@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P3 — Streaming SMP message reassembly** |
-| Last completed phase | P2 — SMP header types and codec |
+| **Next phase to work on** | **P4 — Transport abstraction and `FakeTransport`** |
+| Last completed phase | P3 — streaming SMP message reassembly |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -22,7 +22,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P0](#p0) | Project scaffolding and quality infrastructure | **Complete** | — |
 | [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | **Complete** | P0 |
 | [P2](#p2) | SMP header types and codec | **Complete** | P1 |
-| [P3](#p3) | Streaming SMP message reassembly | Planned | P2 |
+| [P3](#p3) | Streaming SMP message reassembly | **Complete** | P2 |
 | [P4](#p4) | Transport abstraction and `FakeTransport` | Planned | P1 |
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | Planned | P1 |
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Planned | P2–P5 |
@@ -327,7 +327,7 @@ explicit shifts throughout, so the encoding does not depend on the host's.
 <a id="p3"></a>
 ## P3 — Streaming SMP message reassembly
 
-**Status: Planned** · **Depends on:** P2
+**Status: Complete** (2026-09-04) · **Depends on:** P2
 
 **Objective.** Turn an arbitrary byte stream into complete SMP messages, within
 hard bounds.
@@ -356,6 +356,51 @@ messages in one `feed()`. Truncated tail buffered then completed. Oversized
 buffer never exceeds the configured bound under adversarial input.
 
 **Exit.** The only reassembly implementation in the repository.
+
+### Outcome
+
+**Completed.** `src/smp/assembler.{hpp,cpp}` and
+`tests/unit/test_assembler.cpp` (19 new cases, 72 total, all passing under
+ASan/UBSan). The fragmentation invariant is checked against whole delivery,
+byte-at-a-time, every fixed fragment size 1–64, oversized fragments and eight
+seeded random cut patterns.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **No read cursor and no compaction.** The planned design was one growing
+   buffer with a cursor, compacted past the halfway mark. The implementation
+   buffers **at most one message** and parses directly out of the caller's
+   bytes when nothing is held. This is simpler *and* strictly better bounded:
+   with append-then-parse, a caller passing a megabyte in one `feed()` would
+   buffer the whole megabyte before anything checked it, whereas here nothing is
+   appended beyond a `total_size()` that was validated first. The fast path is
+   also zero-copy, which the cursor design could not be. `design.md` §2 is
+   rewritten to describe what exists, with the reasoning.
+2. **The `max_buffer` check runs before waiting**, not after the bytes arrive.
+   Checking afterwards leaves the stream stalled forever waiting for data that
+   would be refused on arrival. There is a test named for this.
+3. **`capacity()` instead of a counting allocator.** The plan called for a
+   counting allocator to prove no allocation growth. Exposing `capacity()` (and
+   `peak_buffered()`) tests the same property more directly and with far less
+   machinery: the assertion is that a hostile declared length leaves capacity
+   untouched, which is the thing actually worth guaranteeing.
+4. **A re-entrancy guard was added.** Not in the plan, but a sink calling
+   `feed()` from inside `on_message()` would mutate the buffer its own payload
+   points into. Three lines turn a use-after-free into `InvalidState`.
+
+**Discovered.**
+
+* **Internal headers needed an include path.** `src/` was on the include path
+  for tests (via `smply::smply_internal`) but not for smply's own sources, so
+  `#include "smp/assembler.hpp"` did not compile. Added as a `PRIVATE` include
+  directory on the `smply` target — consumers still cannot see it, and the
+  public-header gate still keeps internal headers out of `include/`.
+* Four clang-tidy findings on new code, all real and all fixed: an implicit
+  widening multiplication in `limits.hpp` (`16U * 1024U` computed in `unsigned`
+  then widened), a non-const RAII guard, a parameter name that disagreed between
+  declaration and definition, and unnamed parameters in a test sink.
 
 ---
 
@@ -935,6 +980,7 @@ them.
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P3 | The assembler's re-entrancy guard makes a re-entrant sink an error. P6's `SmpClient` dispatches user callbacks from `on_message()`, and a callback that starts a new request must not end up back in `feed()`. It will not today (a new request goes to `Transport::send`, not to the assembler), but the constraint should be stated in `SmpClient`'s documentation. | P6 |
 | P2 | `Header` has no `is_response()` / `response_to()` helper. P6 needs the request-to-response operation mapping for correlation and should add it to `smp/header.hpp` rather than open-coding it in the client. | P6 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI; `linux-gcc-asan-ubsan` covers sanitizers locally. | — (accepted) |

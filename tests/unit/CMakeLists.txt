@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_executable(smply_unit_tests
+    test_assembler.cpp
     test_clock.cpp
     test_error.cpp
     test_result.cpp

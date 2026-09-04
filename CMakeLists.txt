@@ -61,6 +61,7 @@ add_library(smply::smply ALIAS smply)
 target_sources(smply
     PRIVATE
         src/core.cpp
+        src/smp/assembler.cpp
         src/smp/codec.cpp
         src/version.cpp
 )
@@ -70,6 +71,11 @@ target_include_directories(smply
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        # Internal headers (src/smp/assembler.hpp and the like) are included as
+        # "smp/assembler.hpp" by smply's own sources. PRIVATE: consumers must
+        # not see them, and the public-header gate keeps them out of include/.
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # PRIVATE: strict warnings and instrumentation must not reach consumers.

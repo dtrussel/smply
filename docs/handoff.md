@@ -340,3 +340,56 @@ identical output — `FakeTransport` does not exist yet (P4), so drive
 `MessageAssembler::feed()` directly. Enforce both bounds
 (`limits::kMaxSmpPayload`, `limits::kMaxAssemblyBuffer`) and assert the buffer
 never exceeds them under adversarial input, using `make_raw_message()`.
+
+### 2026-09-04 — P3: streaming SMP message reassembly
+
+**Status after this session:** P3 = `Complete`. Next phase is **P4 — Transport
+abstraction and `FakeTransport`**.
+
+**Completed.** `src/smp/assembler.{hpp,cpp}` and 19 test cases (72 total). All
+gates green, including ASan/UBSan and 13/13 gate self-checks.
+
+**Changed.** Four deviations, all in the roadmap's P3 outcome. The substantive
+one: the assembler buffers **at most one message** and parses directly out of
+the caller's bytes when nothing is held, rather than using the planned growing
+buffer with a read cursor. `design.md` §2 has been rewritten to describe what
+exists and why it is better bounded.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** `src/` had to be added as a `PRIVATE` include
+directory on the `smply` target so its own sources can include internal
+headers. One new follow-up for P6, about the re-entrancy guard.
+
+**Caveats — read these before P4.**
+
+* **Payload spans are borrowed for the duration of `on_message()` only**, and on
+  the fast path they point into the *caller's* buffer, not the assembler's.
+  `SmpClient` must copy anything it retains past the callback.
+* **A sink must not call `feed()` re-entrantly.** The assembler returns
+  `InvalidState` rather than corrupting its buffer, but the real answer is not
+  to do it. Relevant when P6 dispatches user callbacks from `on_message()`.
+* **Malformed framing is terminal for the stream, by design.** SMP has no sync
+  word, so there is nothing to resynchronise on. The assembler resets and
+  returns the error; the caller is expected to drop the connection. Do not add
+  a "skip a byte and retry" recovery — it would resynchronise onto attacker-
+  chosen boundaries.
+* **`reset()` must be called on connect and disconnect.**
+  `SmpClient::rebind_transport()` owes this, so a truncated message cannot bleed
+  across a reconnect.
+* The assembler holds no opinions the codec does not: unknown groups and flags
+  pass straight through, with a test asserting it.
+
+**Docs updated.** `design.md` (§2 rewritten: the two paths, the ordering of the
+bound check, why one-message buffering beats a cursor, the failure and
+lifecycle rules), `roadmap.md` (P3 Complete with outcome, 4 deviations, 2
+discovered items), this log. `api.md` unchanged — the assembler is internal.
+
+**Recommended next.** **P4 — Transport abstraction and `FakeTransport`.**
+`include/smply/transport.hpp` is the last public contract to freeze before the
+client exists, so get it right: the normative wording is `design.md` §9 and the
+rationale is ADR-0005. `FakeTransport` should be able to express every scenario
+listed in `testing.md` §2 — write one test per scenario even where trivial,
+because P6 through P12 all depend on those being expressible. Note that
+`MessageSink` (P3) and `TransportListener` (P4) are different interfaces at
+different layers; `SmpClient` will implement both.

@@ -38,41 +38,101 @@ groups and an open range; unknown groups round-trip unchanged.
 ## 2. Streaming reassembly (`src/smp/assembler.*`)
 
 ```cpp
+class MessageSink {                       // implemented by SmpClient (P6)
+public:
+    // payload is borrowed for the duration of this call only. Must not
+    // re-enter the assembler.
+    virtual void on_message(const Header&, ConstBytes payload) = 0;
+};
+
+struct AssemblerLimits {
+    std::uint16_t max_payload = limits::kMaxSmpPayload;
+    std::size_t   max_buffer  = limits::kMaxAssemblyBuffer;
+};
+
 class MessageAssembler {
 public:
-    explicit MessageAssembler(AssemblerLimits);
-    // Feeds arbitrary bytes; invokes sink(header, payload) for each complete
-    // message. payload is only valid during the callback.
-    Result<void> feed(std::span<const std::byte> bytes, MessageSink& sink);
-    void reset() noexcept;               // on (re)connect
-    std::size_t buffered() const noexcept;
+    explicit MessageAssembler(AssemblerLimits = {});
+    Result<void> feed(ConstBytes input, MessageSink&);   // arbitrary chunks
+    void         reset() noexcept;                       // on (re)connect
+    std::size_t  buffered() const noexcept;
+    std::size_t  peak_buffered() const noexcept;         // high-water mark
+    std::size_t  capacity() const noexcept;              // for bound assertions
 };
 ```
 
-Algorithm, driven purely by the header length (PN §2):
+Algorithm, driven purely by the header length (PN §2). It has two paths, and
+which one runs depends only on whether a partial message is already held:
 
-1. Append incoming bytes to the partial buffer.
-2. While `buffered() >= 8`:
-   a. Decode the header. On decode failure → return the error and `reset()`
-      (a stream that cannot be parsed cannot be resynchronised safely).
-   b. If `length > limits.max_payload` → `MessageTooLarge`, `reset()`.
-   c. If `buffered() < 8 + length` → **break** and wait for more bytes;
-      if `8 + length > limits.max_buffer` → `MessageTooLarge`, `reset()`.
-   d. Emit `(header, payload)`; consume `8 + length` bytes; loop.
-3. Bytes remaining after the loop stay buffered.
+**Fast path — nothing buffered.** Parse directly out of the caller's bytes.
 
-Properties, all covered by tests and by a fuzz target:
+1. Fewer than 8 bytes available ⇒ stash them and return.
+2. Decode the header. On failure, `reset()` and return the error.
+3. Validate the size (below). On failure, `reset()` and return the error.
+4. Fewer than `total_size()` bytes available ⇒ stash them and return.
+5. Emit `(header, payload)` as a view **into the caller's buffer**, advance past
+   the message, and loop.
 
-* Byte-at-a-time delivery, whole-message delivery and N-messages-in-one-`feed()`
-  all produce identical output (the "arbitrary fragmentation" invariant).
-* The buffer never exceeds `max_buffer`; a device claiming a huge `length`
-  causes a bounded error, never an allocation.
-* `reset()` is called on disconnect and before a reconnect so a truncated
-  message never bleeds into the next session.
+A whole message delivered in one call is therefore never copied at all — the
+common case for BLE, where a notification frequently completes a response.
 
-The buffer is a `std::vector<std::byte>` with a reserved capacity and a read
-cursor; it is compacted (not reallocated) once the cursor passes half the
-buffer, so steady-state upload traffic performs no allocation.
+**Slow path — a partial message is held.** Top the buffer up from the input in
+two stages: first to 8 bytes so the header can be decoded, then to
+`total_size()`. If the input runs out at either stage, return and wait. When the
+message completes, emit it from the buffer and `clear()` — never `erase()`, so
+the capacity is retained and steady-state traffic performs no allocation.
+
+**Size validation**, applied identically on both paths:
+
+* `length > max_payload` ⇒ `MessageTooLarge`;
+* `total_size() > max_buffer` ⇒ `MessageTooLarge`.
+
+The second check happens **before** waiting for the remaining bytes, not after
+they arrive. Checking afterwards would leave the stream stalled forever, waiting
+for bytes that would be refused the moment they turned up.
+
+### Why one message, not a sliding window
+
+An earlier sketch used a single growing buffer with a read cursor, compacted
+once the cursor passed the halfway mark. The implementation buffers **at most
+one message** instead, which is both simpler and strictly better bounded:
+
+* `buffered()` can never exceed `max_buffer`, because nothing is ever appended
+  beyond the current message's `total_size()`, and that was validated first. A
+  caller passing a megabyte in one `feed()` still buffers only the trailing
+  partial message. With an append-then-parse design the whole megabyte would
+  land in the buffer before anything checked it.
+* There is no cursor, no compaction and no reallocation in steady state.
+* The fast path is zero-copy, which the cursor design could not be.
+
+`capacity()` is exposed so tests can assert the bound is real rather than merely
+observed: a hostile peer must not be able to induce an allocation it will never
+fill.
+
+### Failure and lifecycle
+
+* **Malformed framing is terminal for the stream.** SMP has no sentinel or
+  sync word, so a stream whose framing is violated cannot be resynchronised —
+  there is no way to find where the next message starts. The assembler discards
+  its buffer and returns the error; the caller is expected to drop the
+  connection. Messages successfully parsed *before* the bad one are still
+  delivered.
+* **`reset()`** discards any partial message. `SmpClient::rebind_transport()`
+  calls it, so a truncated message cannot bleed across a reconnect.
+* **Re-entrancy is refused.** A sink that calls `feed()` from inside
+  `on_message()` would mutate the buffer its own payload points into. The
+  assembler returns `InvalidState` rather than allowing the use-after-free.
+* The object remains usable after an error — it is left empty, not poisoned.
+
+Properties covered by tests, and by a fuzz target from P13:
+
+* **The fragmentation invariant**: whole delivery, byte-at-a-time, every fixed
+  fragment size 1–64, oversized fragments, and seeded random cut points all
+  produce an identical sequence of messages.
+* The buffer and its capacity never exceed `max_buffer`, under adversarial
+  input including a declared length of `0xFFFF`.
+* Unknown groups and unknown flags pass through untouched: the assembler holds
+  no opinions the codec does not.
 
 ## 3. CBOR façade (`src/cbor/`)
 

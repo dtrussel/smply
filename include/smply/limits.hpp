@@ -29,7 +29,7 @@ inline constexpr std::uint16_t kMaxSmpPayload = 8192;
 
 /// Cap on bytes held while waiting for a message to complete. Bounds the cost
 /// of a peer that sends a header and then stops.
-inline constexpr std::size_t kMaxAssemblyBuffer = 16U * 1024U;
+inline constexpr std::size_t kMaxAssemblyBuffer = std::size_t{16} * 1024;
 
 /// Maximum CBOR nesting depth accepted, bounding decoder recursion.
 inline constexpr unsigned kMaxCborNesting = 16;
