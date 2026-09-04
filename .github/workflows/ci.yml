@@ -30,6 +30,10 @@ jobs:
           - { os: ubuntu-latest,  preset: linux-gcc }
           - { os: ubuntu-latest,  preset: linux-clang }
           - { os: ubuntu-latest,  preset: linux-gcc-fallback-expected }
+          # Builds the same tests against std::expected. Without this the
+          # standard backing is never exercised, because std::expected does not
+          # exist under the C++20 baseline (ADR-0002).
+          - { os: ubuntu-latest,  preset: linux-gcc-cxx23-std-expected }
           - { os: windows-latest, preset: windows-msvc }
           - { os: windows-latest, preset: core-without-winrt }
     steps:

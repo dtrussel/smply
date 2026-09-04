@@ -1,0 +1,185 @@
+// SPDX-License-Identifier: Apache-2.0
+#ifndef SMPLY_ERROR_HPP
+#define SMPLY_ERROR_HPP
+
+/// \file
+/// smply's structured error type (ADR-0002).
+///
+/// Errors are values, not strings and not bare integers. `ErrorCode` is the
+/// machine-readable category callers switch on; `MgmtError` preserves the
+/// device's own numbers together with the group they must be interpreted
+/// against; `reason` and `where` exist only for diagnostics.
+
+#include "smply/group.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace smply {
+
+/// The machine-readable error category. This is what control flow switches on.
+///
+/// The underlying type is fixed at 16 bits for headroom and to match the other
+/// protocol enumerations; the values themselves are smply's own and never go on
+/// the wire.
+enum class ErrorCode : std::uint16_t
+{
+    Ok = 0,                ///< No error. The default-constructed state.
+    InvalidArgument,       ///< Caller misuse: bad size, null source, bad argument.
+    InvalidState,          ///< The operation is not legal in the current state.
+    MalformedMessage,      ///< SMP header or framing violated.
+    UnsupportedSmpVersion, ///< SMP version bits 0b10 or 0b11 (reserved).
+    MessageTooLarge,       ///< Exceeds a configured limit (smply/limits.hpp).
+    CborEncode,            ///< Failed to encode a request payload.
+    CborDecode,            ///< Malformed or unexpected CBOR in a response.
+    ProtocolError,         ///< The device reported an error; see Error::mgmt().
+    UnexpectedResponse,    ///< Sequence, group or command did not match.
+    Timeout,               ///< No response within the deadline.
+    Cancelled,             ///< Cancelled by the caller, or by destruction.
+    TransportError,        ///< The transport failed, but the link is still up.
+    TransportBusy,         ///< Retry once the transport drains.
+    Disconnected,          ///< The link is gone.
+    ImageMismatch,         ///< Device content does not match what was uploaded.
+    UpdateFailed,          ///< Terminal failure of the DFU state machine.
+    Internal,              ///< A bug in smply.
+};
+
+/// A short, stable name for an error code. Never allocates.
+///
+/// This is the zero-allocation path for logging; `to_string(const Error&)` adds
+/// the device detail and may allocate.
+[[nodiscard]] std::string_view to_string(ErrorCode code) noexcept;
+
+/// An error reported by the device, in either SMP version's shape.
+///
+/// SMP v1 returns a flat `rc` drawn from `mcumgr_err_t`. SMP v2 returns
+/// `err: {group, rc}`, where `rc` is drawn from *that group's* own enumeration
+/// -- so an image-group `rc` of 30 means something entirely different from an
+/// OS-group `rc` of 30, and neither is comparable with a v1 `rc` of 30. Keeping
+/// the group and the flag alongside the number is what makes the value
+/// interpretable at all (docs/protocol-notes.md section 3).
+///
+/// Unknown `rc` values are preserved numerically rather than rejected: these
+/// enumerations grow with each Zephyr release (protocol-notes section 9, A2).
+struct MgmtError
+{
+    /// The group the code belongs to. Only meaningful when `group_scoped`.
+    Group group{Group::Os};
+    /// The raw code: group-scoped when `group_scoped`, else `mcumgr_err_t`.
+    std::uint16_t rc{};
+    /// True when `rc` must be read against `group` (SMP v2 `err` map).
+    bool group_scoped{};
+
+    /// A flat SMP v1 `rc`, drawn from `mcumgr_err_t`.
+    [[nodiscard]] static constexpr MgmtError smp(std::uint16_t rc) noexcept
+    {
+        return MgmtError{Group::Os, rc, false};
+    }
+
+    /// A group-scoped SMP v2 error, drawn from `group`'s own enumeration.
+    [[nodiscard]] static constexpr MgmtError scoped(Group group, std::uint16_t rc) noexcept
+    {
+        return MgmtError{group, rc, true};
+    }
+
+    [[nodiscard]] friend constexpr bool operator==(const MgmtError&,
+                                                   const MgmtError&) noexcept = default;
+};
+
+/// A structured error: a category, optionally the device's own report, and
+/// diagnostic context.
+///
+/// Comparison covers `code`, `mgmt` and `reason`. It deliberately excludes
+/// `where`, which is a logging aid rather than part of the error's identity --
+/// two failures of the same kind raised at different call sites are equal.
+class Error
+{
+public:
+    /// A default-constructed Error is `ErrorCode::Ok` with no detail.
+    Error() noexcept = default;
+
+    /// \param code  The error category.
+    /// \param where A static, literal call-site tag for logs, or nullptr. Must
+    ///              have static storage duration; it is stored by pointer.
+    explicit Error(ErrorCode code, const char* where = nullptr) noexcept
+        : code_{code}, where_{where}
+    {}
+
+    /// An error carrying the device's own report. The code is normally
+    /// `ErrorCode::ProtocolError`.
+    Error(ErrorCode code, MgmtError mgmt, const char* where = nullptr) noexcept
+        : code_{code}, mgmt_{mgmt}, where_{where}
+    {}
+
+    [[nodiscard]] ErrorCode code() const noexcept
+    {
+        return code_;
+    }
+
+    /// The device's own error report, when there was one.
+    [[nodiscard]] const std::optional<MgmtError>& mgmt() const noexcept
+    {
+        return mgmt_;
+    }
+
+    /// The device-supplied `rsn` string. Empty when absent.
+    ///
+    /// This is attacker-controlled text: it must be length-capped and escaped
+    /// before being logged or displayed (docs/security.md, T12).
+    [[nodiscard]] std::string_view reason() const noexcept
+    {
+        return reason_;
+    }
+
+    /// The static call-site tag, or nullptr. For logs only; never compared.
+    [[nodiscard]] const char* where() const noexcept
+    {
+        return where_;
+    }
+
+    /// Attaches the device's `rsn` text. Chainable.
+    Error& with_reason(std::string reason) &
+    {
+        reason_ = std::move(reason);
+        return *this;
+    }
+
+    /// \overload
+    Error&& with_reason(std::string reason) &&
+    {
+        reason_ = std::move(reason);
+        return std::move(*this);
+    }
+
+    /// True when this represents an actual failure.
+    [[nodiscard]] bool failed() const noexcept
+    {
+        return code_ != ErrorCode::Ok;
+    }
+
+    [[nodiscard]] friend bool operator==(const Error& lhs, const Error& rhs) noexcept
+    {
+        // `where_` is excluded deliberately: see the class comment.
+        return lhs.code_ == rhs.code_ && lhs.mgmt_ == rhs.mgmt_ && lhs.reason_ == rhs.reason_;
+    }
+
+private:
+    ErrorCode code_{ErrorCode::Ok};
+    std::optional<MgmtError> mgmt_;
+    std::string reason_;
+    const char* where_{nullptr};
+};
+
+/// A human-readable rendering, for diagnostics only.
+///
+/// Never parse this, and never branch on it: `code()` and `mgmt()` are the
+/// machine-readable surface. Prefer `to_string(ErrorCode)` when only the
+/// category is needed -- that overload does not allocate.
+[[nodiscard]] std::string to_string(const Error& error);
+
+} // namespace smply
+
+#endif // SMPLY_ERROR_HPP

@@ -27,7 +27,13 @@ option(SMPLY_USE_SYSTEM_QCBOR "Use find_package(qcbor) instead of FetchContent" 
 option(SMPLY_FORCE_FALLBACK_EXPECTED
        "Use smply's expected<> even when std::expected is available" OFF)
 
-set(CMAKE_CXX_STANDARD 20)              # ADR-0001
+# C++20 is the baseline (ADR-0001). 23 is buildable so the std::expected
+# backing of Result<T> can be exercised in CI -- under C++20 the standard type
+# does not exist, so without this the fallback would be the only thing ever
+# tested (see docs/decisions/ADR-0002-result-and-error-type.md).
+set(SMPLY_CXX_STANDARD 20 CACHE STRING "C++ standard: 20 (baseline) or 23")
+set_property(CACHE SMPLY_CXX_STANDARD PROPERTY STRINGS 20 23)
+set(CMAKE_CXX_STANDARD ${SMPLY_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -52,7 +58,11 @@ configure_file(
 add_library(smply)
 add_library(smply::smply ALIAS smply)
 
-target_sources(smply PRIVATE src/version.cpp)
+target_sources(smply
+    PRIVATE
+        src/core.cpp
+        src/version.cpp
+)
 
 target_include_directories(smply
     PUBLIC

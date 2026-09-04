@@ -219,3 +219,67 @@ to test both backings. Then `error.hpp` (note `MgmtError` must carry the group
 alongside `rc` — see `protocol-notes.md` §3), then `clock.hpp` and
 `tests/support/manual_clock.hpp`. Watch for `check_docs.py` R4 firing on
 templates and multi-line declarations; harden it rather than working around it.
+
+### 2026-09-04 — P1: core types
+
+**Status after this session:** P1 = `Complete`. Next phase is **P2 — SMP header
+types and codec**.
+
+**Completed.** The vocabulary every later phase builds on: `bytes.hpp`,
+`group.hpp`, `error.hpp`, `detail/expected.hpp`, `result.hpp`, `clock.hpp`,
+`limits.hpp`, `src/core.cpp`, `tests/support/manual_clock.hpp`, and 35 tests.
+All gates green, clang-tidy clean, 13/13 gate self-checks passing.
+
+**Changed.** Four deviations, all recorded in the roadmap's P1 outcome:
+`Group` promoted to its own core header (the error model needs it, so it cannot
+wait for P2); a C++23 CI job added so the `std::expected` backing is actually
+exercised; `performance-enum-size` disabled with a written reason; and
+`src/core.cpp` holding three small out-of-line definitions rather than one file
+per header.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** Three new items in the roadmap's follow-up table
+(no monadic operations on `Result`; `to_string(const Error&)` allocates; Clang
+sanitizers are CI-only here). The R4 follow-up from P0 is resolved.
+
+**Caveats — read these before P2.**
+
+* **`Result<T>` is a *subset* of `std::expected`.** There is no `value()` and
+  there are no monadic operations. Under C++20 you get smply's own type, so
+  anything outside the subset compiles nowhere useful; under the C++23 job it
+  would compile and then break every other build. Use `has_value()`,
+  `operator*`, `operator->`, `error()`, `value_or()`, and `fail()` to build
+  failures.
+* **`expected` is backed by `std::variant`, not a union.** The first version
+  used a union and had a real exception-safety hole, which clang-tidy's analyser
+  found. Both alternatives are `static_assert`ed nothrow-move-constructible so
+  `valueless_by_exception` is unreachable. If you add a type to a `Result` that
+  is not nothrow-move-constructible you will get a clear compile error — fix the
+  type, do not remove the assertion.
+* **`MgmtError` is not just an int.** `rc` is meaningless without `group` and
+  `group_scoped`; an image-group rc 30 and an SMP v1 rc 30 are different errors.
+  Build them with `MgmtError::smp()` / `MgmtError::scoped()` rather than
+  aggregate-initialising, so the flag cannot disagree with the shape.
+* **`Group` is open.** Any 16-bit value is legal; never reject one. It now lives
+  in `smply/group.hpp`, so P2's `smp/header.hpp` should include that rather than
+  redefining it as `api.md` originally showed.
+* `tools/verify_gates.sh` earns its keep — it caught two R4 bugs this session
+  that review had missed. Run it whenever you touch `tools/` or `cmake/`.
+
+**Docs updated.** `api.md` (new `group.hpp` and `limits.hpp` sections; `error.hpp`
+and `result.hpp` reconciled with the real signatures; `Group` removed from the
+`smp/header.hpp` sketch), `architecture.md` (layout, core-types row, limits
+pointer), `quality-gates.md` (the C++23 job, the `performance-enum-size`
+rationale, the YAML folded-scalar trap, the two site-local suppressions),
+`roadmap.md` (P1 Complete with outcome, 4 deviations, 3 discovered items),
+this log.
+
+**Recommended next.** **P2 — SMP header types and codec.** `include/smply/group.hpp`
+already exists; `smp/header.hpp` adds `Operation`, `Version`, `Header` and
+`kHeaderSize` and includes it. Start from the bit layout and the golden vectors
+in `protocol-notes.md` §2 — byte 0 is `res(3) | version(2) | op(3)` MSB-first,
+and every multi-byte field is big-endian. Decode must reject non-zero `res` and
+version `0b10`/`0b11`, but preserve unknown `flags` rather than rejecting them.
+Do not validate `length` there: bounds belong to the assembler in P3, which is
+the only component that knows the configured limit.

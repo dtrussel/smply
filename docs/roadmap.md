@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P1 — Core types: `Result`, `Error`, `Clock`, bytes** |
-| Last completed phase | P0 — scaffolding and quality infrastructure |
+| **Next phase to work on** | **P2 — SMP header types and codec** |
+| Last completed phase | P1 — core types |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -20,7 +20,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | ID | Title | Status | Depends on |
 | -- | ----- | ------ | ---------- |
 | [P0](#p0) | Project scaffolding and quality infrastructure | **Complete** | — |
-| [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | Planned | P0 |
+| [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | **Complete** | P0 |
 | [P2](#p2) | SMP header types and codec | Planned | P1 |
 | [P3](#p3) | Streaming SMP message reassembly | Planned | P2 |
 | [P4](#p4) | Transport abstraction and `FakeTransport` | Planned | P1 |
@@ -155,7 +155,7 @@ actually run:
 <a id="p1"></a>
 ## P1 — Core types
 
-**Status: Planned** · **Depends on:** P0
+**Status: Complete** (2026-09-04) · **Depends on:** P0
 
 **Objective.** The vocabulary types every other phase uses.
 
@@ -190,6 +190,63 @@ clang-tidy, format, tests.
 **Acceptance.** Both `expected` backings pass an identical test suite.
 
 **Exit.** No later phase defines its own error or time type.
+
+### Outcome
+
+**Completed.** `bytes.hpp`, `group.hpp`, `error.hpp`, `detail/expected.hpp`,
+`result.hpp`, `clock.hpp`, `limits.hpp`, `src/core.cpp`, plus
+`tests/support/manual_clock.hpp` and 35 tests across `test_result.cpp`,
+`test_error.cpp` and `test_clock.cpp`. All gates green; clang-tidy clean with no
+check disabled beyond the one documented below.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **`Group` moved into P1** as its own header `include/smply/group.hpp`,
+   rather than living in `smp/header.hpp` (P2) as `api.md` had it. `MgmtError`
+   needs it — an SMP v2 code is meaningless without the group it is scoped to —
+   so the error model cannot be built without it. It is genuine core vocabulary,
+   used by the error model, the group clients and the request router alike;
+   `smp/header.hpp` will include it in P2. `api.md` and `architecture.md`
+   updated. No ADR contradicted, so none superseded.
+2. **A C++23 CI job was added** (`linux-gcc-cxx23-std-expected`). This is what
+   makes the phase's own acceptance criterion testable: under the C++20 baseline
+   `std::expected` does not exist, so `SMPLY_FORCE_FALLBACK_EXPECTED` alone
+   tests the same backing twice and the standard path is never exercised.
+   C++20 remains the baseline (ADR-0001) — `SMPLY_CXX_STANDARD` merely makes 23
+   buildable.
+3. **`performance-enum-size` disabled** in `.clang-tidy`, with the reason
+   recorded in `quality-gates.md` §3: underlying types here follow the wire
+   format, and `Group` must be `uint16_t`.
+4. **`src/core.cpp`** holds the out-of-line definitions for `system_clock`,
+   `group_name` and both `to_string` overloads, rather than one file per header.
+   Splitting three small functions across three translation units would be
+   noise; revisit if it grows.
+
+**Discovered.** Three findings, two of them defects in work from this phase and
+P0 that the gates caught:
+
+* **The hand-written `expected` had an exception-safety hole**, surfaced by
+  clang-tidy's analyser. Changing which union member is active means destroying
+  one object and constructing another; if that construction throws, the object
+  holds neither and the destructor then destroys something that was never built.
+  It is now backed by `std::variant` with both alternatives required to be
+  nothrow-move-constructible, so the valueless state is unreachable and there is
+  no hand-managed lifetime at all. That also cleared every analyser finding —
+  they were all rooted in the union, not false positives to be silenced.
+* **`check_docs.py` R4 had two real bugs**, both found by
+  `tools/verify_gates.sh` rather than by review. Its `detail`-namespace
+  exemption compared brace depth against zero, which — since the enclosing
+  `namespace smply` never closes until EOF — exempted *everything* after the
+  first `detail` block; and it did not match the nested `namespace smply::detail`
+  form at all. Separately, hardening it to look past `template<...>` lines made
+  it skip any line starting with `[[`, swallowing complete declarations like
+  `[[nodiscard]] const char* version() noexcept;`. All three are fixed and the
+  gate self-check passes 13/13 again.
+* **YAML folded scalars have no comments.** A `#` inside `.clang-tidy`'s
+  `Checks:` block becomes part of the check list rather than a comment, which
+  silently broke a suppression. Noted in `quality-gates.md` §3.
 
 ---
 
@@ -838,6 +895,9 @@ them.
 | Found in | Item | Absorb into |
 | -------- | ---- | ----------- |
 | P0 | `install(EXPORT)` for a target that links a `FetchContent`-provided static library needs care: `target_link_libraries(smply PRIVATE qcbor)` still records `$<LINK_ONLY:qcbor::qcbor>` in smply's interface, which `install(EXPORT)` rejects unless QCBOR is exported too. Options: require `find_package(qcbor)` for installed builds, or re-export. Install/export was already scoped to P18; this is the specific problem it must solve. | P18 |
-| P0 | `tools/check_docs.py` R4 (public symbols documented) is a line-based heuristic. It is correct on P0's single header but has not met templates, nested namespaces or multi-line declarations. Expect to harden it once real headers exist. | P1 |
+| ~~P0~~ | ~~`check_docs.py` R4 is a line-based heuristic untested against templates and nested namespaces.~~ **Done in P1**: three bugs found and fixed (nested `detail` namespaces, brace-depth tracking, attribute-prefixed declarations). Still a heuristic; expect further hardening as headers grow. | — |
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
+| P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
+| P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI; `linux-gcc-asan-ubsan` covers sanitizers locally. | — (accepted) |

@@ -15,6 +15,7 @@ deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
 | `linux-gcc` | ubuntu-latest | GCC 13 | C++20 | core + tests |
 | `linux-clang` | ubuntu-latest | Clang 18 | C++20 | core + tests |
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
+| `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
 | `windows-winrt` *(P15)* | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: adapter + example |
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
@@ -102,7 +103,22 @@ Rationale for the notable choices: `cppcoreguidelines-pro-type-*-cast` and
 mechanically; `readability-magic-numbers` is off because protocol constants are
 named in one place already and the check fires constantly on test vectors;
 `easily-swappable-parameters` is off because `(offset, length)` pairs are
-inherent here.
+inherent here; **`performance-enum-size` is off** because underlying types here
+are chosen to match the wire format and to leave room for protocol growth, not
+to minimise `sizeof` -- `Group` must be `uint16_t` because the SMP header
+carries 16 bits, so the check would fight every protocol enumeration for no
+benefit.
+
+Note that `.clang-tidy`'s `Checks:` value is a YAML *folded scalar*: a `#`
+inside it is not a comment, it becomes part of the check list. Rationale
+comments go above the key.
+
+Two analyser checks are suppressed at specific call sites rather than globally,
+each with a written reason: `bugprone-unchecked-optional-access` where a
+`REQUIRE` already guarantees engagement (the checker cannot see through Catch2's
+macros), and `clang-analyzer-optin.core.EnumCastOutOfRange` where a test
+deliberately casts an out-of-range value to exercise `Group`'s openness or a
+defensive default.
 
 **cppcheck** runs as a complement (`--enable=warning,performance,portability
 --inline-suppr --error-exitcode=1`, C++20, suppressions in

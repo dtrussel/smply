@@ -2,6 +2,15 @@
 #
 # See docs/quality-gates.md section 3 for the rationale behind each inclusion
 # and each deliberate exclusion.
+#
+# Note: the Checks value below is a YAML folded scalar, so '#' inside it is NOT
+# a comment -- it becomes part of the check list. Explanations go here instead.
+#
+# -performance-enum-size: underlying types here are chosen to match the wire
+#   format and to leave room for protocol growth, not to minimise sizeof. Group
+#   must be uint16_t because the SMP header carries 16 bits
+#   (docs/protocol-notes.md section 2); the check would fight every protocol
+#   enumeration for no benefit.
 ---
 Checks: >
   -*,
@@ -24,6 +33,7 @@ Checks: >
   modernize-*,
   -modernize-use-trailing-return-type,
   performance-*,
+  -performance-enum-size,
   readability-*,
   -readability-magic-numbers,
   -readability-identifier-length,

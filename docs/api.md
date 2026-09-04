@@ -9,6 +9,30 @@ Everything lives in namespace `smply`. Baseline **C++20**
 
 ---
 
+## `smply/group.hpp`
+
+`Group` is core vocabulary rather than an SMP-header detail: the error model
+needs it (an SMP v2 code is only meaningful against its group), and so do the
+group clients and the request router. `smply/smp/header.hpp` includes it.
+
+```cpp
+namespace smply {
+
+// Open by design: any 16-bit value is legal on the wire and round-trips
+// unchanged, so an unknown or vendor group is never rejected.
+enum class Group : std::uint16_t {
+    Os = 0, Image = 1, Stat = 2, Settings = 3, Log = 4, Crash = 5, Split = 6,
+    Run = 7, Fs = 8, Shell = 9, Enumeration = 10, Transport = 11,
+    ZephyrBasic = 63, PerUser = 64,
+};
+
+constexpr std::uint16_t to_underlying(Group) noexcept;
+constexpr bool          is_user_defined(Group) noexcept;   // >= PerUser
+const char*             group_name(Group) noexcept;        // "unknown" if unnamed
+
+} // namespace smply
+```
+
 ## `smply/result.hpp`, `smply/error.hpp`
 
 ```cpp
@@ -35,35 +59,61 @@ enum class ErrorCode : std::uint16_t {
     Internal,
 };
 
+// Never allocates: the zero-cost path for logging.
+std::string_view to_string(ErrorCode) noexcept;
+
 // Device-reported error, both SMP v1 and v2 shapes (protocol-notes §3).
 struct MgmtError {
-    Group         group{};        // v2 only; Group::Os for flat v1 rc
-    std::uint16_t rc{};           // group-scoped (v2) or mcumgr_err_t (v1)
-    bool          group_scoped{}; // true => rc must be read against `group`
+    Group         group{Group::Os}; // only meaningful when group_scoped
+    std::uint16_t rc{};             // group-scoped (v2) or mcumgr_err_t (v1)
+    bool          group_scoped{};   // true => rc must be read against `group`
+
+    // Named factories, so the flag cannot be set inconsistently with the shape.
+    static constexpr MgmtError smp(std::uint16_t rc) noexcept;              // v1 flat
+    static constexpr MgmtError scoped(Group, std::uint16_t rc) noexcept;    // v2
+    friend constexpr bool operator==(const MgmtError&, const MgmtError&) noexcept = default;
 };
 
 class Error {
 public:
-    Error() = default;
-    explicit Error(ErrorCode, const char* where = nullptr);
-    Error(ErrorCode, MgmtError, const char* where = nullptr);
+    Error() noexcept = default;                            // ErrorCode::Ok
+    explicit Error(ErrorCode, const char* where = nullptr) noexcept;
+    Error(ErrorCode, MgmtError, const char* where = nullptr) noexcept;
 
-    ErrorCode                   code()   const noexcept;
-    const std::optional<MgmtError>& mgmt() const noexcept;
-    std::string_view            reason() const noexcept; // device "rsn", may be empty
-    const char*                 where()  const noexcept; // static site tag, for logs
+    ErrorCode                       code()   const noexcept;
+    const std::optional<MgmtError>& mgmt()   const noexcept;
+    std::string_view                reason() const noexcept; // device "rsn", may be empty
+    const char*                     where()  const noexcept; // static site tag, for logs
+    bool                            failed() const noexcept; // code() != Ok
 
-    Error& with_reason(std::string);
+    Error&  with_reason(std::string) &;
+    Error&& with_reason(std::string) &&;   // for `return Error{...}.with_reason(...)`
+
+    // Compares code, mgmt and reason. `where` is excluded: it is a logging aid,
+    // not part of the error's identity.
     friend bool operator==(const Error&, const Error&) noexcept;
 };
 
 std::string to_string(const Error&);   // diagnostics only, never for control flow
 
-// std::expected when available (C++23), otherwise an API-compatible subset.
-template <class T> using Result = SMPLY_EXPECTED<T, Error>;
+// std::expected where the standard library has it, otherwise an API-compatible
+// subset (ADR-0002). Use only the common subset: has_value/operator bool,
+// operator*, operator->, error(), value_or. There is deliberately no value().
+template <class T, class E> using expected   = /* std:: or smply's own */;
+template <class E>          using unexpected = /* ditto */;
+template <class T>          using Result     = expected<T, Error>;
+
+// Builds the failure state, so call sites never name the backing.
+unexpected<Error> fail(Error) noexcept;
+unexpected<Error> fail(ErrorCode, const char* where = nullptr) noexcept;
 
 } // namespace smply
 ```
+
+Under the C++20 baseline `std::expected` does not exist, so `Result` is always
+smply's own there. The `linux-gcc-cxx23-std-expected` CI job builds the same
+tests against the standard type; `SMPLY_USING_STD_EXPECTED` says which is in
+use.
 
 ## `smply/clock.hpp`, `smply/bytes.hpp`
 
@@ -76,16 +126,31 @@ using TimePoint = std::chrono::steady_clock::time_point;
 class Clock {                       // injectable; tests use ManualClock
 public:
     virtual ~Clock() = default;
+    // Must be monotonic: successive calls never decrease.
     virtual TimePoint now() const noexcept = 0;
 };
-const Clock& system_clock() noexcept;
+const Clock& system_clock() noexcept;   // static storage duration
 
 using ConstBytes = std::span<const std::byte>;
 using MutBytes   = std::span<std::byte>;
+
+// NB: two distinct SHA-256 values appear in MCUmgr and must not be confused --
+// the upload "sha" (whole file) and image-state "hash" (IMAGE_TLV_SHA256, over
+// header and body only). See protocol-notes §7.
 using Hash       = std::array<std::byte, 32>;
 
 } // namespace smply
 ```
+
+## `smply/limits.hpp`
+
+The defensive bounds from [`architecture.md`](architecture.md) §9, as named
+constants in `namespace smply::limits`: `kMaxSmpPayload`, `kMaxAssemblyBuffer`,
+`kMaxCborNesting`, `kMaxInFlight`, `kMaxRetiredSeqs`, `kMaxImages`,
+`kMaxSlotsPerImage`, `kMaxVersionStringLength`, `kMaxReasonLength`,
+`kDefaultTimeout`, `kFirstChunkTimeout`, `kEraseTimeout`, `kUploadChunkMax`,
+`kUploadChunkMin`, `kDefaultSmpMessageBudget`, `kMaxImageSize`. These are the
+defaults; `SmpClientConfig` and `UploadOptions` override them per instance.
 
 ## `smply/smp/header.hpp`
 
@@ -97,10 +162,7 @@ enum class Operation : std::uint8_t {
 };
 enum class Version : std::uint8_t { V1 = 0, V2 = 1 };
 
-enum class Group : std::uint16_t {
-    Os = 0, Image = 1, Stat = 2, Settings = 3, Fs = 8, Shell = 9,
-    Enumeration = 10, Transport = 11, ZephyrBasic = 63, PerUser = 64,
-};   // open: unknown values round-trip unchanged
+// Group comes from smply/group.hpp, which this header includes.
 
 inline constexpr std::size_t kHeaderSize = 8;
 

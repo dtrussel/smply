@@ -98,7 +98,7 @@ dependencies between peers, and no cycles.
 
 | Component | Owns | Must not know about |
 | --------- | ---- | ------------------- |
-| **core types** (`include/smply/`) | `Result<T>`, `Error`, `ErrorCode`, `Clock`, `Duration`, byte buffer aliases, limits | anything protocol-specific |
+| **core types** (`include/smply/`) | `Result<T>`, `Error`, `ErrorCode`, `MgmtError`, `Group`, `Clock`, `Duration`, byte-buffer aliases, `limits` | anything protocol-specific beyond group identity |
 | **smp codec** (`src/smp/codec.*`) | `Header` encode/decode, byte order, field validation | CBOR, groups, transports |
 | **MessageAssembler** (`src/smp/assembler.*`) | turning an arbitrary byte stream into complete SMP messages; bounded buffering; resync | who sent the bytes |
 | **cbor façade** (`src/cbor/`) | bounded encode/decode of the CBOR shapes smply uses; `MgmtError` extraction | SMP header, groups' meaning |
@@ -251,7 +251,8 @@ Detail: [`security.md`](security.md).
 
 ## 9. Configuration limits (defensive bounds)
 
-Compile-time defaults, overridable per `SmpClient` via `SmpClientConfig`:
+Compile-time defaults in `include/smply/limits.hpp`, overridable per
+`SmpClient` via `SmpClientConfig`:
 
 | Limit | Default | Purpose |
 | ----- | ------- | ------- |
@@ -275,16 +276,17 @@ smply/
 ├── cmake/                      warnings.cmake, sanitizers.cmake, smplyConfig.cmake.in
 ├── include/smply/              PUBLIC headers only — no third-party types
 │   ├── smply.hpp               umbrella
-│   ├── result.hpp  error.hpp  clock.hpp  bytes.hpp  limits.hpp
+│   ├── result.hpp  error.hpp  clock.hpp  bytes.hpp  limits.hpp  group.hpp
 │   ├── transport.hpp           Transport + TransportListener
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle
-│   ├── smp/header.hpp          Operation, Version, Group, Header
+│   ├── smp/header.hpp          Operation, Version, Header (Group is core, above)
 │   ├── groups/os.hpp           OsManagement
 │   ├── groups/image.hpp        ImageManagement, ImageState, UploadOptions
 │   ├── image_source.hpp        ImageSource, MemoryImageSource, McubootImageInfo
 │   ├── dfu/firmware_updater.hpp
 │   └── util/dispatcher.hpp     thread-marshalling helper for adapters
 ├── src/
+│   ├── core.cpp                system_clock, group_name, to_string
 │   ├── smp/                    codec.cpp assembler.cpp client.cpp
 │   ├── cbor/                   reader.* writer.* backend_qcbor.* mgmt_error.*
 │   ├── groups/{os,image}/      image/ also holds upload_session.*

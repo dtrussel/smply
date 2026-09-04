@@ -68,6 +68,15 @@
       }
     },
     {
+      "name": "linux-gcc-cxx23-std-expected",
+      "inherits": "linux-gcc",
+      "displayName": "Linux / GCC, C++23 (Result backed by std::expected)",
+      "description": "Exercises the std::expected backing; the C++20 builds use smply's own.",
+      "cacheVariables": {
+        "SMPLY_CXX_STANDARD": "23"
+      }
+    },
+    {
       "name": "windows-msvc",
       "inherits": "base",
       "displayName": "Windows / MSVC",
@@ -110,6 +119,10 @@
     {
       "name": "linux-gcc-fallback-expected",
       "configurePreset": "linux-gcc-fallback-expected"
+    },
+    {
+      "name": "linux-gcc-cxx23-std-expected",
+      "configurePreset": "linux-gcc-cxx23-std-expected"
     },
     {
       "name": "windows-msvc",
@@ -159,6 +172,13 @@
     {
       "name": "linux-gcc-fallback-expected",
       "configurePreset": "linux-gcc-fallback-expected",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-cxx23-std-expected",
+      "configurePreset": "linux-gcc-cxx23-std-expected",
       "output": {
         "outputOnFailure": true
       }

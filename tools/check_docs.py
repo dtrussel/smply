@@ -187,8 +187,10 @@ def rule_4_public_symbols_documented() -> list[str]:
     """Each public declaration needs a preceding /// comment.
 
     Deliberately conservative: only namespace-scope declarations in
-    include/smply/ are considered, and anything inside a detail namespace is
-    exempt. Use '/// \\internal' to document a symbol as not-for-consumers.
+    include/smply/ are considered, and anything in a `detail` namespace (nested
+    or not) is exempt. A doc comment may be separated from its declaration by a
+    template parameter list, a requires-clause, attributes or preprocessor
+    lines.
     """
     public_dir = REPO / "include" / "smply"
     if not public_dir.is_dir():
@@ -202,16 +204,24 @@ def rule_4_public_symbols_documented() -> list[str]:
 
     for header in sorted(list(public_dir.rglob("*.hpp")) + list(public_dir.rglob("*.hpp.in"))):
         lines = header.read_text(encoding="utf-8").splitlines()
-        depth_detail = False
+        # Track the brace depth at which a `namespace detail` block was
+        # entered, and clear the exemption when we come back out of it.
+        # Comparing against zero instead would exempt everything after the
+        # block, since the enclosing `namespace smply` never closes until EOF.
+        detail_depth: int | None = None
         brace_depth = 0
         for i, raw in enumerate(lines):
             line = raw.strip()
-            if re.match(r"^namespace\s+detail\b", line):
-                depth_detail = True
+            # Matches both `namespace detail {` and `namespace smply::detail {`.
+            entering_detail = (
+                re.match(r"^namespace\s+(?:[\w:]+::)?detail\b", line) is not None
+            )
             brace_depth += raw.count("{") - raw.count("}")
-            if depth_detail and brace_depth == 0:
-                depth_detail = False
-            if depth_detail:
+            if entering_detail and detail_depth is None:
+                detail_depth = brace_depth - 1
+            elif detail_depth is not None and brace_depth <= detail_depth:
+                detail_depth = None
+            if detail_depth is not None:
                 continue
             if not line or line.startswith(("//", "*", "/*", "#", "}")):
                 continue
@@ -223,11 +233,26 @@ def rule_4_public_symbols_documented() -> list[str]:
                 continue
             if line.startswith(("using namespace", "template")) and line.endswith(">"):
                 continue
+            # Walk back past anything that legitimately sits between a doc
+            # comment and the thing it documents: template parameter lists,
+            # requires-clauses, attributes and preprocessor lines.
             preceding = ""
             for j in range(i - 1, -1, -1):
-                if lines[j].strip():
-                    preceding = lines[j].strip()
+                candidate = lines[j].strip()
+                if not candidate:
+                    continue
+                # Skip only lines that cannot themselves be the declaration:
+                # a bare template header, a requires-clause, an attribute-only
+                # line or a preprocessor directive. A line ending in ';' is a
+                # complete declaration even if it starts with '[[nodiscard]]',
+                # and must not be skipped over.
+                if candidate.endswith((";", "}")):
+                    preceding = candidate
                     break
+                if re.match(r"^(template\s*<|requires\b|\[\[|#)", candidate):
+                    continue
+                preceding = candidate
+                break
             if not preceding.startswith(("///", "*", "/**", "/*!")):
                 errors.append(
                     f"{header.relative_to(REPO)}:{i + 1}: public declaration without a "
