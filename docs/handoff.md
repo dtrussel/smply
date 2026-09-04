@@ -266,6 +266,11 @@ sanitizers are CI-only here). The R4 follow-up from P0 is resolved.
   redefining it as `api.md` originally showed.
 * `tools/verify_gates.sh` earns its keep — it caught two R4 bugs this session
   that review had missed. Run it whenever you touch `tools/` or `cmake/`.
+* **Its own fixtures can rot.** Completing P1 turned the R2 case's text
+  substitution into a no-op, so that gate silently went unverified while still
+  printing PASS; CI caught it. It now appends a synthetic `P99` phase. When you
+  add a case, do not key the violation to real content that later work will
+  change.
 
 **Docs updated.** `api.md` (new `group.hpp` and `limits.hpp` sections; `error.hpp`
 and `result.hpp` reconciled with the real signatures; `Group` removed from the

@@ -127,14 +127,19 @@ expect_fail "check_deps rejects a tag pin instead of a full commit hash" \
     python3 tools/check_deps.py
 restore cmake/dependencies.cmake
 
-# 8. Docs R2: a phase marked Complete that still lists remaining work
-python3 - "$WORK/docs/roadmap.md" <<'PY'
-import re, sys, pathlib
-p = pathlib.Path(sys.argv[1]); t = p.read_text()
-t = t.replace("## P1 — Core types\n\n**Status: Planned**",
-              "## P1 — Core types\n\n**Status: Complete**\n\n**Remaining in this phase.** The whole thing, actually.")
-p.write_text(t)
-PY
+# 8. Docs R2: a phase marked Complete that still lists remaining work.
+# Appends a synthetic phase rather than patching a real one: an earlier version
+# rewrote "P1 ... Status: Planned", which silently became a no-op the moment P1
+# was completed, leaving the gate untested while still reporting PASS.
+cat >> "$WORK/docs/roadmap.md" <<'ROADMAP'
+
+<a id="p99"></a>
+## P99 — Synthetic phase used by tools/verify_gates.sh
+
+**Status: Complete**
+
+**Remaining in this phase.** Deliberately non-empty, so R2 must reject this.
+ROADMAP
 expect_fail "check_docs R2 rejects a Complete phase with remaining work" \
     python3 tools/check_docs.py
 restore docs/roadmap.md
