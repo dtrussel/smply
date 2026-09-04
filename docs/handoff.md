@@ -192,10 +192,9 @@ verification step is not optional.
   (`libclang-rt-18-dev`), so `linux-clang-asan-ubsan` cannot be verified
   locally; a GCC sanitizer preset was added and *is* verified locally, and CI
   installs the Clang runtime explicitly.
-* `cppcheck`, `lcov` and `gcovr` are likewise absent locally. `tools/lint.sh`
-  and `tools/coverage.sh` degrade with a message rather than failing. **The
-  cppcheck suppression list has therefore never been exercised** — treat the
-  first CI run as its real first test.
+* `cppcheck`, `lcov` and `gcovr` are absent locally. `tools/lint.sh` and
+  `tools/coverage.sh` degrade with a message rather than failing, so a local
+  run is weaker than CI. cppcheck 2.13 has now run in CI and reported nothing.
 * The CMake floor is now **3.25** (was 3.24) for `FetchContent_Declare(SYSTEM)`.
 * Coverage thresholds are deliberately not enforced yet; P13 turns them on.
 
@@ -205,6 +204,13 @@ verification step is not optional.
 SYSTEM finding, §10/§11 reconciled with the implementation),
 `docs/roadmap.md` (P0 Complete + outcome + 5 deviations, O1 resolved, 4
 follow-ups), `CLAUDE.md` (SPDX convention, pre-finish checklist), this log.
+
+**CI.** All 10 jobs green on the first push (run 33919323903), including both
+MSVC jobs, which could not be verified locally. Two cosmetic follow-ups were
+fixed afterwards: `tools/lint.sh` printed clang-tidy's "Optimized build." line
+instead of its version, and `tools/cppcheck-suppressions.txt` used `//` rather
+than cppcheck's documented `#` comment syntax (cppcheck tolerated it, so this
+corrected a latent inaccuracy rather than a break).
 
 **Recommended next.** **P1 — Core types.** Start with
 `include/smply/detail/expected.hpp`, since everything else depends on

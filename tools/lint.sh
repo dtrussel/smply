@@ -28,7 +28,7 @@ if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
     mapfile -t tus < <(tools/sources.sh | grep -E '\.(cpp|cc)$' \
         | grep -v '^tests/consumer/')
     if [[ ${#tus[@]} -gt 0 ]]; then
-        echo "running $($CLANG_TIDY --version | head -2 | tail -1) over ${#tus[@]} TUs"
+        echo "running $("$CLANG_TIDY" --version | grep -m1 -oE '[Vv]ersion [0-9.]+') over ${#tus[@]} TUs"
         "$CLANG_TIDY" -p "$BUILD_DIR" "${tus[@]}" || status=1
     fi
 else
