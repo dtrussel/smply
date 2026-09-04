@@ -160,24 +160,41 @@ namespace smply {
 enum class Operation : std::uint8_t {
     Read = 0, ReadResponse = 1, Write = 2, WriteResponse = 3,
 };
-enum class Version : std::uint8_t { V1 = 0, V2 = 1 };
+enum class Version : std::uint8_t { V1 = 0, V2 = 1 };  // 0b10/0b11 are reserved
 
 // Group comes from smply/group.hpp, which this header includes.
 
 inline constexpr std::size_t kHeaderSize = 8;
+inline constexpr std::uint32_t kMaxEncodableLength = 0xFFFF;
 
 struct Header {
     Operation     op{};
     Version       version{Version::V1};
-    std::uint8_t  flags{};
-    std::uint16_t length{};
+    std::uint8_t  flags{};      // undefined by the spec; unknown bits preserved
+    std::uint16_t length{};     // payload size, EXCLUDING this header
     Group         group{};
-    std::uint8_t  seq{};
+    std::uint8_t  seq{};        // wraps at 8 bits; a response echoes it
     std::uint8_t  command{};
+
+    // Bytes of the whole message: kHeaderSize + length. This relationship is
+    // what lets a byte stream be split into messages without transport
+    // framing (ADR-0006).
+    constexpr std::size_t total_size() const noexcept;
+
+    friend constexpr bool operator==(const Header&, const Header&) noexcept = default;
 };
 
+// Total function: every Header encodes. Reserved bits are always written zero.
 std::array<std::byte, kHeaderSize> encode(const Header&) noexcept;
+
+// Rejects set reserved bits and op > 3 (MalformedMessage) and the reserved
+// versions 0b10/0b11 (UnsupportedSmpVersion). Deliberately does NOT validate
+// `length`: bounds belong to the reassembler, the only component that knows
+// the configured limit.
 Result<Header> decode_header(std::span<const std::byte, kHeaderSize>) noexcept;
+Result<Header> decode_header(ConstBytes) noexcept;   // short buffer => Malformed
+
+const char* operation_name(Operation) noexcept;
 
 } // namespace smply
 ```

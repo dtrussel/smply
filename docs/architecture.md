@@ -279,7 +279,7 @@ smply/
 │   ├── result.hpp  error.hpp  clock.hpp  bytes.hpp  limits.hpp  group.hpp
 │   ├── transport.hpp           Transport + TransportListener
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle
-│   ├── smp/header.hpp          Operation, Version, Header (Group is core, above)
+│   ├── smp/header.hpp          Operation, Version, Header, codec (Group is core, above)
 │   ├── groups/os.hpp           OsManagement
 │   ├── groups/image.hpp        ImageManagement, ImageState, UploadOptions
 │   ├── image_source.hpp        ImageSource, MemoryImageSource, McubootImageInfo

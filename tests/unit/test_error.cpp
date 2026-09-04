@@ -76,8 +76,7 @@ TEST_CASE("MgmtError preserves rc values smply does not recognise", "[error]")
 
     // Likewise an entirely unknown group: Group is open.
     // Group is open by design (see smply/group.hpp); this is the property under
-    // test, so the analyzer's out-of-range complaint is the wrong call here.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    // test.
     const auto vendor = MgmtError::scoped(static_cast<Group>(9000), 7);
     REQUIRE(smply::to_underlying(vendor.group) == 9000);
     REQUIRE(smply::is_user_defined(vendor.group));
@@ -169,7 +168,6 @@ TEST_CASE("every ErrorCode has a distinct, non-empty name", "[error]")
 TEST_CASE("to_string(ErrorCode) handles an out-of-range value", "[error]")
 {
     // Defensive: someone casting a bad value in must not fall off the end.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): deliberate.
     REQUIRE_FALSE(smply::to_string(static_cast<ErrorCode>(60000)).empty());
 }
 
@@ -216,7 +214,6 @@ TEST_CASE("group_name covers the named groups and degrades for unknown ones", "[
 {
     REQUIRE(std::string_view{smply::group_name(Group::Os)} == "os");
     REQUIRE(std::string_view{smply::group_name(Group::Image)} == "image");
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): deliberate.
     REQUIRE(std::string_view{smply::group_name(static_cast<Group>(9000))} == "unknown");
 }
 
@@ -225,6 +222,5 @@ TEST_CASE("is_user_defined marks the vendor range", "[error]")
     REQUIRE_FALSE(smply::is_user_defined(Group::Os));
     REQUIRE_FALSE(smply::is_user_defined(Group::ZephyrBasic));
     REQUIRE(smply::is_user_defined(Group::PerUser));
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): deliberate.
     REQUIRE(smply::is_user_defined(static_cast<Group>(200)));
 }

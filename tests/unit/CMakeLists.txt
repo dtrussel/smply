@@ -4,6 +4,7 @@ add_executable(smply_unit_tests
     test_clock.cpp
     test_error.cpp
     test_result.cpp
+    test_smp_codec.cpp
     test_version.cpp
 )
 

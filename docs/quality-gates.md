@@ -113,12 +113,17 @@ Note that `.clang-tidy`'s `Checks:` value is a YAML *folded scalar*: a `#`
 inside it is not a comment, it becomes part of the check list. Rationale
 comments go above the key.
 
-Two analyser checks are suppressed at specific call sites rather than globally,
-each with a written reason: `bugprone-unchecked-optional-access` where a
-`REQUIRE` already guarantees engagement (the checker cannot see through Catch2's
-macros), and `clang-analyzer-optin.core.EnumCastOutOfRange` where a test
-deliberately casts an out-of-range value to exercise `Group`'s openness or a
-defensive default.
+`clang-analyzer-optin.core.EnumCastOutOfRange` is also off, for a reason
+specific to this domain: it assumes an enumeration's valid values are exactly
+its enumerators, which is false for a wire-format enumeration. `Group` is open
+by design — every 16-bit value is legal and must round-trip — so decoding one is
+a `static_cast` from an arbitrary value by construction, and the check fires on
+correct code throughout the codec, the groups layer and their tests.
+
+One check is suppressed at specific call sites rather than globally, with a
+written reason at each: `bugprone-unchecked-optional-access`, where a `REQUIRE`
+already guarantees engagement but the checker cannot see through Catch2's
+macros.
 
 **cppcheck** runs as a complement (`--enable=warning,performance,portability
 --inline-suppr --error-exitcode=1`, C++20, suppressions in

@@ -288,3 +288,55 @@ and every multi-byte field is big-endian. Decode must reject non-zero `res` and
 version `0b10`/`0b11`, but preserve unknown `flags` rather than rejecting them.
 Do not validate `length` there: bounds belong to the assembler in P3, which is
 the only component that knows the configured limit.
+
+### 2026-09-04 — P2: SMP header types and codec
+
+**Status after this session:** P2 = `Complete`. Next phase is **P3 — Streaming
+SMP message reassembly**.
+
+**Completed.** `smp/header.hpp` (`Operation`, `Version`, `Header`,
+`kHeaderSize`, `total_size()`), `src/smp/codec.cpp`, and
+`tests/support/message_builder.hpp`. 53 tests total, all gates green.
+
+**Changed.** Three deviations, all in the roadmap's P2 outcome: `Group` had
+already landed in P1; `Header::total_size()` and a dynamic-span `decode_header`
+overload were added because P3 needs both; response-operation mapping was
+deliberately left to P6, where correlation lives.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** `clang-analyzer-optin.core.EnumCastOutOfRange` is
+now disabled project-wide — see the P2 outcome for why a wire-format enumeration
+makes it unusable. One new follow-up: P6 should add the request-to-response
+operation mapping to `smp/header.hpp`.
+
+**Caveats — read these before P3.**
+
+* **`decode_header` does not validate `length`, on purpose.** It reports what
+  the wire says. A device claiming 60 000 bytes decodes fine; rejecting that is
+  P3's job, because the assembler is the only component that knows the
+  configured limit. `tests/support/message_builder.hpp` has
+  `make_raw_message()` specifically for constructing that case.
+* **`Header::total_size()` is the message-boundary rule.** Use it in the
+  assembler rather than writing `8 + length` again.
+* **Unknown flags and unknown groups are preserved, never rejected.** Both have
+  tests asserting it. Do not "tidy" either into a validation error.
+* `make_message()` fixes the length field to match the payload;
+  `make_raw_message()` leaves it as stated. Reach for the second whenever you
+  are testing hostile input.
+
+**Docs updated.** `api.md` (`smp/header.hpp` reconciled with the real
+signatures, including the two additions and the deliberate non-validation of
+`length`), `architecture.md` (layout line), `quality-gates.md` (the
+`EnumCastOutOfRange` rationale; the per-site suppression note narrowed to the
+one that remains), `roadmap.md` (P2 Complete with outcome, 3 deviations, 1
+discovered item), this log.
+
+**Recommended next.** **P3 — Streaming SMP message reassembly.**
+`src/smp/assembler.{hpp,cpp}` per `design.md` §2. The algorithm is short; the
+value is in the tests. The invariant to build first is that byte-at-a-time,
+whole-message, fixed-size-fragment and randomised-cut delivery all produce
+identical output — `FakeTransport` does not exist yet (P4), so drive
+`MessageAssembler::feed()` directly. Enforce both bounds
+(`limits::kMaxSmpPayload`, `limits::kMaxAssemblyBuffer`) and assert the buffer
+never exceeds them under adversarial input, using `make_raw_message()`.

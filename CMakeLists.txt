@@ -61,6 +61,7 @@ add_library(smply::smply ALIAS smply)
 target_sources(smply
     PRIVATE
         src/core.cpp
+        src/smp/codec.cpp
         src/version.cpp
 )
 

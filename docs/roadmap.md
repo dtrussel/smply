@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P2 — SMP header types and codec** |
-| Last completed phase | P1 — core types |
+| **Next phase to work on** | **P3 — Streaming SMP message reassembly** |
+| Last completed phase | P2 — SMP header types and codec |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -21,7 +21,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | -- | ----- | ------ | ---------- |
 | [P0](#p0) | Project scaffolding and quality infrastructure | **Complete** | — |
 | [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | **Complete** | P0 |
-| [P2](#p2) | SMP header types and codec | Planned | P1 |
+| [P2](#p2) | SMP header types and codec | **Complete** | P1 |
 | [P3](#p3) | Streaming SMP message reassembly | Planned | P2 |
 | [P4](#p4) | Transport abstraction and `FakeTransport` | Planned | P1 |
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | Planned | P1 |
@@ -253,7 +253,7 @@ P0 that the gates caught:
 <a id="p2"></a>
 ## P2 — SMP header types and codec
 
-**Status: Planned** · **Depends on:** P1
+**Status: Complete** (2026-09-04) · **Depends on:** P1
 
 **Objective.** Encode and decode the 8-byte SMP header, correctly and
 defensively.
@@ -285,6 +285,42 @@ version `0b10`/`0b11` ⇒ `UnsupportedSmpVersion`; explicit assertion that
 implementation.
 
 **Exit.** No other file in the repository manipulates header bytes.
+
+### Outcome
+
+**Completed.** `include/smply/smp/header.hpp`, `src/smp/codec.cpp`,
+`tests/support/message_builder.hpp` and `tests/unit/test_smp_codec.cpp`
+(18 new cases, 53 total). Five hand-computed golden vectors, round-trip over a
+generated field space, and rejection cases for reserved bits, reserved versions,
+undefined operations and short buffers. No `reinterpret_cast`; byte order is
+explicit shifts throughout, so the encoding does not depend on the host's.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **`Group` was already delivered in P1**, so this phase's scope line naming it
+   was satisfied on arrival; `smp/header.hpp` includes `smply/group.hpp`.
+2. **Two small additions beyond the stated scope**: `Header::total_size()`,
+   which puts the `kHeaderSize + length` message-boundary rule in one place
+   rather than leaving P3 to open-code it, and a dynamic-span `decode_header`
+   overload, which is the form the reassembler will actually call. Also
+   `operation_name()` for diagnostics, matching `group_name()` from P1.
+3. **Response-operation mapping was deliberately left out.** `Read -> ReadResponse`
+   is correlation policy, not header encoding; it belongs with the
+   pending-request table in P6.
+
+**Discovered.**
+
+* **`clang-analyzer-optin.core.EnumCastOutOfRange` is unusable for this
+  codebase** and is now disabled with the reason recorded in
+  `quality-gates.md` §3. It assumes an enumeration's valid values are exactly
+  its enumerators, which is false for a wire-format enumeration: `Group` is open
+  by design, so decoding one is a `static_cast` from an arbitrary 16-bit value
+  by construction. It had already needed per-site suppression in P1's tests and
+  fired again in two more places here; a third round of NOLINTs would have been
+  the wrong answer. The per-site suppressions it forced in `test_error.cpp` were
+  removed.
 
 ---
 
@@ -899,6 +935,7 @@ them.
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P2 | `Header` has no `is_response()` / `response_to()` helper. P6 needs the request-to-response operation mapping for correlation and should add it to `smp/header.hpp` rather than open-coding it in the client. | P6 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI; `linux-gcc-asan-ubsan` covers sanitizers locally. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

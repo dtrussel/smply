@@ -6,6 +6,14 @@
 # Note: the Checks value below is a YAML folded scalar, so '#' inside it is NOT
 # a comment -- it becomes part of the check list. Explanations go here instead.
 #
+# -clang-analyzer-optin.core.EnumCastOutOfRange: the check assumes an enum's
+#   valid values are exactly its enumerators. That is false for a wire-format
+#   enumeration: Group is open by design, so every 16-bit value is legal and
+#   must round-trip unchanged (docs/protocol-notes.md section 2, smply/group.hpp).
+#   Decoding a group is a static_cast from an arbitrary 16-bit value by
+#   construction, so the check fires on correct code throughout the codec, the
+#   groups layer and their tests.
+#
 # -performance-enum-size: underlying types here are chosen to match the wire
 #   format and to leave room for protocol growth, not to minimise sizeof. Group
 #   must be uint16_t because the SMP header carries 16 bits
@@ -19,6 +27,7 @@ Checks: >
   cert-*,
   -cert-err58-cpp,
   clang-analyzer-*,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
   concurrency-*,
   cppcoreguidelines-pro-type-reinterpret-cast,
   cppcoreguidelines-pro-type-const-cast,
