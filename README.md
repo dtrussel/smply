@@ -15,11 +15,43 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Planning / design complete. No implementation yet.**
+**Scaffolding complete (roadmap phase P0). Protocol implementation starts at P1.**
 
-The repository currently contains the architecture, protocol analysis, public
-API proposal and a phased implementation roadmap. Implementation starts at
-roadmap phase `P0`.
+The build system, quality gates and CI are in place and enforced; the library
+itself is still a placeholder. See [`docs/roadmap.md`](docs/roadmap.md).
+
+## Building
+
+Requires **CMake >= 3.25** and a C++20 compiler (GCC 11+, Clang 14+, MSVC
+19.30+). C is also required: QCBOR, the CBOR backend, is a C library.
+
+```sh
+cmake --preset linux-clang          # or linux-gcc, windows-msvc
+cmake --build --preset linux-clang
+ctest --preset linux-clang
+```
+
+Dependencies (QCBOR, Catch2) are fetched automatically and pinned to exact
+commits. Pass `-DSMPLY_USE_SYSTEM_QCBOR=ON` to use a system or vcpkg copy
+instead.
+
+Every CI configuration has a matching preset, so a CI failure reproduces
+locally with one command. `cmake --list-presets` shows them all.
+
+### Checks
+
+```sh
+tools/format.sh              # reformat; --check to verify only
+tools/lint.sh                # clang-tidy (+ cppcheck when installed)
+tools/coverage.sh            # coverage report (thresholds enforced from P13)
+python3 tools/check_public_headers.py   # no platform/third-party types in public headers
+python3 tools/check_deps.py             # dependencies declared and pinned by hash
+python3 tools/check_docs.py             # documentation gate (ADR-0013)
+tools/verify_gates.sh        # proves each gate rejects a deliberate violation
+```
+
+`tools/verify_gates.sh` works on a throwaway copy of the tree and never
+modifies the working tree.
 
 ## Start here
 
@@ -52,5 +84,7 @@ roadmap phase `P0`.
 
 ## Licence
 
-To be decided in P0 (intent: permissive, proprietary-friendly — see
-[`docs/dependencies.md`](docs/dependencies.md)).
+**Apache-2.0** — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Permissive and
+suitable for linking into proprietary applications, with an explicit patent
+grant. Third-party licences are inventoried in
+[`docs/dependencies.md`](docs/dependencies.md).

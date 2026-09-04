@@ -37,8 +37,16 @@ and ADRs. Full description: [`docs/architecture.md`](docs/architecture.md) §10.
 
 ## Conventions
 
-C++20, no compiler extensions. Warnings are errors for smply's own targets.
+C++20, no compiler extensions. Every file starts with
+`// SPDX-License-Identifier: Apache-2.0` (`#` for CMake, Python and shell).
+Warnings are errors for smply's own targets.
 No owning raw pointers, no C-style casts, no `reinterpret_cast` over device
 data. Exhaustive `switch` over internal enums with no `default`. Public entry
 points validate arguments and return `InvalidArgument` rather than asserting.
 See [`docs/design.md`](docs/design.md) §11.
+
+## Before you finish
+
+`tools/format.sh --check`, `tools/lint.sh`, the three `tools/check_*.py` gates
+and `ctest` must all pass. `tools/verify_gates.sh` proves the gates themselves
+still work — run it if you touch anything under `tools/` or `cmake/`.

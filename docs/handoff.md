@@ -154,3 +154,62 @@ first chunk, which puts a hard floor on chunk size (§6 rules 2–3).
 top-level CMake and the `smply_internal_options` target. Prove each CI gate
 fails on a deliberate violation before moving on; every later phase depends on
 those gates actually working.
+
+### 2026-09-04 — P0: project scaffolding and quality infrastructure
+
+**Status after this session:** P0 = `Complete`. Next phase is **P1 — Core types**.
+
+**Completed.** All eight P0 tasks. The repository now builds a placeholder
+library, runs three passing tests, and enforces every gate that has code to
+enforce against. Open question O1 resolved: **Apache-2.0**.
+
+**Changed.**
+* `LICENSE` (Apache-2.0), `NOTICE`, `.editorconfig`, SPDX headers everywhere.
+* `CMakeLists.txt`, `CMakePresets.json`, `cmake/{warnings,sanitizers,dependencies}.cmake`.
+  Target-based throughout; strict flags live on `smply_internal_options`, linked
+  `PRIVATE`, so consumers inherit nothing.
+* `include/smply/version.hpp.in`, `src/version.cpp`, `tests/unit/`,
+  `tests/consumer/` (the flag-leak guard).
+* `.clang-format`, `.clang-tidy`, `tools/cppcheck-suppressions.txt`.
+* `tools/`: `sources.sh`, `format.sh`, `lint.sh`, `coverage.sh`,
+  `check_public_headers.py`, `check_deps.py`, `check_docs.py`, `verify_gates.sh`.
+* `.github/workflows/ci.yml` — 10 jobs across 5 job groups.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** Four items added to the roadmap's discovered-work
+table (install/export vs. FetchContent for P18; R4's heuristic for P1; cppcheck
+never actually executed yet; the MSVC-preset environment requirement). Three
+technical findings are recorded in the roadmap's P0 outcome section — the most
+important being that **`verify_gates.sh` caught my own flag-leak guard being
+broken**: it checked `INTERFACE_COMPILE_OPTIONS` only, which is empty in exactly
+the case that matters (linking the options target `PUBLIC` rather than
+`PRIVATE`). A gate that cannot fail is worse than no gate, and that is why the
+verification step is not optional.
+
+**Caveats.**
+* **Clang's sanitizer runtime is missing in the development container**
+  (`libclang-rt-18-dev`), so `linux-clang-asan-ubsan` cannot be verified
+  locally; a GCC sanitizer preset was added and *is* verified locally, and CI
+  installs the Clang runtime explicitly.
+* `cppcheck`, `lcov` and `gcovr` are likewise absent locally. `tools/lint.sh`
+  and `tools/coverage.sh` degrade with a message rather than failing. **The
+  cppcheck suppression list has therefore never been exercised** — treat the
+  first CI run as its real first test.
+* The CMake floor is now **3.25** (was 3.24) for `FetchContent_Declare(SYSTEM)`.
+* Coverage thresholds are deliberately not enforced yet; P13 turns them on.
+
+**Docs updated.** `README.md` (status, build, checks, licence),
+`docs/dependencies.md` (exact pins + hashes, licence, SYSTEM rationale),
+`docs/quality-gates.md` (Clang 18, staged job set, coverage not yet enforced,
+SYSTEM finding, §10/§11 reconciled with the implementation),
+`docs/roadmap.md` (P0 Complete + outcome + 5 deviations, O1 resolved, 4
+follow-ups), `CLAUDE.md` (SPDX convention, pre-finish checklist), this log.
+
+**Recommended next.** **P1 — Core types.** Start with
+`include/smply/detail/expected.hpp`, since everything else depends on
+`Result<T>`; the `linux-gcc-fallback-expected` preset and CI job already exist
+to test both backings. Then `error.hpp` (note `MgmtError` must carry the group
+alongside `rc` — see `protocol-notes.md` §3), then `clock.hpp` and
+`tests/support/manual_clock.hpp`. Watch for `check_docs.py` R4 firing on
+templates and multi-line declarations; harden it rather than working around it.

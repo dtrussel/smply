@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// cppcheck suppressions. Each entry must say why.
+
+// clang-tidy's modernize-* and readability-* cover style; cppcheck is kept only
+// for its whole-program value tracking (docs/quality-gates.md section 3).
+missingIncludeSystem
+
+// cppcheck cannot see that Catch2 registers and calls these.
+unusedFunction:tests/*
+
+// Deliberately non-idiomatic: this file exists to prove strict warnings do not
+// reach consumers (tests/consumer/CMakeLists.txt).
+*:tests/consumer/consumer_check.cpp

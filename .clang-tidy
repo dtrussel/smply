@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# See docs/quality-gates.md section 3 for the rationale behind each inclusion
+# and each deliberate exclusion.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  -cert-err58-cpp,
+  clang-analyzer-*,
+  concurrency-*,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-const-cast,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  performance-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(include/smply|src)/.*'
+FormatStyle: file

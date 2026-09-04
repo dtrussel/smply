@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: Apache-2.0
+#ifndef SMPLY_VERSION_HPP
+#define SMPLY_VERSION_HPP
+
+/// \file
+/// Compile-time and run-time version information for smply.
+
+#define SMPLY_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define SMPLY_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define SMPLY_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define SMPLY_VERSION_STRING "@PROJECT_VERSION@"
+
+namespace smply {
+
+/// Version of the smply library this program is linked against, as
+/// "major.minor.patch".
+///
+/// Comparing this against SMPLY_VERSION_STRING detects a header/library
+/// mismatch at run time.
+///
+/// \return A null-terminated string with static storage duration.
+[[nodiscard]] const char* version() noexcept;
+
+}  // namespace smply
+
+#endif  // SMPLY_VERSION_HPP

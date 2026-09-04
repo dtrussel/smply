@@ -1,0 +1,181 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SMPLY_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "inherits": "base",
+      "displayName": "Linux / GCC",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "inherits": "base",
+      "displayName": "Linux / Clang",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "linux-clang-asan-ubsan",
+      "inherits": "linux-clang",
+      "displayName": "Linux / Clang + ASan + UBSan",
+      "cacheVariables": {
+        "SMPLY_SANITIZER": "address,undefined"
+      }
+    },
+    {
+      "name": "linux-gcc-asan-ubsan",
+      "inherits": "linux-gcc",
+      "displayName": "Linux / GCC + ASan + UBSan",
+      "description": "Sanitizer build for environments without Clang's compiler-rt runtime.",
+      "cacheVariables": {
+        "SMPLY_SANITIZER": "address,undefined"
+      }
+    },
+    {
+      "name": "linux-gcc-coverage",
+      "inherits": "linux-gcc",
+      "displayName": "Linux / GCC + coverage",
+      "cacheVariables": {
+        "SMPLY_ENABLE_COVERAGE": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc-fallback-expected",
+      "inherits": "linux-gcc",
+      "displayName": "Linux / GCC, forced expected<> fallback",
+      "cacheVariables": {
+        "SMPLY_FORCE_FALLBACK_EXPECTED": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "inherits": "base",
+      "displayName": "Windows / MSVC",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "core-without-winrt",
+      "inherits": "windows-msvc",
+      "displayName": "Windows / MSVC, WinRT explicitly off (API-discipline gate)",
+      "cacheVariables": {
+        "SMPLY_BUILD_WINRT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-gcc",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-clang",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "linux-clang-asan-ubsan",
+      "configurePreset": "linux-clang-asan-ubsan"
+    },
+    {
+      "name": "linux-gcc-asan-ubsan",
+      "configurePreset": "linux-gcc-asan-ubsan"
+    },
+    {
+      "name": "linux-gcc-coverage",
+      "configurePreset": "linux-gcc-coverage"
+    },
+    {
+      "name": "linux-gcc-fallback-expected",
+      "configurePreset": "linux-gcc-fallback-expected"
+    },
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "core-without-winrt",
+      "configurePreset": "core-without-winrt"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-gcc",
+      "configurePreset": "linux-gcc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang",
+      "configurePreset": "linux-clang",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-asan-ubsan",
+      "configurePreset": "linux-clang-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-asan-ubsan",
+      "configurePreset": "linux-gcc-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-coverage",
+      "configurePreset": "linux-gcc-coverage",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-fallback-expected",
+      "configurePreset": "linux-gcc-fallback-expected",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "core-without-winrt",
+      "configurePreset": "core-without-winrt",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

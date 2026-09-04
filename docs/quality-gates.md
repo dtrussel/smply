@@ -1,22 +1,39 @@
 # Quality gates
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
-Configuration files are created in roadmap phase **P0**; their intended content
-is given here so P0 is mechanical.
+
+**Status (from P0):** the gates marked *(P13)* / *(P15)* below are specified but
+not yet wired, because the targets they would exercise do not exist. Everything
+else is live and enforced. Each live gate has been observed rejecting a
+deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
+`gate-self-check` CI job runs it on every push.
 
 ## 1. Build matrix (required)
 
 | Job | OS | Compiler | Standard | Notes |
 | --- | -- | -------- | -------- | ----- |
 | `linux-gcc` | ubuntu-latest | GCC 13 | C++20 | core + tests |
-| `linux-clang` | ubuntu-latest | Clang 17 | C++20 | core + tests |
+| `linux-clang` | ubuntu-latest | Clang 18 | C++20 | core + tests |
+| `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
-| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: adapter + example |
+| `windows-winrt` *(P15)* | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: adapter + example |
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
-| `linux-clang-asan-ubsan` | ubuntu-latest | Clang 17 | C++20 | tests under ASan+UBSan |
-| `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 17 | C++20 | each fuzz target, `-runs=20000` over the seed corpus |
-| `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcov/lcov, uploads the report |
-| `nightly-fuzz-soak` | ubuntu-latest | Clang 17 | C++20 | 30 min per target (*advisory*, opens an issue on a find) |
+| `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
+| `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
+| `linux-clang-fuzz-smoke` *(P13)* | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the seed corpus |
+| `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
+| `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
+| `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
+| `nightly-fuzz-soak` *(P13)* | ubuntu-latest | Clang 18 | C++20 | 30 min per target (*advisory*, opens an issue on a find) |
+
+Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
+pins the versions above. Clang's sanitizer jobs need `libclang-rt-<v>-dev`
+installed — without it the link fails with a missing `libclang_rt.asan`.
+
+**Dependency headers are included as `SYSTEM`** (`FetchContent_Declare(... SYSTEM)`,
+CMake ≥ 3.25). This is not cosmetic: without it, clang-tidy attributes findings
+inside Catch2's headers to *our* test files through macro expansion — 140 errors
+from two trivial `TEST_CASE`s — and the gate becomes unusable.
 
 MSVC additionally builds with `/permissive- /Zc:__cplusplus /Zc:preprocessor /utf-8`.
 
@@ -112,6 +129,11 @@ logic without a test is a review blocker, not a CI blocker
 Measured on `linux-gcc-coverage`, over `src/` and `include/smply/` only
 (tests, examples and `transports/` excluded).
 
+**Not enforced until P13.** Thresholds against P0's placeholder library are
+meaningless, so `tools/coverage.sh` reports and CI publishes the artefact
+without failing. The thresholds below switch on in P13, when there is protocol
+logic and state-machine code worth measuring.
+
 | Gate | Threshold |
 | ---- | --------- |
 | Line coverage, whole core | **≥ 85 %** |
@@ -142,13 +164,18 @@ unreachable defensive code is explicitly not wanted; mark such code
 * **TSan** is *not* adopted: the core is single-threaded by contract
   ([ADR-0004](decisions/ADR-0004-threading-model.md)) and has no shared state.
   `Dispatcher` (the one concurrent component) gets a dedicated TSan job when it
-  is implemented in P9.
+  is implemented in P14.
+
+Note that sanitizer *link* options do propagate to consumers of an instrumented
+static library, and must — a consumer of an ASan-instrumented `libsmply.a` has
+to link the ASan runtime. Only *compile* options are held back; that is what the
+flag-leak guard in `tests/consumer/` checks.
 
 ## 8. Fuzzing (required, smoke)
 
-Every fuzz target in [`testing.md`](testing.md) §5 builds and runs 20 000
-iterations over its committed seed corpus on each PR. Nightly soak is advisory.
-Any crash reproducer is committed alongside its fix.
+*(P13.)* Every fuzz target in [`testing.md`](testing.md) §5 builds and runs
+20 000 iterations over its committed seed corpus on each PR. Nightly soak is
+advisory. Any crash reproducer is committed alongside its fix.
 
 ## 9. Dependency and licence hygiene (required)
 
@@ -169,10 +196,16 @@ Any crash reproducer is committed alongside its fix.
   standard library);
 * mentions `winrt`, `Windows.h`, `_WIN32`-conditional API surface, `qcbor`,
   `UsefulBuf`, or `#include <windows.h>`;
-* is not self-contained (each public header is compiled standalone in a
-  generated TU as part of the build).
+* is not self-contained — the script compiles each public header alone in a
+  generated translation unit, so a missing include is caught here rather than
+  by the first consumer who includes it first.
 
-Plus the `core-without-winrt` matrix job (§1).
+Plus the `core-without-winrt` matrix job (§1), and a configure-time assertion in
+`tests/consumer/` that smply's interface does not propagate its strict warning
+set — checking both `INTERFACE_COMPILE_OPTIONS` **and**
+`INTERFACE_LINK_LIBRARIES`, since linking `smply_internal_options` `PUBLIC`
+instead of `PRIVATE` leaks the flags transitively while leaving the former
+empty.
 
 ## 11. Documentation gate (required)
 
@@ -185,7 +218,13 @@ Plus the `core-without-winrt` matrix job (§1).
   non-empty;
 * an ADR is referenced from a doc but does not exist, or an ADR's `Status:` is
   neither `Proposed`, `Accepted`, `Superseded by ADR-NNNN` nor `Deprecated`;
-* a public symbol in `include/smply/` has no `///` documentation comment.
+* a public symbol in `include/smply/` has no `///` documentation comment
+  (namespace scope only; `detail` namespaces are exempt).
+
+The first rule needs a diff base and a pull-request body. On a plain branch push
+or a local run neither exists, so that rule is skipped with a message and the
+other three still run — a branch push must never fail for a reason that cannot
+apply to it.
 
 ## 12. Definition of Done
 

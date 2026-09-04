@@ -10,7 +10,7 @@ declared dependency is missing from this table
 
 | Name | Purpose | Licence | Maintenance | In public API? | Replaceable? |
 | ---- | ------- | ------- | ----------- | -------------- | ------------ |
-| **QCBOR** | CBOR encode/decode | BSD-3-Clause | Actively maintained (Laurence Lundblade); used in IETF/IoT stacks | **No** — hidden behind `smply::cbor::Reader/Writer` | Yes — `src/cbor/backend_qcbor.*` is the only file that names it. TinyCBOR or zcbor could replace it behind the same façade. See [ADR-0007](decisions/ADR-0007-cbor-library.md). |
+| **QCBOR** `v1.6.1` (`930708bb86481e88879eb1d87fd4d664f1d69503`) | CBOR encode/decode | BSD-3-Clause | Actively maintained (Laurence Lundblade); used in IETF/IoT stacks | **No** — hidden behind `smply::cbor::Reader/Writer` | Yes — `src/cbor/backend_qcbor.*` is the only file that names it. TinyCBOR or zcbor could replace it behind the same façade. See [ADR-0007](decisions/ADR-0007-cbor-library.md). |
 | **SHA-256** (vendored, `src/image/sha256.cpp`) | SHA-256 for the MCUmgr upload `sha` field | Public domain / CC0 | ~150 lines, vendored deliberately rather than depending on a crypto library | No | Trivially — swap for a platform API if one is ever preferred. See [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md). |
 
 That is the complete runtime footprint: **one third-party library and one
@@ -21,12 +21,12 @@ framework.
 
 | Name | Purpose | Licence | In public API? |
 | ---- | ------- | ------- | -------------- |
-| **Catch2 v3** | unit/component test framework | BSL-1.0 | No |
-| **CMake ≥ 3.24** | build system (`FetchContent` + `OVERRIDE_FIND_PACKAGE`) | BSD-3-Clause | n/a |
+| **Catch2** `v3.9.1` (`dfc2dff8d70d083c60c1c6986030e5389a867a93`) | unit/component test framework | BSL-1.0 | No |
+| **CMake ≥ 3.25** | build system (`FetchContent` + `OVERRIDE_FIND_PACKAGE` needs 3.24; `SYSTEM` needs 3.25) | BSD-3-Clause | n/a |
 | **clang-format / clang-tidy** | formatting, static analysis | Apache-2.0 WITH LLVM-exception | n/a |
 | **cppcheck** | complementary static analysis | GPL-3.0 (*tool only, never linked or copied from*) | n/a |
 | **libFuzzer** | fuzzing (part of Clang) | Apache-2.0 WITH LLVM-exception | n/a |
-| **lcov / gcov** | coverage | GPL-2.0 (*tool only*) | n/a |
+| **gcovr / lcov / gcov** | coverage (`tools/coverage.sh` uses whichever is present) | Apache-2.0 / GPL-2.0 (*tools only*) | n/a |
 | **OSV-Scanner** | vulnerability monitoring | Apache-2.0 | n/a |
 
 Note on GPL tools: cppcheck and lcov are *executed*, never linked, and no code
@@ -48,11 +48,22 @@ Never linked by `smply::smply`; enforced by the `core-without-winrt` CI job.
 
 Dependencies are fetched with CMake `FetchContent` pinned to an exact tag **and**
 commit hash, with `OVERRIDE_FIND_PACKAGE` so a distribution- or vcpkg-provided
-copy is used when present. `SMPLY_USE_SYSTEM_QCBOR=ON` forces `find_package`.
+copy is used when present. `tools/check_deps.py` fails the build if a declared
+dependency is missing from this file **or** is pinned to anything other than a
+full 40-character commit hash — a tag can be moved, a hash cannot.
+
+Each declaration also passes `SYSTEM`, so dependency headers are system includes.
+Without it, findings from inside Catch2's and QCBOR's headers are reported
+against smply's own files (macro expansion attributes them to the expansion
+site), which made clang-tidy unusable. `SMPLY_USE_SYSTEM_QCBOR=ON` forces `find_package`.
 Nothing is vendored under `third_party/` unless an upstream becomes unavailable;
 if that happens it requires an ADR.
 
 ## Licence of smply itself
 
-To be decided in P0. Intent: a permissive licence (Apache-2.0 or MIT) compatible
-with linking into proprietary Windows applications and with all of the above.
+**Apache-2.0** (decided in P0, resolving roadmap open question O1). Permissive,
+compatible with linking into proprietary Windows applications and with every
+licence above, and it carries an explicit patent grant — worth having for a
+protocol implementation. See `LICENSE` and `NOTICE`.
+
+Every source file carries `// SPDX-License-Identifier: Apache-2.0`.

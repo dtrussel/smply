@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# See docs/quality-gates.md for what each job enforces and why.
+#
+# Three jobs from the full matrix in quality-gates.md section 1 are absent
+# because the targets they would exercise do not exist yet:
+#   windows-winrt          -> arrives with the WinRT transport in P15
+#   linux-clang-fuzz-smoke -> arrives with the fuzz targets in P13
+#   nightly-fuzz-soak      -> arrives with the fuzz targets in P13
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  preset: linux-gcc }
+          - { os: ubuntu-latest,  preset: linux-clang }
+          - { os: ubuntu-latest,  preset: linux-gcc-fallback-expected }
+          - { os: windows-latest, preset: windows-msvc }
+          - { os: windows-latest, preset: core-without-winrt }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux toolchain
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+
+      - name: Set up MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  sanitizers:
+    name: sanitizers (${{ matrix.preset }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [linux-clang-asan-ubsan, linux-gcc-asan-ubsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          # libclang-rt-*-dev carries the sanitizer runtimes; without it the
+          # Clang sanitizer build fails at link time.
+          sudo apt-get install -y ninja-build clang libclang-rt-18-dev
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --preset ${{ matrix.preset }}
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build lcov gcovr
+      - run: cmake --preset linux-gcc-coverage
+      - run: cmake --build --preset linux-gcc-coverage
+      - run: ctest --preset linux-gcc-coverage
+      # Reported, not enforced, until P13 (docs/quality-gates.md section 6).
+      - run: tools/coverage.sh build/linux-gcc-coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/linux-gcc-coverage/coverage*.info
+          if-no-files-found: ignore
+
+  gates:
+    name: gates (format, tidy, api, deps, docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check_docs.py R1 diffs against the base branch.
+          fetch-depth: 0
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang clang-format clang-tidy cppcheck
+
+      # A compile database is needed by clang-tidy and by the self-containment
+      # check's generated headers.
+      - name: Configure
+        run: cmake --preset linux-clang
+
+      - name: Formatting
+        run: tools/format.sh --check
+
+      - name: Static analysis
+        run: tools/lint.sh build/linux-clang
+
+      - name: Public header discipline
+        run: python3 tools/check_public_headers.py --build-dir build/linux-clang
+
+      - name: Dependency inventory
+        run: python3 tools/check_deps.py
+
+      - name: Documentation
+        run: python3 tools/check_docs.py --verbose
+
+  gate-self-check:
+    name: gates actually fail on violations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang clang-format clang-tidy
+      # Populates build/linux-clang/_deps so the scratch copy does not re-clone.
+      - name: Warm the dependency cache
+        run: cmake --preset linux-clang
+      # A gate that never fires is worse than no gate: this proves each one
+      # rejects a deliberate violation. See tools/verify_gates.sh.
+      - name: Verify every gate rejects its violation
+        run: tools/verify_gates.sh

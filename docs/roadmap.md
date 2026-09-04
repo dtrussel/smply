@@ -10,16 +10,16 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P0 — Project scaffolding and quality infrastructure** |
-| Last completed phase | *none* (planning session only) |
+| **Next phase to work on** | **P1 — Core types: `Result`, `Error`, `Clock`, bytes** |
+| Last completed phase | P0 — scaffolding and quality infrastructure |
 | Blocked phases | none |
-| Open decisions | see [§ Open questions](#open-questions) |
+| Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
 ## Phase summary
 
 | ID | Title | Status | Depends on |
 | -- | ----- | ------ | ---------- |
-| [P0](#p0) | Project scaffolding and quality infrastructure | Planned | — |
+| [P0](#p0) | Project scaffolding and quality infrastructure | **Complete** | — |
 | [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | Planned | P0 |
 | [P2](#p2) | SMP header types and codec | Planned | P1 |
 | [P3](#p3) | Streaming SMP message reassembly | Planned | P2 |
@@ -47,7 +47,7 @@ P15–P17 require Windows; P17 additionally requires hardware.
 <a id="p0"></a>
 ## P0 — Project scaffolding and quality infrastructure
 
-**Status: Planned**
+**Status: Complete** (2026-09-04)
 
 **Objective.** A repository that builds an empty library, runs an empty test
 suite, and enforces every quality gate — so that from P1 onwards no session has
@@ -100,6 +100,55 @@ linux-clang && ctest --preset linux-clang` succeeds on a clean clone; every CI
 job is green; each gate has been observed to fail on a deliberate violation.
 
 **Exit.** A later phase never has to touch build infrastructure to add a file.
+
+### Outcome
+
+**Completed.** All eight tasks. Licence resolved to Apache-2.0 (O1). Build
+system, presets, both gate-carrying interface targets, placeholder library with
+three passing tests, formatting and static-analysis configuration, four `tools/`
+gate scripts, coverage script, CI, and `tools/verify_gates.sh` — which
+demonstrates **13 gates each rejecting a deliberate violation** on a throwaway
+copy of the tree.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **6 of the 9 CI jobs specified in `quality-gates.md` §1 landed here**, plus
+   three that were not in the original matrix (`linux-gcc-fallback-expected`,
+   `gates`, `gate-self-check`). `windows-winrt` needs the P15 target;
+   `linux-clang-fuzz-smoke` and `nightly-fuzz-soak` need P13's fuzz targets.
+   Those three rows are now marked *(P13)* / *(P15)* in `quality-gates.md`.
+2. **Coverage is measured but not enforced.** Thresholds against a placeholder
+   library are meaningless; `tools/coverage.sh` reports, CI publishes the
+   artefact, and enforcement switches on in P13 as §6 always anticipated.
+3. **Clang 18, not Clang 17** — 18.1.3 is what the toolchain provides. The
+   minimum supported Clang stays 14 (ADR-0001).
+4. **CMake floor raised 3.24 → 3.25** for `FetchContent_Declare(SYSTEM)`. See
+   the discovered-work note below; 3.25 is from 2022 and is available
+   everywhere the project targets.
+5. **A GCC sanitizer job was added** alongside the Clang one. GCC's and Clang's
+   sanitizers do not diagnose identically, and Clang's runtime
+   (`libclang-rt-*-dev`) is absent in some environments where GCC's is present.
+
+**Discovered.** Three findings worth recording, all from making the gates
+actually run:
+
+* **Dependency headers must be `SYSTEM`.** Without it, clang-tidy attributes
+  findings inside Catch2's headers to *our* test files through macro expansion:
+  140 errors from two trivial `TEST_CASE`s. With `SYSTEM`, zero — and, notably,
+  **no clang-tidy check had to be disabled**, which the plan had expected to be
+  necessary.
+* **The flag-leak guard was itself broken, and `verify_gates.sh` caught it.**
+  Checking only `INTERFACE_COMPILE_OPTIONS` misses the likelier mistake:
+  linking `smply_internal_options` `PUBLIC` leaves that property empty and
+  leaks the flags through `INTERFACE_LINK_LIBRARIES` instead. Both are now
+  checked, at configure time and by compiling `tests/consumer/`. This is
+  precisely the class of silent-green failure the verification step exists to
+  find.
+* **Sanitizer *link* options legitimately propagate to consumers** of an
+  instrumented static library and must not be treated as a leak; only *compile*
+  options are held back.
 
 ---
 
@@ -774,7 +823,7 @@ comment in code.
 
 | ID | Question | Owner phase | Notes |
 | -- | -------- | ----------- | ----- |
-| O1 | Which licence for smply itself? | P0 | Must be permissive and compatible with proprietary linking ([`dependencies.md`](dependencies.md)). Apache-2.0 recommended (patent grant). |
+| ~~O1~~ | ~~Which licence for smply itself?~~ | ~~P0~~ | **Resolved in P0: Apache-2.0.** Permissive, proprietary-linking friendly, explicit patent grant. `LICENSE` + `NOTICE` added; every source file carries an SPDX identifier. |
 | O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. |
 | O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
 | O4 | Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library? | P9 | Leaning: keep file I/O out of the core; the example provides one. |
@@ -783,5 +832,12 @@ comment in code.
 
 ## Discovered follow-up work
 
-*(Empty. Sessions append items here as they find them, with the phase that
-should absorb them.)*
+Sessions append items here as they find them, with the phase that should absorb
+them.
+
+| Found in | Item | Absorb into |
+| -------- | ---- | ----------- |
+| P0 | `install(EXPORT)` for a target that links a `FetchContent`-provided static library needs care: `target_link_libraries(smply PRIVATE qcbor)` still records `$<LINK_ONLY:qcbor::qcbor>` in smply's interface, which `install(EXPORT)` rejects unless QCBOR is exported too. Options: require `find_package(qcbor)` for installed builds, or re-export. Install/export was already scoped to P18; this is the specific problem it must solve. | P18 |
+| P0 | `tools/check_docs.py` R4 (public symbols documented) is a line-based heuristic. It is correct on P0's single header but has not met templates, nested namespaces or multi-line declarations. Expect to harden it once real headers exist. | P1 |
+| P0 | `cppcheck` is configured but has never actually run — it is absent from the development container and only executes in the `gates` CI job. Its suppression list is therefore untested. Confirm on the first CI run and prune. | P1 |
+| P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
