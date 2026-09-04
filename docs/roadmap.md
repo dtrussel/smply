@@ -1,0 +1,787 @@
+# Implementation roadmap
+
+**This file is the project's execution state.** A new session determines what to
+do next by reading it. Update it in the same change as the work
+([ADR-0013](decisions/ADR-0013-living-documentation.md)).
+
+Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
+
+## Current state
+
+| | |
+| - | - |
+| **Next phase to work on** | **P0 — Project scaffolding and quality infrastructure** |
+| Last completed phase | *none* (planning session only) |
+| Blocked phases | none |
+| Open decisions | see [§ Open questions](#open-questions) |
+
+## Phase summary
+
+| ID | Title | Status | Depends on |
+| -- | ----- | ------ | ---------- |
+| [P0](#p0) | Project scaffolding and quality infrastructure | Planned | — |
+| [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | Planned | P0 |
+| [P2](#p2) | SMP header types and codec | Planned | P1 |
+| [P3](#p3) | Streaming SMP message reassembly | Planned | P2 |
+| [P4](#p4) | Transport abstraction and `FakeTransport` | Planned | P1 |
+| [P5](#p5) | CBOR façade and MCUmgr error extraction | Planned | P1 |
+| [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Planned | P2–P5 |
+| [P7](#p7) | OS management: reset, params, echo | Planned | P6 |
+| [P8](#p8) | Image management: state read/write, erase, slot info | Planned | P6 |
+| [P9](#p9) | MCUboot image file handling and SHA-256 | Planned | P1 |
+| [P10](#p10) | Image upload state machine | Planned | P8, P9 |
+| [P11](#p11) | `ServerSimulator` and component test harness | Planned | P7, P8, P10 |
+| [P12](#p12) | `FirmwareUpdater` orchestration | Planned | P11 |
+| [P13](#p13) | Fuzzing, hardening and coverage push | Planned | P10 |
+| [P14](#p14) | `Dispatcher` and the portable example | Planned | P12 |
+| [P15](#p15) | WinRT BLE transport | Planned | P14 |
+| [P16](#p16) | WinRT BLE DFU example application | Planned | P15 |
+| [P17](#p17) | Hardware interoperability suite | Planned | P16 |
+| [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17 |
+
+Phases P1–P13 are portable and can be developed and verified entirely on Linux.
+P15–P17 require Windows; P17 additionally requires hardware.
+
+---
+
+<a id="p0"></a>
+## P0 — Project scaffolding and quality infrastructure
+
+**Status: Planned**
+
+**Objective.** A repository that builds an empty library, runs an empty test
+suite, and enforces every quality gate — so that from P1 onwards no session has
+to think about infrastructure.
+
+**Scope.** Top-level `CMakeLists.txt` with the options from
+[ADR-0011](decisions/ADR-0011-build-and-dependencies.md); `CMakePresets.json`
+matching the CI matrix; `cmake/warnings.cmake` and `cmake/sanitizers.cmake`;
+`.clang-format`, `.clang-tidy`, `.gitignore`, `.editorconfig`; `LICENSE`;
+QCBOR and Catch2 wired via `FetchContent` with exact pins; the
+`smply_internal_options` and `smply::smply_internal` targets; a placeholder
+`smply::smply` with one trivial header and one trivial test; GitHub Actions
+workflows for the full matrix in [`quality-gates.md`](quality-gates.md) §1;
+`tools/check_public_headers.py`, `tools/check_docs.py`, `tools/check_deps.py`,
+`tools/format.sh`.
+
+**Out of scope.** Any protocol code. Fuzz targets (P13 wires them; the CMake
+option exists here but builds nothing). The WinRT target (P15) — but the
+`SMPLY_BUILD_WINRT` option and the `core-without-winrt` CI job exist now.
+
+**Prerequisites.** None.
+
+**Tasks.**
+1. Decide and add the licence (see open question O1) — blocks nothing else.
+2. Top-level CMake, options, presets, namespaced alias targets.
+3. Warning and sanitizer interface targets; verify flags reach smply's targets
+   and **not** a consumer (add a `tests/consumer/` mini-project that links
+   `smply::smply` with `-Wall` only and must build clean).
+4. Dependency wiring with `OVERRIDE_FIND_PACKAGE` and pins; verify
+   `SMPLY_USE_SYSTEM_QCBOR=ON` path.
+5. Formatting, clang-tidy and cppcheck configuration + local scripts.
+6. The four `tools/check_*.py` gates.
+7. CI workflows for all nine matrix jobs; confirm each actually fails when it
+   should (introduce a deliberate violation, watch it fail, revert).
+
+**Files.** `CMakeLists.txt`, `CMakePresets.json`, `cmake/*`, `.clang-format`,
+`.clang-tidy`, `.github/workflows/*`, `tools/*`, `LICENSE`,
+`include/smply/version.hpp`, `tests/unit/CMakeLists.txt`, `tests/consumer/*`.
+
+**Tests.** One trivial test proving Catch2 + CTest work in every matrix job.
+
+**Docs.** `README.md` build instructions; `dependencies.md` gains the exact pins
+and versions; this phase's status.
+
+**Gates.** All of §1–§4, §10, §11 in [`quality-gates.md`](quality-gates.md)
+green. Coverage and fuzz gates are configured but not yet meaningful.
+
+**Acceptance.** `cmake --preset linux-clang && cmake --build --preset
+linux-clang && ctest --preset linux-clang` succeeds on a clean clone; every CI
+job is green; each gate has been observed to fail on a deliberate violation.
+
+**Exit.** A later phase never has to touch build infrastructure to add a file.
+
+---
+
+<a id="p1"></a>
+## P1 — Core types
+
+**Status: Planned** · **Depends on:** P0
+
+**Objective.** The vocabulary types every other phase uses.
+
+**Scope.** `result.hpp` (`Result<T>`, `SMPLY_EXPECTED`, and
+`detail/expected.hpp`), `error.hpp` (`ErrorCode`, `MgmtError`, `Error`,
+`to_string`), `clock.hpp` (`Clock`, `system_clock`, `Duration`, `TimePoint`),
+`bytes.hpp`, `limits.hpp` (the table in [`architecture.md`](architecture.md) §9),
+and `tests/support/manual_clock.hpp`.
+
+**Out of scope.** `std::error_code` interop. Logging.
+
+**Tasks.** Implement the `expected` fallback to the subset in
+[ADR-0002](decisions/ADR-0002-result-and-error-type.md); make `Error` a
+comparable value type; ensure `to_string` never allocates for the common case;
+add a build option `SMPLY_FORCE_FALLBACK_EXPECTED` so both configurations are
+testable everywhere.
+
+**Files.** `include/smply/{result,error,clock,bytes,limits}.hpp`,
+`include/smply/detail/expected.hpp`, `tests/unit/test_result.cpp`,
+`tests/unit/test_error.cpp`, `tests/support/manual_clock.hpp`.
+
+**Tests.** `expected` semantics: value/error construction, move-only payloads,
+`value_or`, no accidental copies, no UB on `error()` of a value state (returns a
+diagnosable failure in debug). `Error` equality, `MgmtError` round-trip,
+`to_string` for every `ErrorCode`. `ManualClock` monotonicity.
+
+**Docs.** [`api.md`](api.md) §`result.hpp`/`error.hpp` reconciled with reality.
+
+**Gates.** Build matrix (incl. the forced-fallback configuration), warnings,
+clang-tidy, format, tests.
+
+**Acceptance.** Both `expected` backings pass an identical test suite.
+
+**Exit.** No later phase defines its own error or time type.
+
+---
+
+<a id="p2"></a>
+## P2 — SMP header types and codec
+
+**Status: Planned** · **Depends on:** P1
+
+**Objective.** Encode and decode the 8-byte SMP header, correctly and
+defensively.
+
+**Scope.** `smp/header.hpp` (`Operation`, `Version`, `Group`, `Header`,
+`kHeaderSize`), `src/smp/codec.cpp`.
+
+**Out of scope.** CBOR, reassembly, anything stateful.
+
+**Tasks.** Implement per [`protocol-notes.md`](protocol-notes.md) §2: byte-0
+bit packing, big-endian fields, reserved-bit and version validation, unknown
+groups round-tripping, `flags` preserved rather than rejected.
+
+**Files.** `include/smply/smp/header.hpp`, `src/smp/codec.cpp`,
+`tests/unit/test_smp_codec.cpp`, `tests/support/message_builder.hpp`.
+
+**Tests.** Golden vectors (hand-computed from the spec table) for at least
+`(Read, V1, Os, 0)`, `(WriteResponse, V2, Image, 1)` and a maximal header;
+round-trip over generated combinations; reserved bits set ⇒ `MalformedMessage`;
+version `0b10`/`0b11` ⇒ `UnsupportedSmpVersion`; explicit assertion that
+`length`/`group` are big-endian on a little-endian host.
+
+**Docs.** [`api.md`](api.md) `smp/header.hpp`; any spec ambiguity found →
+[`protocol-notes.md`](protocol-notes.md).
+
+**Gates.** All P1 gates.
+
+**Acceptance.** Golden vectors pass byte-for-byte; no `reinterpret_cast` in the
+implementation.
+
+**Exit.** No other file in the repository manipulates header bytes.
+
+---
+
+<a id="p3"></a>
+## P3 — Streaming SMP message reassembly
+
+**Status: Planned** · **Depends on:** P2
+
+**Objective.** Turn an arbitrary byte stream into complete SMP messages, within
+hard bounds.
+
+**Scope.** `src/smp/assembler.{hpp,cpp}` (internal), per
+[`design.md`](design.md) §2.
+
+**Out of scope.** Transport (P4), correlation (P6).
+
+**Tasks.** Implement the loop; the compacting buffer with a read cursor; the
+two bounds (`max_smp_payload`, `max_assembly_bytes`); `reset()`.
+
+**Files.** `src/smp/assembler.{hpp,cpp}`, `tests/unit/test_assembler.cpp`.
+
+**Tests.** The **fragmentation invariant** — identical output for whole,
+byte-at-a-time, every fixed fragment size 1–64, and seeded random cuts. Multiple
+messages in one `feed()`. Truncated tail buffered then completed. Oversized
+`length` ⇒ `MessageTooLarge` with no allocation growth (assert on
+`buffered()` and on a counting allocator). `reset()` discards partial state.
+
+**Docs.** [`design.md`](design.md) §2 reconciled.
+
+**Gates.** All P2 gates + ASan/UBSan.
+
+**Acceptance.** The invariant test passes for every fragmentation pattern; peak
+buffer never exceeds the configured bound under adversarial input.
+
+**Exit.** The only reassembly implementation in the repository.
+
+---
+
+<a id="p4"></a>
+## P4 — Transport abstraction and `FakeTransport`
+
+**Status: Planned** · **Depends on:** P1
+
+**Objective.** Freeze the transport contract and provide the test double every
+later phase depends on.
+
+**Scope.** `include/smply/transport.hpp`; `tests/support/fake_transport.{hpp,cpp}`
+with the full injection and fault API in [`testing.md`](testing.md) §2.
+
+**Out of scope.** Any real transport.
+
+**Tasks.** Implement the interfaces; write the normative contract into
+[`design.md`](design.md) §9 as the header's documentation; build `FakeTransport`
+including `deliver_split_at`, `set_busy`, `raise_transport_error`, `disconnect`.
+
+**Files.** `include/smply/transport.hpp`, `tests/support/fake_transport.*`,
+`tests/unit/test_fake_transport.cpp`.
+
+**Tests.** `FakeTransport` itself: records whole messages; each delivery mode
+produces the expected `on_bytes` call pattern; `close()` prevents further
+callbacks; borrowed-buffer lifetime is respected (verified under ASan by
+delivering from a temporary).
+
+**Docs.** [`api.md`](api.md) transport section; [`design.md`](design.md) §9.
+
+**Gates.** All P3 gates.
+
+**Acceptance.** The test double can express every scenario listed in
+[`testing.md`](testing.md) §2 — verified by writing one test per scenario, even
+if trivial.
+
+**Exit.** The contract is stable; changing it later requires superseding
+[ADR-0005](decisions/ADR-0005-transport-abstraction.md).
+
+---
+
+<a id="p5"></a>
+## P5 — CBOR façade and MCUmgr error extraction
+
+**Status: Planned** · **Depends on:** P1
+
+**Objective.** Bounded, non-allocating CBOR encode/decode, with QCBOR hidden.
+
+**Scope.** `src/cbor/{reader,writer,backend_qcbor,mgmt_error}.*` per
+[`design.md`](design.md) §3.
+
+**Out of scope.** Group-specific shapes (P7, P8).
+
+**Tasks.** Implement `Writer` over a caller-owned buffer with a sticky error;
+`Reader` with map-key getters returning `std::optional`, array iteration by
+callback, bounded nesting; `extract_mgmt_error()` handling v1 flat `rc`, v2
+`err:{group,rc}`, and v2-with-flat-`rc` ([`protocol-notes.md`](protocol-notes.md) §3).
+
+**Files.** `src/cbor/*`, `tests/unit/test_cbor_reader.cpp`,
+`tests/unit/test_cbor_writer.cpp`, `tests/unit/test_mgmt_error.cpp`.
+
+**Tests.** Round-trips; absent key ⇒ `nullopt` not error; wrong type ⇒ sticky
+error not a wrong value; over-nesting ⇒ error; **every prefix** of a valid
+encoding decodes as an error and never crashes; all four `MgmtError` shapes;
+writer buffer exhaustion ⇒ error from `finish()`.
+
+**Docs.** [`design.md`](design.md) §3;
+[`dependencies.md`](dependencies.md) pin confirmed.
+
+**Gates.** All P4 gates. `check_public_headers.py` must confirm QCBOR is absent
+from `include/`.
+
+**Acceptance.** No QCBOR symbol reachable from a public header; no allocation
+attributable to device-supplied sizes.
+
+**Exit.** All later CBOR work uses the façade only.
+
+---
+
+<a id="p6"></a>
+## P6 — `SmpClient`
+
+**Status: Planned** · **Depends on:** P2, P3, P4, P5
+
+**Objective.** The request lifecycle: sequence allocation, correlation,
+timeouts, cancellation, disconnection, statistics.
+
+**Scope.** `include/smply/smp_client.hpp`, `src/smp/client.cpp`, per
+[`design.md`](design.md) §4 and
+[ADR-0010](decisions/ADR-0010-request-correlation.md).
+
+**Out of scope.** Any management group.
+
+**Tasks.** Pending-request table (bounded by `max_in_flight`); generation-tagged
+`RequestHandle`; retired-sequence ring; sequence allocator skipping pending and
+retired; `poll()`/`next_deadline()`; `rebind_transport()`; re-entrancy-safe
+completion; `Stats`; destructor cancelling pending requests.
+
+**Files.** `include/smply/smp_client.hpp`, `src/smp/client.cpp`,
+`tests/unit/test_smp_client.cpp`.
+
+**Tests.** The full list in [`testing.md`](testing.md) §3 "SmpClient" —
+correlation tuple, wrong seq/group/command dropped, duplicate dropped, late
+response after timeout not attributed to a reused seq, timeout at the exact
+deadline under `ManualClock`, cancel-once semantics, stale handle is inert,
+disconnect fails all pending, destruction with pending requests, `TransportBusy`
+surfaced, callback-starts-request re-entrancy.
+
+**Docs.** [`api.md`](api.md) `smp_client.hpp`; [`design.md`](design.md) §4.
+
+**Gates.** All P5 gates + ASan/UBSan.
+
+**Acceptance.** Every listed test passes; branch coverage of `src/smp/` ≥ 90 %.
+
+**Exit.** Groups can be written without touching correlation or timing.
+
+---
+
+<a id="p7"></a>
+## P7 — OS management group
+
+**Status: Planned** · **Depends on:** P6
+
+**Objective.** Reset, MCUmgr parameters, echo.
+
+**Scope.** `include/smply/groups/os.hpp`, `src/groups/os/*`.
+
+**Out of scope.** DFU policy around reset (P12); `boot_mode`.
+
+**Tasks.** Encode/decode per [`protocol-notes.md`](protocol-notes.md) §5,
+including `force`; `mcumgr_parameters` with `ENOTSUP` surfaced as an ordinary
+`ProtocolError` for the caller to treat as non-fatal; echo (small, and it is the
+easiest end-to-end smoke test against real hardware).
+
+**Files.** `include/smply/groups/os.hpp`, `src/groups/os/os_management.cpp`,
+`tests/unit/test_os_group.cpp`.
+
+**Tests.** Request encodings byte-for-byte; `buf_size`/`buf_count` decode;
+`ENOTSUP` path; reset with and without `force`; malformed responses bounded.
+
+**Docs.** [`api.md`](api.md) `groups/os.hpp`.
+
+**Gates.** All P6 gates.
+
+**Acceptance.** Encodings match hand-computed vectors from the spec.
+
+---
+
+<a id="p8"></a>
+## P8 — Image management: state, erase, slot info
+
+**Status: Planned** · **Depends on:** P6
+
+**Objective.** Everything in group 1 except upload.
+
+**Scope.** `include/smply/groups/image.hpp` (types + non-upload methods),
+`src/groups/image/image_management.cpp`.
+
+**Out of scope.** Upload (P10).
+
+**Tasks.** `ImageState`/`ImageSlot`/`SetStateRequest`/`SlotInfo` decoding per
+[`protocol-notes.md`](protocol-notes.md) §6 with the "absent means false" and
+"absent image ⇒ 0" rules; helper accessors (`active_slot`, `find_by_hash`,
+`secondary`); element and string caps; `ImageVersion::parse`.
+
+**Files.** as above, `tests/unit/test_image_group.cpp`.
+
+**Tests.** Golden responses from the spec examples; single-image response
+without `"image"`; empty `images` array (valid, not an error); all-flags-absent
+entry; hostile responses (huge array, oversized hash, oversized version string)
+⇒ bounded error; `set_state` encoding with and without `hash`; erase with the
+long timeout.
+
+**Docs.** [`api.md`](api.md) `groups/image.hpp`.
+
+**Gates.** All P7 gates.
+
+**Acceptance.** Every optional field's absence is handled per spec, with a test
+naming the rule.
+
+---
+
+<a id="p9"></a>
+## P9 — MCUboot image file handling and SHA-256
+
+**Status: Planned** · **Depends on:** P1
+
+**Objective.** Read the firmware file safely, and produce the two hashes the
+protocol needs.
+
+**Scope.** `include/smply/image_source.hpp`, `src/image/{mcuboot_header,tlv,
+sha256}.*`, per [`design.md`](design.md) §7 and
+[ADR-0009](decisions/ADR-0009-mcuboot-boundary.md).
+
+**Out of scope.** Signature verification, decryption, file I/O beyond
+`MemoryImageSource` (the application provides its own source).
+
+**Tasks.** Field-by-field header decode (no struct cast); vendored SHA-256 with
+NIST vectors; streaming `sha256(ImageSource&)`; hardened TLV scan (bounded
+`it_tlv_tot`, strictly-positive advance, iteration cap); `encrypted` flag.
+
+**Files.** as above, `tests/unit/test_mcuboot_header.cpp`,
+`tests/unit/test_sha256.cpp`, `tests/unit/test_tlv.cpp`, `tests/data/*`.
+
+**Tests.** Golden headers; wrong magic; truncated; absurd sizes. NIST SHA-256
+vectors plus a large streaming case exercised at every buffer boundary. TLV:
+valid protected + unprotected, `it_tlv_tot` beyond EOF, zero-length TLV
+(termination), missing `IMAGE_TLV_SHA256`, encrypted image short-circuit.
+
+**Docs.** [`api.md`](api.md) `image_source.hpp`; the two-hash distinction
+restated where it is used.
+
+**Gates.** All P8 gates + ASan/UBSan.
+
+**Acceptance.** SHA-256 matches NIST vectors; the TLV scanner provably
+terminates on arbitrary input (fuzzed in P13).
+
+---
+
+<a id="p10"></a>
+## P10 — Image upload state machine
+
+**Status: Planned** · **Depends on:** P8, P9
+
+**Objective.** Correct, resumable, bounded image upload — the protocol core of
+the product.
+
+**Scope.** `src/groups/image/upload_session.*` (pure functions) and
+`ImageManagement::upload`/`resume`/`UploadHandle`, per
+[`design.md`](design.md) §6 and
+[ADR-0008](decisions/ADR-0008-upload-state-ownership.md).
+
+**Out of scope.** Reset/reconnect orchestration (P12).
+
+**Tasks.** Chunk sizing including exact first-packet CBOR overhead and the
+32-byte floor; first-packet reconstruction whenever `off == 0` or
+`first_packet_pending`; the full response table (authoritative `rsp.off`,
+restart on zero, rewind/no-progress budget, overrun, missing `off`, `match`);
+timeout retransmission of the identical request; bounded retries and restarts;
+progress from `confirmed_off` only; cancellation.
+
+**Files.** as above, `tests/unit/test_upload_session.cpp`,
+`tests/unit/test_upload_driver.cpp`.
+
+**Tests.** The full table-driven list in [`testing.md`](testing.md) §3
+"UploadSession" — 15+ named cases, each traceable to a rule in
+[`protocol-notes.md`](protocol-notes.md) §6. Plus driver-level tests over
+`FakeTransport`: retransmission after timeout sends byte-identical bytes;
+cancellation completes exactly once.
+
+**Docs.** [`design.md`](design.md) §6 reconciled; any newly discovered server
+behaviour → [`protocol-notes.md`](protocol-notes.md).
+
+**Gates.** All P9 gates. **Branch coverage of `upload_session.*` ≥ 90 %.**
+
+**Acceptance.** Every row of the response table has a named test. No code path
+computes `next_off` arithmetically.
+
+**Exit.** Upload works standalone (`UploadOnly`) before any DFU orchestration
+exists.
+
+---
+
+<a id="p11"></a>
+## P11 — `ServerSimulator` and the component harness
+
+**Status: Planned** · **Depends on:** P7, P8, P10
+
+**Objective.** A deterministic in-memory MCUmgr device, so the DFU state machine
+can be developed against realistic behaviour without hardware.
+
+**Scope.** `tests/support/server_simulator.*` with the `ServerConfig` in
+[`testing.md`](testing.md) §2; `tests/component/` scaffolding.
+
+**Out of scope.** `FirmwareUpdater` itself (P12).
+
+**Tasks.** Implement groups 0 and 1 to the letter of
+[`protocol-notes.md`](protocol-notes.md), including offset correction, resume by
+`sha`, forced restart, `match` on the final chunk, reset-then-drop, and a
+simulated reboot that performs an MCUboot-like swap and updates slot state
+(including the revert-if-unconfirmed rule). Support v1/v2, missing optional
+commands, single-image mode and response delays.
+
+**Files.** `tests/support/server_simulator.*`,
+`tests/component/test_round_trip.cpp`, `tests/component/CMakeLists.txt`.
+
+**Tests.** The simulator itself: an upload driven by `ImageManagement` completes
+and the simulated flash content equals the source byte-for-byte; each configured
+deviation (v2, no params, no slot info, no image check) behaves as specified;
+the simulated reboot/revert rules match [`protocol-notes.md`](protocol-notes.md) §7.
+
+**Docs.** [`testing.md`](testing.md) §2 reconciled with the real `ServerConfig`.
+
+**Gates.** All P10 gates.
+
+**Acceptance.** A full upload through the real client stack into the simulator
+reproduces the source image exactly, in both SMP versions.
+
+---
+
+<a id="p12"></a>
+## P12 — `FirmwareUpdater` orchestration
+
+**Status: Planned** · **Depends on:** P11
+
+**Objective.** The end-to-end update, including the reset/reconnect protocol
+with the application.
+
+**Scope.** `include/smply/dfu/firmware_updater.hpp`,
+`src/dfu/update_state_machine.*` (pure), `src/dfu/firmware_updater.cpp`, per
+[`design.md`](design.md) §8.
+
+**Out of scope.** Any connection management.
+
+**Tasks.** The pure `(state, event) → (state, effects)` machine covering every
+state and every row of the failure/recovery table; the three `UpdateMode`s; the
+event stream (`DisconnectExpected`, `ReconnectRequired`, `Progress`,
+`StateChanged`, `Finished`); `resume_after_reconnect()` and
+`reconnect_failed()`; `UpdateReport`; `RolledBack` detection.
+
+**Files.** as above, `tests/unit/test_update_state_machine.cpp`,
+`tests/component/test_firmware_update.cpp`.
+
+**Tests.** Unit: every transition and every recovery row, driven directly.
+Component (over the simulator): every scenario in
+[`testing.md`](testing.md) §4 — clean update in all three modes, disconnect at
+each 10 % boundary then resume, forced restart, already-present, already-active,
+invalid image, lost reset response, `EBUSY` then `force`, rollback observed,
+confirmation denied, cancellation in every non-terminal state, and all of it
+repeated with `ServerConfig::version = V2` and with params unsupported.
+
+**Docs.** [`design.md`](design.md) §8 diagram and table reconciled;
+[`api.md`](api.md) DFU section; [`architecture.md`](architecture.md) if
+component boundaries moved.
+
+**Gates.** All P11 gates. **Branch coverage of `src/dfu/` ≥ 90 %.**
+
+**Acceptance.** All component scenarios pass with no wall-clock dependence.
+
+**Exit.** The portable product is functionally complete; everything after this
+is hardening, platform work and packaging.
+
+---
+
+<a id="p13"></a>
+## P13 — Fuzzing, hardening and coverage
+
+**Status: Planned** · **Depends on:** P10 (may run in parallel with P12)
+
+**Objective.** Prove the untrusted-input surface is safe, and close coverage
+gaps.
+
+**Scope.** All seven fuzz targets in [`testing.md`](testing.md) §5 with seeded
+corpora; the ASan/UBSan and fuzz-smoke CI jobs made blocking; a review of every
+robustness rule in [`design.md`](design.md) §11 against the actual code; the
+coverage gates turned on.
+
+**Out of scope.** New features.
+
+**Tasks.** Write the targets and corpora; run a real soak (≥ 2 h per target
+locally) before declaring the phase done; fix every finding and commit its
+reproducer; audit each limit in [`architecture.md`](architecture.md) §9 for an
+actual enforcement site and a test; enable the coverage thresholds in CI.
+
+**Files.** `tests/fuzz/*`, `tests/fuzz/corpus/*`, CI workflow updates.
+
+**Tests.** The fuzz targets, plus a unit test per limit asserting the bound is
+enforced (not merely documented).
+
+**Docs.** [`security.md`](security.md) updated with anything the fuzzers
+revealed; [`quality-gates.md`](quality-gates.md) coverage numbers made real.
+
+**Gates.** Everything, with coverage and fuzz-smoke now blocking.
+
+**Acceptance.** A 2-hour soak per target with no findings; every configured
+limit has an enforcement test.
+
+---
+
+<a id="p14"></a>
+## P14 — `Dispatcher` and the portable example
+
+**Status: Planned** · **Depends on:** P12
+
+**Objective.** Give adapter authors the marshalling helper, and prove the pump
+model with a runnable program on Linux.
+
+**Scope.** `include/smply/util/dispatcher.hpp`, `src/util/dispatcher.cpp`,
+`examples/cli_dfu/` (a console DFU driver over a stub/loopback transport).
+
+**Out of scope.** WinRT.
+
+**Tasks.** Implement `Dispatcher` (mutex + queue + wake callback, MPSC,
+`drain()` on the client context only); write the example as the canonical pump
+loop shown in [`api.md`](api.md).
+
+**Files.** as above, `tests/unit/test_dispatcher.cpp`, CI job for TSan on the
+dispatcher test.
+
+**Tests.** Multi-producer posting under TSan; `drain()` returns the count and
+runs each closure once; `clear()` drops without running; a closure posted from
+inside `drain()` runs on the next drain, not recursively.
+
+**Docs.** [`api.md`](api.md) dispatcher section;
+[`architecture.md`](architecture.md) §5 reference to it.
+
+**Gates.** All P13 gates + the new TSan job.
+
+**Acceptance.** The example performs a complete simulated update end to end.
+
+---
+
+<a id="p15"></a>
+## P15 — WinRT BLE transport
+
+**Status: Planned** · **Depends on:** P14 · **Requires Windows**
+
+**Objective.** A reference `Transport` over C++/WinRT GATT.
+
+**Scope.** `transports/winrt_ble/` → target `smply::winrt_ble`, per
+[`design.md`](design.md) §10.
+
+**Out of scope.** Scanning/pairing UI, connection policy (the example's job).
+
+**Tasks.** Service and characteristic discovery by the UUIDs in
+[`protocol-notes.md`](protocol-notes.md) §8; CCCD write + `ValueChanged`
+subscription; fragmenting `send()` by `MaxPduSize − 3` using write-without-
+response; `max_message_size()` as a configured cap; inbound copy → `Dispatcher`
+→ `on_bytes()`; `ConnectionStatusChanged` → `on_disconnected()`;
+`event_revoker`-based lifetime; a synchronous, idempotent `close()` after which
+no callback can fire; MTU change handling.
+
+**Files.** `transports/winrt_ble/*`, `tests/unit/test_winrt_ble_framing.cpp`
+(the fragmentation maths is testable without a radio).
+
+**Tests.** Pure-logic tests for fragment splitting at various MTUs (including
+the minimum 23-byte ATT MTU) and for the `close()` state machine. Anything
+requiring a radio is deferred to P17.
+
+**Docs.** [`design.md`](design.md) §10 reconciled; adapter README covering
+threading and shutdown obligations.
+
+**Gates.** `windows-winrt` **and** `core-without-winrt` both green;
+`check_public_headers.py` confirms no WinRT type in `include/smply/`.
+
+**Acceptance.** The core still builds with `SMPLY_BUILD_WINRT=OFF` on all three
+platforms; no `winrt::` symbol is reachable from a public header.
+
+---
+
+<a id="p16"></a>
+## P16 — WinRT BLE DFU example application
+
+**Status: Planned** · **Depends on:** P15 · **Requires Windows**
+
+**Objective.** A usable console tool that performs a real update, and the
+reference for how an application drives smply across a reboot.
+
+**Scope.** `examples/winrt_ble_dfu/`.
+
+**Out of scope.** A GUI.
+
+**Tasks.** Scan/connect by name or address; build the client stack; the pump
+loop; progress output; handle `ReconnectRequired` by reconnecting with backoff,
+calling `rebind_transport()` then `resume_after_reconnect()`; clear exit codes
+and error reporting.
+
+**Files.** `examples/winrt_ble_dfu/*`, its README.
+
+**Tests.** Manual, documented in the README; automated coverage arrives with P17.
+
+**Docs.** README with usage; [`architecture.md`](architecture.md) §1 diagram
+confirmed against the real example.
+
+**Gates.** `windows-winrt` builds the example; format, warnings, clang-tidy.
+
+**Acceptance.** The tool completes an update against a real device (recorded in
+the P17 log if hardware is not yet available at this point).
+
+---
+
+<a id="p17"></a>
+## P17 — Hardware interoperability suite
+
+**Status: Planned** · **Depends on:** P16 · **Requires hardware**
+
+**Objective.** Prove interoperability with a real Zephyr + MCUboot device, and
+cross-check against established tooling.
+
+**Scope.** `tests/hil/` (target `smply_hil`, `SMPLY_BUILD_HIL=ON`), the device
+setup documentation, and the cross-check procedure in
+[`testing.md`](testing.md) §6.
+
+**Out of scope.** The PR gate — HIL never blocks a PR.
+
+**Tasks.** Document the exact board, Zephyr revision, `smp_svr` configuration
+and Kconfig snapshot; implement the case list; run the same updates with
+Zephyr's supported `mcumgr-client` and compare image-state output and captured
+HCI traces; record every divergence.
+
+**Files.** `tests/hil/*`, `tests/hil/README.md`.
+
+**Tests.** Clean update · interrupted upload then resume · resume after an
+application restart · already present · corrupted image rejected · test boot
+then confirm · test boot then reset without confirm ⇒ **rollback observed** ·
+reset · erase · optional-command presence/absence.
+
+**Docs.** **Every divergence from expectation becomes an entry in
+[`protocol-notes.md`](protocol-notes.md) §9**, and if it changes behaviour, an
+ADR. This is the phase most likely to invalidate an assumption — treat
+assumption updates as the primary deliverable, not a side effect.
+
+**Gates.** Nightly self-hosted job, advisory; failures open issues.
+
+**Acceptance.** All cases pass against real hardware; smply and `mcumgr-client`
+produce equivalent device state after the same operations.
+
+---
+
+<a id="p18"></a>
+## P18 — Packaging, install/export and 1.0 review
+
+**Status: Planned** · **Depends on:** P17
+
+**Objective.** Make smply consumable, and confirm the documentation still
+describes the software that exists.
+
+**Scope.** Install/export targets, `smplyConfig.cmake`, versioning and SemVer
+policy, `SECURITY.md`, `CHANGELOG.md`, SBOM generation, and a full read-through
+of every document against the code.
+
+**Tasks.** `install(TARGETS … EXPORT)` + config package; verify consumption from
+an out-of-tree project in three ways (`find_package`, `add_subdirectory`,
+`FetchContent`); generate the SBOM; write `SECURITY.md`; audit every diagram,
+API example and protocol claim in `docs/` against the implementation and fix
+drift; review all ADRs and mark any that reality superseded.
+
+**Files.** `cmake/smplyConfig.cmake.in`, `CHANGELOG.md`, `SECURITY.md`,
+`tests/consumer/*` extended, all of `docs/`.
+
+**Tests.** The three consumption modes build and run a smoke program.
+
+**Docs.** All of them — this phase is a documentation audit as much as a
+packaging one.
+
+**Gates.** Everything, plus a manual Definition-of-Done review
+([`quality-gates.md`](quality-gates.md) §12) against the whole repository.
+
+**Acceptance.** A fresh clone, consumed out-of-tree, builds and updates a device;
+no document contains a claim contradicted by the code.
+
+---
+
+## Open questions
+
+Tracked here until resolved; resolving one means an ADR or a doc update, not a
+comment in code.
+
+| ID | Question | Owner phase | Notes |
+| -- | -------- | ----------- | ----- |
+| O1 | Which licence for smply itself? | P0 | Must be permissive and compatible with proprietary linking ([`dependencies.md`](dependencies.md)). Apache-2.0 recommended (patent grant). |
+| O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. |
+| O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
+| O4 | Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library? | P9 | Leaning: keep file I/O out of the core; the example provides one. |
+| O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | P12 | Representable already; the question is test/HIL coverage. |
+| O6 | Expose a `std::error_code` interop layer? | after P12 | Only if a consumer asks. |
+
+## Discovered follow-up work
+
+*(Empty. Sessions append items here as they find them, with the phase that
+should absorb them.)*

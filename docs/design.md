@@ -1,0 +1,539 @@
+# Detailed design
+
+Mechanics of each component. Read [`architecture.md`](architecture.md) first;
+wire facts referenced as *(PN §x)* live in [`protocol-notes.md`](protocol-notes.md).
+
+---
+
+## 1. SMP codec (`src/smp/codec.*`)
+
+Pure functions over an 8-byte header. No allocation, no state.
+
+```cpp
+struct Header {
+    Operation op;      Version  version;
+    std::uint8_t flags;  std::uint16_t length;
+    Group group;       std::uint8_t seq;  std::uint8_t command;
+};
+
+std::array<std::byte, 8> encode(const Header&) noexcept;
+Result<Header>           decode(std::span<const std::byte, 8>) noexcept;
+```
+
+Encoding: byte0 = `(res=0 << 5) | (version << 3) | op`, all multi-byte fields
+big-endian (PN §2). Decoding validates:
+
+* `res` bits (7..5) are zero → else `MalformedMessage`;
+* `version ≤ 1` → else `UnsupportedSmpVersion` (0b10/0b11 are reserved);
+* `op ≤ 3` → else `MalformedMessage`;
+* `flags == 0` is **accepted but recorded** (forward compatibility: unknown
+  flags must not break a client), non-zero flags are surfaced in `Header::flags`.
+
+`length` is *not* validated here — bounds are the assembler's job, because only
+it knows the configured limit.
+
+`Group` is an enum class over `uint16_t` with named constants for the known
+groups and an open range; unknown groups round-trip unchanged.
+
+## 2. Streaming reassembly (`src/smp/assembler.*`)
+
+```cpp
+class MessageAssembler {
+public:
+    explicit MessageAssembler(AssemblerLimits);
+    // Feeds arbitrary bytes; invokes sink(header, payload) for each complete
+    // message. payload is only valid during the callback.
+    Result<void> feed(std::span<const std::byte> bytes, MessageSink& sink);
+    void reset() noexcept;               // on (re)connect
+    std::size_t buffered() const noexcept;
+};
+```
+
+Algorithm, driven purely by the header length (PN §2):
+
+1. Append incoming bytes to the partial buffer.
+2. While `buffered() >= 8`:
+   a. Decode the header. On decode failure → return the error and `reset()`
+      (a stream that cannot be parsed cannot be resynchronised safely).
+   b. If `length > limits.max_payload` → `MessageTooLarge`, `reset()`.
+   c. If `buffered() < 8 + length` → **break** and wait for more bytes;
+      if `8 + length > limits.max_buffer` → `MessageTooLarge`, `reset()`.
+   d. Emit `(header, payload)`; consume `8 + length` bytes; loop.
+3. Bytes remaining after the loop stay buffered.
+
+Properties, all covered by tests and by a fuzz target:
+
+* Byte-at-a-time delivery, whole-message delivery and N-messages-in-one-`feed()`
+  all produce identical output (the "arbitrary fragmentation" invariant).
+* The buffer never exceeds `max_buffer`; a device claiming a huge `length`
+  causes a bounded error, never an allocation.
+* `reset()` is called on disconnect and before a reconnect so a truncated
+  message never bleeds into the next session.
+
+The buffer is a `std::vector<std::byte>` with a reserved capacity and a read
+cursor; it is compacted (not reallocated) once the cursor passes half the
+buffer, so steady-state upload traffic performs no allocation.
+
+## 3. CBOR façade (`src/cbor/`)
+
+Backend: **QCBOR** ([ADR-0007](decisions/ADR-0007-cbor-library.md)). Never
+exposed publicly.
+
+```cpp
+namespace smply::cbor {
+
+class Writer {                       // fixed-capacity, caller-owned buffer
+public:
+    explicit Writer(std::span<std::byte> out, unsigned max_nesting);
+    Writer& open_map();  Writer& close_map();
+    Writer& key(std::string_view);
+    Writer& value(std::uint64_t);  Writer& value(std::int64_t);
+    Writer& value(bool);  Writer& value(std::string_view);
+    Writer& value(std::span<const std::byte>);
+    Result<std::span<const std::byte>> finish();   // sticky error surfaces here
+};
+
+class Reader {                       // bounded, non-allocating, map-key based
+public:
+    Reader(std::span<const std::byte>, unsigned max_nesting);
+    Result<void> enter_map();  Result<void> leave_map();
+    std::optional<std::uint64_t>  uint(std::string_view key);
+    std::optional<std::int64_t>   integer(std::string_view key);
+    std::optional<bool>           boolean(std::string_view key);
+    std::optional<std::string_view> text(std::string_view key);
+    std::optional<std::span<const std::byte>> bytes(std::string_view key);
+    Result<void> for_each_in_array(std::string_view key,
+                                   const std::function<Result<void>(Reader&)>&);
+    Result<void> status() const;     // sticky decode error
+};
+}
+```
+
+Design points:
+
+* **Sticky errors.** Individual getters return `std::optional` (absent key ⇒
+  `nullopt`, which the protocol uses to mean "false"/"default", PN §6); a
+  genuine *decode* failure sets the sticky status checked once via `status()`.
+  This keeps call sites free of per-field error handling without losing errors.
+* **Absent ≠ error** everywhere, matching MCUmgr's omit-when-false convention.
+* Views (`string_view`, `span`) point into the caller's response buffer and are
+  only valid until the response callback returns. Group code copies what it
+  keeps.
+* Nesting is bounded; arrays are iterated with a callback so no container is
+  allocated on behalf of the device.
+* `mgmt_error.*` implements the **dual** error extraction (PN §3): try
+  `err:{group,rc}` first, then flat `rc`, producing a `MgmtError`. Applied to
+  every response before any group-specific parsing.
+
+## 4. Request lifecycle (`src/smp/client.*`)
+
+```cpp
+class SmpClient : public TransportListener {
+public:
+    SmpClient(Transport&, const Clock&, SmpClientConfig = {});
+    RequestHandle request(const RequestSpec&, ResponseCallback);
+    void   poll(TimePoint now);       // drives timeouts; may invoke callbacks
+    TimePoint next_deadline() const;  // for event-loop wait computation
+    void   cancel(RequestHandle);
+    void   rebind_transport(Transport&);   // after reconnect; resets assembler
+    // TransportListener
+    void on_bytes(std::span<const std::byte>) override;
+    void on_transport_error(Error) override;
+    void on_disconnected(Error) override;
+};
+```
+
+**Send path.** Allocate `seq` (see below) → encode header + already-encoded CBOR
+payload into a reusable send buffer → `transport.send(whole_message)` →
+on success, insert into the pending table with `deadline = now + timeout`; on
+`TransportBusy`, fail the request immediately with that code (the caller decides
+whether to retry — the DFU machine does); on any other transport error, fail
+with `TransportError`.
+
+**Sequence allocation.** A monotonically incrementing `uint8_t`. Because
+`max_in_flight` defaults to 1 and is bounded well below 256, a value in use is
+never reallocated. The allocator skips numbers currently pending **and** numbers
+in the retired set.
+
+**Receive path.** `on_bytes()` → `MessageAssembler::feed()` → for each complete
+message:
+
+1. Look up `seq` in the pending table. Not found → check the retired set; if
+   present, drop silently (a late response, PN §9 A4); otherwise count it as
+   `unmatched_responses` and drop. Never fatal (A5).
+2. Verify `header.group == pending.group && header.command == pending.command &&
+   header.op == expected_response_op(pending.op)`. Mismatch ⇒ complete the
+   request with `UnexpectedResponse`… **no**: the request stays pending and the
+   *message* is discarded with a counter bump, because a mismatched message may
+   belong to a different, stale exchange. The request then times out normally.
+   (Rationale: A4 — the spec does not define this case; discarding is the only
+   choice that cannot mis-complete a request.)
+3. Extract `MgmtError` (PN §3). If non-zero, complete with
+   `ErrorCode::ProtocolError` + the preserved `MgmtError` + optional `rsn`.
+4. Otherwise complete with the raw payload span; the group layer decodes it.
+
+Completion always: remove from pending → add `seq` to the bounded retired set →
+invoke the callback exactly once.
+
+**Timeouts.** `poll(now)` walks the pending table (≤ `max_in_flight` entries) and
+completes expired requests with `Timeout`. `next_deadline()` lets the
+application sleep precisely instead of spinning.
+
+**Cancellation.** `cancel(handle)` completes the request with `Cancelled`
+immediately and retires the `seq`. It does **not** try to abort the transport
+write; the device may still answer, and that answer is dropped by the retired
+set. A `RequestHandle` for an already-completed request is a harmless no-op
+(handles carry a generation counter so a stale handle cannot cancel a newer
+request that reused the slot).
+
+**Disconnect.** `on_disconnected()` fails every pending request with
+`Disconnected`, resets the assembler and marks the client unbound; subsequent
+`request()` calls fail fast with `Disconnected` until `rebind_transport()`.
+
+**Re-entrancy.** Callbacks may start new requests. The pending table is
+iterated over a snapshot of expired handles, and completion is performed
+outside the iteration, so a callback mutating the table is safe.
+
+## 5. Management groups
+
+Thin, stateless-except-where-noted wrappers that own only encoding and decoding.
+
+```cpp
+class OsManagement {                       // src/groups/os/
+    RequestHandle reset(ResetOptions, Callback<void>);
+    RequestHandle mcumgr_parameters(Callback<McumgrParameters>);
+    RequestHandle echo(std::string_view, Callback<std::string>);
+};
+
+class ImageManagement {                    // src/groups/image/
+    RequestHandle get_state(Callback<ImageState>);
+    RequestHandle set_state(SetStateRequest, Callback<ImageState>);
+    RequestHandle erase(std::optional<std::uint32_t> slot, Callback<void>);
+    RequestHandle get_slot_info(Callback<SlotInfo>);
+    UploadSession start_upload(ImageSource&, UploadOptions);  // see §6
+};
+```
+
+Decoding rules applied uniformly (PN §6): absent boolean ⇒ `false`; absent
+`"image"` ⇒ `0`; array elements are bounded by `limits.max_images` and
+`limits.max_slots`; a `hash` longer than 64 bytes is rejected;
+`version` strings longer than 32 bytes are rejected.
+
+`ImageState`/`ImageSlot` are plain value structs with `std::optional` where the
+protocol genuinely distinguishes absent from default (e.g. `hash`).
+
+## 6. Upload state machine (`src/groups/image/upload_session.*`)
+
+The most intricate part of the library, and deliberately a **pure function** so
+it can be exhaustively unit-tested with no client, transport or clock:
+
+```cpp
+struct UploadState {
+    std::uint64_t confirmed_off = 0;   // server-acknowledged offset (authoritative)
+    std::uint64_t in_flight_off = 0;   // offset of the request currently out
+    std::uint32_t in_flight_len = 0;
+    std::uint32_t chunk_size    = 0;
+    std::uint32_t consecutive_no_progress = 0;
+    std::uint32_t restarts      = 0;
+    bool          first_packet_pending = true;  // next request must be a full first packet
+    Phase         phase = Phase::Idle;
+};
+
+enum class Action { SendChunk, Complete, Fail, Restart };
+struct Step { Action action; UploadRequest request; Error error; };
+
+Step plan_next(const UploadState&, const UploadConfig&);            // what to send
+Step on_response(UploadState&, const UploadResponse&, const UploadConfig&);
+```
+
+### Chunk sizing
+
+```
+budget      = min(server_buf_size (OS params, PN §5) or default 256,
+                  transport.max_message_size(),
+                  config.upload_chunk_max)
+overhead    = 8 (SMP header) + cbor_overhead_first_packet(len, sha, image, upgrade)
+chunk_size  = clamp(budget - overhead, 32, config.upload_chunk_max)
+```
+
+`cbor_overhead_first_packet` is computed exactly, by encoding a probe map with
+the real `len`/`sha`/`image` values and a zero-length `data` bstr, then adding
+the bstr header for `chunk_size`. Using the *first-packet* overhead for every
+chunk wastes a handful of bytes on subsequent chunks and guarantees the first
+one fits — a deliberate simplification. The floor of 32 enforces PN §6 rule 2
+(first chunk must carry the 32-byte MCUboot header); if the computed size is
+below 32 the upload fails immediately with `MessageTooLarge` rather than
+looping.
+
+### Request construction
+
+* `off == 0` **or** `first_packet_pending` ⇒ include `len`, `sha` (when
+  available), `image`, and `upgrade` (when requested) — PN §6 rule 7.
+* otherwise ⇒ only `off` and `data`.
+* `data` is `[off, off + chunk_size)` clipped to the image size, read through
+  `ImageSource::read(off, span)`.
+
+### Response handling — `on_response`
+
+Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
+
+| Condition | Action |
+| --------- | ------ |
+| protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
+| `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
+| `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
+| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. |
+| `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if `restarts > max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. |
+| `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
+| `rsp_off <= confirmed_off` | server rewound or repeated. `consecutive_no_progress++`; if over the budget ⇒ `Fail`. Else `confirmed_off = rsp_off`, set `first_packet_pending = (rsp_off == 0)`, `SendChunk` from `rsp_off`. |
+
+`"match"`: absent ⇒ ignored (PN §9 A6, depends on `CONFIG_IMG_ENABLE_IMAGE_CHECK`);
+`false` ⇒ `Fail(ImageMismatch)`; `true` ⇒ recorded on the result.
+
+### Failures that are not responses
+
+* **Timeout** — retry the same request up to `max_chunk_retries` (default 3)
+  with exponential backoff. The `off` is unchanged, so a retransmission is
+  always safe: either the server never saw it, or it saw it and will answer with
+  the offset it actually has, which the table above handles.
+* **Disconnect** — the session is *suspended*, not destroyed. `FirmwareUpdater`
+  can resume it after reconnection by sending a first packet with the same
+  `sha`; the server replies with its offset and the session continues from there
+  (PN §6 rule 6). If the device forgot the session, it answers `off == 0` and
+  the restart path applies.
+* **Cancellation** — the session terminates; no cleanup command is sent (the
+  device's stale session is harmless and is superseded by the next upload's
+  `sha`).
+
+Progress is reported as `{ confirmed_off, image_size }` on every confirmed
+advance — never on send, so progress never moves backwards spuriously.
+
+## 7. MCUboot image handling (`src/image/`)
+
+Boundary rationale: [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md).
+
+```cpp
+class ImageSource {                       // application-provided
+public:
+    virtual std::uint64_t size() const = 0;
+    virtual Result<std::size_t> read(std::uint64_t off, std::span<std::byte>) = 0;
+};
+class MemoryImageSource;                  // provided; wraps a span
+
+struct McubootImageInfo {                 // parsed from the first 32 bytes (PN §7)
+    std::uint32_t header_size, image_size, flags;
+    Version       version;                // major.minor.revision.build
+    bool          encrypted;              // IMAGE_F_ENCRYPTED_AES128|256
+};
+Result<McubootImageInfo> parse_mcuboot_header(std::span<const std::byte> first32);
+Result<Hash>             sha256(ImageSource&);                    // upload "sha"
+Result<std::optional<Hash>> find_tlv_sha256(ImageSource&, const McubootImageInfo&);
+```
+
+What smply **does**: validate the magic `0x96F3B83D` and header size, read the
+version for reporting and for pre-flight comparison against the device, compute
+the file's SHA-256 (streaming, 4 KiB at a time, no full-file buffering), and —
+optionally — scan the TLV area for `IMAGE_TLV_SHA256` so the uploaded file can
+be correlated with a device slot entry without trusting the device's word.
+
+What smply **does not** do: verify signatures, decrypt, evaluate dependency
+TLVs, or reimplement any swap logic.
+
+TLV scanning is defensive: `it_tlv_tot` is bounded by the file size, each
+`image_tlv` advance must be strictly positive, and the loop has an iteration
+cap. Encrypted images (`IMAGE_F_ENCRYPTED_*`) short-circuit TLV correlation and
+set a flag on the plan (PN §9 A13).
+
+SHA-256 is a small vendored public-domain implementation with NIST vector tests;
+no crypto library dependency (see [`dependencies.md`](dependencies.md)).
+
+## 8. Firmware update state machine (`src/dfu/`)
+
+Pure `(state, event) → (state, effects)` core (`update_state_machine.*`) driven
+by `FirmwareUpdater`, which owns the effects (issuing requests, emitting
+callbacks).
+
+### States
+
+```
+                          ┌──────┐
+                          │ Idle │
+                          └───┬──┘  start()
+                              ▼
+                    ┌──────────────────┐
+                    │ QueryingParams   │  OS mcumgr-params (optional; ENOTSUP ok)
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐
+                    │ InspectingImages │  IMG get-state  → learn active/pending/slots
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐   already-running target image
+                    │ Planning         ├──────────────────────────────► Completed
+                    └───────┬──────────┘   already-uploaded ─► VerifyingUpload
+                            ▼
+                    ┌──────────────────┐◄── resume_after_reconnect()
+              ┌────►│ Uploading        │
+              │     └───────┬──────────┘
+              │  disconnect │ byte-complete
+              │     ┌───────▼──────────┐
+              │     │ VerifyingUpload  │  IMG get-state → secondary slot hash present?
+              │     └───────┬──────────┘
+              │             ▼
+              │     ┌──────────────────┐  IMG set-state{hash, confirm=false}
+              │     │ MarkingForTest   │  (or confirm=true in ConfirmImmediately mode)
+              │     └───────┬──────────┘
+              │             ▼
+              │     ┌──────────────────┐  OS reset
+              │     │ Resetting        │
+              │     └───────┬──────────┘
+              │             ▼
+              │     ┌──────────────────┐  emits DisconnectExpected
+              │     │ AwaitingDisconnect│ ← link drop OR grace timeout
+              │     └───────┬──────────┘
+              │             ▼
+              │     ┌──────────────────┐  emits ReconnectRequired; the APPLICATION
+              └─────┤ AwaitingReconnect│  reconnects and calls resume_after_reconnect()
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐  IMG get-state → active slot must carry
+                    │ VerifyingBooted  │  the target hash
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐  IMG set-state{confirm=true}
+                    │ Confirming       │  (skipped in ConfirmImmediately mode)
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐  IMG get-state → confirmed == true
+                    │ VerifyingConfirm │
+                    └───────┬──────────┘
+                            ▼
+                    ┌──────────────────┐        ┌──────────┐     ┌───────────┐
+                    │ Completed        │        │ Failed   │     │ Cancelled │
+                    └──────────────────┘        └──────────┘     └───────────┘
+```
+
+`Failed` and `Cancelled` are reachable from every non-terminal state.
+`RolledBack` is a distinguished `Failed` reason detected in `VerifyingBooted`
+when the active image is the *old* one and no pending image remains — MCUboot
+performed a `REVERT` (PN §7).
+
+### Modes
+
+* `UpdateMode::TestThenConfirm` (**default**) — the flow above. Safe: a device
+  that fails to boot or is never confirmed reverts on the next reset.
+* `UpdateMode::ConfirmImmediately` — `MarkingForTest` sends `confirm = true`;
+  `Confirming` is skipped. No rollback safety net. Opt-in only.
+* `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
+  decides when to activate.
+
+### Application-facing events
+
+`FirmwareUpdater` never touches a connection. It communicates intent through a
+single event stream:
+
+| Event | Meaning | Application must |
+| ----- | ------- | ---------------- |
+| `Progress{sent, total}` | upload advanced | update UI |
+| `StateChanged{from,to}` | any transition | update UI |
+| `DisconnectExpected` | reset accepted; the link is about to drop | stop treating a drop as an error |
+| `ReconnectRequired{hint_delay}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
+| `Finished{Result<UpdateReport>}` | terminal | release resources |
+
+### Failure and recovery per state
+
+| State | Failure | Recovery |
+| ----- | ------- | -------- |
+| `QueryingParams` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
+| `InspectingImages` | any error | fatal; nothing has been changed on the device |
+| `Uploading` | timeout | chunk retry (design §6) |
+| `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
+| `Uploading` | server `off == 0` | restart from the first packet, bounded by `max_restarts` |
+| `VerifyingUpload` | target hash absent from any slot | fatal `ImageMismatch` — the device did not store what we sent |
+| `MarkingForTest` | `IMAGE_ALREADY_PENDING` | re-read state; if the pending image is already ours, continue |
+| `MarkingForTest` | `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` | fatal, with a clear diagnostic |
+| `Resetting` | `EBUSY` | one retry with `force = 1` (PN §5) |
+| `Resetting` | no response but the link drops | **treated as success** (PN §9 A3) |
+| `AwaitingDisconnect` | grace timeout with the link still up | proceed to `AwaitingReconnect` anyway; the verify step is the real check |
+| `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
+| `VerifyingBooted` | active image is the old one | `RolledBack` |
+| `VerifyingBooted` | active image is ours, `confirmed == true` already | skip `Confirming` |
+| `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
+
+Every terminal outcome yields an `UpdateReport` recording the final device
+image state, the number of bytes transferred, restart/retry counts, and, on
+failure, the state it failed in plus the underlying `Error`.
+
+## 9. Transport contract
+
+Normative contract; full signatures in [`api.md`](api.md). Rationale in
+[ADR-0005](decisions/ADR-0005-transport-abstraction.md).
+
+| Question | Answer |
+| -------- | ------ |
+| What is one outbound unit? | **Exactly one complete SMP message** (8-byte header + `length` payload bytes). Fragmenting it is the transport's job. |
+| Does `send()` block? | No. It returns once the message is accepted for transmission. |
+| Backpressure? | `send()` may return `ErrorCode::TransportBusy`. The core does not queue; with `max_in_flight = 1` there is at most one message outstanding, so a busy transport simply fails that request. |
+| How is inbound data delivered? | `TransportListener::on_bytes(span)` with **arbitrary** chunk boundaries. The core reassembles (ADR-0006). |
+| Ordering? | The transport **must** preserve byte order. GATT and UART both do. |
+| Buffer lifetime? | Borrowed for the duration of the call, in both directions. A transport that defers a send must copy. |
+| Concurrency? | Single-threaded: all calls in and out happen on the client context (architecture §5). |
+| Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
+| Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
+| Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "unknown"; the core then uses its configured default. |
+
+## 10. WinRT BLE adapter design (`transports/winrt_ble/`)
+
+Windows-only target `smply::winrt_ble`. Consumes `smply::smply`; no WinRT type
+appears in any header under `include/smply/`, and the core builds with the
+target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
+
+### Mapping
+
+| smply concept | WinRT operation |
+| ------------- | --------------- |
+| open | `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)` |
+| enable notifications | `WriteClientCharacteristicConfigurationDescriptorAsync(Notify)` + subscribe `ValueChanged` |
+| `send(message)` | split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
+| fragment size | `GattSession::MaxPduSize − 3`; clamp to `[20, 512]`; re-read on `MaxPduSizeChanged` |
+| `max_message_size()` | a configured cap (default 1024) — *not* the MTU; a whole SMP message may span many fragments |
+| inbound | `ValueChanged` → copy the `IBuffer` → post to `Dispatcher` → `on_bytes()` on the client context |
+| disconnect | `ConnectionStatusChanged == Disconnected` → post → `on_disconnected()` |
+| errors | `GattCommunicationStatus != Success`, `hresult_error` → `on_transport_error` / `on_disconnected` |
+
+### Threading, lifetime, shutdown
+
+* WinRT raises `ValueChanged` and `ConnectionStatusChanged` on **thread-pool
+  threads**. The adapter never calls the core from them; every inbound event is
+  copied into a `smply::Dispatcher` queue and replayed on the client context
+  (architecture §5).
+* Event tokens are held in `winrt::event_revoker`s so revocation is exception-safe
+  and happens before the owning object is destroyed.
+* `close()` is the **only** safe shutdown path: revoke tokens → wait for
+  in-flight async operations to observe a cancellation flag → drain the
+  dispatcher queue → mark closed. It is synchronous and idempotent, and after it
+  returns no callback can fire. The destructor calls it.
+* `winrt::apartment_context`/`resume_background` are used inside the adapter
+  only; no coroutine crosses the core boundary.
+* Write-without-response has no flow control at the GATT level. The adapter
+  paces fragments using `GattCharacteristic::WriteValueWithResultAsync`'s
+  completion, and surfaces `TransportBusy` if the stack rejects a write.
+
+The example `examples/winrt_ble_dfu/` is a console application: scan by name or
+address → connect → build `SmpClient` + `FirmwareUpdater` → run a simple pump
+loop (`poll()` + `Dispatcher::drain()`), print progress, handle
+`ReconnectRequired` by reconnecting and calling `resume_after_reconnect()`.
+
+## 11. Robustness rules (checklist for reviewers)
+
+* Every length from the device is compared against a configured bound *before*
+  it is used to size, index or allocate.
+* All arithmetic on offsets and lengths uses `std::uint64_t` with explicit
+  overflow checks (`off + len < off` and `off + len > size`).
+* No `reinterpret_cast` over device data; the MCUboot header is decoded field by
+  field from a byte span, never by casting to a struct.
+* No owning raw pointers; no `new`/`delete`; no C-style casts.
+* Every `switch` over an internal enum is exhaustive with no `default`, so adding
+  a state is a compile error at every decision point.
+* Public entry points validate their arguments and return `InvalidArgument`
+  rather than asserting.
