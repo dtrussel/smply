@@ -31,9 +31,15 @@ smply treats the image as **essentially opaque, with three narrow exceptions**.
 2. **Compute SHA-256 of the whole file**, streaming, for the MCUmgr `sha` field.
    This is *required* by the protocol for upload resumption and for the
    device-side `match` check. Not optional.
-3. **Optionally scan the TLV area for `IMAGE_TLV_SHA256`**, so the uploaded file
+3. **Optionally scan the TLV area for the image-hash TLV**, so the uploaded file
    can be correlated with a device slot entry without taking the device's word
    for which image it is holding.
+
+   *(Clarified by P9: that is `IMAGE_TLV_SHA256`, `SHA384` **or** `SHA512`,
+   whichever the image carries. Which one appears depends on how the bootloader
+   was built, and is the same choice that decides whether the device reports a
+   32- or a 64-byte `hash` — so reading only the 32-byte TLV would make
+   correlation silently impossible on a SHA-512 device.)*
 
 **Does not:**
 
@@ -70,15 +76,30 @@ setups. Made optional and used as corroboration, not as a gate.
 
 * `src/image/` depends on nothing else in the library and is trivially testable
   with golden headers and NIST SHA-256 vectors.
-* SHA-256 is a ~150-line vendored public-domain implementation rather than a
-  dependency on OpenSSL/BCrypt — see [`../dependencies.md`](../dependencies.md).
-  Portable, auditable, and it keeps the runtime footprint at one third-party
-  library.
+* SHA-256 is ~150 lines implemented in `src/image/sha256.{hpp,cpp}` rather than
+  a dependency on OpenSSL/BCrypt — see
+  [`../dependencies.md`](../dependencies.md). Portable, auditable, and it keeps
+  the runtime footprint at one third-party library.
+
+  *(Amended by P9, 2026-09-05: this consequence originally read "a vendored
+  public-domain implementation". It is smply's own Apache-2.0 code implementing
+  FIPS 180-4, which keeps every file under the project's SPDX identifier and
+  `NOTICE` free of an attribution entry for a published standard. The decision
+  above — no crypto library dependency — is unchanged, which is why this is an
+  amendment to a consequence and not a superseding ADR.)*
 * The trust boundary is stated in [`../security.md`](../security.md) §1 and must
   be repeated in user-facing documentation: **a successful smply update is not
   an authenticity statement.**
 * Encrypted images are a known limitation
   ([`../protocol-notes.md`](../protocol-notes.md) §9 A13): upload works, TLV
   correlation is skipped, and the plan is flagged.
-* TLV scanning is hardened (bounded `it_tlv_tot`, strictly-positive advance,
-  iteration cap) and fuzzed, because it parses attacker-supplied file content.
+* TLV scanning is hardened (every offset bounded against the file's own length,
+  each entry's length checked against the area end before use, and an iteration
+  cap) and fuzzed, because it parses attacker-supplied file content.
+
+  *(Corrected by P9: the "strictly-positive advance" this once listed as a
+  safeguard is a property of the format, not a check to add — every step
+  consumes at least the four-byte entry header, so the scan terminates on any
+  input. The cap bounds the **work** a crafted file can demand. Documenting it
+  as a loop guard would leave the next reader looking for a bug that cannot
+  exist.)*

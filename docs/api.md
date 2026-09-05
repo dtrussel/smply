@@ -18,7 +18,7 @@ change — record the deviations in the roadmap when it does.
 | `smp_client.hpp` | **Shipped** (P6, extended P7) |
 | `groups/os.hpp` | **Shipped** (P7) |
 | `groups/image.hpp` | **Shipped** (P8: state, erase, slot info) — the upload half below is still Proposed (P10) |
-| `image_source.hpp` | Proposed — P9 |
+| `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
 | `dfu/firmware_updater.hpp` | Proposed — P12 |
 | `util/dispatcher.hpp` | Proposed — P14 |
 
@@ -602,6 +602,10 @@ void resume(UploadHandle&, SmpClient& rebound);
 
 ## `smply/image_source.hpp`
 
+Where the firmware bytes come from. smply never opens a file: the application
+implements two functions, which keeps the core free of file I/O, of paths and of
+a platform.
+
 ```cpp
 namespace smply {
 
@@ -609,24 +613,74 @@ class ImageSource {
 public:
     virtual ~ImageSource() = default;
     virtual std::uint64_t size() const noexcept = 0;
-    // Reads into `out`; returns bytes read (short reads only at EOF).
+
+    // Reads into `out` at `offset`, returning the count. Must be out.size()
+    // unless the read reached the end; at or past the end, 0.
+    //
+    // A short read anywhere else is a broken source, and smply reports it as
+    // InvalidArgument rather than looping -- a source returning one byte per
+    // call would otherwise turn a 16 MiB hash into 16 million calls.
+    //
+    // Implementations must accept any offset order: the header parse reads the
+    // front, the TLV scan seeks near the back and forwards again.
     virtual Result<std::size_t> read(std::uint64_t offset, MutBytes out) = 0;
 };
 
-class MemoryImageSource final : public ImageSource {   // wraps a borrowed span
+class MemoryImageSource final : public ImageSource {   // borrows the span
 public:
-    explicit MemoryImageSource(ConstBytes);
+    explicit MemoryImageSource(ConstBytes) noexcept;
+    std::uint64_t size() const noexcept override;
+    Result<std::size_t> read(std::uint64_t, MutBytes) override;   // never fails
 };
+
+} // namespace smply
+```
+
+## `smply/mcuboot_image.hpp`
+
+The three narrow exceptions to treating the image as opaque
+([ADR-0009](decisions/ADR-0009-mcuboot-boundary.md)). smply does **not** verify
+signatures, decrypt, evaluate dependency TLVs or reimplement swap logic — **a
+successful smply update is not an authenticity statement**
+([`security.md`](security.md) §1).
+
+```cpp
+namespace smply {
+
+inline constexpr std::uint32_t kMcubootImageMagic   = 0x96F3B83D;
+inline constexpr std::uint32_t kMcubootImageMagicV1 = 0x96F3B83C;  // too old to use
+inline constexpr std::size_t   kMcubootHeaderSize   = 32;
 
 struct McubootImageInfo {
-    std::uint32_t header_size, image_size, flags;
-    ImageVersion  version;
-    bool          encrypted;
+    std::uint32_t header_size = 0;         // ih_hdr_size, >= 32
+    std::uint32_t image_size  = 0;         // ih_img_size, excludes the header
+    std::uint32_t protected_tlv_size = 0;  // includes that area's own 4-byte header
+    std::uint32_t flags = 0;               // verbatim; unknown bits are kept
+    ImageVersion  version;                 // from groups/image.hpp
+    bool          encrypted = false;       // IMAGE_F_ENCRYPTED_AES128|AES256
 };
 
-Result<McubootImageInfo>    parse_mcuboot_header(ConstBytes first_32_bytes);
-Result<Hash>                sha256(ImageSource&);              // upload "sha"
-Result<std::optional<Hash>> find_tlv_sha256(ImageSource&, const McubootImageInfo&);
+// Field by field from the span -- never a struct cast. Fails with
+// InvalidArgument for a short span, a wrong magic (an unsigned zephyr.bin is
+// the usual cause), an ih_hdr_size below 32, or a declared size above
+// limits::kMaxImageSize.
+Result<McubootImageInfo> parse_mcuboot_header(ConstBytes first_32_bytes);
+
+// SHA-256 of the WHOLE FILE: the MCUmgr upload `sha`. Streams a few KiB at a
+// time. NOT the image-state hash -- see protocol-notes §7.
+Result<Hash> sha256(ImageSource&);
+
+// The image-hash TLV (IMAGE_TLV_SHA256/384/512), for correlating this file with
+// a device slot: the result compares directly with ImageSlot::hash.
+//
+// nullopt means there is no hash TLV, which is a normal answer -- as is an
+// encrypted image, which is not scanned at all because the flashed bytes differ
+// from the file's (A13). MalformedMessage for a structurally broken TLV area:
+// a length overrunning the area, a protected size disagreeing with its own
+// header, an area past the end of the file, more than limits::kMaxImageTlvs
+// entries, or two hash TLVs.
+Result<std::optional<ImageHash>> find_image_tlv_hash(ImageSource&,
+                                                     const McubootImageInfo&);
 
 } // namespace smply
 ```

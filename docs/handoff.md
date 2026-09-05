@@ -133,7 +133,16 @@ delete an entry when it stops being true.
   file, and image-state `hash`, MCUboot's `IMAGE_TLV_SHA` over header and body.
   Conflating them is the classic client bug. Since P8 they are different types:
   `Hash` (fixed 32 bytes) and `ImageHash` (32 **or 64**, because
-  `IMAGE_SHA_LEN` is 64 for a SHA-512 bootloader). Do not merge them.
+  `IMAGE_SHA_LEN` is 64 for a SHA-512 bootloader). Do not merge them. P9 makes
+  both available: `sha256(ImageSource&)` gives the first,
+  `find_image_tlv_hash()` the second.
+* **The MCUboot TLV trailer is not what the design document implies** (PN §7,
+  now written from `bootutil_tlv_iter_begin()`): `it_tlv_tot` includes its own
+  four-byte area header, `ih_protect_tlv_size` must equal the protected area's
+  `it_tlv_tot` exactly, and the protected and unprotected areas are walked as
+  one contiguous run. A scan also cannot spin — every advance is at least the
+  four-byte entry header — so `limits::kMaxImageTlvs` bounds work, not
+  termination.
 * **"Absent means false" is only half the rule for image-state flags.** The
   specification says a false flag is omitted; the server omits it only under
   `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST` and otherwise sends it explicitly. Absent
@@ -166,7 +175,18 @@ delete an entry when it stops being true.
   without failing, so `pip install gcovr` before believing a number.
 * Read the **uncovered-line list**, not the percentage. In P8 the gap between
   92 % and 95 % was a dozen genuinely reachable bounds checks, not the
-  unreachable guards the percentage suggested.
+  unreachable guards the percentage suggested. In P9 it exposed something
+  worse: three tests that passed **without reaching the check they were named
+  after**, because a fixture-builder convenience kept two fields agreeing. A
+  malformation knob must change exactly one field, or it cannot express an
+  inconsistency.
+* `gcovr … --txt <build-dir>` fails with "Is a directory" — `--txt` takes the
+  next argument as its output file. The same mistake silently disabled
+  `tools/coverage.sh` from P0 to P7. Put the search path first, or omit `--txt`.
+* **`-Wuseless-cast` is GCC-only** and rejects a `static_cast` between
+  `std::uint64_t` and `std::size_t`, which are the same type on a 64-bit host
+  and a real narrowing on a 32-bit one. `image::narrow<To>()` in
+  `src/image/source_reader.hpp` is the way round it.
 * `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it.
   The device's `<???>` version placeholder needs a raw string literal.
 
@@ -943,3 +963,102 @@ independent of P8 (it depends only on P1), and P10 needs both. Start with the
 header decode and the NIST vectors; the TLV scanner is where the hardening
 matters, and `IMAGE_TLV_SHA512 = 0x12` exists alongside `IMAGE_TLV_SHA256 =
 0x10`, so decide early whether P9 reads only the 32-byte one.
+
+### 2026-09-05 — P9: MCUboot image file handling and SHA-256
+
+**Status after this session:** P9 = `Complete`. Next phase: **P10 — Image upload
+state machine**, which now has everything it needs.
+
+**Completed.** `include/smply/image_source.hpp`,
+`include/smply/mcuboot_image.hpp` and `src/image/` (five files): the
+`ImageSource` seam, `MemoryImageSource`, the 32-byte header parse, streaming
+SHA-256, and the TLV scan. 61 new tests (369 total). All gates green across the
+five Linux presets.
+
+**Protocol work.** §7 of [`protocol-notes.md`](protocol-notes.md) described the
+TLV trailer in two sentences and cited only the MCUboot design document. It is
+now written from `bootutil_tlv_iter_begin()`/`_next()` — the code that actually
+enforces the layout — with three new sources (S18-S20). The roadmap's P9 outcome
+lists all four findings; the ones that will bite later are in the caveats below.
+
+**Changed.** Seven deviations, in the roadmap's P9 outcome. The two that reach
+other phases: **two public headers instead of one**, and
+**`find_image_tlv_hash` returns `std::optional<ImageHash>`**, not `Hash`.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P10 and P12.**
+
+* **The file's hash and the device's hash are different types, and P9 is where
+  both become available.** `sha256(ImageSource&)` gives you `Hash` — 32 bytes
+  over the whole file, the upload `sha`. `find_image_tlv_hash()` gives you
+  `ImageHash` — `IMAGE_TLV_SHA256`/`384`/`512` over header and body, the thing
+  `ImageSlot::hash` reports. P10 wants the first, P12 wants the second. They do
+  not convert into each other and that is the point.
+* **`it_tlv_tot` includes its own four-byte area header**, and
+  `ih_protect_tlv_size` must equal the protected area's `it_tlv_tot` exactly.
+  Both areas are walked as one contiguous run. Do not re-derive this from the
+  MCUboot design document — it is not in there; PN §7 now has it from the
+  scanner.
+* **A TLV scan cannot spin.** Every advance is `4 + it_len`, so it is at least
+  the entry header. The cap in `limits::kMaxImageTlvs` bounds work, not
+  termination. ADR-0009 used to list "strictly-positive advance" as a
+  safeguard; that has been corrected, because documenting a property as a guard
+  sends the next reader looking for a bug that cannot exist.
+* **`ImageSource` allows a short read only at the end of the image.** Everything
+  in `src/image/` refuses one anywhere else with `InvalidArgument` rather than
+  looping — a source returning one byte per call would otherwise turn a 16 MiB
+  hash into sixteen million virtual calls. Keep that rule in P10's chunk reads.
+* **An encrypted image is not scanned at all**, and that is `std::nullopt`
+  rather than an error (A13). P12 has to treat "no hash to correlate" as a
+  normal outcome, not a reason to refuse an update.
+
+**Two tooling lessons, both already-known traps that bit anyway.**
+
+* **`-Wuseless-cast` is GCC-only**, and it rejected a `static_cast<std::size_t>`
+  over a `std::uint64_t` — the same type on a 64-bit host, a real narrowing on a
+  32-bit one. Clang built it happily; only the GCC preset caught it. The fix is
+  a small `image::narrow<To>()` template, whose dependent conversion satisfies
+  both. **Build every preset before believing a change compiles.**
+* **A failed build leaves the previous test binary in place**, and `ctest`
+  cheerfully reported 364 passing off a binary whose build had just failed.
+  Third session in a row this has come up. Read the build's exit status
+  separately, every time.
+
+**On coverage, and on tests that pass for the wrong reason.** `src/image/` is at
+98 % line and 93 % branch; the core moved to 95.4 % / 82.7 %. The three uncovered
+lines are unreachable invariant guards, the same P13 exclusion-marker task as
+before.
+
+The uncovered-line list earned its keep more sharply than in P8. It showed three
+TLV tests sitting on lines that had never executed — because one `ImageBuilder`
+call set both `ih_protect_tlv_size` *and* the protected area's own `it_tlv_tot`,
+so the two agreed and the check the tests were named after was never reached.
+They passed, for a different reason than they claimed. The builder now has one
+knob per field, and `testing.md` §3 says why. **When a fixture builder offers a
+convenience that keeps two fields consistent, it cannot express an
+inconsistency** — which is the only thing a malformed-input test is for.
+
+Also: running `gcovr … --txt <build-dir>` by hand fails with "Is a directory" —
+`--txt` eats the next argument as its output file. That is the exact bug that
+silently disabled `tools/coverage.sh` from P0 to P7, and it is just as easy to
+re-create on the command line. Put the search path first, or omit `--txt`.
+
+**Docs updated.** `protocol-notes.md` (S18-S20, §7 rewritten), `api.md`
+(`image_source.hpp` and the new `mcuboot_image.hpp`, both Shipped),
+`design.md` (§7: the header split, the layout rules, why the cap is not a loop
+guard, the `Version`/`ImageVersion` name fix), `architecture.md` (§10),
+`dependencies.md` and `ADR-0009` (SHA-256 provenance; the decision is unchanged,
+so both are amendments rather than a superseding ADR), `testing.md` (§3),
+`quality-gates.md` (§6 measured position, and the `--txt` trap), `roadmap.md`
+(P9 Complete with outcome, seven deviations, four follow-ups, O4 resolved,
+Current state), this log.
+
+**Recommended next.** **P10 — the image upload state machine**, the densest
+phase in the project and the protocol core of the product. Read
+[`design.md`](design.md) §6 and [`protocol-notes.md`](protocol-notes.md) §6's
+twelve verified server rules together before writing anything; the rule that
+shapes everything is **the server-returned `off` is authoritative — never
+compute `next_off = off + sent`**. `upload_session.*` is specified as a pure
+function precisely so the whole response table in
+[`testing.md`](testing.md) §3 can be driven with no client, transport or clock.

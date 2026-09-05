@@ -153,11 +153,43 @@ offset repeatedly ⇒ bounded then `Fail` · server returns `off == 0` mid-uploa
 resume after disconnect with a matching `sha`.
 
 ### Image file handling
-MCUboot header parse: golden 32-byte headers; wrong magic; truncated; absurd
-`ih_hdr_size`/`ih_img_size`. TLV scan: valid protected + unprotected areas;
-`it_tlv_tot` larger than the file; zero-length TLV (infinite-loop guard);
-missing `IMAGE_TLV_SHA256`. SHA-256 against NIST vectors plus a multi-megabyte
-streaming case with every buffer boundary.
+Fixtures are **built in code**, not checked in: `tests/support/image_builder.hpp`
+writes the header and TLV areas field by field, little-endian, independently of
+the parser — and one hand-written 32-byte header literal is asserted against the
+builder so the builder itself is pinned. There is no `tests/data/`; every
+fixture is reviewable in the diff.
+
+The builder is deliberately permissive *and* deliberately fine-grained: each
+malformation knob overrides exactly one field. An earlier version let one call
+change both `ih_protect_tlv_size` and the protected area's own `it_tlv_tot`,
+which kept them agreeing — so three tests passed without ever reaching the check
+they were named after. **A knob that changes two fields at once cannot express
+an inconsistency.**
+
+MCUboot header parse: golden 32-byte header, field by field; wrong magic; the
+v1 magic (too old, distinct from foreign); every truncation from 0 to 31 bytes;
+`ih_hdr_size` below 32; `ih_img_size` above `limits::kMaxImageSize` and exactly
+at it; both encryption flags; an unknown flag carried through rather than
+rejected.
+
+TLV scan: unprotected only; protected + unprotected; `ih_protect_tlv_size`
+disagreeing with the protected area's own total; an area smaller than its own
+four-byte header; `it_tlv_tot` past the end of the file; an entry length
+overrunning the area; SHA-384 and SHA-512 found at their own lengths; two hash
+TLVs ⇒ error; a hash TLV of the wrong length for its type ⇒ error; no hash TLV
+and an encrypted image ⇒ `nullopt`, not an error; a zero-length entry advances
+and terminates; the entry cap at N and at N+1.
+
+SHA-256 against the NIST vectors (empty, `"abc"`, the 56- and 112-byte examples,
+a million `'a'`), then the incremental property — every split of a message, a
+byte at a time, and every length across a block boundary — and the streaming
+path at sizes around the 4 KiB read chunk.
+
+`ImageSource`: reads at, across and past the end; any offset order; and two
+deliberately broken sources (`tests/support/fake_image_source.hpp`) — one that
+fails every read, one that always reads short — because `MemoryImageSource`
+cannot do either, and an error path no test can reach is indistinguishable from
+one that does not work.
 
 ### Update state machine (pure function)
 Every transition in [`design.md`](design.md) §8, and every row of its

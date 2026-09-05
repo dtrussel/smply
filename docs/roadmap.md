@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P9 — MCUboot image file handling and SHA-256** (see its [entry](#p9)) |
-| Last completed phase | P8 — Image management: state read/write, erase, slot info |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · Image group (everything but upload). 308 tests, 11 CI jobs green. |
+| **Next phase to work on** | **P10 — Image upload state machine** (see its [entry](#p10)) |
+| Last completed phase | P9 — MCUboot image file handling and SHA-256 |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · Image group (everything but upload) · MCUboot image parsing, SHA-256 and TLV scan. 369 tests, 11 CI jobs green. |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -29,7 +29,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Complete | P2–P5 |
 | [P7](#p7) | OS management: reset, params, echo | Complete | P6 |
 | [P8](#p8) | Image management: state read/write, erase, slot info | Complete | P6 |
-| [P9](#p9) | MCUboot image file handling and SHA-256 | Planned | P1 |
+| [P9](#p9) | MCUboot image file handling and SHA-256 | Complete | P1 |
 | [P10](#p10) | Image upload state machine | Planned | P8, P9 |
 | [P11](#p11) | `ServerSimulator` and component test harness | Planned | P7, P8, P10 |
 | [P12](#p12) | `FirmwareUpdater` orchestration | Planned | P11 |
@@ -922,7 +922,7 @@ uncovered-line list rather than the percentage is what found them.
 <a id="p9"></a>
 ## P9 — MCUboot image file handling and SHA-256
 
-**Status: Planned** · **Depends on:** P1
+**Status: Complete** (2026-09-05) · **Depends on:** P1
 
 **Objective.** Read the firmware file safely, and produce the two hashes the
 protocol needs.
@@ -953,6 +953,97 @@ restated where it is used.
 
 **Acceptance.** SHA-256 matches NIST vectors; the TLV scanner provably
 terminates on arbitrary input (fuzzed in P13).
+
+### Outcome
+
+**Completed.** `include/smply/image_source.hpp`,
+`include/smply/mcuboot_image.hpp`, `src/image/` (five files) and 61 new tests
+(369 total): the `ImageSource` seam, `MemoryImageSource`, the header parse,
+SHA-256, and the TLV scan. All gates green across the five Linux presets.
+
+**Remaining in this phase.** None.
+
+**Protocol work.** `protocol-notes.md` §7 previously described the trailer in
+two sentences and cited only S12, MCUboot's design document. It is now written
+from the scanner — `bootutil_tlv_iter_begin()`/`_next()` — with three new
+sources (S18 `bootutil/image.h`, S19 `tlv.c`, S20 `image_validate.c`). Four
+rules were not recorded anywhere and are not in the design document either:
+
+1. **`it_tlv_tot` includes its own area's four-byte header**, and
+   `ih_protect_tlv_size` must equal the protected area's `it_tlv_tot`
+   **exactly** — MCUboot refuses the image otherwise. A scanner treating either
+   as a payload size lands four bytes short on every signed image.
+2. **The two areas are walked as one contiguous run**: iteration starts inside
+   the protected area and steps over the unprotected area's own header on the
+   way past.
+3. **The hash TLVs are `IMAGE_TLV_SHA256`, `SHA384` and `SHA512`**, all legal in
+   the unprotected area (S20's `allowed_unprot_tlvs`), and never in the
+   protected one — the hash covers the protected TLVs.
+4. **The zero-length-TLV infinite loop this file and `testing.md` both warned
+   about cannot happen.** Every advance is `4 + it_len`, so it is at least the
+   entry header and the offset strictly increases. The iteration cap is still
+   worth having, but it bounds *work*, not termination. ADR-0009's consequence
+   listing "strictly-positive advance" as a safeguard has been corrected: it is
+   a property of the format, and documenting it as a guard leaves the next
+   reader hunting a bug that cannot exist.
+
+**Deviations from the original plan.**
+
+1. **Two public headers, not one.** `image_source.hpp` is the interface an
+   application *implements*; `mcuboot_image.hpp` is the functions it *calls*.
+   `api.md` had them together. An application writing a custom source has no
+   reason to see the parsing API.
+2. **`find_tlv_sha256` became `find_image_tlv_hash`, returning
+   `std::optional<ImageHash>`.** `api.md` proposed `std::optional<Hash>`, 32
+   bytes and SHA-256 only — which cannot represent what a SHA-512 bootloader
+   signs, and would need a conversion at exactly the seam where the two hashes
+   get confused. It now returns whichever of the three hash TLVs is present, at
+   its own length, directly comparable with `ImageSlot::hash`.
+3. **`McubootImageInfo` gained `protected_tlv_size`.** The TLV layout cannot be
+   resolved without it, and `design.md` §7's field list omitted it.
+4. **SHA-256 is smply's own Apache-2.0 code, not a vendored public-domain
+   file.** ADR-0009's *decision* — no crypto library dependency — is unchanged,
+   so this is an amendment to its Consequences and to `dependencies.md`'s row
+   rather than a superseding ADR. It keeps every source file under the
+   project's SPDX identifier and `NOTICE` free of an attribution entry for 150
+   lines of a published standard. Correctness is pinned by the NIST vectors
+   either way.
+5. **No `tests/data/`.** Fixtures are built in code by
+   `tests/support/image_builder.hpp`, with one hand-written header literal
+   asserted against the builder. The roadmap named binary fixtures; opaque blobs
+   are unreviewable in a diff and would need CMake plumbing for no gain.
+6. **`design.md` §7 named the version field `Version`**, which is smply's SMP
+   protocol-version enum. It is `ImageVersion`, P8's type. Fixed rather than
+   propagated.
+7. **A fifth file, `src/image/source_reader.hpp`.** The header parser and the
+   TLV scanner need the same bounded-read and little-endian-load helpers; one
+   definition of "a short read is a broken source" is better than two.
+
+**Two things worth knowing.**
+
+* **`-Wuseless-cast` is GCC-only and it rejected `static_cast<std::size_t>` over
+  a `std::uint64_t`** — the same type on a 64-bit host, a real narrowing on a
+  32-bit one. Clang built it happily, so this was found only by the GCC preset.
+  The fix is a small `image::narrow<To>()` template: the conversion is then
+  dependent, which satisfies both, and it says at the call site that the value
+  was checked first. A green Clang build remains necessary, not sufficient.
+* **A failed build leaves the previous test binary in place**, and it happened
+  again here: `ctest` reported 364 passing off a binary whose build had just
+  failed on a dangling builder member. The build's exit status has to be read
+  separately, every time.
+
+**On coverage.** `src/image/` is at **98 % line and 93 % branch**; the whole core
+moved from 94.6 % / 82.4 % to **95.4 % / 82.7 %**. The three uncovered lines are
+`read_exact` and `ImageHash::from` failure guards inside the TLV entry loop that
+the preceding bounds checks make unreachable — the same invariant-guard category
+P7 recorded, and the same P13 exclusion-marker task.
+
+Reading the uncovered-line list rather than the percentage paid for itself
+again, and more sharply than in P8: it showed that **three TLV tests were
+passing without reaching the check they were named after**, because one builder
+call set both `ih_protect_tlv_size` and the protected area's own `it_tlv_tot`
+and so kept them agreeing. The builder now has one knob per field. A green test
+that cannot fail is worth no more than a gate that cannot fail.
 
 ---
 
@@ -1300,7 +1391,7 @@ comment in code.
 | ~~O1~~ | ~~Which licence for smply itself?~~ | ~~P0~~ | **Resolved in P0: Apache-2.0.** Permissive, proprietary-linking friendly, explicit patent grant. `LICENSE` + `NOTICE` added; every source file carries an SPDX identifier. |
 | O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. **P8 adds a concrete cost to staying on v1**: a server built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates image-group codes onto `mcumgr_err_t` and drops the group, so `HASH_NOT_FOUND` is indistinguishable from a generic failure (protocol-notes §9, A16). |
 | O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
-| O4 | Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library? | P9 | Leaning: keep file I/O out of the core; the example provides one. |
+| ~~O4~~ | ~~Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library?~~ | ~~P9~~ | **Resolved in P9: `MemoryImageSource` only.** `ImageSource` is two virtual functions, so a file-backed source is a dozen lines in the application, and adding one to the core would drag in file I/O, paths and error mapping across three platforms for no protocol benefit (architecture.md §2). The P14 example provides one. |
 | O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | P12 | Representable already; the question is test/HIL coverage. |
 | O6 | Expose a `std::error_code` interop layer? | after P12 | Only if a consumer asks. |
 
@@ -1332,6 +1423,10 @@ them.
 | P8 | `cbor::Reader::enter_map(key)` is the one failure path that does **not** call `record()`: a missing or non-map nested key returns a failed `Result` but leaves `status()` clean. Every other error is sticky. Nothing uses it yet — P8's nested decoding goes through `for_each_map_in_array` — but a caller that follows the house rule of "check `status()` at the end" would miss this one. Make it sticky, or document why it is not. | P13 |
 | P8 | `upload_image_id` in a slot-info response means two different things: the global slot index plus one under `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`, and the image number without it (protocol-notes §6). smply reports the number verbatim and does not try to tell the two apart. P10 must decide whether the upload path may use it at all, or whether it stays advisory. | P10 |
 | P8 | `ImageState` has no `operator==`, so a test comparing two whole states has to compare `slots` and `split_status` separately. Trivial to add if P11's component tests want it. | when needed |
+| P9 | **Compressed images are unhandled.** MCUboot has `IMAGE_F_COMPRESSED_LZMA1/LZMA2/ARM_THUMB_FLT` and a separate `IMAGE_TLV_DECOMP_SHA`, whose relationship to the slot hash is the same question encrypted images raise (A13). smply carries the flags through and does not interpret them, so a compressed image's hash correlation is unverified rather than known-wrong. Decide whether to flag it like `encrypted`, or to document it as untested. | P12 |
+| P9 | `fuzz_mcuboot_header` and `fuzz_tlv_scan` are specified in `testing.md` §5 but not built. The TLV scanner is the strongest candidate in the library for fuzzing — it indexes with file-supplied offsets — and it is written to be a pure function over an `ImageSource`, so a target is a few lines. | P13 |
+| P9 | `image::narrow<To>()` exists because GCC's `-Wuseless-cast` rejects a `static_cast` between `std::uint64_t` and `std::size_t` on a 64-bit host. It is in `src/image/` because that is where it was needed; if a second area needs the same thing, promote it rather than copying it. | when needed |
+| P9 | The TLV entry cap counts loop iterations, so the one iteration spent stepping over the unprotected area's header consumes a unit of the budget. Immaterial at 256, but if the cap is ever tightened it should count entries. | when needed |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

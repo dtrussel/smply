@@ -11,11 +11,19 @@ declared dependency is missing from this table
 | Name | Purpose | Licence | Maintenance | In public API? | Replaceable? |
 | ---- | ------- | ------- | ----------- | -------------- | ------------ |
 | **QCBOR** `v1.6.1` (`930708bb86481e88879eb1d87fd4d664f1d69503`) | CBOR encode/decode | BSD-3-Clause | Actively maintained (Laurence Lundblade); used in IETF/IoT stacks | **No** — hidden behind `smply::cbor::Reader/Writer` | Yes — `src/cbor/backend_qcbor.*` is the only file that names it. TinyCBOR or zcbor could replace it behind the same façade. See [ADR-0007](decisions/ADR-0007-cbor-library.md). |
-| **SHA-256** (vendored, `src/image/sha256.cpp`) | SHA-256 for the MCUmgr upload `sha` field | Public domain / CC0 | ~150 lines, vendored deliberately rather than depending on a crypto library | No | Trivially — swap for a platform API if one is ever preferred. See [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md). |
+| **SHA-256** (`src/image/sha256.{hpp,cpp}`) | SHA-256 for the MCUmgr upload `sha` field | Apache-2.0 — **smply's own code**, not a third-party component | ~150 lines of FIPS 180-4, written for this project rather than depending on a crypto library; correctness pinned by the NIST vectors in `tests/unit/test_sha256.cpp` | No | Trivially — swap for a platform API if one is ever preferred. See [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md). |
 
-That is the complete runtime footprint: **one third-party library and one
-vendored primitive.** No Boost, no fmt, no JSON library, no OpenSSL, no async
-framework.
+That is the complete runtime footprint: **one third-party library**, plus one
+primitive smply implements itself. No Boost, no fmt, no JSON library, no
+OpenSSL, no async framework.
+
+The SHA-256 row is listed here even though it is not a dependency, because the
+question "where does smply get its crypto?" has to have an answer in this file.
+Being first-party rather than vendored is deliberate: it keeps every source file
+under the project's own SPDX identifier and keeps `NOTICE` free of an
+attribution entry for 150 lines of a published standard. P9 recorded the change;
+[ADR-0009](decisions/ADR-0009-mcuboot-boundary.md)'s decision — no crypto
+library dependency — is unaffected.
 
 ## Build and test only (never shipped)
 

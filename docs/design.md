@@ -546,23 +546,38 @@ advance — never on send, so progress never moves backwards spuriously.
 
 Boundary rationale: [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md).
 
+Two public headers, because they are two different things: `image_source.hpp` is
+an interface the application *implements*, and `mcuboot_image.hpp` is a set of
+functions it *calls*. An application writing a custom source has no reason to
+see the parsing API.
+
 ```cpp
+// smply/image_source.hpp
 class ImageSource {                       // application-provided
 public:
-    virtual std::uint64_t size() const = 0;
-    virtual Result<std::size_t> read(std::uint64_t off, std::span<std::byte>) = 0;
+    virtual std::uint64_t size() const noexcept = 0;
+    virtual Result<std::size_t> read(std::uint64_t off, MutBytes out) = 0;
 };
-class MemoryImageSource;                  // provided; wraps a span
+class MemoryImageSource;                  // provided; wraps a borrowed span
 
+// smply/mcuboot_image.hpp
 struct McubootImageInfo {                 // parsed from the first 32 bytes (PN §7)
-    std::uint32_t header_size, image_size, flags;
-    Version       version;                // major.minor.revision.build
+    std::uint32_t header_size, image_size, protected_tlv_size, flags;
+    ImageVersion  version;                // major.minor.revision.build
     bool          encrypted;              // IMAGE_F_ENCRYPTED_AES128|256
 };
-Result<McubootImageInfo> parse_mcuboot_header(std::span<const std::byte> first32);
-Result<Hash>             sha256(ImageSource&);                    // upload "sha"
-Result<std::optional<Hash>> find_tlv_sha256(ImageSource&, const McubootImageInfo&);
+Result<McubootImageInfo>         parse_mcuboot_header(ConstBytes first32);
+Result<Hash>                     sha256(ImageSource&);            // upload "sha"
+Result<std::optional<ImageHash>> find_image_tlv_hash(ImageSource&,
+                                                     const McubootImageInfo&);
 ```
+
+`find_image_tlv_hash` returns an `ImageHash`, not a `Hash`, and accepts
+`IMAGE_TLV_SHA256`, `SHA384` and `SHA512`: its whole purpose is to be compared
+with `ImageSlot::hash` from the device, whose length depends on how the
+bootloader was built (PN §6, §7). Returning the 32-byte type would make the
+comparison need a conversion, which is exactly where the two hashes get
+confused.
 
 What smply **does**: validate the magic `0x96F3B83D` and header size, read the
 version for reporting and for pre-flight comparison against the device, compute
@@ -573,13 +588,26 @@ be correlated with a device slot entry without trusting the device's word.
 What smply **does not** do: verify signatures, decrypt, evaluate dependency
 TLVs, or reimplement any swap logic.
 
-TLV scanning is defensive: `it_tlv_tot` is bounded by the file size, each
-`image_tlv` advance must be strictly positive, and the loop has an iteration
-cap. Encrypted images (`IMAGE_F_ENCRYPTED_*`) short-circuit TLV correlation and
-set a flag on the plan (PN §9 A13).
+TLV scanning follows MCUboot's own layout rules exactly (PN §7, from
+`bootutil_tlv_iter_begin()` rather than from a diagram): the protected and
+unprotected areas are contiguous and walked as one run, `ih_protect_tlv_size`
+includes the protected area's own four-byte header and must equal it exactly,
+and every offset is bounded against the file before a read.
 
-SHA-256 is a small vendored public-domain implementation with NIST vector tests;
-no crypto library dependency (see [`dependencies.md`](dependencies.md)).
+It is defensive in the way that parsing attacker-supplied content demands, but
+the reason for the iteration cap is worth stating precisely: **the scan
+terminates without it.** Every advance is `4 + it_len`, so it is at least the
+four-byte entry header and the offset strictly increases — a zero-length entry
+cannot spin. `limits::kMaxImageTlvs` bounds the *work* a crafted file can
+demand, not the loop.
+
+Encrypted images (`IMAGE_F_ENCRYPTED_*`) are not scanned at all: the bytes on
+the device are not the bytes in the file, so a correlation could never succeed
+(PN §9 A13). That is `std::nullopt`, not an error.
+
+SHA-256 is ~150 lines of FIPS 180-4 written for this project, pinned by the NIST
+vectors, rather than a dependency on a crypto library (ADR-0009; see
+[`dependencies.md`](dependencies.md)).
 
 ## 8. Firmware update state machine (`src/dfu/`)
 

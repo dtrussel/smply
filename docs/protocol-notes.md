@@ -30,6 +30,9 @@ and 7 re-verified against the image-group implementation on **2026-09-05**.
 | S15 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_util.c` | `img_mgmt_ver_str()` -- the version string a device actually reports | same |
 | S16 | `subsys/mgmt/mcumgr/grp/img_mgmt/include/mgmt/mcumgr/grp/img_mgmt/img_mgmt_priv.h` | `IMAGE_SHA_LEN` and `IMAGE_TLV_SHA` | same |
 | S17 | `subsys/mgmt/mcumgr/smp/src/smp.c` | `smp_add_cmd_err()`, `smp_build_err_rsp()` and the v1 error translation path | same |
+| S18 | `boot/bootutil/include/bootutil/image.h` | `struct image_header`, `struct image_tlv{,_info}`, `IMAGE_MAGIC`, `IMAGE_F_*`, the TLV type numbers | `mcu-tools/mcuboot@main` (verified 2026-09-05) |
+| S19 | `boot/bootutil/src/tlv.c` | `bootutil_tlv_iter_begin()`/`_next()` -- the authoritative TLV area layout and bounds checks | same |
+| S20 | `boot/bootutil/src/image_validate.c` | `allowed_unprot_tlvs` -- which TLVs may live in the unprotected area | same |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -473,13 +476,13 @@ only for slots that are not the active one (S10).
 
 ---
 
-## 7. [BOOT] MCUboot image and update semantics (S12)
+## 7. [BOOT] MCUboot image and update semantics (S12, S18-S20)
 
-### Image header — 32 bytes, **little-endian**
+### Image header — 32 bytes, **little-endian** (S18)
 
 | off | size | field |
 | --- | ---- | ----- |
-| 0 | 4 | `ih_magic` = `0x96F3B83D` |
+| 0 | 4 | `ih_magic` = `0x96F3B83D` (`IMAGE_MAGIC`) |
 | 4 | 4 | `ih_load_addr` |
 | 8 | 2 | `ih_hdr_size` |
 | 10 | 2 | `ih_protect_tlv_size` |
@@ -488,10 +491,57 @@ only for slots that are not the active one (S10).
 | 20 | 1+1+2+4 | `ih_ver` = major, minor, revision(u16), build(u32) |
 | 28 | 4 | `_pad1` |
 
-TLV area follows the image body. `IMAGE_TLV_INFO_MAGIC = 0x6907`,
-`IMAGE_TLV_PROT_INFO_MAGIC = 0x6908`; `struct image_tlv_info { u16 magic; u16
-total; }`, `struct image_tlv { u16 type; u16 len; }`, all little-endian.
-`IMAGE_TLV_SHA256 = 0x10` is the value reported as `"hash"` by image-state (§6).
+`IMAGE_MAGIC_V1 = 0x96F3B83C` is the first image format and is not usable here;
+recognising it separately turns "not an MCUboot image" into "an image from a
+toolchain that is too old".
+
+Flags of interest: `IMAGE_F_ENCRYPTED_AES128 = 0x04`,
+`IMAGE_F_ENCRYPTED_AES256 = 0x08`. There is also a compression family
+(`IMAGE_F_COMPRESSED_LZMA1 = 0x200`, `LZMA2 = 0x400`, `ARM_THUMB_FLT = 0x800`)
+with its own `IMAGE_TLV_DECOMP_SHA` — out of scope, and a reason not to reject
+unknown flag bits.
+
+### TLV areas — the layout, from the scanner rather than the diagram (S19)
+
+The trailer is **two contiguous areas**, and the rules below come from
+`bootutil_tlv_iter_begin()`/`_next()`, which is what actually enforces them.
+`struct image_tlv_info { u16 magic; u16 total; }` and
+`struct image_tlv { u16 type; u16 len; }`, four bytes each, little-endian.
+
+```
+base = ih_hdr_size + ih_img_size
+  [ image_tlv_info  magic = 0x6908 (PROT), total = ih_protect_tlv_size ]  optional
+  [ entries ...                                                        ]
+  [ image_tlv_info  magic = 0x6907 (INFO), total                       ]
+  [ entries ...                                                        ]
+prot_end = base + ih_protect_tlv_size
+tlv_end  = base + ih_protect_tlv_size + <unprotected total>
+```
+
+* **`it_tlv_tot` includes the four-byte `image_tlv_info` header of its own
+  area**, and `ih_protect_tlv_size` must equal the protected area's `it_tlv_tot`
+  **exactly** — MCUboot refuses the image otherwise. A client that reads either
+  as a payload size lands four bytes short on every signed image.
+* **A protected magic with `ih_protect_tlv_size == 0`, or a non-zero
+  `ih_protect_tlv_size` with no protected magic, is an error.** The two must
+  agree.
+* **The areas are walked as one run**, not separately: iteration starts at
+  `base + 4` — inside the protected area when there is one — and when the cursor
+  reaches `prot_end` it steps over the *unprotected* area's own four-byte header
+  and carries on to `tlv_end`.
+* **Every advance is `4 + it_len`, so it is ≥ 4 by construction.** A TLV scanner
+  cannot spin on a zero-length entry: the entry header itself is always
+  consumed. An iteration cap is still worth having, but it bounds *work*, not
+  termination — do not document it as a loop guard.
+* `it_len` is attacker-controlled: MCUboot checks the entry header fits, then
+  that `it_len <= end - off - 4`, before using it for anything including the
+  advance.
+
+**The hash TLVs live in the unprotected area** (S20, `allowed_unprot_tlvs`):
+`IMAGE_TLV_SHA256 = 0x10` (32 bytes), `IMAGE_TLV_SHA384 = 0x11` (48),
+`IMAGE_TLV_SHA512 = 0x12` (64). Whichever is present is the value image-state
+reports as `"hash"` (§6). It cannot be in the protected area, since it covers
+the protected TLVs.
 
 ### Two different hashes — the key distinction
 

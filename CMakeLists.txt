@@ -66,6 +66,10 @@ target_sources(smply
         src/core.cpp
         src/groups/image/image_management.cpp
         src/groups/os/os_management.cpp
+        src/image/image_source.cpp
+        src/image/mcuboot_header.cpp
+        src/image/sha256.cpp
+        src/image/tlv.cpp
         src/smp/assembler.cpp
         src/smp/client.cpp
         src/smp/codec.cpp

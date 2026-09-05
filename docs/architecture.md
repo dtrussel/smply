@@ -289,7 +289,9 @@ smply/
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
 │   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError;
 │   │                           UploadOptions and UploadHandle are planned (P10)
-│   ├── image_source.hpp        (planned, P9) ImageSource, McubootImageInfo
+│   ├── image_source.hpp        ImageSource, MemoryImageSource
+│   ├── mcuboot_image.hpp       McubootImageInfo, parse_mcuboot_header, sha256,
+│   │                           find_image_tlv_hash
 │   ├── dfu/firmware_updater.hpp    (planned, P12)
 │   └── util/dispatcher.hpp     (planned, P14) thread-marshalling helper for adapters
 ├── src/
@@ -301,7 +303,8 @@ smply/
 │   │                             separate backend file (P5 deviation)
 │   ├── groups/os/              os_management.cpp
 │   ├── groups/image/           image_management.cpp; upload_session.* planned (P10)
-│   ├── image/                  (planned, P9) mcuboot_header.*  tlv.*  sha256.*
+│   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
+│   │                           sha256.{hpp,cpp}  source_reader.hpp
 │   ├── dfu/                    (planned, P12) update_state_machine.*  firmware_updater.cpp
 │   └── util/                   (planned, P14) dispatcher.cpp
 ├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble

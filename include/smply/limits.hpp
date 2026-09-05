@@ -96,6 +96,14 @@ inline constexpr std::uint32_t kDefaultSmpMessageBudget = 256;
 /// Sanity bound on a firmware image offered for upload.
 inline constexpr std::uint64_t kMaxImageSize = 16ULL * 1024ULL * 1024ULL;
 
+/// Largest number of TLV entries scanned in an MCUboot image trailer.
+///
+/// The scan terminates without this -- every entry consumes at least its own
+/// four-byte header, so the offset strictly increases -- so the cap bounds the
+/// *work* a crafted file can demand rather than the loop
+/// (docs/decisions/ADR-0009-mcuboot-boundary.md).
+inline constexpr std::size_t kMaxImageTlvs = 256;
+
 } // namespace smply::limits
 
 #endif // SMPLY_LIMITS_HPP
