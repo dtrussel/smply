@@ -33,11 +33,16 @@ BRANCH_MIN=75
 echo "=== coverage over src/ and include/smply/ ==="
 
 if command -v gcovr >/dev/null 2>&1; then
+    # The search path must NOT follow --txt: gcovr takes the next positional as
+    # that option's output file, and a directory there makes it fail. It failed
+    # exactly that way from P0 until P7 -- silently, because this script exits 0
+    # by design, so CI stayed green while producing no report at all.
     gcovr --root "$REPO" \
+          "$BUILD_DIR" \
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \
           --exclude '.*/_deps/.*' \
-          --print-summary --txt \
-          "$BUILD_DIR"
+          --exclude-throw-branches \
+          --print-summary --txt
 elif command -v lcov >/dev/null 2>&1; then
     lcov --capture --directory "$BUILD_DIR" --output-file "$BUILD_DIR/coverage.info" \
          --rc branch_coverage=1 --quiet

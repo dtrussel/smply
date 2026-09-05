@@ -1,11 +1,26 @@
-# Public API proposal
-
-Preliminary but concrete — enough to validate the architecture. Signatures may
-change during implementation; **when they do, update this file in the same
-change** ([ADR-0013](decisions/ADR-0013-living-documentation.md)).
+# Public API
 
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
+
+**Half of this file is shipped API and half is still a proposal — check which
+before you rely on a signature.** A *shipped* section must match the header
+exactly; if you change the header, change it here in the same commit
+([ADR-0013](decisions/ADR-0013-living-documentation.md)). A *proposed* section
+is a sketch to be validated by the phase that implements it, and is expected to
+change — record the deviations in the roadmap when it does.
+
+| Header | Status |
+| ------ | ------ |
+| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1, extended P7) |
+| `smp/header.hpp` | **Shipped** (P2, extended P6) |
+| `transport.hpp` | **Shipped** (P4) |
+| `smp_client.hpp` | **Shipped** (P6, extended P7) |
+| `groups/os.hpp` | **Shipped** (P7) |
+| `groups/image.hpp` | Proposed — P8 (state, erase, slot info) and P10 (upload) |
+| `image_source.hpp` | Proposed — P9 |
+| `dfu/firmware_updater.hpp` | Proposed — P12 |
+| `util/dispatcher.hpp` | Proposed — P14 |
 
 ---
 

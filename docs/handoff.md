@@ -9,18 +9,20 @@ defines the protocol and holds the log.
 ## Start of session
 
 1. **Read [`roadmap.md`](roadmap.md)** — "Current state" names the next phase.
-2. **Read the newest entry in the [session log](#session-log)** below.
-3. **Read [`architecture.md`](architecture.md)**, and the sections of
+2. **Read [§ Standing caveats](#standing-caveats)** below. It is the distilled
+   version of every session's hard-won detail; the log is the history behind it.
+3. **Read the newest entry in the [session log](#session-log)** below.
+4. **Read [`architecture.md`](architecture.md)**, and the sections of
    [`design.md`](design.md) and [`protocol-notes.md`](protocol-notes.md) that
    the phase references.
-4. **Read the ADRs the phase depends on** ([`decisions/`](decisions/)). Do not
+5. **Read the ADRs the phase depends on** ([`decisions/`](decisions/)). Do not
    re-decide anything an accepted ADR settles — if it must change, follow
    [§ Changing an architectural decision](#changing-an-architectural-decision).
-5. **Check the code and CI**: build the project, run `ctest`, confirm the
+6. **Check the code and CI**: build the project, run `ctest`, confirm the
    working tree matches what the log claims.
-6. **Confirm the phase's prerequisites are met.** If they are not, the phase is
+7. **Confirm the phase's prerequisites are met.** If they are not, the phase is
    `Blocked`: say so in the roadmap and pick up the blocking phase instead.
-7. Refine the phase plan if the code has moved on since it was written — and
+8. Refine the phase plan if the code has moved on since it was written — and
    write the refinement into the roadmap before starting.
 
 ## During the session
@@ -79,6 +81,79 @@ Never drift. If implementation shows an ADR is wrong:
 If the conflict is not clearly resolvable within the session, stop and record it
 as an open question rather than guessing — a documented open question is far
 cheaper than silent divergence.
+
+## Standing caveats
+
+Everything below is true of the code as it stands and has already cost a
+session once. The log records *how* each was found; this list is what you need
+before writing anything. Add to it when a discovery outlives its phase — and
+delete an entry when it stops being true.
+
+**Trusting device data**
+
+* Bound every length before using it; never size an allocation on a number the
+  device supplied.
+* `cbor::Reader` distinguishes two things that look alike: a getter returning
+  `std::nullopt` means the field was **absent**, which is normal — MCUmgr omits
+  rather than sending zero or false. A wrong *type* poisons the reader and makes
+  every field look absent. **Check `status()` before trusting any decoded
+  struct**, or a malformed response reads as a successful one full of defaults.
+* Decoded views (`std::string_view`, `ConstBytes`) point into the assembler's
+  buffer and are valid only for the callback. Copy anything that outlives it.
+
+**Layering**
+
+* Groups are thin. They allocate no sequence numbers, set no deadlines and
+  interpret no `rc` — `SmpClient` has done all three before a response arrives.
+  `src/groups/os/os_management.cpp` is the shape to copy.
+* A callback never runs inside the call that started the operation. When a group
+  must reject an argument, queue the failure with `SmpClient::defer()` rather
+  than invoking the callback inline.
+* `SmpClientConfig::max_in_flight` is **1** by default; a second concurrent
+  request fails with `InvalidState` rather than queueing.
+* A response whose `seq` matches but whose group, command or op does not is
+  discarded and the request left pending (ADR-0010). Do not "fix" this into a
+  failure.
+
+**Lifetime**
+
+* A transport, and anything a callback captures, must **outlive** the
+  `SmpClient`. Its destructor detaches from the transport *and* completes
+  outstanding requests, so both are touched during destruction. Declare them
+  before the client. Two separate bugs came from this, each caught by only one
+  compiler.
+
+**Protocol sources**
+
+* Where Zephyr's documentation and Zephyr's source disagree, **the source wins,
+  and you must read both.** Reset's `force` is the case in point (PN §9, A15):
+  the docs say integer, the server decodes a boolean and silently ignores
+  anything else. Reading only the `.rst` yields a flag that never works.
+* MCUmgr uses **two different SHA-256 values** — the upload `sha` over the whole
+  file, and image-state `hash` over `IMAGE_TLV_SHA256`. Conflating them is the
+  classic client bug and first becomes reachable in P8/P9.
+
+**Tooling traps**
+
+* **A failed build leaves the previous test binary in place**, so `ctest` then
+  reports the *old* suite passing. Check the build's exit status separately;
+  never read "N tests passed" as evidence anything was rebuilt.
+* **GCC's and Clang's sanitizers do not diagnose identically.** GCC's ASan does
+  not report a dangling callback capture even with
+  `-fsanitize-address-use-after-scope`. Clang's compiler-rt is not installable
+  here, so that bug class is **CI-only**. A green local sanitizer run is
+  necessary, not sufficient.
+* **cppcheck IS installable** in the container (`apt-get install -y cppcheck`),
+  despite an earlier note to the contrary — install it rather than discovering
+  its findings in CI. It cannot parse some Catch2 files; see
+  `tools/cppcheck-suppressions.txt` for what is suppressed and why.
+* clang-tidy over the full tree now takes minutes. Run it in the background and
+  collect the result, rather than blocking on it.
+* Coverage means exactly what `tools/coverage.sh` reports (gcovr with
+  `--exclude-throw-branches`). Quoting a branch percentage from a differently
+  configured run is not comparable — the same objects move ~12 points.
+
+---
 
 ## Session-log entry template
 
@@ -689,3 +764,66 @@ string caps in `limits.hpp` exist for it. Read §6 and §7 together first — th
 two-hash distinction (upload `sha` over the whole file versus image-state `hash`
 over `IMAGE_TLV_SHA256`) is the classic client bug, and P8 is where the wrong
 one first becomes reachable.
+
+### 2026-09-05 — Documentation pass: making the set ready for a cold start
+
+**Status after this session:** no phase changed. P7 remains `Complete`; **P8** is
+next. This was a review of the documentation set as a *new* session encounters
+it, not phase work.
+
+**Completed.** Read the docs in the order the protocol prescribes and fixed what
+would have misled or blocked someone starting cold.
+
+**Changed.**
+
+* **`handoff.md` gained [§ Standing caveats](#standing-caveats)**, and the
+  start-of-session list now points at it as step 2. Previously the detail that
+  actually prevents mistakes was spread across eight session entries, and the
+  protocol only told a new agent to read the newest one. The log stays as the
+  history; the new section is what you need before writing code.
+* **`architecture.md` §10 was wrong.** It listed `src/cbor/backend_qcbor.*`
+  (which P5 explicitly decided not to create), `cmake/smplyConfig.cmake.in` and
+  an `smply.hpp` umbrella that do not exist, while omitting `detail/expected.hpp`,
+  `cbor.hpp`, `dependencies.cmake` and most of `tools/`. Everything not yet
+  written is now marked **(planned)** with the phase that creates it.
+* **`api.md` half describes shipped API and half a proposal**, with no way to
+  tell which. A status table at the top now says, per header, which it is —
+  shipped sections must match the code, proposed ones are sketches for the phase
+  that implements them.
+* **`quality-gates.md` §6 pins the coverage metric** to what `tools/coverage.sh`
+  reports, and records the measured position per gate.
+* **`CLAUDE.md`** points at the standing caveats and names the two traps that
+  cost CI cycles this session.
+
+**Two real defects found while checking the docs against reality.**
+
+1. **`tools/coverage.sh` has produced no report at all since P0.** It passed
+   `--txt "$BUILD_DIR"`, so gcovr treated the build directory as that option's
+   output file and failed; the script exits 0 by design, so the CI coverage job
+   stayed green while reporting nothing. Fixed. A gate that cannot fail is not a
+   gate — and note that `verify_gates.sh` proves the *checkers* reject
+   violations but does not cover this reporter.
+2. **The coverage figures quoted in the P6 and P7 outcomes were measured with a
+   flag the project's own script did not pass.** They happen to be right *now*
+   only because §6 and the script were both pinned to
+   `--exclude-throw-branches` in this pass. Before that, `tools/coverage.sh`
+   would have reported 68.3 % branch coverage against a ≥ 75 % gate — a failure,
+   not the pass the roadmap implied. Whole-core figures today: **93.5 % line,
+   80.9 % branch**; `src/cbor/` at 80.9 % is the one area under its ≥ 90 %
+   elevated gate.
+
+**Discovered / follow-up.** Four table rows updated: two closed (the coverage
+metric is now pinned; the stale claim that cppcheck cannot be installed here),
+one reframed (invariant guards are a *task* — §6 already rules that such lines
+carry an exclusion marker — not an open question), one added (the
+`coverage.sh` bug).
+
+**Docs updated.** `CLAUDE.md`, `handoff.md`, `architecture.md`, `api.md`,
+`quality-gates.md`, `roadmap.md`, plus `tools/coverage.sh`.
+
+**Recommended next.** **P8 — image management.** Its roadmap entry now carries an
+Exit criterion and a "Start here" pointer. The short version: read
+[`protocol-notes.md`](protocol-notes.md) §6 **and** §7 together before writing
+anything — §7 holds the two-hash distinction that P8 is the first phase able to
+get wrong — then copy the shape of `src/groups/os/os_management.cpp` and follow
+the four rules in [`design.md`](design.md) §5.

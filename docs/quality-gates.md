@@ -150,17 +150,28 @@ logic without a test is a review blocker, not a CI blocker
 Measured on `linux-gcc-coverage`, over `src/` and `include/smply/` only
 (tests, examples and `transports/` excluded).
 
+**The metric is exactly what `tools/coverage.sh` reports**: gcovr with
+`--exclude-throw-branches`. Pinning this matters more than it sounds — on the
+same object files the branch figure moves by roughly 12 points depending on that
+one flag, because every potentially-throwing call contributes two branches a
+suite that raises no exceptions can never take. A threshold that does not name
+its tool and flags means whichever number CI happens to produce.
+
 **Not enforced until P13.** Thresholds against P0's placeholder library are
 meaningless, so `tools/coverage.sh` reports and CI publishes the artefact
 without failing. The thresholds below switch on in P13, when there is protocol
 logic and state-machine code worth measuring.
 
-| Gate | Threshold |
-| ---- | --------- |
-| Line coverage, whole core | **≥ 85 %** |
-| Branch coverage, whole core | **≥ 75 %** |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** |
-| Regression | no drop > 1 pp vs. the base branch |
+| Gate | Threshold | Measured 2026-09-05 (P7) |
+| ---- | --------- | ------------------------ |
+| Line coverage, whole core | **≥ 85 %** | 93.5 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 80.9 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96.2 % ✓ · `src/cbor/` 80.9 % ✗ |
+| Regression | no drop > 1 pp vs. the base branch | — |
+
+`src/cbor/` is the one area below its gate. It is unenforced until P13, but P13
+cannot switch enforcement on without either raising that coverage or moving the
+directory out of the elevated list — decide which, do not quietly drop the row.
 
 The elevated per-directory gate is the point of the exercise: those four areas
 are pure decision logic over untrusted input, where a missed branch is a real

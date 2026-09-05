@@ -10,8 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P8 — Image management: state read/write, erase, slot info** |
+| **Next phase to work on** | **P8 — Image management: state read/write, erase, slot info** (see its [Start here](#p8)) |
 | Last completed phase | P7 — OS management: reset, params, echo |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group. 239 tests, 11 CI jobs green. |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -810,6 +811,16 @@ long timeout.
 **Acceptance.** Every optional field's absence is handled per spec, with a test
 naming the rule.
 
+**Exit.** The DFU machine can read and set image state without knowing how a
+response is encoded, and P10 has the types its upload needs.
+
+**Start here.** Read [`protocol-notes.md`](protocol-notes.md) §6 *and* §7
+together before writing anything — §7 holds the two-hash distinction (upload
+`sha` over the whole file versus image-state `hash` over `IMAGE_TLV_SHA256`),
+which first becomes reachable in this phase and is the classic client bug.
+`src/groups/os/os_management.cpp` is the shape to copy; the four rules every
+group follows are in [`design.md`](design.md) §5.
+
 ---
 
 <a id="p9"></a>
@@ -1206,7 +1217,7 @@ them.
 | -------- | ---- | ----------- |
 | P0 | `install(EXPORT)` for a target that links a `FetchContent`-provided static library needs care: `target_link_libraries(smply PRIVATE qcbor)` still records `$<LINK_ONLY:qcbor::qcbor>` in smply's interface, which `install(EXPORT)` rejects unless QCBOR is exported too. Options: require `find_package(qcbor)` for installed builds, or re-export. Install/export was already scoped to P18; this is the specific problem it must solve. | P18 |
 | ~~P0~~ | ~~`check_docs.py` R4 is a line-based heuristic untested against templates and nested namespaces.~~ **Done in P1**: three bugs found and fixed (nested `detail` namespaces, brace-depth tracking, attribute-prefixed declarations). Still a heuristic; expect further hardening as headers grow. | — |
-| P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
+| ~~P0~~ | ~~`cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI.~~ **Corrected in P7**: cppcheck *is* installable in the container (`apt-get install -y cppcheck`), and the premise cost a red CI cycle before that was tried. Install it and run `tools/lint.sh` in full before pushing. | — |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. **P6 did not need them** — the client's chains are short and each step wants a different error message — so the ban stays explicit. Reconsider if P7–P12 start hand-rolling the same three-line unwrap. | P12 |
 | P5 | The `Writer` has no way to write a nested map or an array under a key. Nothing in MCUmgr's *request* shapes needs one — every request smply sends is a flat map — so it was not built. If a future group needs it, add it rather than hand-rolling the bytes. | when needed |
@@ -1215,10 +1226,11 @@ them.
 | ~~P3~~ | ~~The assembler's re-entrancy guard makes a re-entrant sink an error … the constraint should be stated in `SmpClient`'s documentation.~~ **Done in P6**: stated in `smp_client.hpp` under "Re-entrancy". | — |
 | ~~P2~~ | ~~`Header` has no `is_response()` / `response_to()` helper.~~ **Done in P6**: both added to `smp/header.hpp`; the client correlates on `response_to(request.op)`. | — |
 | P6 | Two obligations are documented on `SmpClient` but belong in the normative transport contract in `transport.hpp` and `design.md` §9, where a transport author will actually read them: (a) `Transport::send()` **must not** deliver inbound bytes before returning; (b) a transport must outlive every client bound to it, because the client detaches on destruction and on rebind. Consider instead making the contract symmetric — a transport that notifies its listener as it is destroyed would remove (b) entirely. | P15 |
-| P6 | `quality-gates.md` §6 states branch-coverage thresholds without defining the metric. gcov "branches executed" and gcovr `--exclude-throw-branches` differ by ~25 points on the same objects. Pin the tool and the flag before enforcement switches on. | P13 |
-| P6 | `src/cbor/` is at 80 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. Unenforced today; blocking at P13. | P13 |
-| P7 | Deliberate invariant guards are unreachable by construction and drag branch coverage down (`src/groups/os/` is at 71.6 % with *only* guards uncovered). Together with throw branches this is now two categories a bare percentage cannot distinguish from untested code. Decide before P13 whether the gate excludes them, whether guards are marked (`GCOVR_EXCL_LINE` or similar), or whether the threshold simply accounts for them. | P13 |
-| P7 | A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing. Any script or habit that runs build-then-test must check the build's exit status separately, or a compile error reads as success. | P13 |
+| ~~P6~~ | ~~`quality-gates.md` §6 states branch-coverage thresholds without defining the metric.~~ **Resolved in P7's documentation pass**: §6 now pins the metric to what `tools/coverage.sh` reports (gcovr with `--exclude-throw-branches`), the script passes that flag, and §6 records the measured position. | — |
+| P6 | `src/cbor/` is at 80.9 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. The one area below its gate. Unenforced today; P13 must either raise it or move the directory out of the elevated list — not quietly drop the row. | P13 |
+| P7 | Deliberate invariant guards are unreachable by construction and drag branch coverage down — `src/groups/os/` is at 71.6 % with *only* guards uncovered. **This is not an open question**: `quality-gates.md` §6 already rules that forcing coverage of unreachable defensive code is unwanted and that such lines should carry an exclusion marker with a comment. The task is to apply the markers to the eight guards in `os_management.cpp` (and any later equivalents), not to decide policy. | P13 |
+| ~~P7~~ | ~~A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing.~~ **Recorded in `handoff.md` § Standing caveats**; no code change needed, it is a habit. | — |
+| P7 | **`tools/coverage.sh` produced no report at all, from P0 until P7.** `--txt "$BUILD_DIR"` made gcovr treat the build directory as that option's output file; the script exits 0 by design, so the CI coverage job stayed green while reporting nothing. Fixed in P7's documentation pass. The lesson generalises: a gate that cannot fail is not a gate, and `verify_gates.sh` covers the *checkers* but not this reporter — consider extending it. | P13 |
 | P7 | **cppcheck cannot parse some Catch2 test translation units.** It runs without the project's include paths, so `TEST_CASE`/`SECTION`/`REQUIRE` are unknown macros, and it explores preprocessor configurations no build uses (it reports `toomanyconfigs` on the same run). On `test_os_group.cpp` that yields a `syntaxError` at the first `TEST_CASE`; passing `-I` and a smaller check set makes it vanish, which is what identifies it as a parser artefact rather than a defect. Suppressed narrowly (`syntaxError:tests/*`) with the reason written in `tools/cppcheck-suppressions.txt`. The better fix is to give `lint.sh` the include paths and exclude `_deps/`, but that made cppcheck report findings inside Catch2's own headers, so it needs its own pass — do it before P13 leans on cppcheck for anything. | P13 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |

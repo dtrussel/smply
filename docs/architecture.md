@@ -269,44 +269,53 @@ Compile-time defaults in `include/smply/limits.hpp`, overridable per
 
 ## 10. Repository layout
 
+Entries marked **(planned)** do not exist yet and name the phase that creates
+them; everything else is present today. Keep this accurate — a layout that lists
+files which were never written costs the next session a search.
+
 ```
 smply/
-├── CMakeLists.txt              top-level; options SMPLY_BUILD_{TESTS,FUZZERS,WINRT,EXAMPLES}
+├── CMakeLists.txt              options SMPLY_BUILD_{TESTS,FUZZERS,WINRT,EXAMPLES,HIL},
+│                               SMPLY_USE_SYSTEM_QCBOR, SMPLY_FORCE_FALLBACK_EXPECTED
 ├── CMakePresets.json           named configs used verbatim by CI
-├── cmake/                      warnings.cmake, sanitizers.cmake, smplyConfig.cmake.in
+├── cmake/                      warnings.cmake  sanitizers.cmake  dependencies.cmake
 ├── include/smply/              PUBLIC headers only — no third-party types
-│   ├── smply.hpp               umbrella
-│   ├── result.hpp  error.hpp  clock.hpp  bytes.hpp  limits.hpp  group.hpp
-│   ├── transport.hpp           Transport + TransportListener
-│   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle
-│   ├── smp/header.hpp          Operation, Version, Header, codec (Group is core, above)
-│   ├── groups/os.hpp           OsManagement
-│   ├── groups/image.hpp        ImageManagement, ImageState, UploadOptions
-│   ├── image_source.hpp        ImageSource, MemoryImageSource, McubootImageInfo
-│   ├── dfu/firmware_updater.hpp
-│   └── util/dispatcher.hpp     thread-marshalling helper for adapters
+│   ├── bytes.hpp  clock.hpp  error.hpp  group.hpp  limits.hpp  result.hpp
+│   ├── version.hpp.in          configured into the build dir as version.hpp
+│   ├── detail/expected.hpp     C++20 fallback for std::expected (ADR-0002)
+│   ├── transport.hpp           Transport + TransportListener; the contract is in the header
+│   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
+│   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
+│   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
+│   ├── groups/image.hpp        (planned, P8/P10) ImageManagement, ImageState, UploadOptions
+│   ├── image_source.hpp        (planned, P9) ImageSource, McubootImageInfo
+│   ├── dfu/firmware_updater.hpp    (planned, P12)
+│   └── util/dispatcher.hpp     (planned, P14) thread-marshalling helper for adapters
 ├── src/
 │   ├── core.cpp                system_clock, group_name, to_string
-│   ├── smp/                    codec.cpp assembler.cpp client.cpp
-│   ├── cbor/                   reader.* writer.* backend_qcbor.* mgmt_error.*
-│   ├── groups/{os,image}/      image/ also holds upload_session.*
-│   ├── image/                  mcuboot_header.* tlv.* sha256.*
-│   ├── dfu/                    update_state_machine.* firmware_updater.cpp
-│   └── util/                   dispatcher.cpp hexdump.cpp
-├── transports/
-│   └── winrt_ble/              Windows-only target smply::winrt_ble
-├── examples/
-│   ├── cli_dfu/                portable example over a loopback/stub transport
-│   └── winrt_ble_dfu/          Windows console DFU tool
+│   ├── version.cpp
+│   ├── smp/                    codec.cpp  assembler.{hpp,cpp}  client.cpp
+│   ├── cbor/                   cbor.hpp  reader.cpp  writer.cpp  mgmt_error.{hpp,cpp}
+│   │                           — reader/writer ARE the QCBOR backend; there is no
+│   │                             separate backend file (P5 deviation)
+│   ├── groups/os/              os_management.cpp
+│   ├── groups/image/           (planned, P8/P10) image_management.cpp  upload_session.*
+│   ├── image/                  (planned, P9) mcuboot_header.*  tlv.*  sha256.*
+│   ├── dfu/                    (planned, P12) update_state_machine.*  firmware_updater.cpp
+│   └── util/                   (planned, P14) dispatcher.cpp
+├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble
+├── examples/                   (planned, P14/P16) cli_dfu/  winrt_ble_dfu/
 ├── tests/
-│   ├── support/                FakeTransport, ManualClock, ServerSimulator, builders
+│   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
+│   │                           — built as smply_test_support; ServerSimulator lands in P11
 │   ├── unit/                   per-component
-│   ├── component/              full-stack over FakeTransport + ServerSimulator
-│   ├── fuzz/                   libFuzzer targets + corpora
-│   └── hil/                    hardware interoperability, opt-in
-├── tools/                      check_public_headers.py, licence inventory
-├── third_party/                only if vendoring becomes necessary (see ADR-0011)
-└── docs/                       this documentation set
+│   ├── component/              (planned, P11) full stack over FakeTransport + simulator
+│   ├── fuzz/                   (planned, P13) libFuzzer targets + corpora
+│   └── hil/                    (planned, P17) hardware interoperability, opt-in
+├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
+│                               check_public_headers.py  check_deps.py  check_docs.py
+│                               verify_gates.sh  cppcheck-suppressions.txt
+└── docs/                       this documentation set + decisions/
 ```
 
 CMake is fully target-based: no `include_directories()`, no global

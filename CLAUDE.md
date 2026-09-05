@@ -1,7 +1,9 @@
 # smply — instructions for coding agents
 
-**Before doing anything, read [`docs/handoff.md`](docs/handoff.md).** It defines
-the session protocol; this file is only the short version.
+**Before doing anything, read [`docs/handoff.md`](docs/handoff.md)** — its
+session protocol and its **§ Standing caveats**, which is the distilled version
+of everything earlier sessions learned the hard way. This file is only the
+short version.
 
 ## The rules that matter
 
@@ -50,3 +52,11 @@ See [`docs/design.md`](docs/design.md) §11.
 `tools/format.sh --check`, `tools/lint.sh`, the three `tools/check_*.py` gates
 and `ctest` must all pass. `tools/verify_gates.sh` proves the gates themselves
 still work — run it if you touch anything under `tools/` or `cmake/`.
+
+Two ways this has gone wrong before, both cheap to avoid:
+
+* **`tools/lint.sh` skips cppcheck silently when it is not installed**, so a
+  clean local run can still fail CI. `apt-get install -y cppcheck` first.
+* **A failed build leaves the old test binary in place**, so `ctest` then
+  reports the *previous* suite passing. Check the build's exit status
+  separately — never read "N tests passed" as proof anything was rebuilt.
