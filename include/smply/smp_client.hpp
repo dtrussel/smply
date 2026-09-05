@@ -167,6 +167,11 @@ struct SmpClientStats
 /// `rebind_transport()` detaches from the one it is replacing; a transport
 /// destroyed first leaves those calls dangling. Declaring the transport before
 /// the client is enough.
+///
+/// The same applies to whatever a callback captures. Because the destructor
+/// completes outstanding requests, a callback runs *during* destruction, and
+/// anything it refers to must still be alive at that point. Declare it before
+/// the client.
 class SmpClient final : private TransportListener
 {
 public:
@@ -181,6 +186,9 @@ public:
     /// Completes every outstanding request with `Cancelled` before returning,
     /// so no callback can fire after destruction. This is the one place a
     /// callback runs outside `poll()` or `on_bytes()`.
+    ///
+    /// Those callbacks run here, which is why everything they capture must
+    /// outlive the client -- see the class documentation.
     ~SmpClient() override;
 
     /// Issues a request.

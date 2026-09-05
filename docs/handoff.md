@@ -546,13 +546,20 @@ is below.
 
 **Caveats — read these before P7 and P8.**
 
-* **A transport must outlive every client bound to it.** `~SmpClient` and
-  `rebind_transport()` both call `set_listener()` on the transport they are
-  letting go of. Three rebind tests declared the replacement transport *after*
-  the fixture, so it died first: GCC aborted with `pure virtual method called`,
-  Clang silently did not. **Declare transports before clients.** The requirement
-  is now on `SmpClient` and `rebind_transport()`; moving it into the normative
-  transport contract is a P15 follow-up.
+* **A transport must outlive every client bound to it, and so must anything a
+  callback captures.** `~SmpClient` detaches from its transport *and* completes
+  outstanding requests, so both are touched during destruction. Two separate
+  bugs came out of this, each caught by exactly one compiler: the transport half
+  by GCC (`pure virtual method called`), the capture half by Clang's ASan
+  (stack-use-after-scope in 13 tests). **Declare transports and captures before
+  the client.** Stated on `SmpClient`, its destructor and `rebind_transport()`,
+  and at the test fixture's definition.
+* **The two sanitizer jobs are not interchangeable.** GCC's ASan does not report
+  the dangling-capture case even with `-fsanitize-address-use-after-scope` and
+  `detect_stack_use_after_scope=1` — verified by running the failing test under
+  both. `linux-clang-asan-ubsan` is CI-only here (no compiler-rt in the
+  container), so this bug class cannot be caught locally at all. Treat a green
+  local sanitizer run as necessary, not sufficient.
 * **Groups get correlation and timing for free and must not reimplement
   either.** A group issues a `RequestSpec` and receives a `Result<RawResponse>`.
   It never sees a sequence number, never sets a deadline, and never decodes an

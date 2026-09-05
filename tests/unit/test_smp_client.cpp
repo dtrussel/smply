@@ -97,6 +97,15 @@ struct Outcome
     return RequestSpec{.op = op, .group = group, .command = command, .payload = {}, .timeout = {}};
 }
 
+/// Transport, clock and client, wired together.
+///
+/// **Declare anything a callback captures -- an `Outcome`, a counter, a handle
+/// -- *before* the fixture.** `~SmpClient` completes every request still
+/// outstanding, so a callback runs during the fixture's destruction. A capture
+/// declared after the fixture is destroyed first, and the callback then writes
+/// through a dangling pointer. That is a stack-use-after-scope which only
+/// Clang's AddressSanitizer reports; GCC's does not, and an ordinary build is
+/// silent. The blank line after the declarations in each test is the seam.
 struct Fixture
 {
     FakeTransport transport;
@@ -142,8 +151,9 @@ struct Fixture
 
 TEST_CASE("a request is sent and its response delivered", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     const auto handle = fixture.client.request(spec(), outcome.callback());
 
@@ -165,8 +175,9 @@ TEST_CASE("the outgoing message carries the configured version and fields", "[cl
 {
     SmpClientConfig config;
     config.smp_version = Version::V2;
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     const auto body = bytes_of({0xA1, 0x61, 0x64, 0x01});
     RequestSpec request_spec = spec(Operation::Write, Group::Os, 5);
@@ -186,9 +197,10 @@ TEST_CASE("the outgoing message carries the configured version and fields", "[cl
 TEST_CASE("the payload is copied, not borrowed past the call", "[client]")
 {
     // RequestSpec::payload is borrowed for the duration of request() only.
-    Fixture fixture;
     Outcome outcome;
     std::vector<std::byte> expected;
+
+    Fixture fixture;
 
     {
         const auto body = bytes_of({0xA1, 0x61, 0x64, 0x2A});
@@ -205,8 +217,9 @@ TEST_CASE("the payload is copied, not borrowed past the call", "[client]")
 
 TEST_CASE("a device-reported error becomes a protocol failure", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -219,14 +232,18 @@ TEST_CASE("a device-reported error becomes a protocol failure", "[client]")
 
 TEST_CASE("successive requests use different sequence numbers", "[client]")
 {
+    std::vector<std::uint8_t> seqs;
+
     Fixture fixture;
 
-    std::vector<std::uint8_t> seqs;
     for (int i = 0; i < 5; ++i) {
         Outcome outcome;
         static_cast<void>(fixture.client.request(spec(), outcome.callback()));
         seqs.push_back(fixture.sent_seq());
         fixture.respond(fixture.reply_header(), ConstBytes{ok_payload()});
+        // Completed within the iteration, which is what makes a loop-local
+        // Outcome safe: nothing pending outlives it.
+        REQUIRE(outcome.calls == 1);
     }
 
     for (std::size_t i = 1; i < seqs.size(); ++i) {
@@ -241,8 +258,9 @@ TEST_CASE("successive requests use different sequence numbers", "[client]")
 
 TEST_CASE("a response with the wrong sequence is dropped", "[client][correlation]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -261,8 +279,9 @@ TEST_CASE("a response with the wrong group is dropped and the request left pendi
     // The sequence matches but the group does not. Completing the request would
     // let an unrelated exchange answer it; the specification does not define
     // this case, so discarding is the only choice that cannot mis-complete.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     fixture.respond(fixture.reply_header(Operation::ReadResponse, Group::Os, 0),
@@ -275,8 +294,9 @@ TEST_CASE("a response with the wrong group is dropped and the request left pendi
 
 TEST_CASE("a response with the wrong command is dropped", "[client][correlation]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     fixture.respond(fixture.reply_header(Operation::ReadResponse, Group::Image, 9),
@@ -290,8 +310,9 @@ TEST_CASE("a response with the wrong operation is dropped", "[client][correlatio
 {
     // A Read must be answered by a ReadResponse. A WriteResponse carrying the
     // right sequence is not this request's answer.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(Operation::Read), outcome.callback()));
     fixture.respond(fixture.reply_header(Operation::WriteResponse), ConstBytes{ok_payload()});
@@ -302,8 +323,9 @@ TEST_CASE("a response with the wrong operation is dropped", "[client][correlatio
 
 TEST_CASE("a write is answered by a write-response", "[client][correlation]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(Operation::Write), outcome.callback()));
     fixture.respond(fixture.reply_header(Operation::WriteResponse), ConstBytes{ok_payload()});
@@ -314,8 +336,9 @@ TEST_CASE("a write is answered by a write-response", "[client][correlation]")
 
 TEST_CASE("a mismatched response still lets the request time out normally", "[client][correlation]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     fixture.respond(fixture.reply_header(Operation::ReadResponse, Group::Os, 0),
@@ -330,8 +353,9 @@ TEST_CASE("a mismatched response still lets the request time out normally", "[cl
 
 TEST_CASE("a duplicate response is delivered once", "[client][correlation]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -376,9 +400,11 @@ TEST_CASE("a late response cannot complete a request that reused its sequence",
     // completed by A's data.
     SmpClientConfig config;
     config.max_retired_seqs = 64;
+    Outcome first;
+    Outcome second;
+
     Fixture fixture{config};
 
-    Outcome first;
     static_cast<void>(fixture.client.request(spec(), first.callback()));
     const std::uint8_t first_seq = fixture.sent_seq();
 
@@ -386,7 +412,6 @@ TEST_CASE("a late response cannot complete a request that reused its sequence",
     fixture.client.poll(fixture.clock.now());
     REQUIRE(first.code == ErrorCode::Timeout);
 
-    Outcome second;
     static_cast<void>(fixture.client.request(spec(), second.callback()));
     const std::uint8_t second_seq = fixture.sent_seq();
 
@@ -415,14 +440,16 @@ TEST_CASE("the retired set is bounded", "[client][correlation]")
     // as unsolicited rather than late.
     SmpClientConfig config;
     config.max_retired_seqs = 4;
+    std::vector<std::uint8_t> seqs;
+
     Fixture fixture{config};
 
-    std::vector<std::uint8_t> seqs;
     for (int i = 0; i < 10; ++i) {
         Outcome outcome;
         static_cast<void>(fixture.client.request(spec(), outcome.callback()));
         seqs.push_back(fixture.sent_seq());
         fixture.respond(fixture.reply_header(), ConstBytes{ok_payload()});
+        REQUIRE(outcome.calls == 1); // nothing pending outlives the iteration
     }
 
     // The very first sequence is long forgotten.
@@ -441,8 +468,9 @@ TEST_CASE("a request times out exactly at its deadline", "[client][timeout]")
 {
     SmpClientConfig config;
     config.default_timeout = std::chrono::seconds{5};
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -463,8 +491,9 @@ TEST_CASE("a per-request timeout overrides the default", "[client][timeout]")
     // Image erase and the first upload chunk need far longer than the default.
     SmpClientConfig config;
     config.default_timeout = std::chrono::seconds{5};
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     RequestSpec request_spec = spec();
     request_spec.timeout = std::chrono::seconds{60};
@@ -483,8 +512,9 @@ TEST_CASE("next_deadline reports when there is work to do", "[client][timeout]")
 {
     SmpClientConfig config;
     config.default_timeout = std::chrono::seconds{5};
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     REQUIRE_FALSE(fixture.client.next_deadline().has_value());
 
@@ -503,8 +533,9 @@ TEST_CASE("next_deadline signals immediate work as a past time", "[client][timeo
 {
     // A deferred completion is ready now, so an event loop must poll rather
     // than sleep.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     fixture.transport.disconnect();
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
@@ -528,8 +559,9 @@ TEST_CASE("polling with nothing outstanding is harmless", "[client][timeout]")
 
 TEST_CASE("cancelling completes the request once, on the next poll", "[client][cancel]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     const auto handle = fixture.client.request(spec(), outcome.callback());
     fixture.client.cancel(handle);
@@ -546,8 +578,9 @@ TEST_CASE("cancelling completes the request once, on the next poll", "[client][c
 
 TEST_CASE("a response arriving after cancellation is discarded", "[client][cancel]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     const auto handle = fixture.client.request(spec(), outcome.callback());
     const auto header = fixture.reply_header();
@@ -563,8 +596,9 @@ TEST_CASE("a response arriving after cancellation is discarded", "[client][cance
 
 TEST_CASE("cancelling twice completes once", "[client][cancel]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     const auto handle = fixture.client.request(spec(), outcome.callback());
     fixture.client.cancel(handle);
@@ -578,14 +612,15 @@ TEST_CASE("a stale handle cannot cancel a newer request", "[client][cancel]")
 {
     // Handles are generation-tagged precisely so a handle to a completed
     // request cannot reach across and cancel whatever now occupies its slot.
+    Outcome first;
+    Outcome second;
+
     Fixture fixture;
 
-    Outcome first;
     const auto stale = fixture.client.request(spec(), first.callback());
     fixture.respond(fixture.reply_header(), ConstBytes{ok_payload()});
     REQUIRE(first.calls == 1);
 
-    Outcome second;
     static_cast<void>(fixture.client.request(spec(), second.callback()));
 
     fixture.client.cancel(stale); // inert
@@ -609,8 +644,9 @@ TEST_CASE("cancelling a default-constructed handle is a no-op", "[client][cancel
 
 TEST_CASE("a request on a dropped link fails without being sent", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     fixture.transport.disconnect();
 
@@ -628,8 +664,9 @@ TEST_CASE("TransportBusy is surfaced to the caller", "[client]")
 {
     // The core does not queue on the transport's behalf: whoever knows what the
     // message was for decides whether to retry.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     fixture.transport.set_busy(true);
     const auto handle = fixture.client.request(spec(), outcome.callback());
@@ -642,8 +679,9 @@ TEST_CASE("TransportBusy is surfaced to the caller", "[client]")
 
 TEST_CASE("a send failure is reported and leaves nothing pending", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     fixture.transport.fail_next_send(smply::Error{ErrorCode::TransportError, "injected"});
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
@@ -657,8 +695,9 @@ TEST_CASE("an oversized payload is refused", "[client]")
 {
     SmpClientConfig config;
     config.max_smp_payload = 32;
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     const auto body = smply::test::filler(33);
     RequestSpec request_spec = spec(Operation::Write);
@@ -675,10 +714,10 @@ TEST_CASE("exceeding max_in_flight is refused rather than queued", "[client]")
 {
     SmpClientConfig config;
     config.max_in_flight = 1;
-    Fixture fixture{config};
-
     Outcome first;
     Outcome second;
+
+    Fixture fixture{config};
 
     const auto handle = fixture.client.request(spec(), first.callback());
     REQUIRE(handle.valid());
@@ -695,10 +734,10 @@ TEST_CASE("more than one request may be in flight when configured", "[client]")
 {
     SmpClientConfig config;
     config.max_in_flight = 4;
-    Fixture fixture{config};
-
     Outcome first;
     Outcome second;
+
+    Fixture fixture{config};
 
     static_cast<void>(
         fixture.client.request(spec(Operation::Read, Group::Image, 0), first.callback()));
@@ -732,10 +771,11 @@ TEST_CASE("a disconnect fails every pending request", "[client][disconnect]")
 {
     SmpClientConfig config;
     config.max_in_flight = 3;
-    Fixture fixture{config};
-
     Outcome first;
     Outcome second;
+
+    Fixture fixture{config};
+
     static_cast<void>(fixture.client.request(spec(), first.callback()));
     static_cast<void>(fixture.client.request(spec(), second.callback()));
 
@@ -752,8 +792,9 @@ TEST_CASE("a disconnect fails every pending request", "[client][disconnect]")
 TEST_CASE("a recoverable transport error leaves requests pending", "[client][disconnect]")
 {
     // The link is still up, so the request either gets its answer or times out.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     fixture.transport.raise_transport_error(smply::Error{ErrorCode::TransportError, "glitch"});
@@ -769,8 +810,10 @@ TEST_CASE("rebinding restores service after a reconnect", "[client][disconnect]"
     // bound to it: ~SmpClient detaches from its transport.
     FakeTransport reconnected;
 
-    Fixture fixture;
     Outcome first;
+    Outcome second;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), first.callback()));
     fixture.transport.disconnect();
@@ -780,7 +823,6 @@ TEST_CASE("rebinding restores service after a reconnect", "[client][disconnect]"
 
     REQUIRE(fixture.client.connected());
 
-    Outcome second;
     const auto handle = fixture.client.request(spec(), second.callback());
     REQUIRE(handle.valid());
     REQUIRE(reconnected.send_count() == 1);
@@ -808,8 +850,10 @@ TEST_CASE("a partial message does not survive a rebind", "[client][disconnect]")
     // bound to it: ~SmpClient detaches from its transport.
     FakeTransport reconnected;
 
-    Fixture fixture;
     Outcome outcome;
+    Outcome second;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -819,7 +863,6 @@ TEST_CASE("a partial message does not survive a rebind", "[client][disconnect]")
 
     fixture.client.rebind_transport(reconnected);
 
-    Outcome second;
     static_cast<void>(fixture.client.request(spec(), second.callback()));
 
     const auto decoded = smply::decode_header(reconnected.last_sent());
@@ -847,8 +890,9 @@ TEST_CASE("malformed framing fails pending requests", "[client]")
 {
     // SMP has no sync word, so once framing is violated nothing further can be
     // correlated. The link itself is the application's to drop.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -862,8 +906,9 @@ TEST_CASE("malformed framing fails pending requests", "[client]")
 
 TEST_CASE("a response with an undecodable payload fails its request", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -877,8 +922,9 @@ TEST_CASE("a response with an undecodable payload fails its request", "[client]"
 
 TEST_CASE("responses split across arbitrary fragments still correlate", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
 
@@ -893,10 +939,11 @@ TEST_CASE("two responses in one delivery are both handled", "[client]")
 {
     SmpClientConfig config;
     config.max_in_flight = 2;
-    Fixture fixture{config};
-
     Outcome first;
     Outcome second;
+
+    Fixture fixture{config};
+
     static_cast<void>(
         fixture.client.request(spec(Operation::Read, Group::Image, 0), first.callback()));
     const std::uint8_t first_seq = fixture.sent_seq();
@@ -936,10 +983,10 @@ TEST_CASE("two responses in one delivery are both handled", "[client]")
 TEST_CASE("a callback may issue another request", "[client][reentrancy]")
 {
     // The DFU state machine does exactly this on every step.
-    Fixture fixture;
-
     int first_calls = 0;
     Outcome second;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), [&](const Result<RawResponse>&) {
         ++first_calls;
@@ -960,13 +1007,14 @@ TEST_CASE("a callback may cancel another request", "[client][reentrancy]")
 {
     SmpClientConfig config;
     config.max_in_flight = 2;
+    Outcome other;
+    int calls = 0;
+
     Fixture fixture{config};
 
-    Outcome other;
     const auto other_handle =
         fixture.client.request(spec(Operation::Read, Group::Os, 1), other.callback());
 
-    int calls = 0;
     static_cast<void>(fixture.client.request(spec(Operation::Read, Group::Image, 0),
                                              [&](const Result<RawResponse>&) {
                                                  ++calls;
@@ -992,9 +1040,10 @@ TEST_CASE("a timeout callback may issue a request without looping", "[client][re
 {
     // A new request's deadline is in the future, so it must not be swept by the
     // same poll() that timed out its predecessor.
+    int calls = 0;
+
     Fixture fixture;
 
-    int calls = 0;
     static_cast<void>(fixture.client.request(spec(), [&](const Result<RawResponse>&) {
         ++calls;
         if (calls < 3) {
@@ -1074,8 +1123,9 @@ TEST_CASE("the client detaches itself from the transport on destruction", "[clie
 
 TEST_CASE("statistics count what happened", "[client]")
 {
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     fixture.respond(fixture.reply_header(), ConstBytes{ok_payload()});
@@ -1122,6 +1172,9 @@ TEST_CASE("exhausting the sequence space is reported rather than colliding",
     SmpClientConfig config;
     config.max_in_flight = 2;
     config.max_retired_seqs = 255;
+    Outcome held;
+    Outcome refused;
+
     Fixture fixture{config};
 
     for (int i = 0; i < 255; ++i) {
@@ -1131,11 +1184,9 @@ TEST_CASE("exhausting the sequence space is reported rather than colliding",
         REQUIRE(outcome.calls == 1);
     }
 
-    Outcome held;
     const auto handle = fixture.client.request(spec(), held.callback());
     REQUIRE(handle.valid()); // the one remaining number
 
-    Outcome refused;
     const auto rejected = fixture.client.request(spec(), refused.callback());
     REQUIRE_FALSE(rejected.valid());
 
@@ -1149,8 +1200,9 @@ TEST_CASE("retirement can be switched off", "[client][correlation]")
     // indistinguishable from an unsolicited one. That is the documented cost.
     SmpClientConfig config;
     config.max_retired_seqs = 0;
-    Fixture fixture{config};
     Outcome outcome;
+
+    Fixture fixture{config};
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     const auto header = fixture.reply_header();
@@ -1167,10 +1219,10 @@ TEST_CASE("next_deadline reports the earliest of several", "[client][timeout]")
     SmpClientConfig config;
     config.max_in_flight = 3;
     config.default_timeout = std::chrono::seconds{30};
-    Fixture fixture{config};
-
     Outcome slow;
     Outcome quick;
+
+    Fixture fixture{config};
 
     RequestSpec long_spec = spec(Operation::Read, Group::Image, 0);
     long_spec.timeout = std::chrono::seconds{60};
@@ -1192,19 +1244,20 @@ TEST_CASE("a timeout callback may cancel another expiring request", "[client][re
     // which the sweep must notice rather than completing a freed entry.
     SmpClientConfig config;
     config.max_in_flight = 2;
+    RequestHandle victim;
+    int first_calls = 0;
+    Outcome second;
+
     Fixture fixture{config};
 
     // Registration order matters: poll() sweeps expired requests in slot order,
     // so the canceller has to be registered first to run first.
-    RequestHandle victim;
-    int first_calls = 0;
     static_cast<void>(fixture.client.request(spec(Operation::Read, Group::Image, 0),
                                              [&](const Result<RawResponse>&) {
                                                  ++first_calls;
                                                  fixture.client.cancel(victim);
                                              }));
 
-    Outcome second;
     victim = fixture.client.request(spec(Operation::Read, Group::Os, 1), second.callback());
 
     fixture.clock.advance(std::chrono::seconds{10});
@@ -1223,8 +1276,9 @@ TEST_CASE("rebinding while requests are still pending fails them", "[client][dis
     // bound to it: ~SmpClient detaches from its transport.
     FakeTransport replacement;
 
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     static_cast<void>(fixture.client.request(spec(), outcome.callback()));
     REQUIRE(fixture.client.in_flight() == 1);
@@ -1240,8 +1294,9 @@ TEST_CASE("a user-defined group's payload is passed through undecoded", "[client
 {
     // Groups at 64 and above may define their own encoding, so there is no
     // CBOR error map to look for and none must be demanded.
-    Fixture fixture;
     Outcome outcome;
+
+    Fixture fixture;
 
     const auto vendor = static_cast<Group>(100);
     static_cast<void>(fixture.client.request(spec(Operation::Read, vendor, 7), outcome.callback()));
@@ -1258,9 +1313,10 @@ TEST_CASE("a user-defined group's payload is passed through undecoded", "[client
 
 TEST_CASE("a device reason is attached to the protocol error", "[client]")
 {
+    std::optional<smply::Error> captured;
+
     Fixture fixture;
 
-    std::optional<smply::Error> captured;
     static_cast<void>(fixture.client.request(spec(), [&](const Result<RawResponse>& result) {
         if (!result.has_value()) {
             captured = result.error();

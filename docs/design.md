@@ -253,6 +253,13 @@ the tests do. The transport contract states the converse — a listener outlivin
 its transport — but not this direction; see the P6 follow-up item in
 [`roadmap.md`](roadmap.md).
 
+The rule extends to callback captures. The destructor completes outstanding
+requests, so a callback runs *during* destruction and everything it refers to
+must still be alive then. Declaring captures before the client is enough. This
+is easy to get wrong and hard to see: the resulting stack-use-after-scope is
+reported by Clang's AddressSanitizer and **not** by GCC's, so the two sanitizer
+jobs are not interchangeable.
+
 ### Callbacks never run inside the call that caused them
 
 `request()` and `cancel()` are calls the *application* makes, and neither

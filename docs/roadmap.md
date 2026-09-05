@@ -659,6 +659,18 @@ throw branches — see the metric caveat in Discovered below.
   `quality-gates.md` §6 lists for it. Not P6's code and not yet enforced, but it
   will block P13 as things stand.
 
+* **Whatever a callback captures must outlive the client too, and CI caught it
+  where local runs could not.** `~SmpClient` completes outstanding requests, so
+  a callback runs *during* destruction. Most tests declared their `Outcome`
+  after the fixture, so it died first and the callback wrote through a dangling
+  pointer — 13 tests, a stack-use-after-scope reported by Clang's ASan and by
+  nothing else. GCC's ASan does not detect it even with
+  `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`
+  (verified, not assumed), so the two sanitizer jobs are not interchangeable and
+  the P1 note claiming otherwise is corrected below. Captures are now declared
+  before the fixture, with the reason written at the fixture's definition, and
+  the requirement is stated on `SmpClient` and its destructor.
+
 * **A transport must outlive every client bound to it, and nothing said so.**
   `~SmpClient` and `rebind_transport()` both call `Transport::set_listener()` on
   a transport they are letting go of. Three rebind tests declared the
@@ -1142,5 +1154,5 @@ them.
 | P6 | `quality-gates.md` §6 states branch-coverage thresholds without defining the metric. gcov "branches executed" and gcovr `--exclude-throw-branches` differ by ~25 points on the same objects. Pin the tool and the flag before enforcement switches on. | P13 |
 | P6 | `src/cbor/` is at 80 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. Unenforced today; blocking at P13. | P13 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
-| P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI; `linux-gcc-asan-ubsan` covers sanitizers locally. | — (accepted) |
+| P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
