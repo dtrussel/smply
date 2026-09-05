@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # cppcheck suppressions. Each entry must say why.
 # Comments in this file start with '#' -- cppcheck parses anything else as a
-# suppression id.
+# suppression id. A line containing only '#' is NOT a blank comment line: it
+# reads as a suppression with an empty id and aborts the whole run with
+# "Failed to add suppression. No id." Use '# ---' to separate paragraphs.
 
 # clang-tidy's modernize-* and readability-* cover style; cppcheck is kept only
 # for its whole-program value tracking (docs/quality-gates.md section 3).
@@ -10,3 +12,18 @@ missingIncludeSystem
 # Deliberately non-idiomatic: this file exists to prove strict warnings do not
 # reach consumers (tests/consumer/CMakeLists.txt).
 *:tests/consumer/consumer_check.cpp
+
+# cppcheck cannot reliably parse Catch2-based test translation units. It runs
+# without the project's include paths, so TEST_CASE, SECTION and REQUIRE are
+# unknown macros, and it explores preprocessor configurations that no build
+# uses -- it reports "Too many #ifdef configurations" on the same run. On
+# tests/unit/test_os_group.cpp that combination produces a syntaxError at the
+# first TEST_CASE; supplying the include paths and a smaller check set makes it
+# vanish, which is what identifies it as a parser artefact rather than a defect.
+# ---
+# Suppressed only for tests/, and only this id. A real syntax error in a test is
+# caught immediately by GCC, Clang and MSVC, all three of which compile these
+# files, so cppcheck's parser adds nothing here -- whereas letting it block CI
+# on a construct it cannot parse makes the gate worse than useless. Nothing is
+# suppressed for include/ or src/.
+syntaxError:tests/*
