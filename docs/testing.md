@@ -23,30 +23,57 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 and `tests/component`.
 
 ### `FakeTransport`
-The workhorse. It is a `Transport` that records outbound messages and lets the
-test inject inbound bytes with complete control:
+The workhorse (`tests/support/`). A `Transport` that records outbound messages
+and lets the test inject inbound bytes with complete control:
 
 ```cpp
-class FakeTransport : public Transport {
+class FakeTransport final : public Transport {
 public:
+    // Transport
+    Result<void> send(ConstBytes) override;
+    std::size_t  max_message_size() const noexcept override;   // configurable
+    void         set_listener(TransportListener*) noexcept override;
+    void         close() noexcept override;
+
     // Inspection
-    std::vector<std::vector<std::byte>> sent;      // whole SMP messages
-    std::size_t max_message_size() const noexcept override;  // configurable
+    const std::vector<std::vector<std::byte>>& sent() const noexcept;
+    std::size_t send_count() const noexcept;
+    ConstBytes  last_sent() const;
+    void        clear_sent() noexcept;
+    bool        closed() const noexcept;
+    bool        connected() const noexcept;
+    std::size_t suppressed_deliveries() const noexcept;   // contract violations
+    std::size_t on_bytes_calls() const noexcept;
+
+    // Configuration
+    void set_max_message_size(std::size_t);
 
     // Injection
-    void deliver(ConstBytes);                      // one on_bytes() call
-    void deliver_fragmented(ConstBytes, std::size_t frag);    // fixed fragments
+    void deliver(ConstBytes);                                // one on_bytes()
+    void deliver_fragmented(ConstBytes, std::size_t frag);   // fixed fragments
     void deliver_byte_by_byte(ConstBytes);
-    void deliver_concatenated(std::span<const ConstBytes>);   // N msgs, 1 call
+    void deliver_concatenated(std::span<const ConstBytes>);  // N msgs, 1 call
     void deliver_split_at(ConstBytes, std::span<const std::size_t> cuts);
 
     // Faults
-    void fail_next_send(Error);
+    void fail_next_send(Error);                    // one-shot
     void set_busy(bool);                           // => TransportBusy
-    void raise_transport_error(Error);
+    void raise_transport_error(Error);             // link stays up
     void disconnect(Error = Error{ErrorCode::Disconnected});
 };
 ```
+
+**It enforces the contract rather than merely implementing it.** Delivering
+after `disconnect()` or `close()` is suppressed and counted, so a test that
+accidentally depends on a callback the contract forbids fails on
+`suppressed_deliveries()` instead of passing for the wrong reason. A double that
+is more permissive than the real thing is worse than no double.
+
+Two scenarios need no API of their own: **"no response"** is simply not calling
+`deliver()`, which together with `ManualClock` is how every timeout path is
+driven; and **"delayed response"** is calling it later. **Malformed headers and
+malformed CBOR** are ordinary byte buffers — the transport has no opinion about
+content.
 
 ### `ServerSimulator`
 A deterministic in-memory MCUmgr server built on `FakeTransport`. It implements

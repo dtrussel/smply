@@ -2,7 +2,7 @@
 
 #include "smply/smp/header.hpp"
 
-#include "../support/message_builder.hpp"
+#include "message_builder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>

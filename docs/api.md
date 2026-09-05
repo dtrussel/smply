@@ -228,8 +228,9 @@ public:
 
     // Exactly ONE complete SMP message. The transport fragments as needed.
     // `message` is borrowed for the duration of the call — copy if you defer.
-    // Returns TransportBusy when the caller should retry later.
-    virtual Result<void> send(ConstBytes message) = 0;
+    // Returns TransportBusy when the caller should retry later, Disconnected
+    // when the link is gone.
+    [[nodiscard]] virtual Result<void> send(ConstBytes message) = 0;
 
     // Largest whole SMP message this transport can carry. 0 = unknown.
     // NOT the MTU: a message may span many transport fragments.
@@ -238,7 +239,9 @@ public:
     // Exactly one listener; nullptr detaches. Called on the client context.
     virtual void set_listener(TransportListener*) noexcept = 0;
 
-    // Synchronous, idempotent. After it returns no callback can fire.
+    // Synchronous, idempotent. After it returns no callback can fire, including
+    // from a thread that was mid-delivery. Does NOT deliver on_disconnected():
+    // the caller asked for this.
     virtual void close() noexcept = 0;
 };
 

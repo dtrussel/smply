@@ -4,6 +4,7 @@ add_executable(smply_unit_tests
     test_assembler.cpp
     test_clock.cpp
     test_error.cpp
+    test_fake_transport.cpp
     test_result.cpp
     test_smp_codec.cpp
     test_version.cpp
@@ -12,6 +13,7 @@ add_executable(smply_unit_tests
 target_link_libraries(smply_unit_tests
     PRIVATE
         smply::smply_internal
+        smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain
 )

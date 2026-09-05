@@ -123,6 +123,7 @@ endif()
 
 if(SMPLY_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/support)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/consumer)
 endif()

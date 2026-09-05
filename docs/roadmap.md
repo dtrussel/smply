@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P4 — Transport abstraction and `FakeTransport`** |
-| Last completed phase | P3 — streaming SMP message reassembly |
+| **Next phase to work on** | **P5 — CBOR façade and MCUmgr error extraction** |
+| Last completed phase | P4 — transport abstraction and `FakeTransport` |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -23,7 +23,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P1](#p1) | Core types: `Result`, `Error`, `Clock`, bytes | **Complete** | P0 |
 | [P2](#p2) | SMP header types and codec | **Complete** | P1 |
 | [P3](#p3) | Streaming SMP message reassembly | **Complete** | P2 |
-| [P4](#p4) | Transport abstraction and `FakeTransport` | Planned | P1 |
+| [P4](#p4) | Transport abstraction and `FakeTransport` | **Complete** | P1 |
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | Planned | P1 |
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Planned | P2–P5 |
 | [P7](#p7) | OS management: reset, params, echo | Planned | P6 |
@@ -407,7 +407,7 @@ seeded random cut patterns.
 <a id="p4"></a>
 ## P4 — Transport abstraction and `FakeTransport`
 
-**Status: Planned** · **Depends on:** P1
+**Status: Complete** (2026-09-05) · **Depends on:** P1
 
 **Objective.** Freeze the transport contract and provide the test double every
 later phase depends on.
@@ -439,6 +439,43 @@ if trivial.
 
 **Exit.** The contract is stable; changing it later requires superseding
 [ADR-0005](decisions/ADR-0005-transport-abstraction.md).
+
+### Outcome
+
+**Completed.** `include/smply/transport.hpp` with the normative contract written
+into the header itself, `tests/support/fake_transport.{hpp,cpp}`, and
+`tests/unit/test_fake_transport.cpp` (27 new cases, 99 total). Every scenario in
+[`testing.md`](testing.md) §2 has a test, including the ones that need no API —
+"no response" is not calling `deliver()`, and malformed input is an ordinary
+byte buffer.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **`FakeTransport` enforces the contract, it does not merely implement it.**
+   Delivering after `disconnect()` or `close()` is suppressed and counted via
+   `suppressed_deliveries()`. A double more permissive than the real interface
+   would let tests pass by depending on callbacks a real transport is forbidden
+   to make — which is worse than having no double, because it fails only on
+   hardware.
+2. **A `smply_test_support` static library** was created rather than adding the
+   double to the unit-test executable's source list. P11's `ServerSimulator`
+   and P12's component tests build a second executable against the same doubles,
+   so the target is needed anyway and costs nothing now.
+3. **A composition test was added** (`FakeTransport` → `MessageAssembler`),
+   which is beyond the phase's stated scope. The two are the halves of the
+   inbound path and everything from P6 depends on them fitting together;
+   proving it here is far cheaper than discovering a mismatch inside the client.
+4. **Extra inspection accessors** beyond the sketch: `send_count()`,
+   `last_sent()`, `clear_sent()`, `on_bytes_calls()`, `connected()`.
+   `clear_sent()` in particular lets a later test assert on the commands issued
+   by one phase of a workflow without counting everything before it.
+
+**Discovered.** One clang-tidy finding, fixed:
+`std::exchange`-ing an engaged `std::optional` defeats
+`bugprone-unchecked-optional-access`; the explicit
+check-move-reset form is both clearer and analysable.
 
 ---
 
@@ -980,6 +1017,7 @@ them.
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P4 | `Transport` has no `connected()` query. The core learns about a lost link only through `on_disconnected()`. That is sufficient today — `SmpClient` tracks the state itself — but a transport that reconnects underneath the client would have no way to say so. Revisit if a self-healing transport is ever wanted. | P15 |
 | P3 | The assembler's re-entrancy guard makes a re-entrant sink an error. P6's `SmpClient` dispatches user callbacks from `on_message()`, and a callback that starts a new request must not end up back in `feed()`. It will not today (a new request goes to `Transport::send`, not to the assembler), but the constraint should be stated in `SmpClient`'s documentation. | P6 |
 | P2 | `Header` has no `is_response()` / `response_to()` helper. P6 needs the request-to-response operation mapping for correlation and should add it to `smp/header.hpp` rather than open-coding it in the client. | P6 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |

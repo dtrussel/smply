@@ -393,3 +393,61 @@ listed in `testing.md` §2 — write one test per scenario even where trivial,
 because P6 through P12 all depend on those being expressible. Note that
 `MessageSink` (P3) and `TransportListener` (P4) are different interfaces at
 different layers; `SmpClient` will implement both.
+
+### 2026-09-05 — P4: transport abstraction and `FakeTransport`
+
+**Status after this session:** P4 = `Complete`. Next phase is **P5 — CBOR façade
+and MCUmgr error extraction**.
+
+**Completed.** `include/smply/transport.hpp` — the last public contract to
+freeze before the client exists — plus `FakeTransport` and 27 test cases (99
+total). All gates green, ASan/UBSan clean, 13/13 gate self-checks.
+
+**Changed.** Four deviations, in the roadmap's P4 outcome. The one that matters:
+`FakeTransport` enforces the contract rather than merely implementing it, and
+counts suppressed callbacks.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** One new follow-up (no `connected()` on `Transport`).
+One clang-tidy finding fixed.
+
+**Caveats — read these before P5, and especially before P6.**
+
+* **The contract is now frozen.** `include/smply/transport.hpp` carries it as
+  documentation, and `design.md` §9 is the same thing in a table. Changing it
+  requires superseding
+  [ADR-0005](decisions/ADR-0005-transport-abstraction.md) — do not quietly
+  widen it because something is inconvenient in P6.
+* **`MessageSink` (P3) and `TransportListener` (P4) are different interfaces at
+  different layers.** `SmpClient` implements `TransportListener` publicly-ish
+  (privately, per `api.md`) and `MessageSink` internally, and forwards
+  `on_bytes()` into `MessageAssembler::feed()`. The composition test at the end
+  of `test_fake_transport.cpp` shows the wiring.
+* **Nothing may be delivered after `on_disconnected()`.** `FakeTransport`
+  enforces this. If a P6 test sees `suppressed_deliveries() > 0`, the test is
+  wrong, not the double.
+* **`max_message_size() == 0` means "no opinion"**, not "zero bytes". The core
+  falls back to its configured default. Do not treat 0 as a limit.
+* **`TransportBusy` is a retry request, not a link failure.** The core does not
+  queue; whoever knows what the message was for decides what to do.
+* `send()` recording in `FakeTransport` copies, because the contract says the
+  buffer is borrowed for the call only. Two tests deliver and send from
+  temporaries specifically so ASan catches any retention.
+
+**Docs updated.** `testing.md` (§2 `FakeTransport` reconciled with the shipped
+double, including the enforcement behaviour and the scenarios needing no API),
+`api.md` (transport section: `[[nodiscard]]` on `send`, `Disconnected`, and what
+`close()` does not do), `roadmap.md` (P4 Complete with outcome, 4 deviations, 1
+discovered item), this log. `design.md` §9 needed no change — the implementation
+matched it.
+
+**Recommended next.** **P5 — CBOR façade and MCUmgr error extraction.** This is
+the first phase touching QCBOR, so verify early that its spiffy-decode API is as
+ergonomic as [ADR-0007](decisions/ADR-0007-cbor-library.md) assumed — the ADR
+names TinyCBOR as the fallback and says to supersede it if not. The subtle part
+is not encoding but `extract_mgmt_error()`: it must handle all four shapes from
+`protocol-notes.md` §3 (v1 flat `rc`, v2 `err:{group,rc}`, v2-with-flat-`rc`,
+and success with neither), because an SMP v2 client is required to understand v1
+errors too. Absent key must mean `nullopt`, not an error — MCUmgr omits fields
+rather than sending false.
