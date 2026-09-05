@@ -136,54 +136,90 @@ Properties covered by tests, and by a fuzz target from P13:
 
 ## 3. CBOR façade (`src/cbor/`)
 
-Backend: **QCBOR** ([ADR-0007](decisions/ADR-0007-cbor-library.md)). Never
-exposed publicly.
+Backend: **QCBOR** ([ADR-0007](decisions/ADR-0007-cbor-library.md)). It is named
+in `src/cbor/cbor.hpp` and the two translation units beside it, and nowhere
+else; no public header may mention it, and the API-discipline gate enforces
+that.
 
 ```cpp
 namespace smply::cbor {
 
-class Writer {                       // fixed-capacity, caller-owned buffer
+class Writer {                       // encodes into a caller-owned buffer
 public:
-    explicit Writer(std::span<std::byte> out, unsigned max_nesting);
+    explicit Writer(MutBytes out, unsigned max_nesting = limits::kMaxCborNesting);
     Writer& open_map();  Writer& close_map();
-    Writer& key(std::string_view);
-    Writer& value(std::uint64_t);  Writer& value(std::int64_t);
-    Writer& value(bool);  Writer& value(std::string_view);
-    Writer& value(std::span<const std::byte>);
-    Result<std::span<const std::byte>> finish();   // sticky error surfaces here
+    Writer& put_uint (std::string_view key, std::uint64_t);
+    Writer& put_int  (std::string_view key, std::int64_t);
+    Writer& put_bool (std::string_view key, bool);
+    Writer& put_text (std::string_view key, std::string_view);
+    Writer& put_bytes(std::string_view key, ConstBytes);
+    Result<ConstBytes> finish();     // sticky error surfaces here
+    bool failed() const noexcept;
 };
 
 class Reader {                       // bounded, non-allocating, map-key based
 public:
-    Reader(std::span<const std::byte>, unsigned max_nesting);
-    Result<void> enter_map();  Result<void> leave_map();
-    std::optional<std::uint64_t>  uint(std::string_view key);
-    std::optional<std::int64_t>   integer(std::string_view key);
-    std::optional<bool>           boolean(std::string_view key);
-    std::optional<std::string_view> text(std::string_view key);
-    std::optional<std::span<const std::byte>> bytes(std::string_view key);
-    Result<void> for_each_in_array(std::string_view key,
-                                   const std::function<Result<void>(Reader&)>&);
-    Result<void> status() const;     // sticky decode error
+    explicit Reader(ConstBytes input, unsigned max_nesting = limits::kMaxCborNesting);
+    Result<void> enter_map();                    // the top-level map
+    Result<void> enter_map(std::string_view key);// a nested one
+    Result<void> leave_map();
+
+    std::optional<std::uint64_t>    uint   (std::string_view key);
+    std::optional<std::int64_t>     integer(std::string_view key);
+    std::optional<bool>             boolean(std::string_view key);
+    std::optional<std::string_view> text   (std::string_view key);
+    std::optional<ConstBytes>       bytes  (std::string_view key);
+
+    Result<void> for_each_map_in_array(std::string_view key, std::size_t max_elements,
+                                       const std::function<Result<void>(Reader&)>&);
+    Result<void> status() const;     // first decode failure, if any
 };
 }
 ```
 
 Design points:
 
-* **Sticky errors.** Individual getters return `std::optional` (absent key ⇒
-  `nullopt`, which the protocol uses to mean "false"/"default", PN §6); a
-  genuine *decode* failure sets the sticky status checked once via `status()`.
-  This keeps call sites free of per-field error handling without losing errors.
-* **Absent ≠ error** everywhere, matching MCUmgr's omit-when-false convention.
-* Views (`string_view`, `span`) point into the caller's response buffer and are
-  only valid until the response callback returns. Group code copies what it
-  keeps.
-* Nesting is bounded; arrays are iterated with a callback so no container is
-  allocated on behalf of the device.
-* `mgmt_error.*` implements the **dual** error extraction (PN §3): try
-  `err:{group,rc}` first, then flat `rc`, producing a `MgmtError`. Applied to
-  every response before any group-specific parsing.
+* **Absent is not an error.** MCUmgr omits a field rather than sending false or
+  zero (PN §6), so a missing key yields `std::nullopt` while a genuine decode
+  failure sets a sticky status checked once at the end. Conflating the two would
+  force every call site to handle an "error" that is really an absent optional
+  field — and, worse, would let a wrong-typed field masquerade as a default.
+  QCBOR distinguishes them for us: a lookup miss is `QCBOR_ERR_LABEL_NOT_FOUND`,
+  which the façade resets; anything else is recorded.
+* **Sticky, first-wins errors.** The first failure is kept, because later ones
+  are usually its consequences. A poisoned `Reader` returns `nullopt` from every
+  getter thereafter, so a caller that forgets `status()` gets defaults rather
+  than garbage — but the group layer always checks it.
+* **Named `put_*` rather than overloads.** CBOR distinguishes unsigned from
+  negative integers on the wire, and MCUmgr fields have specific types; letting
+  overload resolution pick could silently emit a different encoding than the
+  protocol asks for.
+* **Nothing allocates.** `Writer` encodes into the caller's buffer; `Reader`
+  returns views into the caller's input, valid only while it lives. Group code
+  copies what it keeps. A device cannot induce an allocation by claiming a size.
+* **Arrays are visited, not collected.** `for_each_map_in_array` takes a hard
+  element cap, so a device cannot make smply iterate — or make the caller
+  accumulate — without bound. An absent array is an empty one, because MCUmgr
+  omits `images` entirely when it has no valid image to report.
+* **Keys are null-terminated behind the façade.** QCBOR's map API takes a C
+  string; copying into a fixed buffer avoids assuming a `string_view` is
+  terminated, which is the sort of assumption that works until one call site
+  passes a substring. Keys longer than `kMaxKeyLength` (31) fail rather than
+  truncate.
+* **Nesting is bounded twice.** The façade counts the levels it enters, and
+  QCBOR independently enforces its own compile-time `QCBOR_MAX_ARRAY_NESTING`
+  of 15. Since that is below `limits::kMaxCborNesting`, QCBOR's bound is the one
+  that fires first on hostile input — deep input fails either way, which is what
+  matters.
+
+`mgmt_error.*` implements the **dual** error extraction (PN §3), applied to every
+response before any group-specific parsing. It handles all four shapes: an empty
+or unrelated map (success), `rc: 0` (also success), a flat `rc` (SMP-level or v1
+error), and `err: {group, rc}` (v2 group-scoped). Both flat and group-scoped are
+always decoded whatever version was requested, because the specification requires
+a v2 client to understand SMP-level errors reported as a flat `rc`. When both
+appear the group-scoped one wins: it loses less information. The device's `rsn`
+text is capped at `limits::kMaxReasonLength`, since it is attacker-controlled.
 
 ## 4. Request lifecycle (`src/smp/client.*`)
 

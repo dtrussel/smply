@@ -52,6 +52,11 @@ copy is used when present. `tools/check_deps.py` fails the build if a declared
 dependency is missing from this file **or** is pinned to anything other than a
 full 40-character commit hash — a tag can be moved, a hash cannot.
 
+QCBOR's pin was exercised for the first time in P5 and its spiffy-decode API
+behaved as [ADR-0007](decisions/ADR-0007-cbor-library.md) assumed: map-key
+getters, a sticky error, and a distinguishable "label not found" that makes
+absent-versus-malformed separable. No fallback to TinyCBOR was needed.
+
 Each declaration also passes `SYSTEM`, so dependency headers are system includes.
 Without it, findings from inside Catch2's and QCBOR's headers are reported
 against smply's own files (macro expansion attributes them to the expansion

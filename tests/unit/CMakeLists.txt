@@ -2,9 +2,11 @@
 
 add_executable(smply_unit_tests
     test_assembler.cpp
+    test_cbor.cpp
     test_clock.cpp
     test_error.cpp
     test_fake_transport.cpp
+    test_mgmt_error.cpp
     test_result.cpp
     test_smp_codec.cpp
     test_version.cpp

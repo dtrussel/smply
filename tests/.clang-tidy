@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test-only relaxations. Everything else is inherited from the repository root,
+# so tests are held to the same standard as the library except where a check
+# cannot see through the test framework.
+#
+# -bugprone-unchecked-optional-access: Catch2's REQUIRE is opaque to the
+#   checker, so `REQUIRE(x.has_value()); use(*x);` -- the correct and idiomatic
+#   way to assert on an optional -- is reported as unchecked. In test code the
+#   check produces only false positives, and the alternative is either dozens of
+#   NOLINT comments or contorting assertions to satisfy a tool. It remains
+#   enabled for src/ and include/, where it earned its place: it caught a real
+#   readability problem in src/cbor/reader.cpp, where failure recording relied
+#   on a postcondition the reader had to take on trust.
+---
+InheritParentConfig: true
+Checks: '-bugprone-unchecked-optional-access'

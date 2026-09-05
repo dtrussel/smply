@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P5 — CBOR façade and MCUmgr error extraction** |
-| Last completed phase | P4 — transport abstraction and `FakeTransport` |
+| **Next phase to work on** | **P6 — `SmpClient`: correlation, timeouts, cancellation** |
+| Last completed phase | P5 — CBOR façade and MCUmgr error extraction |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -24,7 +24,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P2](#p2) | SMP header types and codec | **Complete** | P1 |
 | [P3](#p3) | Streaming SMP message reassembly | **Complete** | P2 |
 | [P4](#p4) | Transport abstraction and `FakeTransport` | **Complete** | P1 |
-| [P5](#p5) | CBOR façade and MCUmgr error extraction | Planned | P1 |
+| [P5](#p5) | CBOR façade and MCUmgr error extraction | **Complete** | P1 |
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Planned | P2–P5 |
 | [P7](#p7) | OS management: reset, params, echo | Planned | P6 |
 | [P8](#p8) | Image management: state read/write, erase, slot info | Planned | P6 |
@@ -482,7 +482,7 @@ check-move-reset form is both clearer and analysable.
 <a id="p5"></a>
 ## P5 — CBOR façade and MCUmgr error extraction
 
-**Status: Planned** · **Depends on:** P1
+**Status: Complete** (2026-09-05) · **Depends on:** P1
 
 **Objective.** Bounded, non-allocating CBOR encode/decode, with QCBOR hidden.
 
@@ -514,6 +514,57 @@ from `include/`.
 attributable to device-supplied sizes.
 
 **Exit.** All later CBOR work uses the façade only.
+
+### Outcome
+
+**Completed.** `src/cbor/{cbor.hpp,reader.cpp,writer.cpp,mgmt_error.*}` and 50
+new tests (149 total). QCBOR appears in exactly three files and no public
+header; the API-discipline gate confirms it.
+
+**Remaining in this phase.** None.
+
+**ADR-0007 validated.** The decision was taken on QCBOR's documented API rather
+than hands-on use, and said to supersede it in favour of TinyCBOR if the
+assumption failed. It held: the spiffy-decode map-key getters, the sticky error
+model, and — most importantly — a distinguishable `QCBOR_ERR_LABEL_NOT_FOUND`
+are exactly what "absent is not an error" needs. The ADR's Status line records
+the validation.
+
+**Deviations from the original plan.**
+
+1. **No separate `backend_qcbor.*` file.** The plan listed one, but `reader.cpp`
+   and `writer.cpp` *are* the backend, and a third file would only have held
+   includes. The seam that matters — no QCBOR in any public header, one
+   replaceable pair of translation units — is intact.
+2. **Named `put_uint`/`put_int`/… rather than an overloaded `value()`.** CBOR
+   distinguishes unsigned from negative integers on the wire and MCUmgr fields
+   have specific types, so overload resolution picking for us could silently
+   emit a different encoding than the protocol asks for. Worth the extra
+   verbosity at call sites.
+3. **`for_each_map_in_array` takes a mandatory element cap** rather than relying
+   on a configured default. The caller knows what it can hold; making the bound
+   explicit at the call site means it cannot be forgotten.
+4. **`smply::smply_internal` now propagates QCBOR's include path.** Internal
+   headers under `src/cbor/` name QCBOR, so testing them needs its headers.
+   `smply::smply` still keeps QCBOR `PRIVATE`, which is what the acceptance
+   criterion and the gate care about.
+
+**Discovered.**
+
+* **Nesting is bounded twice, and QCBOR's bound is the binding one.** QCBOR
+  enforces a compile-time `QCBOR_MAX_ARRAY_NESTING` of 15, below
+  `limits::kMaxCborNesting` (16), so the façade's own counter never fires first
+  on hostile input. Deep input is rejected either way, so this is documented
+  rather than "fixed" — but the configured limit should not be read as the
+  operative one.
+* **`bugprone-unchecked-optional-access` found a real readability problem** in
+  `reader.cpp`: the failure path stored an error and then dereferenced
+  `error_` separately, relying on a postcondition a reader had to take on
+  trust. Replaced with a `record()` helper that stores *and returns* the
+  failure, which is clearer and analysable. The same check produces only false
+  positives in test code, where `REQUIRE(x.has_value())` is opaque to it, so it
+  is disabled for `tests/` alone via `tests/.clang-tidy` — with the reason
+  written there.
 
 ---
 
@@ -1017,6 +1068,8 @@ them.
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P5 | The `Writer` has no way to write a nested map or an array under a key. Nothing in MCUmgr's *request* shapes needs one — every request smply sends is a flat map — so it was not built. If a future group needs it, add it rather than hand-rolling the bytes. | when needed |
+| P5 | `for_each_map_in_array` visits map elements only. An array of scalars would need a separate visitor. No MCUmgr response in scope uses one. | when needed |
 | P4 | `Transport` has no `connected()` query. The core learns about a lost link only through `on_disconnected()`. That is sufficient today — `SmpClient` tracks the state itself — but a transport that reconnects underneath the client would have no way to say so. Revisit if a self-healing transport is ever wanted. | P15 |
 | P3 | The assembler's re-entrancy guard makes a re-entrant sink an error. P6's `SmpClient` dispatches user callbacks from `on_message()`, and a callback that starts a new request must not end up back in `feed()`. It will not today (a new request goes to `Transport::send`, not to the assembler), but the constraint should be stated in `SmpClient`'s documentation. | P6 |
 | P2 | `Header` has no `is_response()` / `response_to()` helper. P6 needs the request-to-response operation mapping for correlation and should add it to `smp/header.hpp` rather than open-coding it in the client. | P6 |

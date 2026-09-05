@@ -60,6 +60,9 @@ add_library(smply::smply ALIAS smply)
 
 target_sources(smply
     PRIVATE
+        src/cbor/mgmt_error.cpp
+        src/cbor/reader.cpp
+        src/cbor/writer.cpp
         src/core.cpp
         src/smp/assembler.cpp
         src/smp/codec.cpp
@@ -105,6 +108,13 @@ add_library(smply::smply_internal ALIAS smply_internal)
 target_include_directories(smply_internal INTERFACE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(smply_internal INTERFACE smply::smply)
+if(TARGET qcbor::qcbor)
+    # Internal headers under src/cbor/ name QCBOR, so anything testing them
+    # needs its headers. smply::smply keeps QCBOR PRIVATE, so this reaches
+    # tests only -- the public API stays free of it, which is what
+    # tools/check_public_headers.py enforces.
+    target_link_libraries(smply_internal INTERFACE qcbor::qcbor)
+endif()
 
 # --- Subdirectories ---------------------------------------------------------
 if(SMPLY_BUILD_WINRT)

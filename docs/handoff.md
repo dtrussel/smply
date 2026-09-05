@@ -451,3 +451,70 @@ is not encoding but `extract_mgmt_error()`: it must handle all four shapes from
 and success with neither), because an SMP v2 client is required to understand v1
 errors too. Absent key must mean `nullopt`, not an error — MCUmgr omits fields
 rather than sending false.
+
+### 2026-09-05 — P5: CBOR façade and MCUmgr error extraction
+
+**Status after this session:** P5 = `Complete`. Next phase is **P6 —
+`SmpClient`: correlation, timeouts, cancellation**.
+
+**Completed.** `src/cbor/` — the façade, the two backend translation units and
+`mgmt_error` — plus 50 tests (149 total). All gates green, ASan/UBSan clean.
+
+**ADR-0007 held.** QCBOR was chosen on its documented API rather than hands-on
+use, and the ADR said to fall back to TinyCBOR if the assumption failed. It did
+not: the spiffy-decode map-key getters and, critically, a distinguishable
+`QCBOR_ERR_LABEL_NOT_FOUND` are exactly what "absent is not an error" requires.
+The ADR's Status line records the validation; no supersession needed.
+
+**Changed.** Four deviations, in the roadmap's P5 outcome. Notable: no separate
+`backend_qcbor.*` file (reader/writer *are* the backend), and named `put_uint` /
+`put_int` / … rather than an overloaded `value()`.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** Two new follow-ups (the `Writer` cannot emit nested
+maps or arrays; `for_each_map_in_array` handles maps only) — neither is needed
+by anything in scope. Plus the nesting-bound finding below.
+
+**Caveats — read these before P6, P7 and P8.**
+
+* **`std::nullopt` means absent; `status()` means broken.** This distinction is
+  the whole point of the façade. A getter returning `nullopt` is the *normal*
+  case — MCUmgr omits fields rather than sending false or zero — whereas a
+  wrong-typed field poisons the reader. **Always check `status()` before
+  trusting a decoded struct**, or a malformed response will look like a
+  successful one full of defaults. `extract_mgmt_error()` does this correctly;
+  copy the pattern.
+* **Views point into the response buffer**, which the assembler owns only for
+  the duration of `on_message()`. `ImageState` and friends must copy every
+  string and hash they keep. This is the same borrowed-buffer rule as P3 and P4,
+  one layer up.
+* **`extract_mgmt_error()` runs on every response, before group parsing.** It
+  already handles all four shapes, so no group needs to think about `rc` versus
+  `err` again — and none should re-implement it.
+* **Nesting is bounded twice.** QCBOR's compile-time `QCBOR_MAX_ARRAY_NESTING`
+  is 15, below `limits::kMaxCborNesting` (16), so QCBOR's bound fires first on
+  hostile input. Do not read the configured limit as the operative one.
+* **`bugprone-unchecked-optional-access` is disabled for `tests/` only**, via
+  `tests/.clang-tidy`, because Catch2's `REQUIRE` is opaque to it. It stays on
+  for `src/` and `include/`, where it earned its keep by finding a real
+  readability problem in `reader.cpp`. Do not extend the exemption upward.
+* Encoding buffers are caller-owned. P7 and P8 should size a request buffer on
+  the stack; nothing in the façade allocates.
+
+**Docs updated.** `design.md` (§3 rewritten around the shipped API, the
+absent-versus-error rule, the double nesting bound, and what `mgmt_error`
+guarantees), `dependencies.md` (QCBOR pin exercised, ADR assumption confirmed),
+`decisions/ADR-0007` (Status line records validation), `roadmap.md` (P5 Complete
+with outcome, 4 deviations, 2 discovered items), this log.
+
+**Recommended next.** **P6 — `SmpClient`.** The pieces it composes all exist:
+`MessageAssembler` (P3), `Transport`/`TransportListener` (P4) and the CBOR
+façade (P5). Read [ADR-0010](decisions/ADR-0010-request-correlation.md) first —
+correlation is on the full `(seq, group, command, op)` tuple, not `seq` alone,
+and a mismatch **discards the message and leaves the request pending** rather
+than failing it, because a stale message must never be able to complete a live
+request. The retired-sequence set is what stops a late response being
+mis-attributed after the 8-bit `seq` wraps. Add `response_to(Operation)` to
+`smp/header.hpp` while you are there (a P2 follow-up), and note the P3 caveat:
+a user callback dispatched from `on_message()` must not re-enter the assembler.

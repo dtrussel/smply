@@ -1,6 +1,6 @@
 # ADR-0007 — QCBOR behind a narrow façade
 
-**Status:** Accepted (2026-09-04)
+**Status:** Accepted (2026-09-04); assumptions validated in P5 (2026-09-05)
 
 ## Context
 
