@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -223,4 +224,31 @@ TEST_CASE("is_user_defined marks the vendor range", "[error]")
     REQUIRE_FALSE(smply::is_user_defined(Group::ZephyrBasic));
     REQUIRE(smply::is_user_defined(Group::PerUser));
     REQUIRE(smply::is_user_defined(static_cast<Group>(200)));
+}
+
+TEST_CASE("smp_error reads a flat rc and refuses a group-scoped one", "[error]")
+{
+    using smply::SmpError;
+
+    // A flat rc is drawn from mcumgr_err_t, so it may be read as an SmpError.
+    const Error flat{ErrorCode::ProtocolError, smply::MgmtError::smp(8)};
+    REQUIRE(smply::smp_error(flat) == SmpError::NotSupported);
+
+    // A group-scoped rc of the same number means something else entirely.
+    // Returning nullopt is what stops a caller comparing the two.
+    const Error scoped{ErrorCode::ProtocolError, smply::MgmtError::scoped(Group::Image, 8)};
+    REQUIRE_FALSE(smply::smp_error(scoped).has_value());
+
+    // An error with no device report has no SMP code either.
+    REQUIRE_FALSE(smply::smp_error(Error{ErrorCode::Timeout}).has_value());
+}
+
+TEST_CASE("an unknown SMP code is preserved rather than rejected", "[error]")
+{
+    // These enumerations grow with each Zephyr release (protocol-notes A2), so
+    // a code smply has never heard of must still round-trip.
+    const Error unknown{ErrorCode::ProtocolError, smply::MgmtError::smp(4242)};
+    const auto code = smply::smp_error(unknown);
+    REQUIRE(code.has_value());
+    REQUIRE(static_cast<std::uint16_t>(*code) == 4242);
 }

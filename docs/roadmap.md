@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P7 — OS management: reset, params, echo** |
-| Last completed phase | P6 — `SmpClient`: correlation, timeouts, cancellation |
+| **Next phase to work on** | **P8 — Image management: state read/write, erase, slot info** |
+| Last completed phase | P7 — OS management: reset, params, echo |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -26,7 +26,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P4](#p4) | Transport abstraction and `FakeTransport` | **Complete** | P1 |
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | **Complete** | P1 |
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Complete | P2–P5 |
-| [P7](#p7) | OS management: reset, params, echo | Planned | P6 |
+| [P7](#p7) | OS management: reset, params, echo | Complete | P6 |
 | [P8](#p8) | Image management: state read/write, erase, slot info | Planned | P6 |
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Planned | P1 |
 | [P10](#p10) | Image upload state machine | Planned | P8, P9 |
@@ -571,7 +571,7 @@ the validation.
 <a id="p6"></a>
 ## P6 — `SmpClient`
 
-**Status: Complete** · **Depends on:** P2, P3, P4, P5
+**Status: Complete** (2026-09-05) · **Depends on:** P2, P3, P4, P5
 
 **Objective.** The request lifecycle: sequence allocation, correlation,
 timeouts, cancellation, disconnection, statistics.
@@ -687,7 +687,7 @@ throw branches — see the metric caveat in Discovered below.
 <a id="p7"></a>
 ## P7 — OS management group
 
-**Status: Planned** · **Depends on:** P6
+**Status: Complete** (2026-09-05) · **Depends on:** P6
 
 **Objective.** Reset, MCUmgr parameters, echo.
 
@@ -711,6 +711,70 @@ easiest end-to-end smoke test against real hardware).
 **Gates.** All P6 gates.
 
 **Acceptance.** Encodings match hand-computed vectors from the spec.
+
+### Outcome
+
+**Completed.** `include/smply/groups/os.hpp`, `src/groups/os/os_management.cpp`
+and 35 new tests (239 total). Every request vector in the suite is derived from
+the CBOR grammar and the field names in `protocol-notes.md` §5, not copied from
+the writer's output -- an encoder that agrees with itself proves nothing. All
+gates green across the five Linux presets.
+
+**Remaining in this phase.** None.
+
+**Protocol work.** Two facts were verified before any code was written, and
+`protocol-notes.md` gained a source (S13, the OS-group server implementation):
+
+* **Echo had no recorded wire shape.** Now documented: `{"d": str}` in,
+  `{"r": str}` back, registered under *both* the read and write handler slots,
+  which is why either op is legal. Reset is registered write-only and mcumgr
+  params read-only, so the wrong op on those yields `ENOTSUP` rather than an
+  answer.
+* **A15 -- the specification and the server disagree about `force`.** The docs
+  say `(int)`, "force reset if value > 0"; the server decodes it with
+  `zcbor_bool_decode` and then *discards the decode result*, so an integer is
+  silently ignored and the reset proceeds unforced with nothing to tell the
+  client its intent was dropped. Checked at `main`, `v3.7.0` and `v3.5.0`.
+  smply sends a boolean, and omits the key when not forcing.
+
+**Deviations from the original plan.**
+
+1. **`SmpClient` gained a public `defer()`.** P6 had the machinery but no way
+   for a layer above to use it, and without it a group rejecting an argument
+   would have to invoke the callback inline -- breaking the invariant that a
+   callback never runs inside the call that started the operation, before the
+   `RequestHandle` has been assigned. The internal deferral was generalised from
+   "a callback plus an error" to arbitrary work; nothing else changed.
+2. **`Callback<T>` lives in `result.hpp`, not in each group's header.**
+   `api.md` declared it in both `groups/os.hpp` and `groups/image.hpp`, which
+   would be a redeclaration once both are included.
+3. **`SmpError` and `smp_error()` were added to `error.hpp`.** The phase's own
+   task list requires `ENOTSUP` to be "surfaced for the caller to treat as
+   non-fatal", and a caller can only do that if it can name the code without a
+   magic 8. `smp_error()` returns `nullopt` for a group-scoped `rc`, so the two
+   numbering spaces cannot be confused.
+4. **`ResetOptions::boot_mode` was not implemented.** `api.md` proposed it; the
+   phase scope puts it out of scope, so the field is absent rather than present
+   and ignored.
+
+**Discovered.**
+
+* **A second category of branch that no test can reach.** `src/groups/os/` sits
+  at 71.6 % branch and 85.2 % line coverage, and *every* uncovered line is one
+  of eight deliberate invariant guards: three encode-failure checks that a
+  `static_assert` proves unreachable, two `enter_map()` checks that
+  `SmpClient::interpret()` already guarantees, and the `reject<>()`
+  instantiations only those can reach. They are kept rather than deleted -- a
+  decoder that assumes its input was validated elsewhere is one refactor away
+  from trusting a device -- but they inflate the branch denominator exactly as
+  throw branches do. That makes the P13 metric question sharper: a bare
+  percentage cannot distinguish an untested path from an assertion.
+* **`constexpr` on a public accessor is compiler-dependent.** `smp_error()` was
+  written `constexpr` and calls `Error::mgmt()`, which is not. Clang accepted
+  it; GCC rejected it under `-Winvalid-constexpr`. Caught only because the phase
+  gate runs both -- and nearly missed, because a failed build leaves the previous
+  test binary in place and `ctest` then reports the *old* suite passing. Build
+  failures must be checked separately from test results.
 
 ---
 
@@ -1153,6 +1217,10 @@ them.
 | P6 | Two obligations are documented on `SmpClient` but belong in the normative transport contract in `transport.hpp` and `design.md` §9, where a transport author will actually read them: (a) `Transport::send()` **must not** deliver inbound bytes before returning; (b) a transport must outlive every client bound to it, because the client detaches on destruction and on rebind. Consider instead making the contract symmetric — a transport that notifies its listener as it is destroyed would remove (b) entirely. | P15 |
 | P6 | `quality-gates.md` §6 states branch-coverage thresholds without defining the metric. gcov "branches executed" and gcovr `--exclude-throw-branches` differ by ~25 points on the same objects. Pin the tool and the flag before enforcement switches on. | P13 |
 | P6 | `src/cbor/` is at 80 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. Unenforced today; blocking at P13. | P13 |
+| P7 | Deliberate invariant guards are unreachable by construction and drag branch coverage down (`src/groups/os/` is at 71.6 % with *only* guards uncovered). Together with throw branches this is now two categories a bare percentage cannot distinguish from untested code. Decide before P13 whether the gate excludes them, whether guards are marked (`GCOVR_EXCL_LINE` or similar), or whether the threshold simply accounts for them. | P13 |
+| P7 | A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing. Any script or habit that runs build-then-test must check the build's exit status separately, or a compile error reads as success. | P13 |
+| P7 | Deliberate invariant guards are unreachable by construction and drag branch coverage down (`src/groups/os/` is at 71.6 % with *only* guards uncovered). Together with throw branches this is now two categories a bare percentage cannot distinguish from untested code. Decide before P13 whether the gate excludes them, whether guards are marked (`GCOVR_EXCL_LINE` or similar), or whether the threshold simply accounts for them. | P13 |
+| P7 | A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing. Any script or habit that runs build-then-test must check the build's exit status separately, or a compile error reads as success. | P13 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

@@ -23,6 +23,7 @@ Verified on **2026-09-04** against Zephyr `main` and MCUboot `main`.
 | S9 | `subsys/mgmt/mcumgr/transport/include/mgmt/mcumgr/transport/smp_internal.h` | `struct smp_hdr` bitfield order | same |
 | S10 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c` | Server-side upload handler; response construction | same |
 | S11 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/zephyr_img_mgmt.c` | `img_mgmt_upload_inspect()` — offset/resume/validation rules | same |
+| S13 | `subsys/mgmt/mcumgr/grp/os_mgmt/src/os_mgmt.c` | OS-group server handlers; echo, reset and mcumgr-params decoding and the handler registration table | same (verified 2026-09-05, and against tags `v3.5.0` and `v3.7.0`) |
 | S12 | `docs/design.md` | MCUboot image format, TLVs, slots, swap types, trailer | `mcu-tools/mcuboot@main` |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
@@ -199,6 +200,22 @@ Commands (S3, S7): `0` echo · `1` console echo control (unimplemented in Zephyr
 · `2` taskstat · `3` mpstat · `4` datetime · `5` **reset** · `6` **mcumgr params**
 · `7` OS/app info · `8` bootloader info.
 
+### Echo — op `0` (read) **or** `2` (write), group `0`, cmd `0` (S3, S13)
+
+Request: `{ "d": (str) }`. Response: `{ "r": (str) }`, echoing `d` back
+verbatim. The response op is `1` for a read request and `3` for a write.
+
+The handler table registers echo under *both* the read and the write slot
+(`[OS_MGMT_ID_ECHO] = { os_mgmt_echo, os_mgmt_echo }`, S13), which is why either
+op is legal. Reset, by contrast, is registered write-only
+(`{ NULL, os_mgmt_reset }`) and mcumgr params read-only
+(`{ os_mgmt_mcumgr_params, NULL }`), so using the wrong op on those yields
+`MGMT_ERR_ENOTSUP` rather than an answer.
+
+The server places no length limit of its own on `d`; the bound is the SMP buffer
+(`buf_size`, §8). A string that does not fit yields `MGMT_ERR_EMSGSIZE` from the
+response encoder.
+
 ### System reset — op `2` (write), group `0`, cmd `5` (S3)
 
 Request: empty CBOR map, or
@@ -218,6 +235,13 @@ Verified semantics:
   reset with an error.
 * If a reset attempt returns `MGMT_ERR_EBUSY`, the client may retry with
   `"force" > 0`.
+* **`"force"` is a CBOR boolean on the wire, not an integer** — see A15. The
+  documentation (S3) says `(int)` and "force reset if value > 0"; the server
+  (S13) decodes it with `zcbor_bool_decode`, at `main`, `v3.7.0` and `v3.5.0`
+  alike. smply sends a boolean.
+* The request body is parsed **only** when `CONFIG_MCUMGR_GRP_OS_RESET_HOOK` is
+  enabled (S13): the whole decode block sits inside that guard. Without it,
+  `"force"` is not read at all and every reset behaves as unforced.
 * `"boot_mode"` requires `CONFIG_MCUMGR_GRP_OS_RESET_BOOT_MODE`. smply does not
   use it in the default DFU flow.
 
@@ -497,3 +521,4 @@ Recorded so future sessions do not rediscover them.
 | A12 | Erase (cmd 5) is synchronous and may take tens of seconds. | Dedicated long timeout; not part of the default DFU flow. |
 | A13 | After a swap, whether the *new* image reports the same `"hash"` as the uploaded file's `IMAGE_TLV_SHA256`. | Verified true for non-encrypted images; for encrypted images it is **not** guaranteed. Encrypted-image DFU is out of scope — record as a known limitation. |
 | A14 | MCUmgr allows several requests per packet in principle (S8 comment); Zephyr's SMP-over-BLE does not use this. | smply sends exactly one request per SMP message and expects one response per message. |
+| A15 | **The documentation and the implementation disagree on the type of reset's `"force"`.** S3 specifies `(int)` with "force reset if value > 0"; S13 decodes it with `zcbor_bool_decode`, which accepts only CBOR `true`/`false` and rejects any integer. Worse, the server *discards* the decode result (`(void)zcbor_map_decode_bulk(...)`, with a comment saying a core command should continue with defaults), so an integer `"force"` is **silently ignored** and the reset proceeds unforced — no error tells the client its intent was dropped. | Encode `"force"` as a CBOR **boolean**, matching the implementation, which is what a device actually enforces. Omit the key entirely when not forcing, so the unforced request is the empty map the specification shows. Same in `v3.5.0` and `v3.7.0`, so this is not a recent regression. |

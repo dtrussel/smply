@@ -18,6 +18,7 @@
 
 #include "smply/error.hpp"
 
+#include <functional>
 #include <utility>
 #include <version>
 
@@ -89,6 +90,17 @@ using Result = expected<T, Error>;
 {
     return unexpected<Error>{Error{code, where}};
 }
+
+/// How an asynchronous operation reports its outcome.
+///
+/// Invoked exactly once. `Callback<void>` is the form for an operation with no
+/// value to return, which still has a failure to report.
+///
+/// Whatever the callback captures must outlive the `SmpClient` driving the
+/// operation: the client's destructor completes anything still outstanding, so
+/// a callback can run during that destruction (see `smply/smp_client.hpp`).
+template<class T>
+using Callback = std::function<void(Result<T>)>;
 
 } // namespace smply
 

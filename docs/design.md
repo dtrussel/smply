@@ -371,10 +371,15 @@ distinction that separates a deliberate discard from a bug.
 ## 5. Management groups
 
 Thin, stateless-except-where-noted wrappers that own only encoding and decoding.
+A group allocates no sequence numbers, sets no deadlines and interprets no `rc`:
+`SmpClient` has already done all three by the time a response reaches it. If a
+group looks like it needs to know about correlation, the seam is in the wrong
+place.
 
 ```cpp
 class OsManagement {                       // src/groups/os/
-    RequestHandle reset(ResetOptions, Callback<void>);
+    RequestHandle reset(const ResetOptions&, Callback<void>);
+    RequestHandle reset(Callback<void>);
     RequestHandle mcumgr_parameters(Callback<McumgrParameters>);
     RequestHandle echo(std::string_view, Callback<std::string>);
 };
@@ -395,6 +400,35 @@ Decoding rules applied uniformly (PN §6): absent boolean ⇒ `false`; absent
 
 `ImageState`/`ImageSlot` are plain value structs with `std::optional` where the
 protocol genuinely distinguishes absent from default (e.g. `hash`).
+
+### Four rules every group follows
+
+1. **Requests encode into a stack buffer**, sized from the constant that bounds
+   the input rather than from what the caller passed. Nothing in the CBOR façade
+   allocates, and a device cannot induce an allocation by claiming a size.
+2. **`status()` is checked before any decoded field is trusted.** A `nullopt`
+   getter means the field was absent, which is normal — MCUmgr omits rather than
+   sending zero. A wrong-typed field poisons the reader and makes *every* field
+   look absent, so skipping the check turns a malformed response into a
+   successful one full of defaults.
+3. **Views are copied before they escape the callback.** A decoded string points
+   into the assembler's buffer, which is valid only for that call.
+4. **A callback never runs inside the call that started the operation** — argument
+   rejections included. `SmpClient::defer()` exists for exactly that case: a
+   group that rejects an argument has no request to attach the failure to.
+
+### Reset is acceptance, not completion
+
+`OsManagement::reset()`'s callback fires when the device *accepted* the command.
+Zephyr answers first and reboots afterwards by design, and the gap between the
+two is implementation-defined (PN §5). Losing the response entirely is normal
+too. Learning that the device actually restarted means waiting for a transport
+disconnect, which is the DFU machine's job (§8), not this layer's.
+
+`force` is sent as a CBOR **boolean** and omitted entirely when false. The
+specification says integer; the server decodes a boolean and silently discards
+anything else, so an integer would leave the client believing it had forced a
+reset that was not forced (PN §9, A15).
 
 ## 6. Upload state machine (`src/groups/image/upload_session.*`)
 

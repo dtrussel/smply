@@ -89,6 +89,37 @@ struct MgmtError
                                                    const MgmtError&) noexcept = default;
 };
 
+/// The SMP-level error codes, `mcumgr_err_t` (docs/protocol-notes.md section 3,
+/// S5).
+///
+/// These are the codes carried by a flat `rc` -- SMP v1 always, and SMP v2 for
+/// failures raised below the group handler. They are **not** comparable with a
+/// group-scoped `rc`, which is why `MgmtError::group_scoped` must be false
+/// before a value is read as one of these. `smp_error()` does that check.
+///
+/// Values a release adds later are preserved numerically rather than rejected
+/// (section 9, A2), so a code outside this list is normal and must not be
+/// treated as malformed.
+enum class SmpError : std::uint16_t
+{
+    Ok = 0,
+    Unknown = 1,
+    NoMemory = 2,        ///< Typically no room for the CBOR response.
+    InvalidArgument = 3, ///< `MGMT_ERR_EINVAL`.
+    TimedOut = 4,
+    NoEntry = 5,
+    BadState = 6, ///< The current state disallows the command.
+    ResponseTooLarge = 7,
+    NotSupported = 8, ///< The command is not built into this firmware.
+    Corrupt = 9,
+    Busy = 10, ///< Blocked by another command; a reset may be retried with `force`.
+    AccessDenied = 11,
+    VersionTooOld = 12,
+    VersionTooNew = 13,
+    BridgeUnavailable = 14,
+    PerUser = 256, ///< First code in the user-defined range.
+};
+
 /// A structured error: a category, optionally the device's own report, and
 /// diagnostic context.
 ///
@@ -172,6 +203,29 @@ private:
     std::string reason_;
     const char* where_{nullptr};
 };
+
+/// The SMP-level code an error carries, if it carries one.
+///
+/// Returns `std::nullopt` unless the device reported a **flat** `rc`: a
+/// group-scoped code means something entirely different and must not be read as
+/// an `SmpError`. This is the safe way to ask "was that ENOTSUP?" without
+/// hand-checking `group_scoped` at every call site.
+///
+/// \code
+///     if (smp_error(error) == SmpError::NotSupported) {
+///         // Optional command; fall back rather than fail.
+///     }
+/// \endcode
+[[nodiscard]] inline std::optional<SmpError> smp_error(const Error& error) noexcept
+{
+    // Bound once rather than calling mgmt() three times: the engaged state is
+    // then visible -- to a reader and to static analysis -- where rc is read.
+    const std::optional<MgmtError>& mgmt = error.mgmt();
+    if (!mgmt.has_value() || mgmt->group_scoped) {
+        return std::nullopt;
+    }
+    return static_cast<SmpError>(mgmt->rc);
+}
 
 /// A human-readable rendering, for diagnostics only.
 ///

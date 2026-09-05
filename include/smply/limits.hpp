@@ -56,6 +56,14 @@ inline constexpr std::size_t kMaxVersionStringLength = 32;
 /// Largest accepted device-supplied `rsn` string, in bytes.
 inline constexpr std::size_t kMaxReasonLength = 128;
 
+/// Largest string smply will send to, or accept back from, the echo command.
+///
+/// Echo exists as an end-to-end smoke test, not as a bulk channel, so the
+/// request encodes into a small stack buffer rather than sizing one from the
+/// caller's input. A longer string is rejected as `InvalidArgument` rather than
+/// silently truncated.
+inline constexpr std::size_t kMaxEchoLength = 128;
+
 /// Default per-request deadline.
 inline constexpr Duration kDefaultTimeout = std::chrono::seconds{5};
 

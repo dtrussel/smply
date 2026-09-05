@@ -545,6 +545,81 @@ TEST_CASE("next_deadline signals immediate work as a past time", "[client][timeo
     REQUIRE(*deadline == smply::TimePoint::min());
 }
 
+TEST_CASE("deferred work runs once, on the next poll", "[client][defer]")
+{
+    // The seam a management group uses to report an argument error without
+    // invoking a callback inside the call that produced it.
+    int calls = 0;
+
+    Fixture fixture;
+
+    fixture.client.defer([&] { ++calls; });
+    REQUIRE(calls == 0);
+
+    fixture.client.poll(fixture.clock.now());
+    REQUIRE(calls == 1);
+
+    fixture.client.poll(fixture.clock.now());
+    REQUIRE(calls == 1); // not re-run
+}
+
+TEST_CASE("deferred work makes next_deadline report work ready now", "[client][defer]")
+{
+    Fixture fixture;
+
+    REQUIRE_FALSE(fixture.client.next_deadline().has_value());
+
+    fixture.client.defer([] {});
+
+    const auto deadline = fixture.client.next_deadline();
+    REQUIRE(deadline.has_value());
+    REQUIRE(*deadline == smply::TimePoint::min());
+}
+
+TEST_CASE("deferred work may defer more", "[client][defer]")
+{
+    int calls = 0;
+
+    Fixture fixture;
+
+    fixture.client.defer([&] {
+        ++calls;
+        fixture.client.defer([&] { ++calls; });
+    });
+
+    // Drained in batches, so the nested one runs in the same poll() rather
+    // than waiting for another.
+    fixture.client.poll(fixture.clock.now());
+    REQUIRE(calls == 2);
+}
+
+TEST_CASE("an empty deferred function is ignored", "[client][defer]")
+{
+    Fixture fixture;
+
+    fixture.client.defer(nullptr);
+
+    REQUIRE_FALSE(fixture.client.next_deadline().has_value());
+    fixture.client.poll(fixture.clock.now());
+    SUCCEED();
+}
+
+TEST_CASE("destruction drains deferred work rather than dropping it", "[client][defer][lifetime]")
+{
+    int calls = 0;
+
+    FakeTransport transport;
+    const ManualClock clock;
+
+    {
+        SmpClient client{transport, clock};
+        client.defer([&] { ++calls; });
+        REQUIRE(calls == 0);
+    }
+
+    REQUIRE(calls == 1);
+}
+
 TEST_CASE("polling with nothing outstanding is harmless", "[client][timeout]")
 {
     Fixture fixture;

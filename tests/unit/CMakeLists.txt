@@ -7,6 +7,7 @@ add_executable(smply_unit_tests
     test_error.cpp
     test_fake_transport.cpp
     test_mgmt_error.cpp
+    test_os_group.cpp
     test_result.cpp
     test_smp_client.cpp
     test_smp_codec.cpp

@@ -603,3 +603,89 @@ everything below it and should read as thin: encode a request with
 `cbor::Reader` — checking `status()` before trusting the result, per the P5
 caveat. Nothing in P7 should touch sequence numbers, deadlines or `rc` handling.
 If it seems to need to, the seam is in the wrong place.
+
+### 2026-09-05 — P7: OS management group
+
+**Status after this session:** P7 = `Complete`. Next phase: **P8 — Image
+management: state read/write, erase, slot info**.
+
+**Completed.** `include/smply/groups/os.hpp` and
+`src/groups/os/os_management.cpp`: reset, MCUmgr parameters, echo. Plus 35 tests
+(239 total). All gates green across the five Linux presets. Every request vector
+in the suite is hand-derived from the CBOR grammar and the field names in
+[`protocol-notes.md`](protocol-notes.md) §5 — an encoder checked against its own
+output proves nothing.
+
+**Protocol work.** Verified before any code was written, adding source S13 (the
+OS-group server implementation) to the inventory:
+
+* **Echo had no recorded wire shape.** `{"d": str}` in, `{"r": str}` back. It is
+  registered under *both* the read and write handler slots, which is why either
+  op is legal; reset is write-only and mcumgr params read-only, so the wrong op
+  on those returns `ENOTSUP` rather than an answer.
+* **A15 — the documentation and the implementation disagree about `force`.**
+
+**Changed.** Four deviations, in the roadmap's P7 outcome. The one that affects
+every later group: **`SmpClient` gained a public `defer()`**. P6 had the
+machinery but exposed no way for a layer above to use it, so a group rejecting
+an argument would have had to invoke its callback inline — breaking the
+invariant that a callback never runs inside the call that started the operation.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P8, P10 and P12.**
+
+* **A group is thin, and P8's should look like this one.** No sequence numbers,
+  no deadlines, no `rc` handling: `SmpClient` has already done all three by the
+  time a response arrives. If a group seems to need any of them, the seam is in
+  the wrong place.
+* **The four rules every group follows** are written out in
+  [`design.md`](design.md) §5: encode into a stack buffer sized from the
+  constant that bounds the input; check `cbor::Reader::status()` before trusting
+  *any* decoded field; copy views before they escape the callback; never run a
+  callback inside the call that started the operation — use `SmpClient::defer()`
+  for an argument rejection.
+* **Where Zephyr's docs and Zephyr's source disagree, the source wins — and you
+  must read both.** A15 is the case in point: the specification says `force` is
+  an integer, the server decodes a boolean, and it *discards the decode result*,
+  so an integer is silently ignored and the reset proceeds unforced with nothing
+  reported back. Reading only the `.rst` would have produced a client whose
+  force flag never worked. P8 covers a much larger surface (§6); read
+  `img_mgmt.c` alongside `smp_group_1.rst`, not instead of it.
+* **Reset is acceptance, not completion.** The callback fires when the device
+  took the command. Learning that it actually restarted means waiting for a
+  transport disconnect, which is P12's job.
+* **`smp_error()` is how a caller recognises an SMP-level code**, and it returns
+  `nullopt` for a group-scoped `rc` so the two numbering spaces cannot be
+  confused. P8 will want the *image* group's own `rc` enumeration alongside it —
+  `img_mgmt_err_code_t` (S6) — and the same discipline applies: a group-scoped 3
+  is not `MGMT_ERR_EINVAL`.
+* **A failed build leaves the previous test binary in place**, so `ctest` cheerfully
+  reports the *old* suite passing. This nearly hid a GCC-only compile error
+  during P7 (`constexpr` on a function calling a non-`constexpr` accessor, which
+  Clang accepts). Check the build's exit status separately from the test result;
+  do not read "239 tests passed" as evidence that anything was rebuilt.
+
+**On coverage.** `src/groups/os/` is at 71.6 % branch and 85.2 % line coverage,
+and every uncovered line is one of eight deliberate invariant guards: three
+encode-failure checks a `static_assert` proves unreachable, two `enter_map()`
+checks `SmpClient::interpret()` already guarantees, and the `reject<>()`
+instantiations only those can reach. They are kept rather than deleted — a
+decoder that assumes its input was validated elsewhere is one refactor away from
+trusting a device — but they inflate the branch denominator exactly as throw
+branches do. That is now **two** categories a bare percentage cannot distinguish
+from untested code, which P13 has to resolve before it turns enforcement on.
+
+**Docs updated.** `protocol-notes.md` (S13, echo's wire shape, A15),
+`design.md` (§5 rewritten: the four rules, and why reset is acceptance rather
+than completion), `api.md` (`groups/os.hpp`, `SmpError`/`smp_error()`,
+`Callback<T>`, `SmpClient::defer()`), `roadmap.md` (P7 Complete with outcome,
+4 deviations, 2 discovered items, 2 follow-ups), this log.
+
+**Recommended next.** **P8 — image management** (everything in group 1 except
+upload). It is the first group with real decoding: `protocol-notes.md` §6 has
+the "absent means false" and "absent image ⇒ 0" rules, and the element and
+string caps in `limits.hpp` exist for it. Read §6 and §7 together first — the
+two-hash distinction (upload `sha` over the whole file versus image-state `hash`
+over `IMAGE_TLV_SHA256`) is the classic client bug, and P8 is where the wrong
+one first becomes reachable.

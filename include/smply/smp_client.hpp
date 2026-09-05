@@ -118,7 +118,7 @@ struct RawResponse
 
 /// Invoked exactly once per request, with the response or the reason there
 /// will not be one.
-using ResponseCallback = std::function<void(Result<RawResponse>)>;
+using ResponseCallback = Callback<RawResponse>;
 
 /// What to send.
 struct RequestSpec
@@ -209,6 +209,20 @@ public:
     /// discarded by the retired-sequence set. An invalid or stale handle is a
     /// no-op.
     void cancel(RequestHandle handle);
+
+    /// Queues \p work to run on the next `poll()`.
+    ///
+    /// This exists so a layer above can keep the same promise the client makes:
+    /// a callback never runs inside the call that started the operation. A
+    /// management group that rejects an argument, or fails to encode a request,
+    /// has no request to attach the failure to -- without this it would have to
+    /// invoke the callback inline, before its own `RequestHandle` had been
+    /// assigned to anything.
+    ///
+    /// Queued work runs once, in order, and is dropped on nothing: the
+    /// destructor drains the queue before returning. An empty `std::function`
+    /// is ignored.
+    void defer(std::function<void()> work);
 
     /// Drives deadlines and delivers deferred completions.
     ///

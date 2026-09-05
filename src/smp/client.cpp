@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -30,13 +31,6 @@ struct Pending
     Operation expected_op{};
     TimePoint deadline;
     ResponseCallback callback;
-};
-
-/// A completion that must not run inside the call that caused it.
-struct Deferred
-{
-    ResponseCallback callback;
-    Error error;
 };
 
 } // namespace
@@ -147,6 +141,13 @@ public:
     }
 
     // --- driving -----------------------------------------------------------
+
+    void defer_work(std::function<void()> work)
+    {
+        if (work) {
+            deferred_.push_back(std::move(work));
+        }
+    }
 
     void poll(TimePoint now)
     {
@@ -378,7 +379,9 @@ private:
     RequestHandle defer(ResponseCallback callback, Error error)
     {
         if (callback) {
-            deferred_.push_back(Deferred{std::move(callback), std::move(error)});
+            defer_work([cb = std::move(callback), err = std::move(error)]() mutable {
+                cb(fail(std::move(err)));
+            });
         }
         return {};
     }
@@ -388,10 +391,10 @@ private:
         // Callbacks may defer more work, so drain in batches rather than
         // iterating a container that is being appended to.
         while (!deferred_.empty()) {
-            std::vector<Deferred> batch;
+            std::vector<std::function<void()>> batch;
             batch.swap(deferred_);
-            for (Deferred& item : batch) {
-                item.callback(fail(std::move(item.error)));
+            for (const std::function<void()>& item : batch) {
+                item();
             }
         }
     }
@@ -474,7 +477,7 @@ private:
 
     std::vector<Pending> pending_;
     std::vector<std::byte> send_buffer_;
-    std::vector<Deferred> deferred_;
+    std::vector<std::function<void()>> deferred_;
 
     /// Membership test for the retired set, and the ring that bounds it.
     std::array<bool, 256> retired_flags_{};
@@ -509,6 +512,11 @@ RequestHandle SmpClient::request(const RequestSpec& spec, ResponseCallback on_re
 void SmpClient::cancel(RequestHandle handle)
 {
     impl_->cancel(handle);
+}
+
+void SmpClient::defer(std::function<void()> work)
+{
+    impl_->defer_work(std::move(work));
 }
 
 void SmpClient::poll(TimePoint now)

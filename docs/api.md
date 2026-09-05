@@ -62,6 +62,19 @@ enum class ErrorCode : std::uint16_t {
 // Never allocates: the zero-cost path for logging.
 std::string_view to_string(ErrorCode) noexcept;
 
+// The SMP-level codes, mcumgr_err_t (protocol-notes §3, S5). Carried by a
+// FLAT rc only -- a group-scoped rc of the same number means something else.
+enum class SmpError : std::uint16_t {
+    Ok = 0, Unknown = 1, NoMemory = 2, InvalidArgument = 3, TimedOut = 4,
+    NoEntry = 5, BadState = 6, ResponseTooLarge = 7,
+    NotSupported = 8,        // the command is not built into this firmware
+    Corrupt = 9,
+    Busy = 10,               // a reset may be retried with force
+    AccessDenied = 11, VersionTooOld = 12, VersionTooNew = 13,
+    BridgeUnavailable = 14,
+    PerUser = 256,
+};
+
 // Device-reported error, both SMP v1 and v2 shapes (protocol-notes §3).
 struct MgmtError {
     Group         group{Group::Os}; // only meaningful when group_scoped
@@ -94,6 +107,11 @@ public:
     friend bool operator==(const Error&, const Error&) noexcept;
 };
 
+// nullopt unless the device reported a FLAT rc, so a group-scoped code can
+// never be mistaken for an SMP-level one:
+//     if (smp_error(e) == SmpError::NotSupported) { /* fall back */ }
+std::optional<SmpError> smp_error(const Error&) noexcept;
+
 std::string to_string(const Error&);   // diagnostics only, never for control flow
 
 // std::expected where the standard library has it, otherwise an API-compatible
@@ -102,6 +120,11 @@ std::string to_string(const Error&);   // diagnostics only, never for control fl
 template <class T, class E> using expected   = /* std:: or smply's own */;
 template <class E>          using unexpected = /* ditto */;
 template <class T>          using Result     = expected<T, Error>;
+
+// How every asynchronous operation reports its outcome. Invoked exactly once.
+// Callback<void> is the form for an operation with no value but a failure to
+// report. Whatever it captures must outlive the SmpClient (see below).
+template <class T>          using Callback   = std::function<void(Result<T>)>;
 
 // Builds the failure state, so call sites never name the backing.
 unexpected<Error> fail(Error) noexcept;
@@ -280,7 +303,7 @@ public:
 // Raw response: the decoded header plus the CBOR payload, borrowed for the
 // duration of the callback.
 struct RawResponse { Header header; ConstBytes payload; };
-using ResponseCallback = std::function<void(Result<RawResponse>)>;
+using ResponseCallback = Callback<RawResponse>;   // same type, named for its role
 
 struct RequestSpec {
     Operation    op{};
@@ -327,6 +350,12 @@ public:
     // poll(). A stale or already-completed handle is a no-op.
     void cancel(RequestHandle);
 
+    // Queues work for the next poll(). This is what lets a layer above keep
+    // the same promise: a management group that rejects an argument has no
+    // request to attach the failure to, and without this would have to invoke
+    // the callback inline. Drained by the destructor, so nothing is dropped.
+    void defer(std::function<void()> work);
+
     // Drives deadlines and delivers deferred completions. Callbacks run inside
     // it. Call from the pump.
     void poll(TimePoint now);
@@ -354,21 +383,36 @@ public:
 ```cpp
 namespace smply {
 
-template <class T> using Callback = std::function<void(Result<T>)>;
+// Callback<T> is declared in smply/result.hpp -- every group shares it:
+//     template <class T> using Callback = std::function<void(Result<T>)>;
 
-struct McumgrParameters { std::uint32_t buf_size; std::uint32_t buf_count; };
+struct McumgrParameters {
+    std::uint32_t buf_size  = 0;   // one SMP buffer, INCLUDING the 8-byte header
+    std::uint32_t buf_count = 0;
+};
+
 struct ResetOptions {
-    bool force = false;
-    std::optional<std::uint32_t> boot_mode{};
-    std::optional<Duration> timeout{};
+    bool force = false;            // sent as a CBOR bool, omitted when false (A15)
+    std::optional<Duration> timeout;
 };
 
 class OsManagement {
 public:
-    explicit OsManagement(SmpClient&);
+    explicit OsManagement(SmpClient&) noexcept;
 
-    RequestHandle reset(ResetOptions, Callback<void>);
+    // The response means the request was accepted, NOT that the device has
+    // restarted. Wait for a transport disconnect to learn that. A reset hook
+    // may refuse; SmpError::Busy invites a retry with force.
+    RequestHandle reset(const ResetOptions&, Callback<void>);
+    RequestHandle reset(Callback<void>);
+
+    // Optional command: a minimal server answers SmpError::NotSupported, which
+    // is an ordinary ProtocolError here. Fall back to
+    // limits::kDefaultSmpMessageBudget rather than failing.
     RequestHandle mcumgr_parameters(Callback<McumgrParameters>);
+
+    // Rejects text longer than limits::kMaxEchoLength with InvalidArgument,
+    // and a reply longer than that with CborDecode.
     RequestHandle echo(std::string_view, Callback<std::string>);
 };
 
