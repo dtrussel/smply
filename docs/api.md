@@ -194,6 +194,13 @@ std::array<std::byte, kHeaderSize> encode(const Header&) noexcept;
 Result<Header> decode_header(std::span<const std::byte, kHeaderSize>) noexcept;
 Result<Header> decode_header(ConstBytes) noexcept;   // short buffer => Malformed
 
+constexpr bool      is_response(Operation) noexcept;
+// The response operation a device must use when answering this request.
+// Correlation compares against it, so a Read cannot be answered by a
+// WriteResponse (ADR-0010). An operation that is already a response is
+// returned unchanged.
+constexpr Operation response_to(Operation request) noexcept;
+
 const char* operation_name(Operation) noexcept;
 
 } // namespace smply
@@ -254,13 +261,12 @@ public:
 namespace smply {
 
 struct SmpClientConfig {
-    Version       smp_version        = Version::V1;   // protocol-notes §9 A1
-    Duration      default_timeout    = std::chrono::seconds{5};
-    std::uint16_t max_smp_payload    = 8192;
-    std::uint32_t max_assembly_bytes = 16 * 1024;
-    unsigned      max_cbor_nesting   = 16;
-    std::uint8_t  max_in_flight      = 1;             // A10
-    std::uint8_t  max_retired_seqs   = 64;
+    Version       smp_version        = Version::V1;              // protocol-notes §9 A1
+    Duration      default_timeout    = limits::kDefaultTimeout;      // 5 s
+    std::uint16_t max_smp_payload    = limits::kMaxSmpPayload;       // 8192
+    std::size_t   max_assembly_bytes = limits::kMaxAssemblyBuffer;   // 16 KiB
+    std::uint8_t  max_in_flight      = limits::kMaxInFlight;         // 1   (A10)
+    std::uint8_t  max_retired_seqs   = limits::kMaxRetiredSeqs;      // 64
 };
 
 class RequestHandle {                 // generation-tagged; safe when stale
@@ -268,6 +274,7 @@ public:
     RequestHandle() = default;
     bool valid() const noexcept;
     explicit operator bool() const noexcept;
+    friend bool operator==(const RequestHandle&, const RequestHandle&) noexcept = default;
 };
 
 // Raw response: the decoded header plus the CBOR payload, borrowed for the
@@ -276,34 +283,67 @@ struct RawResponse { Header header; ConstBytes payload; };
 using ResponseCallback = std::function<void(Result<RawResponse>)>;
 
 struct RequestSpec {
-    Operation   op{};
-    Group       group{};
+    Operation    op{};
+    Group        group{};
     std::uint8_t command{};
-    ConstBytes  payload{};                    // pre-encoded CBOR
-    std::optional<Duration> timeout{};        // else config.default_timeout
+    ConstBytes   payload;                     // pre-encoded CBOR, borrowed for the call
+    std::optional<Duration> timeout;          // else config.default_timeout
+};
+
+// Counters, so a test can assert a message was dropped for a named reason
+// rather than silently mishandled.
+struct SmpClientStats {
+    std::uint64_t sent = 0, received = 0;
+    std::uint64_t unmatched = 0;   // matched no request, live or retired
+    std::uint64_t late = 0;        // answer to something already completed
+    std::uint64_t mismatched = 0;  // seq matched, group/command/op did not
+    std::uint64_t timeouts = 0, cancelled = 0;
+    std::uint64_t malformed = 0;   // framing failure; terminal for the stream
 };
 
 class SmpClient final : private TransportListener {
 public:
+    // Every transport bound to a client -- this one and any later passed to
+    // rebind_transport() -- must outlive it: the client detaches on destruction
+    // and on rebind. Declare the transport first.
     SmpClient(Transport&, const Clock& = system_clock(), SmpClientConfig = {});
-    ~SmpClient();                             // cancels all pending requests
-    SmpClient(SmpClient&&) = delete;           // stable address: it is a listener
 
+    SmpClient(const SmpClient&)            = delete;   // stable address:
+    SmpClient(SmpClient&&)                 = delete;   // it is the transport's listener
+    SmpClient& operator=(const SmpClient&) = delete;
+    SmpClient& operator=(SmpClient&&)      = delete;
+
+    // Completes every outstanding request with Cancelled before returning, so
+    // no callback can fire after destruction. The one place a callback runs
+    // outside poll() or on_bytes().
+    ~SmpClient() override;
+
+    // Returns an invalid handle when the request could not be attempted; the
+    // callback then receives the reason on the next poll(). A callback is
+    // never invoked from inside this call.
     RequestHandle request(const RequestSpec&, ResponseCallback);
-    void          cancel(RequestHandle) noexcept;
 
-    // Drives timeouts. May invoke completion callbacks. Call from the pump.
-    void      poll(TimePoint now);
-    // Earliest pending deadline, for computing a precise event-loop wait.
+    // Removes the request at once; its callback receives Cancelled on the next
+    // poll(). A stale or already-completed handle is a no-op.
+    void cancel(RequestHandle);
+
+    // Drives deadlines and delivers deferred completions. Callbacks run inside
+    // it. Call from the pump.
+    void poll(TimePoint now);
+
+    // nullopt: nothing outstanding. TimePoint::min(): work is ready now, so
+    // poll rather than wait.
     std::optional<TimePoint> next_deadline() const noexcept;
 
-    // After the application re-establishes the link. Resets reassembly and
-    // makes the client usable again. Pending requests must already be gone.
+    // After the application re-establishes the link. Fails anything still
+    // outstanding with Disconnected and resets reassembly.
     void rebind_transport(Transport&);
 
-    bool connected() const noexcept;
-    struct Stats { std::uint64_t sent, received, unmatched, timeouts, malformed; };
-    Stats stats() const noexcept;
+    bool        connected() const noexcept;   // false once the link drops
+    std::size_t in_flight() const noexcept;
+
+    const SmpClientStats&  stats()  const noexcept;
+    const SmpClientConfig& config() const noexcept;
 };
 
 } // namespace smply

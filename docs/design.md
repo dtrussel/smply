@@ -224,71 +224,142 @@ text is capped at `limits::kMaxReasonLength`, since it is attacker-controlled.
 ## 4. Request lifecycle (`src/smp/client.*`)
 
 ```cpp
-class SmpClient : public TransportListener {
-public:
-    SmpClient(Transport&, const Clock&, SmpClientConfig = {});
+class SmpClient final : private TransportListener {   // final, and not movable:
+public:                                               // it registers its address
+    SmpClient(Transport&, const Clock& = system_clock(), SmpClientConfig = {});
+    ~SmpClient() override;            // completes outstanding requests inline
+
     RequestHandle request(const RequestSpec&, ResponseCallback);
-    void   poll(TimePoint now);       // drives timeouts; may invoke callbacks
-    TimePoint next_deadline() const;  // for event-loop wait computation
-    void   cancel(RequestHandle);
-    void   rebind_transport(Transport&);   // after reconnect; resets assembler
-    // TransportListener
-    void on_bytes(std::span<const std::byte>) override;
-    void on_transport_error(Error) override;
-    void on_disconnected(Error) override;
+    void cancel(RequestHandle);
+    void poll(TimePoint now);                       // drives deadlines; runs callbacks
+    std::optional<TimePoint> next_deadline() const; // nullopt: nothing outstanding
+    void rebind_transport(Transport&);              // after reconnect; resets assembler
+
+    bool connected() const;
+    std::size_t in_flight() const;
+    const SmpClientStats& stats() const;
+    const SmpClientConfig& config() const;
 };
 ```
 
-**Send path.** Allocate `seq` (see below) → encode header + already-encoded CBOR
-payload into a reusable send buffer → `transport.send(whole_message)` →
-on success, insert into the pending table with `deadline = now + timeout`; on
-`TransportBusy`, fail the request immediately with that code (the caller decides
-whether to retry — the DFU machine does); on any other transport error, fail
-with `TransportError`.
+`TransportListener` is inherited **privately**: only a transport calls those
+three methods, and nothing above the client should be able to synthesise bytes.
 
-**Sequence allocation.** A monotonically incrementing `uint8_t`. Because
-`max_in_flight` defaults to 1 and is bounded well below 256, a value in use is
-never reallocated. The allocator skips numbers currently pending **and** numbers
-in the retired set.
+**Lifetime.** Every transport a client has been bound to must outlive it. The
+destructor detaches from the transport it holds, and `rebind_transport()`
+detaches from the one it replaces; a transport destroyed first leaves those
+calls dangling. Declaring the transport before the client is enough, and is what
+the tests do. The transport contract states the converse — a listener outliving
+its transport — but not this direction; see the P6 follow-up item in
+[`roadmap.md`](roadmap.md).
 
-**Receive path.** `on_bytes()` → `MessageAssembler::feed()` → for each complete
-message:
+### Callbacks never run inside the call that caused them
 
-1. Look up `seq` in the pending table. Not found → check the retired set; if
-   present, drop silently (a late response, PN §9 A4); otherwise count it as
-   `unmatched_responses` and drop. Never fatal (A5).
-2. Verify `header.group == pending.group && header.command == pending.command &&
-   header.op == expected_response_op(pending.op)`. Mismatch ⇒ complete the
-   request with `UnexpectedResponse`… **no**: the request stays pending and the
-   *message* is discarded with a counter bump, because a mismatched message may
-   belong to a different, stale exchange. The request then times out normally.
-   (Rationale: A4 — the spec does not define this case; discarding is the only
-   choice that cannot mis-complete a request.)
-3. Extract `MgmtError` (PN §3). If non-zero, complete with
-   `ErrorCode::ProtocolError` + the preserved `MgmtError` + optional `rsn`.
+`request()` and `cancel()` are calls the *application* makes, and neither
+invokes a callback before returning. A request that cannot even be attempted —
+link down, table full, payload too large, transport refused it — returns an
+invalid handle and its callback is queued for the next `poll()`. So
+`handle = client.request(...)` always assigns before anything can observe the
+result, which is what lets the upload and DFU machines store the handle they are
+about to be told about.
+
+The single exception is the destructor: there is no later `poll()` to defer to,
+so it drains queued completions, fails everything still outstanding with
+`Cancelled`, and drains again — all inline, before it returns. No callback can
+fire after the client is gone.
+
+Transport callbacks are the mirror image: `on_disconnected()` fails every
+pending request *inline*, because the application did not ask for it and should
+learn at once.
+
+### Send path
+
+Allocate `seq` → encode header + already-encoded CBOR payload into a reusable
+send buffer → `transport.send(whole_message)`. Only on success does the request
+enter the pending table with `deadline = now + timeout`. A failed send retires
+the sequence number before deferring the failure: whether the transport put the
+bytes on the wire before failing is not knowable, and a late answer should be
+dropped quietly rather than counted as unsolicited.
+
+The payload bound is a single comparison against `max_smp_payload`. A second
+check against the largest encodable length would be dead code — `max_smp_payload`
+is a `uint16_t`, so it cannot exceed the 16-bit length field — and a
+`static_assert` says so where a future widening would trip over it.
+
+### Sequence allocation
+
+A monotonically incrementing `uint8_t`. The allocator skips numbers currently
+pending **and** numbers in the retired set, and reports exhaustion rather than
+reusing one. With `max_in_flight` and `max_retired_seqs` both bounded well below
+256 that path is unreachable, but the allocator does not pretend otherwise.
+
+### Receive path
+
+`on_bytes()` → `MessageAssembler::feed()` → for each complete message:
+
+1. Look up `seq` in the pending table. Not found → if it is in the retired set,
+   count `late` and drop (PN §9 A4); otherwise count `unmatched` and drop.
+   Never fatal (A5).
+2. Verify `header.group`, `header.command` and `header.op ==
+   response_to(request.op)`. On a mismatch the **message** is discarded with a
+   `mismatched` bump and the request is left pending to time out normally.
+   Completing it would let a stale or hostile message answer a live request with
+   someone else's data. The spec does not define this case (A4); discarding is
+   the only choice that cannot mis-complete a request.
+3. Groups at 64 and above are user-defined and may carry any payload encoding,
+   so they are handed up undecoded. For every other group, extract `MgmtError`
+   (PN §3): a reported failure completes the request with
+   `ErrorCode::ProtocolError`, the preserved `MgmtError`, and the optional
+   length-capped `rsn` text.
 4. Otherwise complete with the raw payload span; the group layer decodes it.
 
-Completion always: remove from pending → add `seq` to the bounded retired set →
-invoke the callback exactly once.
+Completion always: remove from the table → retire the `seq` → invoke the
+callback exactly once. Removal happens *before* the callback runs, so a callback
+that issues a new request may reuse the slot safely.
 
-**Timeouts.** `poll(now)` walks the pending table (≤ `max_in_flight` entries) and
-completes expired requests with `Timeout`. `next_deadline()` lets the
-application sleep precisely instead of spinning.
+Framing that cannot be parsed at all is terminal for the stream: SMP has no sync
+word, so nothing after a bad length can be correlated. Every outstanding request
+is failed and `malformed` is counted. The link itself stays open — the client
+does not presume to close a transport it does not own.
 
-**Cancellation.** `cancel(handle)` completes the request with `Cancelled`
-immediately and retires the `seq`. It does **not** try to abort the transport
-write; the device may still answer, and that answer is dropped by the retired
-set. A `RequestHandle` for an already-completed request is a harmless no-op
-(handles carry a generation counter so a stale handle cannot cancel a newer
-request that reused the slot).
+### Timeouts
 
-**Disconnect.** `on_disconnected()` fails every pending request with
-`Disconnected`, resets the assembler and marks the client unbound; subsequent
-`request()` calls fail fast with `Disconnected` until `rebind_transport()`.
+`poll(now)` drains queued completions, snapshots the expired handles, completes
+each one that is still live, then drains again. Snapshotting matters: a timeout
+callback may cancel or complete another expiring request, and the generation
+check on re-resolution is what stops the sweep from completing it twice.
 
-**Re-entrancy.** Callbacks may start new requests. The pending table is
-iterated over a snapshot of expired handles, and completion is performed
-outside the iteration, so a callback mutating the table is safe.
+`next_deadline()` returns `std::nullopt` when nothing is outstanding, and
+`TimePoint::min()` when a completion is already queued — the signal to an event
+loop that it should poll rather than wait.
+
+### Cancellation
+
+`cancel(handle)` removes the request from the table immediately, so a response
+arriving before the next `poll()` cannot complete it, and defers the `Cancelled`
+callback. It does not try to abort the transport write; the device may still
+answer, and that answer is dropped by the retired set. A stale or already
+completed handle is a no-op — handles carry a generation counter, so a handle
+cannot cancel a newer request that reused its slot.
+
+### Disconnect and rebind
+
+`on_disconnected()` fails every pending request with `Disconnected`, resets the
+assembler and marks the client unbound; subsequent `request()` calls fail fast
+until `rebind_transport()`. `on_transport_error()` completes nothing: it reports
+a recoverable condition not tied to any one request, so an outstanding request
+either still gets its answer or times out. It is recorded for diagnostics.
+
+`rebind_transport()` fails anything still outstanding, detaches from the old
+transport, resets the assembler so a message truncated by the drop cannot bleed
+into the new session, and marks the client connected again.
+
+### Counters
+
+`SmpClientStats` records `sent`, `received`, `unmatched`, `late`, `mismatched`,
+`timeouts`, `cancelled` and `malformed`. They exist so tests can assert that a
+message was *dropped for a named reason* rather than silently mishandled — the
+distinction that separates a deliberate discard from a bug.
 
 ## 5. Management groups
 

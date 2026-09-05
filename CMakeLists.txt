@@ -65,6 +65,7 @@ target_sources(smply
         src/cbor/writer.cpp
         src/core.cpp
         src/smp/assembler.cpp
+        src/smp/client.cpp
         src/smp/codec.cpp
         src/version.cpp
 )

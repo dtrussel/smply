@@ -112,6 +112,33 @@ struct Header
 /// time; a span shorter than kHeaderSize yields `MalformedMessage`.
 [[nodiscard]] Result<Header> decode_header(ConstBytes bytes) noexcept;
 
+/// True when \p op is a response rather than a request.
+[[nodiscard]] constexpr bool is_response(Operation op) noexcept
+{
+    return op == Operation::ReadResponse || op == Operation::WriteResponse;
+}
+
+/// The response operation a device must use when answering \p request.
+///
+/// Correlation needs this: a response is only the answer to a request if its
+/// operation is the matching response form, and accepting any operation would
+/// let a `Read` be answered by a `WriteResponse`
+/// (ADR-0010). Passing an operation that is already a response returns it
+/// unchanged, since there is nothing to map.
+[[nodiscard]] constexpr Operation response_to(Operation request) noexcept
+{
+    switch (request) {
+    case Operation::Read:
+        return Operation::ReadResponse;
+    case Operation::Write:
+        return Operation::WriteResponse;
+    case Operation::ReadResponse:
+    case Operation::WriteResponse:
+        return request;
+    }
+    return request;
+}
+
 /// A short, stable name for an operation, for logs and test failure messages.
 [[nodiscard]] const char* operation_name(Operation op) noexcept;
 

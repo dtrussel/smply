@@ -475,3 +475,21 @@ TEST_CASE("headers with unusual but legal fields pass through", "[assembler]")
     REQUIRE(smply::to_underlying(recorder.messages[0].header.group) == 9000);
     REQUIRE(recorder.messages[0].header.flags == 0xFF);
 }
+
+TEST_CASE("an oversized length is caught even when the header arrives split", "[assembler][bounds]")
+{
+    // The slow path has its own copy of the size check. A header split across
+    // two feeds must be validated just as strictly as one that arrives whole.
+    const AssemblerLimits limits{.max_payload = 64, .max_buffer = 1024};
+    MessageAssembler assembler{limits};
+    Recorder recorder;
+
+    const auto message = make_raw_message(header_for(1, 65), filler(4));
+
+    REQUIRE(assembler.feed(ConstBytes{message}.first(4), recorder).has_value());
+    const auto result = assembler.feed(ConstBytes{message}.subspan(4), recorder);
+
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().code() == ErrorCode::MessageTooLarge);
+    REQUIRE(assembler.buffered() == 0);
+}

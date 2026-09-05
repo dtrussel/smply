@@ -518,3 +518,81 @@ request. The retired-sequence set is what stops a late response being
 mis-attributed after the 8-bit `seq` wraps. Add `response_to(Operation)` to
 `smp/header.hpp` while you are there (a P2 follow-up), and note the P3 caveat:
 a user callback dispatched from `on_message()` must not re-enter the assembler.
+
+### 2026-09-05 — P6: `SmpClient`
+
+**Status after this session:** P6 = `Complete`. Next phase: **P7 — OS
+management group**.
+
+**Completed.** `include/smply/smp_client.hpp` and `src/smp/client.cpp`: sequence
+allocation, the pending-request table, correlation on the full
+`(seq, group, command, op)` tuple, the retired-sequence ring, deadlines,
+cancellation, disconnect and rebind, and counters. Plus 55 tests (204 total).
+All gates green across `linux-gcc`, `linux-clang`, `linux-gcc-cxx23-std-expected`,
+`linux-gcc-fallback-expected` and `linux-gcc-asan-ubsan`. Branch coverage of
+`src/smp/` is 96.2 % against the phase's ≥ 90 % criterion.
+
+**Changed.** Four deviations, detailed in the roadmap's P6 outcome. The one that
+matters to every later layer: **callbacks are deferred, never immediate**.
+`request()` and `cancel()` queue the callback for the next `poll()` so that
+`handle = client.request(...)` has always assigned before anything can observe
+the handle. `design.md` §4 was rewritten to match — it previously specified
+immediate completion, and also still carried a rejected alternative mid-sentence.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** Three items in the roadmap table. The important one
+is below.
+
+**Caveats — read these before P7 and P8.**
+
+* **A transport must outlive every client bound to it.** `~SmpClient` and
+  `rebind_transport()` both call `set_listener()` on the transport they are
+  letting go of. Three rebind tests declared the replacement transport *after*
+  the fixture, so it died first: GCC aborted with `pure virtual method called`,
+  Clang silently did not. **Declare transports before clients.** The requirement
+  is now on `SmpClient` and `rebind_transport()`; moving it into the normative
+  transport contract is a P15 follow-up.
+* **Groups get correlation and timing for free and must not reimplement
+  either.** A group issues a `RequestSpec` and receives a `Result<RawResponse>`.
+  It never sees a sequence number, never sets a deadline, and never decodes an
+  MCUmgr error — `SmpClient::interpret()` has already turned one into an
+  `ErrorCode::ProtocolError` carrying the `MgmtError` and any `rsn` text.
+* **A response whose `seq` matches but whose group/command/op does not leaves
+  the request pending.** It is counted as `mismatched` and discarded; the
+  request times out normally. Do not "fix" this into a failure — completing a
+  live request from a stale or hostile message is exactly what ADR-0010 forbids.
+* **`RawResponse::payload` is borrowed for the callback only.** Same rule as
+  P3–P5, one layer up: copy anything that must outlive the call.
+* **`max_in_flight` is 1 by default.** A second concurrent request fails with
+  `InvalidState` rather than queueing. P7 and P8 should issue one request at a
+  time; the DFU machine in P12 sequences them.
+* **`SmpClientStats` counters exist to be asserted on.** When a test expects a
+  message to be dropped, assert *which* counter moved — `unmatched`, `late`,
+  `mismatched` or `malformed`. That is the difference between a deliberate
+  discard and a bug that happens to look quiet.
+
+**Chasing coverage found a real defect.** The ≥ 90 % criterion was initially
+missed at 88.1 %. Rather than waive it, the uncovered branches were located:
+`request()` bounded the payload twice, and the second test could never fire
+because `max_smp_payload` is a `uint16_t`. Removed, and replaced with a
+`static_assert` that fires if the field is ever widened. Worth remembering the
+next time a threshold is one point short.
+
+**Caveat on the coverage number itself.** For the same objects, gcovr reports
+76.6 % branch coverage counting throw branches and 96.2 % with
+`--exclude-throw-branches`. `quality-gates.md` §6 does not say which it means.
+Pin that down before P13 turns enforcement on. Related: `src/cbor/` sits at
+80.9 %, below the ≥ 90 % elevated gate it is nominally held to.
+
+**Docs updated.** `design.md` (§4 rewritten around the shipped API: deferred
+callbacks, the receive path, lifetime), `api.md` (`smp_client.hpp` section
+regenerated from the header), `roadmap.md` (P6 Complete with outcome, 4
+deviations, 4 discovered items; three earlier follow-ups closed), this log.
+
+**Recommended next.** **P7 — OS management group.** It is the first consumer of
+everything below it and should read as thin: encode a request with
+`cbor::Writer`, hand it to `SmpClient::request()`, decode the response with
+`cbor::Reader` — checking `status()` before trusting the result, per the P5
+caveat. Nothing in P7 should touch sequence numbers, deadlines or `rc` handling.
+If it seems to need to, the seam is in the wrong place.

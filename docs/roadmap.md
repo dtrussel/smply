@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P6 — `SmpClient`: correlation, timeouts, cancellation** |
-| Last completed phase | P5 — CBOR façade and MCUmgr error extraction |
+| **Next phase to work on** | **P7 — OS management: reset, params, echo** |
+| Last completed phase | P6 — `SmpClient`: correlation, timeouts, cancellation |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -25,7 +25,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P3](#p3) | Streaming SMP message reassembly | **Complete** | P2 |
 | [P4](#p4) | Transport abstraction and `FakeTransport` | **Complete** | P1 |
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | **Complete** | P1 |
-| [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Planned | P2–P5 |
+| [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Complete | P2–P5 |
 | [P7](#p7) | OS management: reset, params, echo | Planned | P6 |
 | [P8](#p8) | Image management: state read/write, erase, slot info | Planned | P6 |
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Planned | P1 |
@@ -571,7 +571,7 @@ the validation.
 <a id="p6"></a>
 ## P6 — `SmpClient`
 
-**Status: Planned** · **Depends on:** P2, P3, P4, P5
+**Status: Complete** · **Depends on:** P2, P3, P4, P5
 
 **Objective.** The request lifecycle: sequence allocation, correlation,
 timeouts, cancellation, disconnection, statistics.
@@ -604,6 +604,71 @@ surfaced, callback-starts-request re-entrancy.
 **Acceptance.** Every listed test passes; branch coverage of `src/smp/` ≥ 90 %.
 
 **Exit.** Groups can be written without touching correlation or timing.
+
+### Outcome
+
+**Completed.** `include/smply/smp_client.hpp`, `src/smp/client.cpp` and 55 new
+tests (204 total). Branch coverage of `src/smp/` is 96.2 % against the ≥ 90 %
+acceptance criterion, and line coverage 98.2 %, measured with gcovr excluding
+throw branches — see the metric caveat in Discovered below.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **Callbacks are deferred, not immediate.** The plan (and `design.md` §4 as
+   written) had `cancel()` complete a request "immediately" and `request()`
+   report a rejection by returning. Both now queue the callback for the next
+   `poll()`. The reason is the invariant every layer above depends on:
+   `handle = client.request(...)` must have assigned before any callback can
+   observe the handle. Completing inline makes the assignment happen *after* the
+   callback that wants to read it. `design.md` §4 was rewritten to match.
+   The destructor is the one exception — it has no later `poll()` — and says so.
+2. **`Stats` is a free-standing `SmpClientStats` returned by const reference**,
+   not a nested type returned by value, and carries three counters the plan did
+   not name: `late`, `mismatched` and `cancelled`. Each exists because a test
+   needs to distinguish *deliberately dropped* from *silently mishandled*, and
+   "unmatched" alone conflates three different reasons for dropping a message.
+3. **`SmpClient` inherits `TransportListener` privately.** Only a transport
+   should be able to feed the client bytes; nothing above it has any business
+   synthesising `on_bytes()`.
+4. **A mismatched response leaves the request pending.** `design.md` §4 already
+   argued for this, but the text still carried the rejected alternative
+   mid-sentence ("complete with `UnexpectedResponse`… **no**:"). Rewritten as a
+   decision rather than a visible deliberation.
+
+**Discovered.**
+
+* **A dead bound, found by chasing coverage rather than assuming it.** P6's
+  ≥ 90 % criterion was initially missed at 88.1 %. Locating the uncovered
+  branches turned up a genuine defect: `request()` checked the payload against
+  both `max_smp_payload` and the largest encodable length, and the second test
+  could never fire, because `max_smp_payload` is a `uint16_t`. Removed, and
+  replaced with a `static_assert` that will fail if the field is ever widened.
+  Nine further tests took `src/smp/` to 95 %. Had the criterion been waived, the
+  dead branch would have survived.
+* **Branch coverage is not one number.** For the identical `src/smp/` object
+  files, gcovr reports 76.6 % counting throw branches and 96.2 % with
+  `--exclude-throw-branches`: a ~20-point swing from metric definition alone,
+  because every potentially-throwing call contributes two branches that a test
+  suite with no exceptions can never take. [`quality-gates.md`](quality-gates.md)
+  §6 states a threshold without saying which metric it means. That must be
+  pinned down before P13 turns enforcement on, or the gate will mean whichever
+  tool CI happens to run.
+* **`src/cbor/` is at 80.9 % branch coverage**, below the ≥ 90 % elevated gate
+  `quality-gates.md` §6 lists for it. Not P6's code and not yet enforced, but it
+  will block P13 as things stand.
+
+* **A transport must outlive every client bound to it, and nothing said so.**
+  `~SmpClient` and `rebind_transport()` both call `Transport::set_listener()` on
+  a transport they are letting go of. Three rebind tests declared the
+  replacement transport *after* the fixture, so it was destroyed first; GCC
+  turned that into `pure virtual method called` while Clang silently did not.
+  A latent use-after-free, found only because the phase's gates run both
+  compilers. The requirement is now stated on `SmpClient` and on
+  `rebind_transport()`, and the tests declare their transports first. The
+  transport contract in `transport.hpp` describes the *listener* outliving the
+  transport but not the reverse; see the follow-up item below.
 
 ---
 
@@ -1067,12 +1132,15 @@ them.
 | ~~P0~~ | ~~`check_docs.py` R4 is a line-based heuristic untested against templates and nested namespaces.~~ **Done in P1**: three bugs found and fixed (nested `detail` namespaces, brace-depth tracking, attribute-prefixed declarations). Still a heuristic; expect further hardening as headers grow. | — |
 | P0 | `cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI. Its first CI run reported nothing, which means the suppression list is also still largely unexercised. Revisit once there is real code. | P1 |
 | P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
-| P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. If chaining becomes common in P6-P12, either add them to the subset or keep the ban explicit. | P6 |
+| P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. **P6 did not need them** — the client's chains are short and each step wants a different error message — so the ban stays explicit. Reconsider if P7–P12 start hand-rolling the same three-line unwrap. | P12 |
 | P5 | The `Writer` has no way to write a nested map or an array under a key. Nothing in MCUmgr's *request* shapes needs one — every request smply sends is a flat map — so it was not built. If a future group needs it, add it rather than hand-rolling the bytes. | when needed |
 | P5 | `for_each_map_in_array` visits map elements only. An array of scalars would need a separate visitor. No MCUmgr response in scope uses one. | when needed |
 | P4 | `Transport` has no `connected()` query. The core learns about a lost link only through `on_disconnected()`. That is sufficient today — `SmpClient` tracks the state itself — but a transport that reconnects underneath the client would have no way to say so. Revisit if a self-healing transport is ever wanted. | P15 |
-| P3 | The assembler's re-entrancy guard makes a re-entrant sink an error. P6's `SmpClient` dispatches user callbacks from `on_message()`, and a callback that starts a new request must not end up back in `feed()`. It will not today (a new request goes to `Transport::send`, not to the assembler), but the constraint should be stated in `SmpClient`'s documentation. | P6 |
-| P2 | `Header` has no `is_response()` / `response_to()` helper. P6 needs the request-to-response operation mapping for correlation and should add it to `smp/header.hpp` rather than open-coding it in the client. | P6 |
+| ~~P3~~ | ~~The assembler's re-entrancy guard makes a re-entrant sink an error … the constraint should be stated in `SmpClient`'s documentation.~~ **Done in P6**: stated in `smp_client.hpp` under "Re-entrancy". | — |
+| ~~P2~~ | ~~`Header` has no `is_response()` / `response_to()` helper.~~ **Done in P6**: both added to `smp/header.hpp`; the client correlates on `response_to(request.op)`. | — |
+| P6 | Two obligations are documented on `SmpClient` but belong in the normative transport contract in `transport.hpp` and `design.md` §9, where a transport author will actually read them: (a) `Transport::send()` **must not** deliver inbound bytes before returning; (b) a transport must outlive every client bound to it, because the client detaches on destruction and on rebind. Consider instead making the contract symmetric — a transport that notifies its listener as it is destroyed would remove (b) entirely. | P15 |
+| P6 | `quality-gates.md` §6 states branch-coverage thresholds without defining the metric. gcov "branches executed" and gcovr `--exclude-throw-branches` differ by ~25 points on the same objects. Pin the tool and the flag before enforcement switches on. | P13 |
+| P6 | `src/cbor/` is at 80 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. Unenforced today; blocking at P13. | P13 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI; `linux-gcc-asan-ubsan` covers sanitizers locally. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
