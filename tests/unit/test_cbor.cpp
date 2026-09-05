@@ -510,6 +510,34 @@ TEST_CASE("array iteration is capped regardless of what the device sends", "[cbo
     REQUIRE(visits == 3); // stopped at the cap, did not run away
 }
 
+TEST_CASE("an array of exactly the cap is accepted", "[cbor]")
+{
+    // The boundary the cap has to get right: three elements with a cap of
+    // three is legal. Testing the cap before entering an element rejects the
+    // last legal one, because the end of the array is never looked for --
+    // which is how P8 found this: a response holding exactly limits::kMaxImages
+    // entries failed to decode.
+    std::vector<std::byte> encoded =
+        bytes_of({0xA1, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, 0x83});
+    for (int i = 0; i < 3; ++i) {
+        const auto element = bytes_of({0xA1, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00});
+        encoded.insert(encoded.end(), element.begin(), element.end());
+    }
+
+    Reader reader{ConstBytes{encoded}};
+    REQUIRE(reader.enter_map().has_value());
+
+    int visits = 0;
+    const auto outcome = reader.for_each_map_in_array("images", 3, [&](Reader&) -> Result<void> {
+        ++visits;
+        return {};
+    });
+
+    REQUIRE(outcome.has_value());
+    REQUIRE(visits == 3);
+    REQUIRE(reader.status().has_value());
+}
+
 TEST_CASE("an error from the callback stops iteration and propagates", "[cbor]")
 {
     const auto encoded = bytes_of({

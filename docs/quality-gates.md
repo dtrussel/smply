@@ -162,12 +162,20 @@ meaningless, so `tools/coverage.sh` reports and CI publishes the artefact
 without failing. The thresholds below switch on in P13, when there is protocol
 logic and state-machine code worth measuring.
 
-| Gate | Threshold | Measured 2026-09-05 (P7) |
+| Gate | Threshold | Measured 2026-09-05 (P8) |
 | ---- | --------- | ------------------------ |
-| Line coverage, whole core | **≥ 85 %** | 93.5 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 80.9 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96.2 % ✓ · `src/cbor/` 80.9 % ✗ |
+| Line coverage, whole core | **≥ 85 %** | 94.6 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 82.4 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96 % ✓ · `src/cbor/` 82 % ✗ |
 | Regression | no drop > 1 pp vs. the base branch | — |
+
+For reference, outside the elevated list: `src/groups/image/` is at 95 % line and
+89 % branch, `src/groups/os/` at 85 % line.
+
+**`gcovr` is not installed in the development container**, and `coverage.sh`
+falls back to plain `gcov` without failing — whose branch metric is a different
+measurement and not comparable with the numbers above. `pip install gcovr`
+before quoting one.
 
 `src/cbor/` is the one area below its gate. It is unenforced until P13, but P13
 cannot switch enforcement on without either raising that coverage or moving the

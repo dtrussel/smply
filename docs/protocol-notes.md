@@ -4,7 +4,8 @@ Authoritative, verified protocol facts for smply. **This file is the single
 source of truth for wire behaviour.** Do not re-derive protocol details from
 third-party clients; add findings here instead.
 
-Verified on **2026-09-04** against Zephyr `main` and MCUboot `main`.
+Verified on **2026-09-04** against Zephyr `main` and MCUboot `main`; sections 6
+and 7 re-verified against the image-group implementation on **2026-09-05**.
 
 ---
 
@@ -21,10 +22,14 @@ Verified on **2026-09-04** against Zephyr `main` and MCUboot `main`.
 | S7 | `include/zephyr/mgmt/mcumgr/grp/os_mgmt/os_mgmt.h` | `OS_MGMT_ID_*`, `os_mgmt_err_code_t` | same |
 | S8 | `include/zephyr/mgmt/mcumgr/smp/smp.h` | `smp_mcumgr_version_t` | same |
 | S9 | `subsys/mgmt/mcumgr/transport/include/mgmt/mcumgr/transport/smp_internal.h` | `struct smp_hdr` bitfield order | same |
-| S10 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c` | Server-side upload handler; response construction | same |
+| S10 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c` | Server-side upload handler and response construction; also the erase and slot-info handlers, and `img_mgmt_translate_error_code()` | same (image handlers verified 2026-09-05) |
 | S11 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/zephyr_img_mgmt.c` | `img_mgmt_upload_inspect()` — offset/resume/validation rules | same |
 | S13 | `subsys/mgmt/mcumgr/grp/os_mgmt/src/os_mgmt.c` | OS-group server handlers; echo, reset and mcumgr-params decoding and the handler registration table | same (verified 2026-09-05, and against tags `v3.5.0` and `v3.7.0`) |
 | S12 | `docs/design.md` | MCUboot image format, TLVs, slots, swap types, trailer | `mcu-tools/mcuboot@main` |
+| S14 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c` | Image-state read and write handlers; the flag encoding and the set-state decode | `zephyrproject-rtos/zephyr@main` (verified 2026-09-05) |
+| S15 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_util.c` | `img_mgmt_ver_str()` -- the version string a device actually reports | same |
+| S16 | `subsys/mgmt/mcumgr/grp/img_mgmt/include/mgmt/mcumgr/grp/img_mgmt/img_mgmt_priv.h` | `IMAGE_SHA_LEN` and `IMAGE_TLV_SHA` | same |
+| S17 | `subsys/mgmt/mcumgr/smp/src/smp.c` | `smp_add_cmd_err()`, `smp_build_err_rsp()` and the v1 error translation path | same |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -286,8 +291,8 @@ Request: empty map. Response:
       "image":     (uint, opt)   // absent iff device supports only one image
       "slot":      (uint)        // 0 = primary, 1 = secondary
       "version":   (str)         // imgtool version string
-      "hash":      (bstr, opt*)  // MCUboot IMAGE_TLV_SHA256
-      "bootable":  (bool, opt)   // omitted == false
+      "hash":      (bstr, opt*)  // MCUboot IMAGE_TLV_SHA; 32 or 64 bytes
+      "bootable":  (bool, opt)   // absent == false, but usually sent
       "pending":   (bool, opt)
       "confirmed": (bool, opt)
       "active":    (bool, opt)
@@ -299,7 +304,24 @@ Request: empty map. Response:
 
 Verified semantics:
 
-* **Absent boolean == `false`.** All flag fields are omitted when false.
+* **Absent boolean == `false` -- but a false flag is usually *sent*.** S4 says
+  the flags are omitted when false. In the implementation (S14) that holds only
+  under `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST`; the default build encodes every
+  flag explicitly, `splitStatus` included. So a client must treat *both* an
+  absent field and a present `false` as false, and must never read "the key is
+  there" as "the flag is set".
+* **`"slot"` and `"version"` are the only non-optional fields**, and the server
+  always writes both (S14).
+* **`"version"` may be the literal `"<???>"`.** S14 substitutes it when
+  `img_mgmt_ver_str()` fails, so a version string is not guaranteed to parse.
+  Keep the raw string; parse separately and tolerate failure.
+* **The version string is dotted, not `+`-separated.** `img_mgmt_ver_str()`
+  (S15) formats `"major.minor.revision"` and appends `".build"` only when the
+  build number is non-zero. imgtool's `"1.2.3+4"` is an *input* spelling, not
+  what a device reports. Longest possible string: `"255.255.65535.4294967295"`,
+  24 bytes with the terminator.
+* **A slot whose `img_mgmt_read_info()` fails is skipped silently** (S14), which
+  is the mechanism behind the "only valid images" rule below.
 * **`"hash"` is not the hash of the file.** S4, verbatim: *"SHA256 hash of the
   image header and body. Note that this will not be the same as the SHA256 of
   the whole file, it is the field in the MCUboot TLV section…"* i.e.
@@ -312,6 +334,12 @@ Verified semantics:
 * `"hash"` is optional only in MCUboot serial-recovery configurations
   (`CONFIG_BOOT_SERIAL_IMG_GRP_HASH`); *"MCUmgr in applications must support
   sending hashes."*
+* **`"hash"` is `IMAGE_SHA_LEN` bytes, which is 32 *or* 64.** S16 defines it as
+  64 under `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512` (with `IMAGE_TLV_SHA` then
+  being `IMAGE_TLV_SHA512`) and 32 otherwise. Only those two; there is no
+  SHA-384 variant of the symbol, and Zephyr's `modules/Kconfig.mcuboot` offers
+  only the SHA-512 option. A client that assumes 32 bytes cannot talk to a
+  SHA-512 device at all, which is why smply carries the length with the value.
 
 ### Set image state — op `2`, group `1`, cmd `0`
 
@@ -326,6 +354,15 @@ Request:
 * `confirm == true` ⇒ **confirm**. `hash` is optional here: *"the currently
   running application will be assumed as target for confirmation."*
 * Response has the same shape as get-state (the refreshed image list).
+* **A test with no hash is refused**, with `IMG_MGMT_ERR_INVALID_HASH` (S14):
+  the server has no way to tell which image is meant. A hash of any length other
+  than `IMAGE_SHA_LEN` gets the same code, before any lookup happens.
+* Unlike reset's `force` (§9, A15), the decode result **is** checked here: a
+  wrong-typed field fails the command with `MGMT_ERR_EINVAL` rather than being
+  ignored.
+* The write handler is registered as `NULL` under
+  `CONFIG_MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP`, `..._RAM_LOAD` and
+  `..._FIRMWARE_UPDATER` (S14), so set-state answers `ENOTSUP` on those builds.
 
 > ⚠ Setting `confirm: true` on a *pending, not-yet-booted* image makes the swap
 > permanent without a trial. That is a legitimate but less safe mode; smply
@@ -394,9 +431,18 @@ state machine is built on):
 
 ### Image erase — op `2`, group `1`, cmd `5`
 
-Request `{ "slot": (uint, opt) }` (default `1`). **Synchronous and potentially
-very slow** (S4) ⇒ needs its own long timeout. `MGMT_ERR_EBADSTATE` means the
-secondary image is already marked for the next boot and cannot be erased.
+Request `{ "slot": (uint, opt) }`. **Synchronous and potentially very slow**
+(S4) ⇒ needs its own long timeout.
+
+* The default is not the constant `1`: the server computes *the slot opposite
+  the active one of the active image* (S10), which is slot 1 in the
+  ordinary case but need not be. Omitting the key is therefore better than
+  sending `1`.
+* A slot holding an image already marked for the next boot is refused with
+  `IMG_MGMT_ERR_NO_FREE_SLOT`, which a v1 client sees as `MGMT_ERR_EBADSTATE`
+  (see A16) -- that translation is where S4's `EBADSTATE` note comes from.
+* Success is the **empty map**, or `{"rc": 0}` when the server was built with
+  `CONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR`. Zero is success in both shapes.
 
 ### Slot info — op `0`, group `1`, cmd `6`
 
@@ -411,6 +457,19 @@ Requires `CONFIG_MCUMGR_GRP_IMG_SLOT_INFO`; `upload_image_id` requires
 `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`; `max_image_size` requires
 `CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_*`. **All optional** ⇒ treat as best-effort
 pre-flight information only.
+
+**Not in S4: a slot entry may carry its own `"rc"`.** When `flash_area_open()`
+fails for a slot, the server writes `{"slot": N, "rc": (int)}` for it -- no
+`"size"`, no `"upload_image_id"` (S10). The value is a Zephyr
+`errno`, and it is *nested inside the slot map*, so it can never be confused
+with the message-level `rc` a client reads for the command's own result. A
+client that requires `"size"` will reject an otherwise perfectly good response
+from a device with one unreadable flash area.
+
+`upload_image_id` also means two different things: with
+`CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD` it is the global slot index plus one and
+is emitted for every slot; without it, it is the *image* number and is emitted
+only for slots that are not the active one (S10).
 
 ---
 
@@ -436,10 +495,14 @@ total; }`, `struct image_tlv { u16 type; u16 len; }`, all little-endian.
 
 ### Two different hashes — the key distinction
 
-| Where | What it is | Who computes it |
-| ----- | ---------- | --------------- |
-| upload `"sha"` | SHA-256 of the **entire file** as uploaded | smply |
-| image-state `"hash"` | `IMAGE_TLV_SHA256`: SHA-256 of **header + body** (+ protected TLVs) | imgtool at signing time; read out of the file's TLVs or reported by the device |
+| Where | What it is | Length | Who computes it |
+| ----- | ---------- | ------ | --------------- |
+| upload `"sha"` | SHA-256 of the **entire file** as uploaded | always 32 | smply |
+| image-state `"hash"` | `IMAGE_TLV_SHA`: SHA of **header + body** (+ protected TLVs) | `IMAGE_SHA_LEN`: 32, or 64 for a SHA-512 bootloader (§6, S16) | imgtool at signing time; read out of the file's TLVs or reported by the device |
+
+The differing lengths are the second reason to keep them apart: smply gives them
+different types (`Hash` and `ImageHash`), so passing one where the other belongs
+does not compile rather than being caught in review.
 
 ### Swap types (S12)
 
@@ -521,4 +584,5 @@ Recorded so future sessions do not rediscover them.
 | A12 | Erase (cmd 5) is synchronous and may take tens of seconds. | Dedicated long timeout; not part of the default DFU flow. |
 | A13 | After a swap, whether the *new* image reports the same `"hash"` as the uploaded file's `IMAGE_TLV_SHA256`. | Verified true for non-encrypted images; for encrypted images it is **not** guaranteed. Encrypted-image DFU is out of scope — record as a known limitation. |
 | A14 | MCUmgr allows several requests per packet in principle (S8 comment); Zephyr's SMP-over-BLE does not use this. | smply sends exactly one request per SMP message and expects one response per message. |
+| A16 | **An image-group error code often does not survive the trip to a v1 client.** `smp_add_cmd_err()` (S17) always writes `err: {group, rc}` into the payload; but when the server has `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` and the request was SMP v1, `smp_handle_single_req()` translates the group code through `img_mgmt_translate_error_code()` (S10) and `smp_on_err()` then **discards the whole partial payload** and rebuilds it as flat `{"rc": …}`. The translation is lossy and many-to-one: `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` all become `EBADSTATE`; `HASH_NOT_FOUND`, `INVALID_TLV`, every flash failure and `INVALID_IMAGE_*` all become `EUNKNOWN`. With that Kconfig **off**, the same v1 client receives the `err` map untouched. | Decode both shapes on every response regardless of the version requested, which smply already does. Expose the group code when there is one (`image_error()`), and document that its absence is normal rather than a malformed reply. A caller that must distinguish `HASH_NOT_FOUND` from a generic failure needs SMP v2 -- another input to O2. |
 | A15 | **The documentation and the implementation disagree on the type of reset's `"force"`.** S3 specifies `(int)` with "force reset if value > 0"; S13 decodes it with `zcbor_bool_decode`, which accepts only CBOR `true`/`false` and rejects any integer. Worse, the server *discards* the decode result (`(void)zcbor_map_decode_bulk(...)`, with a comment saying a core command should continue with defaults), so an integer `"force"` is **silently ignored** and the reset proceeds unforced — no error tells the client its intent was dropped. | Encode `"force"` as a CBOR **boolean**, matching the implementation, which is what a device actually enforces. Omit the key entirely when not forcing, so the unforced request is the empty map the specification shows. Same in `v3.5.0` and `v3.7.0`, so this is not a recent regression. |

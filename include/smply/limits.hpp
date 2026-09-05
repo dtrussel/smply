@@ -53,6 +53,14 @@ inline constexpr std::size_t kMaxSlotsPerImage = 8;
 /// Largest accepted image-state version string, in bytes.
 inline constexpr std::size_t kMaxVersionStringLength = 32;
 
+/// Largest accepted device-reported image hash, in bytes.
+///
+/// The device reports `IMAGE_SHA_LEN` bytes, which is 32 for the usual SHA-256
+/// bootloader and 64 for one built with `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512`
+/// (docs/protocol-notes.md section 6). The larger of the two is the bound, so
+/// the value is copied into a fixed buffer rather than one sized by the device.
+inline constexpr std::size_t kMaxImageHashLength = 64;
+
 /// Largest accepted device-supplied `rsn` string, in bytes.
 inline constexpr std::size_t kMaxReasonLength = 128;
 

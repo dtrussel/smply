@@ -129,9 +129,19 @@ delete an entry when it stops being true.
   and you must read both.** Reset's `force` is the case in point (PN §9, A15):
   the docs say integer, the server decodes a boolean and silently ignores
   anything else. Reading only the `.rst` yields a flag that never works.
-* MCUmgr uses **two different SHA-256 values** — the upload `sha` over the whole
-  file, and image-state `hash` over `IMAGE_TLV_SHA256`. Conflating them is the
-  classic client bug and first becomes reachable in P8/P9.
+* MCUmgr uses **two different hashes** — the upload `sha`, SHA-256 over the whole
+  file, and image-state `hash`, MCUboot's `IMAGE_TLV_SHA` over header and body.
+  Conflating them is the classic client bug. Since P8 they are different types:
+  `Hash` (fixed 32 bytes) and `ImageHash` (32 **or 64**, because
+  `IMAGE_SHA_LEN` is 64 for a SHA-512 bootloader). Do not merge them.
+* **"Absent means false" is only half the rule for image-state flags.** The
+  specification says a false flag is omitted; the server omits it only under
+  `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST` and otherwise sends it explicitly. Absent
+  ⇒ false; present ⇒ whatever it says. Never read "key present" as "true".
+* **A group-scoped error code often does not reach a v1 client** (PN §9, A16).
+  The server may translate it onto `mcumgr_err_t` and rebuild the response, so
+  `image_error()` returning `nullopt` for a real image failure is normal. Check
+  `smp_error()` as well, and never treat the absence as a malformed reply.
 
 **Tooling traps**
 
@@ -151,7 +161,14 @@ delete an entry when it stops being true.
   collect the result, rather than blocking on it.
 * Coverage means exactly what `tools/coverage.sh` reports (gcovr with
   `--exclude-throw-branches`). Quoting a branch percentage from a differently
-  configured run is not comparable — the same objects move ~12 points.
+  configured run is not comparable — the same objects move ~12 points. **gcovr
+  is not installed in the container** and the script falls back to plain `gcov`
+  without failing, so `pip install gcovr` before believing a number.
+* Read the **uncovered-line list**, not the percentage. In P8 the gap between
+  92 % and 95 % was a dozen genuinely reachable bounds checks, not the
+  unreachable guards the percentage suggested.
+* `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it.
+  The device's `<???>` version placeholder needs a raw string literal.
 
 ---
 
@@ -827,3 +844,102 @@ Exit criterion and a "Start here" pointer. The short version: read
 anything — §7 holds the two-hash distinction that P8 is the first phase able to
 get wrong — then copy the shape of `src/groups/os/os_management.cpp` and follow
 the four rules in [`design.md`](design.md) §5.
+
+### 2026-09-05 — P8: image management group
+
+**Status after this session:** P8 = `Complete`. Next phase: **P9 — MCUboot image
+file handling and SHA-256**.
+
+**Completed.** `include/smply/groups/image.hpp` and
+`src/groups/image/image_management.cpp`: image state read and write, erase, slot
+info, plus `ImageHash`, `ImageVersion`, the `ImageState` accessors and
+`ImageError`/`image_error()`. 69 new tests (308 total). All gates green across
+the five Linux presets.
+
+Request vectors are hand-derived from the CBOR grammar, as in P7. Responses are
+built by an **independent** encoder written in the test file from RFC 8949's head
+encoding, sharing no code with `src/cbor/`, so a decoder bug cannot be cancelled
+out by a matching encoder bug — and `golden_state_response()` is written out byte
+by byte and asserted against that builder, which is what keeps the builder
+honest. Copy the pattern in P10; it is the only way a response-decoding suite
+proves anything.
+
+**Protocol work.** Six findings, all from reading `img_mgmt.c`,
+`img_mgmt_state.c`, `img_mgmt_util.c`, `img_mgmt_priv.h` and `smp.c` rather than
+`smp_group_1.rst`. All are in [`protocol-notes.md`](protocol-notes.md) §6/§7,
+with four new sources (S14–S17). The roadmap's P8 outcome lists them; the three
+that will bite a later phase are in the caveats below.
+
+**Changed.** Six deviations from `api.md`'s proposal, in the roadmap's P8
+outcome. The one that reaches other phases: **the device-reported hash is its own
+type, `ImageHash`, not `Hash`.**
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P9, P10 and P12.**
+
+* **There are two hash types now, and that is deliberate.** `Hash` is the fixed
+  32-byte SHA-256 smply computes over the whole firmware file — the upload
+  `sha`. `ImageHash` is what a *device* reports for a slot: MCUboot's
+  `IMAGE_TLV_SHA`, which is 32 bytes normally and **64 under
+  `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512`**, so it carries its own length. P9
+  computes the first and reads the second out of a file's TLVs; P12 compares
+  them. `ImageHash::from(const Hash&)` is the one legitimate crossing. Do not
+  "simplify" them back into one type — the whole point is that the classic
+  MCUmgr client bug now fails to compile.
+* **"Absent means false" is only half the story.** The specification says the
+  state flags are omitted when false; the *implementation* omits them only under
+  `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST`, and the default build sends every flag
+  explicitly. A decoder that reads "the key is present" as "the flag is set"
+  misreads every ordinary device. Absent ⇒ false; present ⇒ whatever it says.
+* **An image-group error code often does not reach the client at all** (A16).
+  Over SMP v1 — smply's default — a server with
+  `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates the group code onto
+  `mcumgr_err_t` and *rebuilds the whole response*, so `HASH_NOT_FOUND` arrives
+  as `EUNKNOWN` and `NO_FREE_SLOT` as `EBADSTATE`. `image_error()` returning
+  `nullopt` for a real image failure is therefore normal, not a malformed reply;
+  check `smp_error()` too. P12 cannot build retry policy on the group code alone
+  without opting into v2 (open question O2).
+* **A device's version string is dotted and may not parse at all.**
+  `img_mgmt_ver_str()` writes `"1.2.3"`, appending `".4"` only for a non-zero
+  build number, and substitutes the literal `<???>` when it cannot format one.
+  `ImageVersion::parse` accepts that, plus imgtool's `"1.2.3+4"`; `ImageSlot`
+  keeps the raw string so a device that reports nonsense is still readable.
+  (In C++ source that placeholder needs a raw string literal — `??>` is a
+  trigraph, and `-Werror` rejects it.)
+* **Slot info is advisory, and one bad flash area does not spoil it.** A slot
+  entry may carry its own nested `"rc"` instead of a `"size"` when
+  `flash_area_open()` fails — undocumented in the specification. It is nested,
+  so it can never be confused with the message-level `rc`.
+
+**One defect fixed outside the phase's own files.**
+`cbor::Reader::for_each_map_in_array` rejected an array of **exactly**
+`max_elements`: the cap was tested before entering an element, so the end of the
+array was never looked for and the last legal element failed. An image-state
+response with exactly `limits::kMaxImages` entries did not decode. Fixed in
+`src/cbor/reader.cpp`; `test_cbor.cpp` gained the boundary case it never had —
+the existing test used eight elements against a cap of three, which passes
+either way. **The general lesson: a cap test that is comfortably over the cap
+does not test the cap.** P10's chunk-size arithmetic has the same shape.
+
+**On coverage.** `src/groups/image/image_management.cpp` is at 95 % line and
+89 % branch; the core moved from 93.5 % / 80.9 % to 94.6 % / 82.4 %. What matters
+is how it got there: the first measurement was 92 % / 79 %, and the gap was *not*
+defensive code — it was a dozen reachable bounds checks that no test touched.
+Reading the uncovered-line list found them; the percentage alone would not have.
+`gcovr` is **not** installed in the container by default and `tools/coverage.sh`
+silently falls back to plain `gcov`, whose branch metric is not comparable
+(`pip install gcovr` first).
+
+**Docs updated.** `protocol-notes.md` (S14–S17, §6 rewritten in five places, §7
+hash table, A16), `api.md` (`groups/image.hpp` now Shipped, upload split into its
+own Proposed subsection), `design.md` (§5 decoding rules, the two hash types, and
+why a group code may not survive), `architecture.md` (§10 layout), `roadmap.md`
+(P8 Complete with outcome, six deviations, four follow-ups, O2 gains A16 as
+evidence, Current state), this log.
+
+**Recommended next.** **P9 — MCUboot image file handling and SHA-256.** It is
+independent of P8 (it depends only on P1), and P10 needs both. Start with the
+header decode and the NIST vectors; the TLV scanner is where the hardening
+matters, and `IMAGE_TLV_SHA512 = 0x12` exists alongside `IMAGE_TLV_SHA256 =
+0x10`, so decide early whether P9 reads only the 32-byte one.

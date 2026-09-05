@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P8 — Image management: state read/write, erase, slot info** (see its [Start here](#p8)) |
-| Last completed phase | P7 — OS management: reset, params, echo |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group. 239 tests, 11 CI jobs green. |
+| **Next phase to work on** | **P9 — MCUboot image file handling and SHA-256** (see its [entry](#p9)) |
+| Last completed phase | P8 — Image management: state read/write, erase, slot info |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · Image group (everything but upload). 308 tests, 11 CI jobs green. |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -28,7 +28,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P5](#p5) | CBOR façade and MCUmgr error extraction | **Complete** | P1 |
 | [P6](#p6) | `SmpClient`: correlation, timeouts, cancellation | Complete | P2–P5 |
 | [P7](#p7) | OS management: reset, params, echo | Complete | P6 |
-| [P8](#p8) | Image management: state read/write, erase, slot info | Planned | P6 |
+| [P8](#p8) | Image management: state read/write, erase, slot info | Complete | P6 |
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Planned | P1 |
 | [P10](#p10) | Image upload state machine | Planned | P8, P9 |
 | [P11](#p11) | `ServerSimulator` and component test harness | Planned | P7, P8, P10 |
@@ -782,7 +782,7 @@ gates green across the five Linux presets.
 <a id="p8"></a>
 ## P8 — Image management: state, erase, slot info
 
-**Status: Planned** · **Depends on:** P6
+**Status: Complete** (2026-09-05) · **Depends on:** P6
 
 **Objective.** Everything in group 1 except upload.
 
@@ -820,6 +820,102 @@ together before writing anything — §7 holds the two-hash distinction (upload
 which first becomes reachable in this phase and is the classic client bug.
 `src/groups/os/os_management.cpp` is the shape to copy; the four rules every
 group follows are in [`design.md`](design.md) §5.
+
+### Outcome
+
+**Completed.** `include/smply/groups/image.hpp`,
+`src/groups/image/image_management.cpp` and 69 new tests (308 total): image
+state read and write, erase, slot info, `ImageVersion::parse`, the accessors,
+`ImageHash`, and `ImageError`/`image_error()`. All gates green across the five
+Linux presets.
+
+Request vectors in the suite are hand-derived from the CBOR grammar; responses
+are built by a small **independent** encoder in the test file, sharing no code
+with `src/cbor/`, so a decoder bug cannot be cancelled out by a matching encoder
+bug. `golden_state_response()` is written byte by byte and asserted against that
+builder, which is what keeps the builder itself honest.
+
+**Remaining in this phase.** None.
+
+**Protocol work.** Six findings, all from the implementation rather than the
+specification, recorded in [`protocol-notes.md`](protocol-notes.md) §6/§7 with
+four new sources (S14 `img_mgmt_state.c`, S15 `img_mgmt_util.c`,
+S16 `img_mgmt_priv.h`, S17 `smp.c`) and a widened S10, whose entry described only
+the upload handler although it also holds erase, slot info and the error
+translation:
+
+1. **The image-state `hash` is 32 *or* 64 bytes.** `IMAGE_SHA_LEN` is 64 under
+   `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512` (S16). A client hard-coding 32 cannot
+   read such a device's state at all.
+2. **A false flag is normally *sent*, not omitted.** The "absent means false"
+   rule the specification states is only the frugal-list build (S14); the
+   default encodes every flag. A client reading "key present" as "true" would
+   misread every ordinary device.
+3. **`"version"` may be the literal `"<???>"`** when the server cannot format
+   one (S14), so a version string is not guaranteed to parse.
+4. **The device's version string is dotted**: `img_mgmt_ver_str()` (S15) writes
+   `"1.2.3"` and appends `".4"` only for a non-zero build number. `api.md`
+   proposed parsing imgtool's `"1.2.3+4"`, which is the *input* spelling.
+5. **Slot-info slot entries can carry their own `"rc"`** in place of `"size"`
+   when `flash_area_open()` fails — absent from the specification entirely.
+6. **A16: an image-group error code often does not reach a v1 client.** The
+   server translates it onto `mcumgr_err_t` and rebuilds the response (S10,
+   S17), losing the detail: `HASH_NOT_FOUND` arrives as `EUNKNOWN`,
+   `NO_FREE_SLOT` as `EBADSTATE` — which is where the specification's erase note
+   comes from. It also explains why `image_error()` returning `nullopt` has to
+   be documented as normal rather than as a malformed reply.
+
+**One defect found and fixed outside this phase's files.**
+`cbor::Reader::for_each_map_in_array` rejected an array of **exactly**
+`max_elements`: it tested the cap before entering an element, so it never looked
+for the end of the array and failed on the last legal one. A response holding
+exactly `limits::kMaxImages` entries did not decode. The check now happens after
+a successful `EnterMap`, and `test_cbor.cpp` gained the boundary case the
+original suite never had — it tested 8 elements against a cap of 3, which passes
+either way. This is a P5 bug, but a P5 bug that made P8's own element cap wrong,
+so it is fixed here rather than deferred.
+
+**Deviations from the original plan.**
+
+1. **`ImageHash` is a new type; `std::optional<Hash>` would not have worked.**
+   `api.md` sketched the device-reported hash as `Hash`, a fixed 32-byte array,
+   which cannot hold the 64 bytes a SHA-512 bootloader reports (finding 1). It
+   is now a bounded value carrying its own length, capped by a new
+   `limits::kMaxImageHashLength`. The happy side effect is that the two hashes of
+   protocol-notes §7 are now different C++ types, so the classic MCUmgr client
+   bug fails to compile.
+2. **`SlotDescriptor::size` is optional and `open_error` was added**, because a
+   slot entry may report an open failure instead of a size (finding 5). Treating
+   a missing `size` as malformed would reject an otherwise good response from a
+   device with one unreadable flash area.
+3. **`erase()` takes an `EraseOptions`** rather than `api.md`'s bare
+   `std::optional<std::uint32_t>`, mirroring `ResetOptions` from P7 and letting
+   a caller raise the long timeout for slow flash without an API change.
+4. **`ImageError` and `image_error()` were added**, the group-scoped counterpart
+   of P7's `SmpError`/`smp_error()`, and they live in the group header rather
+   than in `error.hpp` because the codes are meaningless outside group 1.
+5. **`ImageVersion::parse` accepts three spellings**, not `api.md`'s one: the
+   device's `"1.2.3"` and `"1.2.3.4"`, and imgtool's `"1.2.3+4"`. `to_string()`
+   emits the device's form, so a round trip is stable.
+6. **`set_state` rejects a test with no hash locally**, with `InvalidArgument`
+   via `SmpClient::defer()`. The device answers `IMG_MGMT_ERR_INVALID_HASH` for
+   exactly this, and saying so without a round trip is both clearer and cheaper.
+
+**On coverage.** Measured with `tools/coverage.sh` as configured (gcovr,
+`--exclude-throw-branches`): `src/groups/image/image_management.cpp` is at
+**95 % line and 89 % branch**, and the whole core moved from 93.5 % / 80.9 % to
+**94.6 % line / 82.4 % branch**. Every uncovered line is one of the invariant
+guards P7 described — four encode-failure checks the `static_assert` on
+`kRequestBufferSize` proves unreachable, two `enter_map()` checks
+`SmpClient::interpret()` already guarantees, one `status()` check with nothing
+left that can poison the reader, and the `reject<>()` instantiations only those
+can reach. Same category, same P13 exclusion-marker task; no new policy question.
+
+The number is worth stating because the first measurement was **92 % line, 79 %
+branch**, and the gap was not defensive code: it was a dozen genuinely reachable
+bounds checks — every "out of 32-bit range" path in slot info, the wrong-typed
+`splitStatus`, the empty callback — that no test exercised. Reading the
+uncovered-line list rather than the percentage is what found them.
 
 ---
 
@@ -1202,7 +1298,7 @@ comment in code.
 | ID | Question | Owner phase | Notes |
 | -- | -------- | ----------- | ----- |
 | ~~O1~~ | ~~Which licence for smply itself?~~ | ~~P0~~ | **Resolved in P0: Apache-2.0.** Permissive, proprietary-linking friendly, explicit patent grant. `LICENSE` + `NOTICE` added; every source file carries an SPDX identifier. |
-| O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. |
+| O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. **P8 adds a concrete cost to staying on v1**: a server built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates image-group codes onto `mcumgr_err_t` and drops the group, so `HASH_NOT_FOUND` is indistinguishable from a generic failure (protocol-notes §9, A16). |
 | O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
 | O4 | Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library? | P9 | Leaning: keep file I/O out of the core; the example provides one. |
 | O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | P12 | Representable already; the question is test/HIL coverage. |
@@ -1232,6 +1328,10 @@ them.
 | ~~P7~~ | ~~A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing.~~ **Recorded in `handoff.md` § Standing caveats**; no code change needed, it is a habit. | — |
 | P7 | **`tools/coverage.sh` produced no report at all, from P0 until P7.** `--txt "$BUILD_DIR"` made gcovr treat the build directory as that option's output file; the script exits 0 by design, so the CI coverage job stayed green while reporting nothing. Fixed in P7's documentation pass. The lesson generalises: a gate that cannot fail is not a gate, and `verify_gates.sh` covers the *checkers* but not this reporter — consider extending it. | P13 |
 | P7 | **cppcheck cannot parse some Catch2 test translation units.** It runs without the project's include paths, so `TEST_CASE`/`SECTION`/`REQUIRE` are unknown macros, and it explores preprocessor configurations no build uses (it reports `toomanyconfigs` on the same run). On `test_os_group.cpp` that yields a `syntaxError` at the first `TEST_CASE`; passing `-I` and a smaller check set makes it vanish, which is what identifies it as a parser artefact rather than a defect. Suppressed narrowly (`syntaxError:tests/*`) with the reason written in `tools/cppcheck-suppressions.txt`. The better fix is to give `lint.sh` the include paths and exclude `_deps/`, but that made cppcheck report findings inside Catch2's own headers, so it needs its own pass — do it before P13 leans on cppcheck for anything. | P13 |
+| ~~P8~~ | ~~`cbor::Reader::for_each_map_in_array` rejected an array of exactly `max_elements`: the cap was tested before entering an element, so the end of the array was never looked for and the last legal element failed.~~ **Fixed in P8**, in `src/cbor/reader.cpp`, with the boundary case added to `test_cbor.cpp` — the original test used 8 elements against a cap of 3, which passes either way. Found because an image-state response with exactly `limits::kMaxImages` entries did not decode. | — (fixed) |
+| P8 | `cbor::Reader::enter_map(key)` is the one failure path that does **not** call `record()`: a missing or non-map nested key returns a failed `Result` but leaves `status()` clean. Every other error is sticky. Nothing uses it yet — P8's nested decoding goes through `for_each_map_in_array` — but a caller that follows the house rule of "check `status()` at the end" would miss this one. Make it sticky, or document why it is not. | P13 |
+| P8 | `upload_image_id` in a slot-info response means two different things: the global slot index plus one under `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`, and the image number without it (protocol-notes §6). smply reports the number verbatim and does not try to tell the two apart. P10 must decide whether the upload path may use it at all, or whether it stays advisory. | P10 |
+| P8 | `ImageState` has no `operator==`, so a test comparing two whole states has to compare `slots` and `split_status` separately. Trivial to add if P11's component tests want it. | when needed |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

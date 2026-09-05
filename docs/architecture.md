@@ -287,7 +287,8 @@ smply/
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
 │   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
-│   ├── groups/image.hpp        (planned, P8/P10) ImageManagement, ImageState, UploadOptions
+│   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError;
+│   │                           UploadOptions and UploadHandle are planned (P10)
 │   ├── image_source.hpp        (planned, P9) ImageSource, McubootImageInfo
 │   ├── dfu/firmware_updater.hpp    (planned, P12)
 │   └── util/dispatcher.hpp     (planned, P14) thread-marshalling helper for adapters
@@ -299,7 +300,7 @@ smply/
 │   │                           — reader/writer ARE the QCBOR backend; there is no
 │   │                             separate backend file (P5 deviation)
 │   ├── groups/os/              os_management.cpp
-│   ├── groups/image/           (planned, P8/P10) image_management.cpp  upload_session.*
+│   ├── groups/image/           image_management.cpp; upload_session.* planned (P10)
 │   ├── image/                  (planned, P9) mcuboot_header.*  tlv.*  sha256.*
 │   ├── dfu/                    (planned, P12) update_state_machine.*  firmware_updater.cpp
 │   └── util/                   (planned, P14) dispatcher.cpp

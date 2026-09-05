@@ -64,6 +64,7 @@ target_sources(smply
         src/cbor/reader.cpp
         src/cbor/writer.cpp
         src/core.cpp
+        src/groups/image/image_management.cpp
         src/groups/os/os_management.cpp
         src/smp/assembler.cpp
         src/smp/client.cpp

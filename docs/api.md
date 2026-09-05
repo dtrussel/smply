@@ -17,7 +17,7 @@ change — record the deviations in the roadmap when it does.
 | `transport.hpp` | **Shipped** (P4) |
 | `smp_client.hpp` | **Shipped** (P6, extended P7) |
 | `groups/os.hpp` | **Shipped** (P7) |
-| `groups/image.hpp` | Proposed — P8 (state, erase, slot info) and P10 (upload) |
+| `groups/image.hpp` | **Shipped** (P8: state, erase, slot info) — the upload half below is still Proposed (P10) |
 | `image_source.hpp` | Proposed — P9 |
 | `dfu/firmware_updater.hpp` | Proposed — P12 |
 | `util/dispatcher.hpp` | Proposed — P14 |
@@ -436,39 +436,132 @@ public:
 
 ## `smply/groups/image.hpp`
 
+**Shipped (P8)** for state, set-state, erase and slot info. The upload types at
+the end of this section are still **proposed** and belong to P10.
+
 ```cpp
 namespace smply {
 
+// A hash as the DEVICE reports it: MCUboot's IMAGE_TLV_SHA over header + body.
+// IMAGE_SHA_LEN is 32, or 64 for a SHA-512 bootloader, so the length is carried
+// rather than assumed (protocol-notes §6). Distinct from `Hash`, which is the
+// 32-byte upload `sha` over the whole file -- different types so the two cannot
+// be swapped by accident (protocol-notes §7).
+class ImageHash {
+public:
+    ImageHash() = default;                              // empty
+    static Result<ImageHash> from(ConstBytes);          // rejects empty or > 64
+    static ImageHash        from(const Hash&);          // the 32-byte case
+    ConstBytes  bytes() const noexcept;
+    std::size_t size()  const noexcept;
+    bool        empty() const noexcept;
+    friend bool operator==(const ImageHash&, const ImageHash&) noexcept;
+};
+
 struct ImageVersion {
     std::uint8_t major{}, minor{}; std::uint16_t revision{}; std::uint32_t build{};
-    static Result<ImageVersion> parse(std::string_view);  // "1.2.3+4"
-    std::string to_string() const;
+    // Accepts "1.2.3", the device's "1.2.3.4" and imgtool's "1.2.3+4".
+    // Fails with InvalidArgument -- including on the "<???>" a device sends
+    // when it cannot format a version at all.
+    static Result<ImageVersion> parse(std::string_view);
+    std::string to_string() const;   // the device's form: "1.2.3" or "1.2.3.4"
 };
 
 struct ImageSlot {
-    std::uint32_t image = 0;          // absent in the response => 0
+    std::uint32_t image = 0;          // absent in the response => 0 (A9)
     std::uint32_t slot  = 0;          // 0 = primary, 1 = secondary
-    std::string   version;            // raw string as reported
-    std::optional<Hash> hash;         // IMAGE_TLV_SHA256 — NOT the upload "sha"
+    std::string   version;            // raw, exactly as reported
+    std::optional<ImageHash> hash;    // IMAGE_TLV_SHA -- NOT the upload "sha"
     bool bootable = false, pending = false, confirmed = false;
-    bool active   = false, permanent = false;   // absent => false
+    bool active   = false, permanent = false;   // absent => false, and a
+                                                // present false is ordinary
 };
 
 struct ImageState {
-    std::vector<ImageSlot> slots;
+    std::vector<ImageSlot> slots;               // empty is a valid answer
     std::optional<std::int32_t> split_status;
 
     const ImageSlot* active_slot(std::uint32_t image = 0) const noexcept;
-    const ImageSlot* find_by_hash(const Hash&) const noexcept;
-    const ImageSlot* secondary(std::uint32_t image = 0) const noexcept;
+    const ImageSlot* secondary(std::uint32_t image = 0) const noexcept;  // the
+                                 // reported slot of that image that is not
+                                 // active; nullptr once it has been erased
+    const ImageSlot* find_by_hash(const ImageHash&) const noexcept;
 };
 
-struct SetStateRequest { std::optional<Hash> hash; bool confirm = false; };
+struct SetStateRequest { std::optional<ImageHash> hash; bool confirm = false; };
 
-struct SlotDescriptor { std::uint32_t slot, size; std::optional<std::uint32_t> upload_image_id; };
-struct ImageSlotsInfo { std::uint32_t image; std::vector<SlotDescriptor> slots;
+struct EraseOptions {
+    std::optional<std::uint32_t> slot;      // absent => the device chooses
+    std::optional<Duration> timeout;        // absent => limits::kEraseTimeout
+};
+
+struct SlotDescriptor {
+    std::uint32_t slot = 0;
+    std::optional<std::uint32_t> size;             // absent iff open_error
+    std::optional<std::uint32_t> upload_image_id;
+    std::optional<std::int32_t>  open_error;       // the device's per-slot "rc"
+};
+struct ImageSlotsInfo { std::uint32_t image = 0; std::vector<SlotDescriptor> slots;
                         std::optional<std::uint32_t> max_image_size; };
-struct SlotInfo { std::vector<ImageSlotsInfo> images; };
+struct SlotInfo      { std::vector<ImageSlotsInfo> images; };
+
+// img_mgmt_err_code_t (protocol-notes §3). Group-scoped: an image rc of 3 is
+// NoImage, while an SMP rc of 3 is SmpError::InvalidArgument.
+enum class ImageError : std::uint16_t {
+    Ok = 0, Unknown = 1, FlashConfigQueryFail = 2, NoImage = 3, NoTlvs = 4,
+    InvalidTlv = 5, TlvMultipleHashesFound = 6, TlvInvalidSize = 7,
+    HashNotFound = 8, NoFreeSlot = 9, FlashOpenFailed = 10, FlashReadFailed = 11,
+    FlashWriteFailed = 12, FlashEraseFailed = 13, InvalidSlot = 14,
+    NoFreeMemory = 15, FlashContextAlreadySet = 16, FlashContextNotSet = 17,
+    FlashAreaDeviceNull = 18, InvalidPageOffset = 19, InvalidOffset = 20,
+    InvalidLength = 21, InvalidImageHeader = 22, InvalidImageHeaderMagic = 23,
+    InvalidHash = 24, InvalidFlashAddress = 25, VersionGetFailed = 26,
+    CurrentVersionIsNewer = 27, ImageAlreadyPending = 28,
+    InvalidImageVectorTable = 29, InvalidImageTooLarge = 30,
+    InvalidImageDataOverrun = 31, ImageConfirmationDenied = 32,
+    ImageSettingTestToActiveDenied = 33, ActiveSlotNotKnown = 34,
+};
+
+// nullopt unless the error is group-scoped AND the group is Image. Often
+// nullopt even for a real image failure: over SMP v1 the server may translate
+// the code onto mcumgr_err_t and drop the group (protocol-notes §9, A16), so
+// check smp_error() too.
+std::optional<ImageError> image_error(const Error&) noexcept;
+
+class ImageManagement {
+public:
+    explicit ImageManagement(SmpClient&) noexcept;
+
+    RequestHandle get_state(Callback<ImageState>);
+
+    // Answers with the refreshed slot table. A request with neither hash nor
+    // confirm is rejected with InvalidArgument -- the device cannot tell which
+    // image is meant and answers ImageError::InvalidHash.
+    RequestHandle set_state(const SetStateRequest&, Callback<ImageState>);
+
+    // Carries limits::kEraseTimeout rather than the client's default: erase is
+    // synchronous on the device and may take tens of seconds (A12).
+    RequestHandle erase(const EraseOptions&, Callback<void>);
+    RequestHandle erase(Callback<void>);
+
+    // Optional command, and every field of the answer is optional too. A device
+    // without it answers SmpError::NotSupported, which is not a failure (A8).
+    RequestHandle get_slot_info(Callback<SlotInfo>);
+};
+
+} // namespace smply
+```
+
+Decoding bounds, all enforced before anything is copied or sized:
+`limits::kMaxImages` entries in `images`, `limits::kMaxSlotsPerImage` in a
+`slots` array, `limits::kMaxVersionStringLength` for a version string, and
+`limits::kMaxImageHashLength` for a hash. Exceeding any of them, or a field of
+the wrong type, is `ErrorCode::CborDecode`; an absent optional field never is.
+
+### Proposed — P10 (upload)
+
+```cpp
+namespace smply {
 
 struct UploadOptions {
     std::uint32_t image = 0;
@@ -492,25 +585,17 @@ public:
     bool active() const noexcept;
 };
 
-class ImageManagement {
-public:
-    explicit ImageManagement(SmpClient&);
+// Added to ImageManagement by P10.
+//
+//   `source` must outlive the upload. Progress fires on every CONFIRMED
+//   advance; completion fires exactly once.
+UploadHandle upload(ImageSource& source, UploadOptions,
+                    std::function<void(UploadProgress)> on_progress,
+                    Callback<UploadResult> on_done);
 
-    RequestHandle get_state(Callback<ImageState>);
-    RequestHandle set_state(const SetStateRequest&, Callback<ImageState>);
-    RequestHandle erase(std::optional<std::uint32_t> slot, Callback<void>);
-    RequestHandle get_slot_info(Callback<SlotInfo>);
-
-    // `source` must outlive the upload. Progress fires on every CONFIRMED
-    // advance; completion fires exactly once.
-    UploadHandle upload(ImageSource& source, UploadOptions,
-                        std::function<void(UploadProgress)> on_progress,
-                        Callback<UploadResult> on_done);
-
-    // Resume after a reconnect: re-sends the first packet with the same sha and
-    // continues from the offset the device reports (protocol-notes §6 rule 6).
-    void resume(UploadHandle&, SmpClient& rebound);
-};
+// Resume after a reconnect: re-sends the first packet with the same sha and
+// continues from the offset the device reports (protocol-notes §6 rule 6).
+void resume(UploadHandle&, SmpClient& rebound);
 
 } // namespace smply
 ```

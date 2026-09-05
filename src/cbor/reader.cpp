@@ -220,12 +220,6 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
     Result<void> outcome{};
     std::size_t seen = 0;
     while (true) {
-        if (seen == max_elements) {
-            // Bounded by configuration, not by what the device claims.
-            outcome = record(Error{ErrorCode::CborDecode, "cbor reader: too many array elements"});
-            break;
-        }
-
         QCBORDecode_EnterMap(&context_, nullptr);
         if (const QCBORError status = QCBORDecode_GetAndResetError(&context_);
             status != QCBOR_SUCCESS) {
@@ -234,6 +228,16 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
                     record(Error{ErrorCode::CborDecode, "cbor reader: array element not a map"});
             }
             break; // end of the array
+        }
+
+        if (seen == max_elements) {
+            // Bounded by configuration, not by what the device claims. The cap
+            // is tested *after* entering, so that an array of exactly
+            // max_elements is accepted: checking first would reject the last
+            // legal element, having never looked for the end of the array.
+            outcome = record(Error{ErrorCode::CborDecode, "cbor reader: too many array elements"});
+            QCBORDecode_ExitMap(&context_);
+            break;
         }
         ++seen;
 

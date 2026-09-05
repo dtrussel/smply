@@ -386,20 +386,34 @@ class OsManagement {                       // src/groups/os/
 
 class ImageManagement {                    // src/groups/image/
     RequestHandle get_state(Callback<ImageState>);
-    RequestHandle set_state(SetStateRequest, Callback<ImageState>);
-    RequestHandle erase(std::optional<std::uint32_t> slot, Callback<void>);
+    RequestHandle set_state(const SetStateRequest&, Callback<ImageState>);
+    RequestHandle erase(const EraseOptions&, Callback<void>);
+    RequestHandle erase(Callback<void>);
     RequestHandle get_slot_info(Callback<SlotInfo>);
-    UploadSession start_upload(ImageSource&, UploadOptions);  // see §6
+    UploadHandle upload(ImageSource&, UploadOptions, ...);    // see §6, P10
 };
 ```
 
-Decoding rules applied uniformly (PN §6): absent boolean ⇒ `false`; absent
-`"image"` ⇒ `0`; array elements are bounded by `limits.max_images` and
-`limits.max_slots`; a `hash` longer than 64 bytes is rejected;
-`version` strings longer than 32 bytes are rejected.
+Decoding rules applied uniformly (PN §6): absent boolean ⇒ `false`, and a
+*present* `false` is just as ordinary — only a frugal-list build omits them;
+absent `"image"` ⇒ `0`; array elements are bounded by `limits::kMaxImages` and
+`limits::kMaxSlotsPerImage`; a `hash` outside 1…`limits::kMaxImageHashLength`
+(64) bytes is rejected; `version` strings longer than
+`limits::kMaxVersionStringLength` are rejected. `"slot"` and `"version"` are
+required, because the specification does not mark them optional and the server
+always writes both.
 
 `ImageState`/`ImageSlot` are plain value structs with `std::optional` where the
 protocol genuinely distinguishes absent from default (e.g. `hash`).
+
+**Two hash types, on purpose.** `Hash` is a fixed 32-byte SHA-256 — the upload
+`sha`, which smply computes over the whole file. `ImageHash` is what the device
+*reports* for a slot: MCUboot's `IMAGE_TLV_SHA`, whose length is 32 or 64
+depending on the bootloader (PN §6, §7). Two types rather than one means the
+classic MCUmgr client bug — passing the file hash where the image hash belongs —
+fails to compile instead of failing on hardware. `ImageHash::from(const Hash&)`
+exists for the one legitimate crossing: comparing a hash read out of a file's
+TLVs against what a device reports.
 
 ### Four rules every group follows
 
@@ -429,6 +443,18 @@ disconnect, which is the DFU machine's job (§8), not this layer's.
 specification says integer; the server decodes a boolean and silently discards
 anything else, so an integer would leave the client believing it had forced a
 reset that was not forced (PN §9, A15).
+
+### A group error code may not survive the trip
+
+`ImageManagement` surfaces the image group's own codes through `image_error()`,
+the exact counterpart of `smp_error()`. Both return `nullopt` rather than
+guessing, because a v1 `rc` and a group-scoped `rc` are different numbering
+spaces. What is specific to group 1 is how often the group detail is simply not
+there: over SMP v1 — smply's default — a server built with
+`CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates the code onto
+`mcumgr_err_t` and rebuilds the response, so `HashNotFound` reaches the client
+as `SmpError::Unknown` (PN §9, A16). Callers check both accessors, and treat an
+absent image code as normal rather than as a malformed reply.
 
 ## 6. Upload state machine (`src/groups/image/upload_session.*`)
 

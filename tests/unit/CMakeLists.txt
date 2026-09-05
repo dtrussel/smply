@@ -6,6 +6,7 @@ add_executable(smply_unit_tests
     test_clock.cpp
     test_error.cpp
     test_fake_transport.cpp
+    test_image_group.cpp
     test_mgmt_error.cpp
     test_os_group.cpp
     test_result.cpp
