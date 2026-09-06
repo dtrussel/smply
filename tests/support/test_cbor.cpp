@@ -98,9 +98,9 @@ std::optional<Value> parse_item(Cursor& cursor, unsigned depth);
 
 /// Reads \p count items into \p out.
 ///
-/// NOLINTNEXTLINE(misc-no-recursion): recursive descent is the shape of the
-/// grammar, and the depth is capped by kMaxDepth above, so a hostile encoding
-/// cannot drive it into the stack.
+/// Recursive descent is the shape of the grammar, and the depth is capped by
+/// kMaxDepth above, so a hostile encoding cannot drive it into the stack.
+// NOLINTNEXTLINE(misc-no-recursion): bounded by kMaxDepth; see above.
 bool parse_items(Cursor& cursor, unsigned depth, std::uint64_t count, std::vector<Value>& out)
 {
     for (std::uint64_t i = 0; i < count; ++i) {

@@ -141,9 +141,9 @@ private:
         received_.insert(received_.end(), bytes.begin(), bytes.end());
     }
 
-    void on_transport_error(smply::Error) override {}
+    void on_transport_error(smply::Error /*error*/) override {}
 
-    void on_disconnected(smply::Error) override {}
+    void on_disconnected(smply::Error /*error*/) override {}
 
     FakeTransport transport_;
     ManualClock clock_;
