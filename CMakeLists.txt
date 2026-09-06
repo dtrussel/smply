@@ -19,7 +19,7 @@ project(smply
 # quiet and cheap.
 option(SMPLY_BUILD_TESTS    "Build smply's tests"            ${PROJECT_IS_TOP_LEVEL})
 option(SMPLY_BUILD_EXAMPLES "Build smply's examples"         ${PROJECT_IS_TOP_LEVEL})
-option(SMPLY_BUILD_FUZZERS  "Build fuzz targets (P13)"       OFF)
+option(SMPLY_BUILD_FUZZERS  "Build libFuzzer targets"        OFF)
 option(SMPLY_BUILD_WINRT    "Build the WinRT BLE transport (P15)" OFF)
 option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests (P17)" OFF)
 option(SMPLY_USE_SYSTEM_QCBOR "Use find_package(qcbor) instead of FetchContent" OFF)
@@ -137,9 +137,9 @@ if(SMPLY_BUILD_WINRT)
     message(STATUS "smply: SMPLY_BUILD_WINRT is set but the transport arrives in P15")
 endif()
 
-if(SMPLY_BUILD_FUZZERS)
-    # P13 adds tests/fuzz.
-    message(STATUS "smply: SMPLY_BUILD_FUZZERS is set but fuzz targets arrive in P13")
+if(SMPLY_BUILD_FUZZERS AND NOT SMPLY_BUILD_TESTS)
+    # The targets link smply::test_support for FakeTransport and ManualClock.
+    message(FATAL_ERROR "SMPLY_BUILD_FUZZERS requires SMPLY_BUILD_TESTS")
 endif()
 
 if(SMPLY_BUILD_TESTS)
@@ -148,6 +148,9 @@ if(SMPLY_BUILD_TESTS)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/component)
     add_subdirectory(tests/consumer)
+    if(SMPLY_BUILD_FUZZERS)
+        add_subdirectory(tests/fuzz)
+    endif()
 endif()
 
 # Install/export is deliberately deferred to P18, together with the

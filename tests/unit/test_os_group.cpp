@@ -632,3 +632,49 @@ TEST_CASE("commands issued together get distinct sequence numbers", "[os]")
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Untrusted numbers in the parameters response
+//
+// P13's audit found these two paths uncovered. Both are reachable by a device
+// -- one omits a field, the other reports a number too large for the type the
+// value is used as -- so they are tests rather than coverage exclusions.
+
+TEST_CASE("incomplete mcumgr parameters are rejected", "[os][limits]")
+{
+    // buf_size without buf_count. Treating a missing field as zero would hand
+    // the upload state machine a budget of nothing.
+    Fixture fixture;
+
+    std::optional<ErrorCode> failure;
+    static_cast<void>(fixture.os.mcumgr_parameters([&failure](Result<McumgrParameters> result) {
+        if (!result.has_value()) {
+            failure = result.error().code();
+        }
+    }));
+
+    fixture.respond(ConstBytes{
+        bytes_of({0xA1, 0x68, 'b', 'u', 'f', '_', 's', 'i', 'z', 'e', 0x19, 0x01, 0x00})});
+    CHECK(failure == ErrorCode::CborDecode);
+}
+
+TEST_CASE("mcumgr parameters larger than 32 bits are rejected", "[os][limits]")
+{
+    // The fields are decoded as uint64 because CBOR says so, and used as
+    // uint32 because that is what a buffer size is. A device reporting more
+    // than fits must fail rather than being truncated into something plausible.
+    Fixture fixture;
+
+    std::optional<ErrorCode> failure;
+    static_cast<void>(fixture.os.mcumgr_parameters([&failure](Result<McumgrParameters> result) {
+        if (!result.has_value()) {
+            failure = result.error().code();
+        }
+    }));
+
+    // {"buf_size": 2^32, "buf_count": 1}
+    fixture.respond(ConstBytes{bytes_of(
+        {0xA2, 0x68, 'b',  'u',  'f',  '_', 's', 'i', 'z', 'e', 0x1B, 0x00, 0x00, 0x00, 0x01,
+         0x00, 0x00, 0x00, 0x00, 0x69, 'b', 'u', 'f', '_', 'c', 'o',  'u',  'n',  't',  0x01})});
+    CHECK(failure == ErrorCode::CborDecode);
+}

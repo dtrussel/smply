@@ -301,7 +301,9 @@ TEST_CASE("every prefix of a valid encoding is rejected without crashing", "[cbo
 
 TEST_CASE("arbitrary bytes never crash the reader", "[cbor][hostile]")
 {
-    // A cheap stand-in until the real fuzz target arrives in P13.
+    // A deterministic floor under the fuzzers: `fuzz_cbor_image_state` and
+    // `fuzz_cbor_upload_response` search this space far harder, but they are
+    // not part of ctest, so this is what runs on every build.
     const auto seed = static_cast<std::uint8_t>(GENERATE(range(0, 256)));
     const auto garbage = bytes_of({seed, 0xFF, 0x00, 0xA5, 0x5A, seed, 0x1F, 0xE0});
 
@@ -593,4 +595,219 @@ TEST_CASE("text and byte views point into the caller's buffer", "[cbor]")
     const auto* base = encoded.data();
     REQUIRE(view->data() >= base);
     REQUIRE(view->data() + view->size() <= base + encoded.size());
+}
+
+// ---------------------------------------------------------------------------
+// Bounds and sticky state
+//
+// Everything below was uncovered until P13, and the uncovered *list* is what
+// said so: 21 of the 23 missing branches in src/cbor/ were the guards these
+// cases exercise. The percentage said "write more tests"; the list said which.
+
+TEST_CASE("a key longer than the label buffer is refused by every getter", "[cbor][limits]")
+{
+    // QCBOR's map API takes a C string, so a key is copied into a fixed buffer
+    // first. The guard is repeated at every accessor, and one accessor missing
+    // it would be a buffer overrun rather than a decode failure.
+    const std::vector<std::byte> document =
+        encode_map([](Writer& writer) { writer.put_uint("off", 42); });
+    const std::string too_long(smply::cbor::kMaxKeyLength + 1, 'k');
+
+    // A **fresh reader per accessor**, which is the whole point. The first
+    // over-long key poisons the reader, and every later getter then returns on
+    // the sticky-error check without ever reaching its own guard -- so a single
+    // reader would exercise one of these seven and leave six untested while
+    // passing. The uncovered-branch list is what showed that.
+    const std::vector<std::function<bool(Reader&, const std::string&)>> accessors{
+        [](Reader& r, const std::string& key) { return r.uint(key).has_value(); },
+        [](Reader& r, const std::string& key) { return r.integer(key).has_value(); },
+        [](Reader& r, const std::string& key) { return r.boolean(key).has_value(); },
+        [](Reader& r, const std::string& key) { return r.text(key).has_value(); },
+        [](Reader& r, const std::string& key) { return r.bytes(key).has_value(); },
+        [](Reader& r, const std::string& key) { return r.enter_map(key).has_value(); },
+        [](Reader& r, const std::string& key) {
+            return r.for_each_map_in_array(key, 4, [](Reader&) { return Result<void>{}; })
+                .has_value();
+        },
+    };
+
+    for (const auto& access : accessors) {
+        Reader reader{ConstBytes{document}};
+        REQUIRE(reader.enter_map().has_value());
+        CHECK_FALSE(access(reader, too_long));
+
+        // A failure, not an absence: a key smply cannot even ask for is a bug
+        // in smply, so the status must show it rather than reading as "the
+        // device did not send that field".
+        REQUIRE_FALSE(reader.ok());
+        CHECK(reader.status().error().code() == ErrorCode::CborDecode);
+    }
+}
+
+TEST_CASE("a key longer than the label buffer is refused by every setter", "[cbor][limits]")
+{
+    const std::string too_long(smply::cbor::kMaxKeyLength + 1, 'k');
+
+    // A fresh writer each time, for the same reason as the reader above: the
+    // first failure latches `failed_` and every later setter is a no-op.
+    const std::vector<std::function<void(Writer&, const std::string&)>> setters{
+        [](Writer& w, const std::string& key) { w.put_uint(key, 1); },
+        [](Writer& w, const std::string& key) { w.put_int(key, -1); },
+        [](Writer& w, const std::string& key) { w.put_bool(key, true); },
+        [](Writer& w, const std::string& key) { w.put_text(key, "x"); },
+        [](Writer& w, const std::string& key) { w.put_bytes(key, ConstBytes{}); },
+    };
+
+    for (const auto& set : setters) {
+        Buffer buffer{};
+        Writer writer{MutBytes{buffer}};
+        writer.open_map();
+        set(writer, too_long);
+        CHECK(writer.failed());
+        writer.close_map();
+        CHECK_FALSE(writer.finish().has_value());
+    }
+}
+
+TEST_CASE("closing a map that was never opened is a safe no-op", "[cbor][limits]")
+{
+    // Deliberately asymmetric with `Reader::leave_map()`, which records an
+    // error for the same mistake. The reader's input comes from a device, so an
+    // unbalanced structure there is something to report; the writer's calls all
+    // come from smply itself, so the guard exists to stop the depth going
+    // negative and corrupting QCBOR's state, not to diagnose a caller. It stays
+    // a no-op rather than latching `failed_`, which would turn a harmless
+    // double close into an encode failure.
+    Buffer buffer{};
+    Writer writer{MutBytes{buffer}};
+    writer.close_map();
+    CHECK_FALSE(writer.failed());
+
+    // And the writer is still usable, which is the point of the guard.
+    writer.open_map();
+    writer.put_uint("off", 1);
+    writer.close_map();
+    writer.close_map();
+    CHECK(writer.finish().has_value());
+}
+
+TEST_CASE("a nested map can be entered and left", "[cbor]")
+{
+    // The success side of `enter_map(key)`, which the SMP v2 `err` shape needs
+    // and which nothing else in the suite exercised. Built by hand: `Writer`
+    // has no way to open a map *under a key*, because nothing smply encodes is
+    // nested -- only what it decodes is.
+    //
+    //   {"rc": 0, "err": {"group": 1, "rc": 24}}
+    const auto document = bytes_of({0xA2, 0x62, 'r', 'c', 0x00, 0x63, 'e',  'r', 'r', 0xA2, 0x65,
+                                    'g',  'r',  'o', 'u', 'p',  0x01, 0x62, 'r', 'c', 0x18, 0x18});
+
+    Reader reader{ConstBytes{document}};
+    REQUIRE(reader.enter_map().has_value());
+    REQUIRE(reader.enter_map("err").has_value());
+    CHECK(reader.uint("group") == 1);
+    CHECK(reader.uint("rc") == 24);
+    REQUIRE(reader.leave_map().has_value());
+    CHECK(reader.uint("rc") == 0);
+    CHECK(reader.ok());
+}
+
+TEST_CASE("the nesting limit bounds how deep a document can take the reader", "[cbor][limits]")
+{
+    // A device cannot make the decoder recurse without bound: the cap is
+    // checked before entering, so the depth never exceeds it even briefly.
+    const std::vector<std::byte> document =
+        encode_map([](Writer& writer) { writer.put_uint("off", 1); });
+
+    Reader reader{ConstBytes{document}, 1};
+    REQUIRE(reader.enter_map().has_value());
+
+    // Depth is now 1, which is the cap: both forms refuse, as does the array
+    // walk, which enters an element.
+    CHECK_FALSE(reader.enter_map().has_value());
+    CHECK_FALSE(reader.enter_map("nested").has_value());
+    CHECK_FALSE(reader.for_each_map_in_array("images", 4, [](Reader&) { return Result<void>{}; })
+                    .has_value());
+    CHECK_FALSE(reader.ok());
+}
+
+TEST_CASE("leave_map without a matching enter is a failure, not a crash", "[cbor][limits]")
+{
+    const std::vector<std::byte> document =
+        encode_map([](Writer& writer) { writer.put_uint("off", 1); });
+
+    Reader reader{ConstBytes{document}};
+    CHECK_FALSE(reader.leave_map().has_value());
+    CHECK(reader.status().error().code() == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a poisoned reader refuses everything afterwards", "[cbor]")
+{
+    // First failure wins and is sticky, so a caller that checks status() once
+    // at the end cannot miss an error that happened early.
+    const std::vector<std::byte> document =
+        encode_map([](Writer& writer) { writer.put_text("version", "1.2.3"); });
+
+    Reader reader{ConstBytes{document}};
+    REQUIRE(reader.enter_map().has_value());
+
+    // Present, but not an integer: a genuine decode failure rather than an
+    // absent field.
+    CHECK(reader.uint("version") == std::nullopt);
+    REQUIRE_FALSE(reader.ok());
+    const Result<void> first = reader.status();
+
+    CHECK(reader.uint("version") == std::nullopt);
+    CHECK(reader.text("version") == std::nullopt);
+    CHECK_FALSE(reader.enter_map().has_value());
+    CHECK_FALSE(reader.enter_map("nested").has_value());
+    CHECK_FALSE(reader.for_each_map_in_array("images", 4, [](Reader&) { return Result<void>{}; })
+                    .has_value());
+
+    // Still the *first* error, not the most recent one.
+    CHECK(reader.status().error() == first.error());
+}
+
+TEST_CASE("entering a map that is not there leaves the reader usable", "[cbor]")
+{
+    // `enter_map(key)` is the one failure that is deliberately NOT sticky, so
+    // it can be used to probe for an optional nested map. Poisoning the reader
+    // here would make an absent optional field indistinguishable from a
+    // malformed document -- see the note in cbor.hpp.
+    const std::vector<std::byte> document = encode_map([](Writer& writer) {
+        writer.put_uint("rc", 0);
+        writer.put_text("version", "1.2.3");
+    });
+
+    Reader reader{ConstBytes{document}};
+    REQUIRE(reader.enter_map().has_value());
+
+    CHECK_FALSE(reader.enter_map("err").has_value());
+    CHECK(reader.ok());
+
+    // And reading carries on normally afterwards.
+    CHECK(reader.uint("rc") == 0);
+    CHECK(reader.text("version") == "1.2.3");
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a document that is not a map at all fails to enter", "[cbor]")
+{
+    const std::vector<std::byte> not_a_map = bytes_of({0x63, 'a', 'b', 'c'});
+    Reader reader{ConstBytes{not_a_map}};
+    CHECK_FALSE(reader.enter_map().has_value());
+    CHECK(reader.status().error().code() == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a truncated document fails rather than reading past the end", "[cbor]")
+{
+    const std::vector<std::byte> document =
+        encode_map([](Writer& writer) { writer.put_bytes("hash", ConstBytes{}); });
+    const ConstBytes truncated = ConstBytes{document}.first(document.size() - 1);
+
+    Reader reader{truncated};
+    if (reader.enter_map().has_value()) {
+        CHECK(reader.bytes("hash") == std::nullopt);
+    }
+    CHECK_FALSE(reader.ok());
 }

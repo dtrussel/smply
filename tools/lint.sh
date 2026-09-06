@@ -37,12 +37,48 @@ else
 fi
 
 # --- cppcheck (complementary; skipped when absent) --------------------------
-if command -v cppcheck >/dev/null 2>&1; then
+#
+# cppcheck is given the project's include paths, unlike clang-tidy it cannot
+# read compile_commands.json for them. Without them it parsed the Catch2 test
+# files blind and reported a syntaxError at the first TEST_CASE, which cost the
+# gate a blanket `syntaxError:tests/*` suppression until P13.
+#
+# The include paths alone were not enough. The real cause was the *preprocessor
+# configuration*: with no macros pinned, cppcheck explores Catch2's own option
+# macros, and in the `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL` combination
+# Catch2 does not define TEST_CASE at all -- so the file genuinely has no valid
+# parse. No build uses that combination. Telling cppcheck those two are
+# undefined removes exactly those configurations and nothing else, which is why
+# the suppression could be deleted rather than narrowed.
+if [[ -n "${SMPLY_LINT_SKIP_CPPCHECK:-}" ]]; then
+    # tools/verify_gates.sh sets this: its clang-tidy case only needs the
+    # *required* half of this script to reject a violation, and a full cppcheck
+    # pass over a scratch copy of the tree adds minutes to every run of it.
+    echo "note: SMPLY_LINT_SKIP_CPPCHECK set -- skipping cppcheck"
+elif command -v cppcheck >/dev/null 2>&1; then
     echo "running $(cppcheck --version)"
+
+    cppcheck_includes=(-I include -I src -I tests/support -I tests/component -I tests/fuzz)
+    # Catch2 is fetched into the build tree; its generated config header lives
+    # beside it. Both are optional -- a source-only checkout still lints.
+    for dir in "$BUILD_DIR/_deps/catch2-src/src" \
+               "$BUILD_DIR/_deps/catch2-build/generated-includes" \
+               "$BUILD_DIR/_deps/qcbor-src/inc"; do
+        # An `if`, not `[[ ... ]] &&`: the loop's status is its last command's,
+        # and under `set -e` a final iteration whose directory is absent would
+        # end the script rather than the loop.
+        if [[ -d "$dir" ]]; then
+            cppcheck_includes+=(-I "$dir")
+        fi
+    done
+
     cppcheck --enable=warning,performance,portability \
              --std=c++20 \
              --language=c++ \
              --inline-suppr \
+             "${cppcheck_includes[@]}" \
+             -UCATCH_CONFIG_DISABLE \
+             -UCATCH_CONFIG_PREFIX_ALL \
              --suppressions-list=tools/cppcheck-suppressions.txt \
              --error-exitcode=1 \
              --quiet \

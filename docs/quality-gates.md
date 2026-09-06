@@ -2,9 +2,10 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P12):** the gates marked *(P13)* / *(P15)* below are specified
-but not yet wired, because the targets they would exercise do not exist.
-Everything else is live and enforced. Each live gate has been observed rejecting
+**Status (as of P13):** the gate marked *(P15)* below is specified but not yet
+wired, because the target it would exercise does not exist. Everything else is
+live and enforced — including the fuzz smoke job and the coverage thresholds,
+both of which P13 switched on. Each live gate has been observed rejecting
 a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
 `gate-self-check` CI job runs it on every push.
 
@@ -21,11 +22,11 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
-| `linux-clang-fuzz-smoke` *(P13)* | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the seed corpus |
+| `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
 | `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
-| `nightly-fuzz-soak` *(P13)* | ubuntu-latest | Clang 18 | C++20 | 30 min per target (*advisory*, opens an issue on a find) |
+| `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
 pins the versions above. Clang's sanitizer jobs need `libclang-rt-<v>-dev`
@@ -131,6 +132,21 @@ macros.
 tracking finds different defects from clang-tidy's AST checks; overlap is
 suppressed rather than duplicated.
 
+Unlike clang-tidy it cannot read `compile_commands.json`, so `tools/lint.sh`
+passes it the include paths explicitly. That alone was not enough to make it
+parse the Catch2 suites: with no macros pinned, cppcheck explores Catch2's own
+option macros, and in the `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL`
+combination `TEST_CASE` is undefined, so the file genuinely has no valid parse.
+No build uses that combination, and `-UCATCH_CONFIG_DISABLE
+-UCATCH_CONFIG_PREFIX_ALL` removes exactly those configurations. Between them
+the two changes retired the blanket `syntaxError:tests/*` suppression this gate
+carried from P7 to P13. A full pass takes about three minutes, which is why
+`SMPLY_LINT_SKIP_CPPCHECK=1` exists: `tools/verify_gates.sh` sets it for its
+clang-tidy case, whose violation only the required half of the script has to
+reject. Nothing in CI sets it. What replaced it is narrower: dependency headers under
+`_deps/` are not reported on, for the same reason they are declared `SYSTEM` for
+clang-tidy (§1).
+
 ## 4. Formatting (required)
 
 `.clang-format` (LLVM base, 4-space indent, 100 columns, pointer-left,
@@ -157,69 +173,95 @@ one flag, because every potentially-throwing call contributes two branches a
 suite that raises no exceptions can never take. A threshold that does not name
 its tool and flags means whichever number CI happens to produce.
 
-**Not enforced until P13.** `tools/coverage.sh` reports and CI publishes the
-artefact without failing. Two things must be settled before the thresholds can
-switch on, and both are P13's:
+**Enforced from P13.** CI runs `tools/coverage.sh <build-dir> --enforce`, which
+fails the job below either whole-core threshold. `--enforce` also **refuses to
+run without gcovr** rather than falling back: the lcov and gcov paths measure
+branches differently, so enforcing against one of them would enforce a different
+threshold than the one named here. A gate that cannot fail is not a gate — this
+script spent P0 to P7 reporting nothing and exiting 0, and
+`tools/verify_gates.sh` now covers the reporter itself for exactly that reason
+(the `gate-self-check` job in §1).
 
-* `src/cbor/` is below its elevated gate and has been since P6. P13 either
-  raises it or moves the directory out of the elevated list — it does not
-  quietly drop the row.
-* Deliberate invariant guards — unreachable by construction, kept because a
-  decoder that assumes its input was validated elsewhere is one refactor away
-  from trusting a device — count against the branch denominator exactly as
-  throw branches do. §6 already rules that such lines carry an exclusion
-  marker; applying them is the outstanding task.
+The two questions that blocked enforcement are both settled:
 
-| Gate | Threshold | Measured 2026-09-06 (P12) |
+* `src/cbor/` was below its elevated gate from P6. P13 **raised it, on
+  evidence**: reading the uncovered-branch list rather than the number showed
+  21 of the 23 missing branches were reachable straight through the API — 13 of
+  them the same over-long-key guard repeated at every accessor. Tests for them
+  took the directory from 82 % to 97.7 %. Neither of the roadmap's two options
+  (raise it, or drop the row) had to be chosen against the other.
+* Deliberate invariant guards now carry exclusion markers. **`LCOV_EXCL_LINE`
+  excludes the line it sits on and nothing else** — marking only the `if` left
+  the guard's body in the denominator, which is most of what the exclusion was
+  for. The guards are wrapped in `LCOV_EXCL_START` / `LCOV_EXCL_STOP` instead,
+  except where the guard's `else` arm is the ordinary path and must stay
+  counted. A marker on a comment line above the code is silently ignored.
+
+| Gate | Threshold | Measured 2026-09-06 (P13) |
 | ---- | --------- | ------------------------- |
-| Line coverage, whole core | **≥ 85 %** | 96.3 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 84.3 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/smp/` 96 % ✓ · `upload_session.*` 94 % ✓ · **`src/dfu/` 93 % ✓** · `src/cbor/` 82 % ✗ |
+| Line coverage, whole core | **≥ 85 %** | 98.4 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 87.5 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 97.7 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 95.5 % ✓ · `src/dfu/` 92.3 % ✓ |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
-P10 is the first phase whose own acceptance criterion was one of the elevated
-gates, and `upload_session.*` clears it at 94 % branch and 99 % line.
+**The elevated per-directory gates are not enforced by the script**, only the
+two whole-core thresholds are. gcovr has no per-directory threshold, and four
+separate invocations would turn one number into five that can disagree. They are
+measured and recorded here each phase instead, which is what has actually caught
+things — see below.
 
-**P11 added 48 component tests and moved these numbers not at all**, which is
-worth understanding rather than treating as a disappointment. The component
-suite exercises the same lines as the unit suite; what it adds is evidence about
-*sequences* — that the commands smply issues, in the order it issues them, are
-ones a server accepts, and that an image survives the round trip byte for byte.
-Line and branch coverage cannot see that. A flat coverage number is therefore
-not a measure of what the component tests are worth, in either direction.
+Outside the elevated list: `src/image/` is at 98.8 % line and 93.2 % branch,
+`src/groups/image/` at 98.2 % and 89.6 %, `src/core.cpp` at 99.1 % and 98.5 %,
+`src/groups/os/` at 92.4 % and 80.7 % — the lowest in the tree, and entirely
+invariant guards that carry markers plus the `reject()` instantiations only
+those guards call.
 
-**P12's gate was missed on the first measurement, at 81 %**, and the gap was not
-where the percentage suggested. Almost all of it was one branch repeated: the
-"event not legal in this state" fall-through, which a single spot-check test had
-left unexercised in thirteen of the fourteen states. Looping that test over
-every state took `src/dfu/` from 81 % to 90 % on its own. Read the
-uncovered-branch list.
+### What reading the list has been worth
 
-For reference, outside the elevated list: `src/image/` is at 98 % line and 93 %
-branch, `src/groups/image/` at 95 % line and 86 % branch, `src/groups/os/` at
-85 % line.
+Three phases running, the uncovered-branch *list* said something the percentage
+did not. This is the reason §6 says "with judgement" in its title.
 
-**`gcovr` is not installed in the development container**, and `coverage.sh`
-falls back to plain `gcov` without failing — whose branch metric is a different
-measurement and not comparable with the numbers above. `pip install gcovr`
-before quoting one.
+* **P10** was the first phase whose own acceptance criterion was one of the
+  elevated gates; `upload_session.*` cleared it.
+* **P11 added 48 component tests and moved these numbers not at all.** The
+  component suite exercises the same lines as the unit suite; what it adds is
+  evidence about *sequences* — that the commands smply issues, in the order it
+  issues them, are ones a server accepts, and that an image survives the round
+  trip byte for byte. Line and branch coverage cannot see that, so a flat number
+  is not a measure of what those tests are worth, in either direction.
+* **P12's gate was missed on the first measurement, at 81 %**, and the gap was
+  not where the percentage suggested. Almost all of it was one branch repeated:
+  the "event not legal in this state" fall-through, which a single spot-check
+  test had left unexercised in thirteen of the fourteen states. Looping that
+  test over every state took `src/dfu/` from 81 % to 90 % on its own.
+* **P13's `src/cbor/`**, above: 21 of 23 missing branches reachable from a test,
+  which is why the directory did not have to leave the elevated list.
+
+### Traps
+
+**`gcovr` is not installed in the development container**, and without
+`--enforce` `coverage.sh` falls back to plain `gcov` — a different measurement,
+not comparable with the numbers above. `pip install gcovr` before quoting one.
 
 **`--txt` takes the next argument as its output file.** Running gcovr by hand as
 `gcovr … --txt <build-dir>` fails with "Is a directory" — the same mistake that
 silently disabled `coverage.sh` from P0 to P7. Put the search path first, or
 omit `--txt` entirely: text is the default.
 
-`src/cbor/` is the one area below its gate. It is unenforced until P13, but P13
-cannot switch enforcement on without either raising that coverage or moving the
-directory out of the elevated list — decide which, do not quietly drop the row.
+**Stale `.gcda` files survive a rebuild.** Building over an existing coverage
+build prints `libgcov profiling error: … overwriting an existing profile data
+with a different checksum` and then mixes counts from two versions of the code.
+Delete them (`find <build-dir> -name '*.gcda' -delete`) and re-run the tests
+before measuring; the warning scrolls past in build output and the number that
+follows looks perfectly ordinary.
 
 The elevated per-directory gate is the point of the exercise: those four areas
 are pure decision logic over untrusted input, where a missed branch is a real
 untested protocol path. Coverage elsewhere (glue, formatting, accessors) is
 informational — **the percentage is not a goal, the branch table in
 [`testing.md`](testing.md) is.** Raising a threshold to force coverage of
-unreachable defensive code is explicitly not wanted; mark such code
-`LCOV_EXCL_LINE` with a comment instead.
+unreachable defensive code is explicitly not wanted; mark such code with an
+exclusion marker and a comment instead.
 
 ## 7. Sanitizers (required)
 
@@ -245,9 +287,21 @@ flag-leak guard in `tests/consumer/` checks.
 
 ## 8. Fuzzing (required, smoke)
 
-*(P13.)* Every fuzz target in [`testing.md`](testing.md) §5 builds and runs
-20 000 iterations over its committed seed corpus on each PR. Nightly soak is
-advisory. Any crash reproducer is committed alongside its fix.
+Every fuzz target in [`testing.md`](testing.md) §5 builds and runs 20 000
+iterations over its committed corpus on each push and pull request
+(`linux-clang-fuzz-smoke`). That job is blocking, and it is a **regression**
+gate, not a search: a crash there means a reproducer that was fixed once has
+come back, or a change has broken a property one of the targets asserts.
+
+The search is the scheduled `nightly-fuzz-soak` workflow, 30 minutes per target,
+which is advisory — it uploads the grown corpus and any reproducer, and opens
+one issue per target on a find. Any crash reproducer is committed to
+`tests/fuzz/corpus/<target>/` **alongside its fix**, which is what moves it from
+the advisory job into the blocking one.
+
+Neither job writes to the committed corpus: both copy it out of the tree first,
+because libFuzzer writes what it discovers into the directory it is given and
+what the repository carries is a decision for a person.
 
 ## 9. Dependency and licence hygiene (required)
 

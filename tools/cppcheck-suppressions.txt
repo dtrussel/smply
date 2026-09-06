@@ -13,17 +13,18 @@ missingIncludeSystem
 # reach consumers (tests/consumer/CMakeLists.txt).
 *:tests/consumer/consumer_check.cpp
 
-# cppcheck cannot reliably parse Catch2-based test translation units. It runs
-# without the project's include paths, so TEST_CASE, SECTION and REQUIRE are
-# unknown macros, and it explores preprocessor configurations that no build
-# uses -- it reports "Too many #ifdef configurations" on the same run. On
-# tests/unit/test_os_group.cpp that combination produces a syntaxError at the
-# first TEST_CASE; supplying the include paths and a smaller check set makes it
-# vanish, which is what identifies it as a parser artefact rather than a defect.
+# The `syntaxError:tests/*` suppression that stood here from P7 to P13 is gone.
+# It papered over a parser artefact -- cppcheck was run with no include paths
+# and no pinned preprocessor configuration, so it explored a Catch2 option
+# combination in which TEST_CASE is undefined and the tests do not parse.
+# tools/lint.sh now supplies both, and the tests parse. Nothing is suppressed
+# for include/, src/ or tests/ any more beyond the two entries above.
+
 # ---
-# Suppressed only for tests/, and only this id. A real syntax error in a test is
-# caught immediately by GCC, Clang and MSVC, all three of which compile these
-# files, so cppcheck's parser adds nothing here -- whereas letting it block CI
-# on a construct it cannot parse makes the gate worse than useless. Nothing is
-# suppressed for include/ or src/.
-syntaxError:tests/*
+# Dependency headers. Giving cppcheck the project's include paths (P13) also
+# gives it Catch2's and QCBOR's, and it reports on what it finds there --
+# `duplInheritedMember` in catch_message.hpp, for one. Those are not ours to
+# fix, and the alternative of withholding the include paths is what produced
+# the syntaxError this file used to suppress. Same reasoning as declaring the
+# dependencies SYSTEM for clang-tidy (docs/quality-gates.md section 1).
+*:*/_deps/*

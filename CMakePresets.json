@@ -43,6 +43,15 @@
       }
     },
     {
+      "name": "linux-clang-fuzz",
+      "inherits": "linux-clang",
+      "displayName": "Linux / Clang + libFuzzer + ASan + UBSan",
+      "cacheVariables": {
+        "SMPLY_SANITIZER": "fuzzer-no-link,address,undefined",
+        "SMPLY_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
       "name": "linux-gcc-asan-ubsan",
       "inherits": "linux-gcc",
       "displayName": "Linux / GCC + ASan + UBSan",
@@ -109,6 +118,10 @@
       "configurePreset": "linux-clang-asan-ubsan"
     },
     {
+      "name": "linux-clang-fuzz",
+      "configurePreset": "linux-clang-fuzz"
+    },
+    {
       "name": "linux-gcc-asan-ubsan",
       "configurePreset": "linux-gcc-asan-ubsan"
     },
@@ -151,6 +164,13 @@
     {
       "name": "linux-clang-asan-ubsan",
       "configurePreset": "linux-clang-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-fuzz",
+      "configurePreset": "linux-clang-fuzz",
       "output": {
         "outputOnFailure": true
       }

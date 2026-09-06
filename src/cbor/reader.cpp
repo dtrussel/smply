@@ -84,6 +84,11 @@ Result<void> Reader::enter_map(std::string_view key) noexcept
 
     QCBORDecode_EnterMapFromMapSZ(&context_, name);
     if (QCBORDecode_GetError(&context_) != QCBOR_SUCCESS) {
+        // fail(), not record(): this is the one non-sticky failure on the
+        // class, because the call doubles as a probe for an optional map. See
+        // the declaration in cbor.hpp for why, and why the two guards above it
+        // are sticky when this is not.
+        //
         // Distinguishing "absent" from "present but not a map" here would need
         // a peek; callers that care check for the key first.
         QCBORDecode_GetAndResetError(&context_);

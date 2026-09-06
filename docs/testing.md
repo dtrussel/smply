@@ -11,7 +11,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | ----- | -------- | ------- | ---- |
 | Unit | `tests/unit/` | < 5 s total | every PR, all 3 toolchains |
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
-| Fuzz (smoke: fixed corpus, short) | `tests/fuzz/` | < 60 s | every PR (Linux/Clang) |
+| Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
 | HIL / interoperability | `tests/hil/` | minutes | manual + nightly on a self-hosted runner |
 
@@ -337,23 +337,71 @@ image is good. Shipped:
 * cancellation mid-update, destruction mid-update, and a callback that outlives
   the updater while the client is still alive.
 
-## 5. Fuzzing
+## 5. Fuzzing (`tests/fuzz/`)
 
-libFuzzer, `-fsanitize=fuzzer,address,undefined`, Linux/Clang.
+libFuzzer on Linux/Clang, behind the `linux-clang-fuzz` preset. The whole tree
+is compiled with `-fsanitize=fuzzer-no-link,address,undefined` so every
+translation unit is instrumented, and each target adds `-fsanitize=fuzzer` at
+link time, which is what supplies libFuzzer's `main()`.
 
-| Target | Input | Assertion |
-| ------ | ----- | --------- |
-| `fuzz_header` | 8 bytes | no crash; decode/encode round-trip when decode succeeds |
-| `fuzz_assembler` | arbitrary stream, split at fuzzer-chosen points | no crash, no unbounded memory, buffer ≤ limit |
-| `fuzz_cbor_image_state` | arbitrary CBOR | no crash; bounded allocation |
-| `fuzz_cbor_upload_response` | arbitrary CBOR | no crash |
-| `fuzz_mcuboot_header` | arbitrary bytes | no crash |
-| `fuzz_tlv_scan` | arbitrary bytes | no crash; terminates (iteration cap) |
-| `fuzz_smp_client_rx` | arbitrary stream fed to a live client with a pending request | no crash; the pending request is never completed with a wrong-seq response |
+```sh
+cmake --preset linux-clang-fuzz
+cmake --build --preset linux-clang-fuzz
+build/linux-clang-fuzz/tests/fuzz/fuzz_tlv_scan tests/fuzz/corpus/fuzz_tlv_scan
+```
 
-Corpora in `tests/fuzz/corpus/<target>/`, seeded with: valid encodings produced
-by the unit tests, every malformed case named above, and regression inputs. A
-crash found in CI is committed to the corpus with the fix.
+The targets are **not** part of `ctest`: a fuzz target runs until it is told to
+stop. CI drives them explicitly instead — see §5.3.
+
+### 5.1 The targets
+
+Every one asserts a property beyond "no crash". "No crash" is what ASan and
+UBSan give for free; an assertion is what makes the target notice a bound that
+has quietly stopped holding.
+
+| Target | Input | Property asserted |
+| ------ | ----- | ----------------- |
+| `fuzz_header` | 8+ bytes | decoding is *faithful*: anything accepted re-encodes to the bytes it came from, and decodes again to the same header. A client and a device that disagree about what was on the wire is how a response reaches the wrong request. |
+| `fuzz_assembler` | a stream, split at fuzzer-chosen points (the first byte is the fragment size) | buffering never exceeds `max_buffer`, at every step and at the peak; a completed message's payload length equals its header's; the buffer returns to empty between messages |
+| `fuzz_cbor_image_state` | arbitrary CBOR, delivered as a correlated response to a real `get_state` | `kMaxImages`, `kMaxVersionStringLength` and `kMaxImageHashLength` all hold on the decoded result — no container or string sized by the device |
+| `fuzz_cbor_upload_response` | arbitrary CBOR, delivered into a live upload | the session never reports more transferred than the image holds, whatever offset the device claims (protocol-notes §6, rule 5) |
+| `fuzz_mcuboot_header` | arbitrary bytes | the trailer offset a parsed header implies is never below the header itself — the arithmetic that indexes the file cannot be made to point backwards |
+| `fuzz_tlv_scan` | arbitrary bytes as a `MemoryImageSource` | the scan terminates, and any hash it returns is 32 or 64 bytes — `IMAGE_SHA_LEN`, not a length the file chose (protocol-notes §6) |
+| `fuzz_smp_client_rx` | an arbitrary stream fed to a live client with a request pending | a completed request is only ever completed by a response matching its `seq`, `group` and `command`; unmatched responses never exceed received ones |
+
+Three of these — the two CBOR targets and `fuzz_smp_client_rx` — go through a
+real `SmpClient` rather than calling a decoder directly, because the decoders
+are file-local. That is the better target anyway: it fuzzes framing,
+correlation, error extraction and the group decode together, which is the path
+a device actually drives.
+
+### 5.2 Corpora
+
+`tests/fuzz/corpus/<target>/`, seeded from the vectors the unit suites already
+build by hand (`tests/support/message_builder.hpp`, `image_builder.hpp`,
+`test_cbor.hpp`) — so seeding was extraction, not invention — plus inputs the
+soak found worth keeping.
+
+A crash reproducer is committed to the corpus **with its fix**. That is what
+makes the corpus a regression suite rather than a cache: the smoke job replays
+every committed input on every pull request, so a fixed input coming back is a
+build failure, not a rediscovery.
+
+### 5.3 How CI runs them
+
+| Job | When | What | Blocking |
+| --- | ---- | ---- | -------- |
+| `linux-clang-fuzz-smoke` (`ci.yml`) | every push and pull request | 20 000 runs per target over the committed corpus | yes |
+| `nightly-fuzz-soak` (`nightly-fuzz.yml`) | 03:17 UTC daily, or on demand | 30 minutes per target, corpus and any reproducer uploaded, one issue opened per target on a find | no — advisory |
+
+Both copy the corpus out of the tree before running: libFuzzer writes what it
+discovers into the directory it is given, and what the committed corpus contains
+is a decision for a person, not for a CI run.
+
+P13's roadmap entry asked for a one-off soak of at least two hours per target.
+That was replaced, deliberately, by the local soak recorded in the roadmap plus
+the standing nightly job — a schedule outlives a measurement, and the same
+corpus that finds nothing today may find something tomorrow.
 
 ## 6. Hardware interoperability (`tests/hil/`)
 

@@ -15,15 +15,18 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P12 complete — the portable library does what it exists to do.**
+**Phases P0–P13 complete — the portable library does what it exists to do, and
+its untrusted-input surface is fuzzed.**
 SMP framing and streaming reassembly, a bounded CBOR façade, request
 correlation with timeouts and cancellation, the OS and image management groups,
 MCUboot image parsing with SHA-256, the image upload state machine, and
 `FirmwareUpdater`: the whole update, including the reset and the reconnect.
-559 tests, 11 CI jobs green.
+Seven libFuzzer targets over every decoder that reads bytes it did not write,
+with the coverage thresholds and a fuzz smoke run now blocking.
+590 tests, 12 CI jobs green plus a nightly soak.
 
-What is not built yet: fuzzing, the WinRT BLE transport and the example
-applications. See
+What is not built yet: the `Dispatcher` helper, the WinRT BLE transport and the
+example applications. See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 
@@ -72,7 +75,7 @@ locally with one command. `cmake --list-presets` shows them all.
 ```sh
 tools/format.sh              # reformat; --check to verify only
 tools/lint.sh                # clang-tidy (+ cppcheck when installed)
-tools/coverage.sh            # coverage report (thresholds enforced from P13)
+tools/coverage.sh            # coverage report; --enforce applies the thresholds
 python3 tools/check_public_headers.py   # no platform/third-party types in public headers
 python3 tools/check_deps.py             # dependencies declared and pinned by hash
 python3 tools/check_docs.py             # documentation gate (ADR-0013)

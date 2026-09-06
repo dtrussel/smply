@@ -263,7 +263,7 @@ smply will accept from a device or a file.
 | -------- | ------- | ------- | -------- |
 | `kMaxSmpPayload` | 8192 B | reject an oversized `length` before buffering | `SmpClientConfig` |
 | `kMaxAssemblyBuffer` | 16 KiB | cap partial-message buffering | `SmpClientConfig` |
-| `kMaxCborNesting` | 16 | bound decoder recursion | — |
+| `kMaxCborNesting` | 14 | bound decoder recursion; **must stay strictly below QCBOR's own limit of 15**, or QCBOR refuses first and the failure is not sticky (P13) | — |
 | `kMaxInFlight` | 1 | bound the pending-request table | `SmpClientConfig` |
 | `kMaxRetiredSeqs` | 64 | bound late-response suppression | `SmpClientConfig` |
 | `kDefaultTimeout` | 5 s | per request | `SmpClientConfig`, `UploadOptions` |
@@ -335,7 +335,7 @@ smply/
 │   ├── unit/                   per-component
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
-│   ├── fuzz/                   (planned, P13) libFuzzer targets + corpora
+│   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
 │   └── hil/                    (planned, P17) hardware interoperability, opt-in
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py

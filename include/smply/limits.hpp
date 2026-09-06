@@ -32,7 +32,27 @@ inline constexpr std::uint16_t kMaxSmpPayload = 8192;
 inline constexpr std::size_t kMaxAssemblyBuffer = std::size_t{16} * 1024;
 
 /// Maximum CBOR nesting depth accepted, bounding decoder recursion.
-inline constexpr unsigned kMaxCborNesting = 16;
+///
+/// **Must be strictly below QCBOR's own `QCBOR_MAX_ARRAY_NESTING`, which is
+/// 15**, so that this bound is the one that binds.
+///
+/// It was 16 until P13's limits audit, which made it the *documented* bound
+/// while QCBOR's was the *effective* one -- and the difference was not
+/// academic. A document nested deeper than QCBOR allows makes the reader stop
+/// descending while its `status()` stays **clean**, because the QCBOR-error
+/// path in `enter_map(key)` is deliberately non-sticky so it can double as a
+/// probe for an optional map. A hostile document therefore turned into silently
+/// missing fields rather than a decode failure, and a caller following the
+/// house rule of "check `status()` at the end" would have seen nothing wrong.
+///
+/// Fourteen, not fifteen: equal is not enough. Reaching smply's cap needs a
+/// document one level deeper than the cap, and at fifteen that document is one
+/// QCBOR refuses first. Only a strictly lower value routes the refusal through
+/// smply's own sticky `record()`.
+///
+/// MCUmgr's deepest real structure is four levels (slot info's images then
+/// slots), so this is far above anything the protocol uses.
+inline constexpr unsigned kMaxCborNesting = 14;
 
 /// Requests outstanding at once. One by default: Zephyr's server processes
 /// packets sequentially, and a single in-flight request is what makes upload

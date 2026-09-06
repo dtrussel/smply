@@ -86,7 +86,11 @@ std::string_view to_string(UpdateState state) noexcept
     case UpdateState::Cancelled:
         return "Cancelled";
     }
-    return "Unknown";
+    // Unreachable: the switch is exhaustive over the enum and has no default
+    // (docs/design.md section 11), so this exists only because a function
+    // returning a value must. The marker has to sit on the excluded line
+    // itself; on the comment above it, gcovr ignores it.
+    return "Unknown"; // LCOV_EXCL_LINE
 }
 
 /// The I/O half: it carries out effects and owns nothing that decides anything.

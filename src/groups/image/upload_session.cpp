@@ -96,12 +96,16 @@ std::size_t first_packet_overhead(const FirstPacketFields& fields)
     // A zero-length data string, so what the probe measures is the envelope.
     writer.put_bytes("data", ConstBytes{});
     const auto probe = writer.close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (!probe.has_value()) {
         // Unreachable: kProbeBufferSize is far larger than the largest legal
         // envelope. Reported as an overhead nothing can fit rather than a
         // silent under-estimate, so chunk sizing fails loudly.
         return kProbeBufferSize;
     }
+    // LCOV_EXCL_STOP
 
     // The probe already contains a one-byte empty-string header; the real chunk
     // needs one sized for its own length.

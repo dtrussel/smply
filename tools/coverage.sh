@@ -3,13 +3,17 @@
 #
 # Coverage report for smply's own sources (docs/quality-gates.md section 6).
 #
-# Thresholds are NOT enforced yet: against P0's placeholder library the numbers
-# are meaningless. Enforcement switches on in P13, when there is protocol logic
-# and state-machine code worth measuring. Until then this reports and always
-# exits 0 unless --enforce is passed.
+# With --enforce the thresholds are real and a shortfall fails the run; without
+# it the report is printed and the script exits 0. CI passes --enforce (from
+# P13); a developer running it by hand usually does not want a non-zero exit
+# while iterating.
 #
-# Prefers gcovr, falls back to lcov, falls back to plain gcov -- so it is
-# usable in a container with none of the extras installed.
+# **Enforcement requires gcovr.** The lcov and gcov fallbacks below produce a
+# different measurement -- the branch figure moves by roughly 12 points -- so
+# enforcing against one of them would be enforcing a different threshold than
+# the one quality-gates.md names. --enforce without gcovr is an error, not a
+# pass: a gate that cannot fail is not a gate, which this script learned the
+# hard way between P0 and P7.
 #
 # Usage: tools/coverage.sh [build-dir] [--enforce]
 set -uo pipefail
@@ -32,6 +36,17 @@ BRANCH_MIN=75
 
 echo "=== coverage over src/ and include/smply/ ==="
 
+# Checked before anything is measured, not after: the lcov and gcov fallbacks
+# below produce a different number, and running one of them first would either
+# print a figure nobody may act on or fail for an unrelated reason.
+if [[ $ENFORCE -eq 1 ]] && ! command -v gcovr >/dev/null 2>&1; then
+    echo "error: --enforce needs gcovr; the lcov and gcov fallbacks measure" >&2
+    echo "       branches differently, so enforcing against one of them would" >&2
+    echo "       enforce a different threshold than the documented one." >&2
+    echo "       pip install gcovr" >&2
+    exit 1
+fi
+
 if command -v gcovr >/dev/null 2>&1; then
     # The search path must NOT follow --txt: gcovr takes the next positional as
     # that option's output file, and a directory there makes it fail. It failed
@@ -42,7 +57,10 @@ if command -v gcovr >/dev/null 2>&1; then
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \
           --exclude '.*/_deps/.*' \
           --exclude-throw-branches \
-          --print-summary --txt
+          --print-summary --txt \
+          --fail-under-line "$( [[ $ENFORCE -eq 1 ]] && echo "$LINE_MIN" || echo 0 )" \
+          --fail-under-branch "$( [[ $ENFORCE -eq 1 ]] && echo "$BRANCH_MIN" || echo 0 )"
+    GCOVR_STATUS=$?
 elif command -v lcov >/dev/null 2>&1; then
     lcov --capture --directory "$BUILD_DIR" --output-file "$BUILD_DIR/coverage.info" \
          --rc branch_coverage=1 --quiet
@@ -62,11 +80,16 @@ else
 fi
 
 if [[ $ENFORCE -eq 1 ]]; then
+    if [[ ${GCOVR_STATUS:-1} -ne 0 ]]; then
+        echo >&2
+        echo "error: below the thresholds in docs/quality-gates.md section 6" >&2
+        echo "       (${LINE_MIN}% line, ${BRANCH_MIN}% branch)." >&2
+        exit 1
+    fi
     echo
-    echo "error: --enforce is not active until P13 (docs/quality-gates.md section 6)." >&2
-    echo "       Thresholds when it is: ${LINE_MIN}% line, ${BRANCH_MIN}% branch." >&2
-    exit 1
+    echo "coverage OK: at or above ${LINE_MIN}% line and ${BRANCH_MIN}% branch"
+    exit 0
 fi
 
 echo
-echo "reported only; thresholds (${LINE_MIN}% line / ${BRANCH_MIN}% branch) are enforced from P13"
+echo "reported only; pass --enforce to apply the ${LINE_MIN}%/${BRANCH_MIN}% thresholds"

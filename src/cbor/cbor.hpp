@@ -119,6 +119,22 @@ public:
     [[nodiscard]] Result<void> leave_map() noexcept;
 
     /// Enters a map held under \p key, for nested structures.
+    ///
+    /// **The absent-map failure is deliberately not sticky**, unlike every
+    /// other failure on this class. A caller uses this as a probe for an
+    /// optional map -- `extract_mgmt_error` asks for `err` on every response,
+    /// and an SMP v1 device never carries one (docs/protocol-notes.md
+    /// section 9, A16). Recording that as an error would make the reader fail
+    /// for every v1 response ever decoded.
+    ///
+    /// So a *missing or non-map* value returns a failed `Result` and leaves
+    /// `status()` clean; the caller learns of it from the return value alone.
+    /// The other two failures here -- the nesting cap and an over-long key --
+    /// are not "absent", they are hostile input and a caller bug respectively,
+    /// and both do set `status()`. P13's limits audit turned on that
+    /// distinction: `kMaxCborNesting` had to drop below QCBOR's own cap
+    /// precisely so a too-deep document fails through `record()` here rather
+    /// than through the silent path (see `smply/limits.hpp`).
     [[nodiscard]] Result<void> enter_map(std::string_view key) noexcept;
 
     /// \name Getters

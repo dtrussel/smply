@@ -115,6 +115,9 @@ void UploadDriver::send(const UploadRequest& request)
     writer.put_bytes("data", ConstBytes{into});
 
     const auto payload = writer.close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (!payload.has_value()) {
         // Unreachable: kUploadBufferSize covers the largest legal chunk plus
         // the largest envelope, and chunk_size is bounded before a session
@@ -122,6 +125,7 @@ void UploadDriver::send(const UploadRequest& request)
         finish(fail(Error{ErrorCode::Internal, "upload: request buffer too small"}));
         return;
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Image,
@@ -155,11 +159,16 @@ void UploadDriver::handle(Result<RawResponse> response)
         decoded.failure = response.error();
     } else {
         cbor::Reader reader{response->payload};
+        // LCOV_EXCL_START -- unreachable guard; see the note above the first
+        // one for why the whole block and not just the condition. The STOP is
+        // inside the guard here, not after the chain: the `else` arm is the
+        // ordinary path and must stay counted.
         if (const auto entered = reader.enter_map(); !entered.has_value()) {
             // Unreachable today: SmpClient::interpret() has already required a
             // map. Checked anyway -- a decoder that assumes its input was
             // validated elsewhere is one refactor away from trusting a device.
             decoded.failure = entered.error();
+            // LCOV_EXCL_STOP
         } else {
             const std::optional<std::uint64_t> off = reader.uint("off");
             const std::optional<bool> match = reader.boolean("match");

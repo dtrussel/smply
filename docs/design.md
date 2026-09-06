@@ -124,7 +124,8 @@ fill.
   assembler returns `InvalidState` rather than allowing the use-after-free.
 * The object remains usable after an error — it is left empty, not poisoned.
 
-Properties covered by tests, and by a fuzz target from P13:
+Properties covered by tests, and by `fuzz_assembler`, which asserts the buffer
+bound at every step and at the peak:
 
 * **The fragmentation invariant**: whole delivery, byte-at-a-time, every fixed
   fragment size 1–64, oversized fragments, and seeded random cut points all

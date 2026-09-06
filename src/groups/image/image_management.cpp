@@ -164,6 +164,9 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
 [[nodiscard]] Result<ImageState> decode_state(ConstBytes payload)
 {
     cbor::Reader reader{payload};
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (const auto entered = reader.enter_map(); !entered.has_value()) {
         // Unreachable today: SmpClient::interpret() has already run
         // extract_mgmt_error() over this payload, which fails unless it is a
@@ -171,6 +174,7 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
         // elsewhere is one refactor away from trusting a device.
         return fail(entered.error());
     }
+    // LCOV_EXCL_STOP
 
     ImageState state;
     // An absent or empty array is a successful, empty answer: the device
@@ -258,10 +262,13 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
 [[nodiscard]] Result<SlotInfo> decode_slot_info(ConstBytes payload)
 {
     cbor::Reader reader{payload};
+    // LCOV_EXCL_START -- unreachable guard; see the note above the first
+    // one for why the whole block and not just the condition.
     if (const auto entered = reader.enter_map(); !entered.has_value()) {
         // Unreachable today: see decode_state().
         return fail(entered.error());
     }
+    // LCOV_EXCL_STOP
 
     SlotInfo info;
     const auto walked = reader.for_each_map_in_array(
@@ -629,6 +636,8 @@ RequestHandle ImageManagement::get_state(Callback<ImageState> on_done)
 {
     std::array<std::byte, kRequestBufferSize> buffer{};
     const auto payload = encode_empty(MutBytes{buffer});
+    // LCOV_EXCL_START -- unreachable guard; see the note above the first
+    // one for why the whole block and not just the condition.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize. Kept as a
         // guard rather than deleted, so a future change to the sizing fails
@@ -636,6 +645,7 @@ RequestHandle ImageManagement::get_state(Callback<ImageState> on_done)
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "image: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Read,
                            .group = Group::Image,
@@ -669,11 +679,14 @@ RequestHandle ImageManagement::set_state(const SetStateRequest& request,
     // a confirm that silently became a test would be the worse failure.
     writer.put_bool("confirm", request.confirm);
     const auto payload = writer.close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard; see the note above the first
+    // one for why the whole block and not just the condition.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize.
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "image: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Image,
@@ -703,11 +716,14 @@ RequestHandle ImageManagement::erase(const EraseOptions& options, Callback<void>
         writer.put_uint("slot", *options.slot);
     }
     const auto payload = writer.close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard; see the note above the first
+    // one for why the whole block and not just the condition.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize.
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "image: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Image,
@@ -741,11 +757,14 @@ RequestHandle ImageManagement::get_slot_info(Callback<SlotInfo> on_done)
 {
     std::array<std::byte, kRequestBufferSize> buffer{};
     const auto payload = encode_empty(MutBytes{buffer});
+    // LCOV_EXCL_START -- unreachable guard; see the note above the first
+    // one for why the whole block and not just the condition.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize.
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "image: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Read,
                            .group = Group::Image,

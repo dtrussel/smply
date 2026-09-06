@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The scheduled fuzz soak (docs/quality-gates.md section 8).
+#
+# Advisory, not required: it is a search, and a search that finds nothing today
+# may find something tomorrow from the same corpus. What makes it useful is that
+# it keeps running -- P13 replaced the roadmap's one-off "two hours per target
+# locally" with this job, on the grounds that a schedule outlives a measurement.
+#
+# A find is not a broken build; it is a bug report with a reproducer attached.
+# The reproducer is uploaded as an artifact and an issue is opened, and the fix
+# lands with that input committed to tests/fuzz/corpus/, which is what turns the
+# corpus into a regression suite rather than a cache.
+name: nightly-fuzz-soak
+
+on:
+  schedule:
+    # 03:17 UTC: off the hour, so this does not queue behind everything else
+    # that runs at midnight.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Seconds per target"
+        required: false
+        default: "1800"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  soak:
+    name: soak (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Every target runs even if one of them finds something.
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_assembler
+          - fuzz_cbor_image_state
+          - fuzz_cbor_upload_response
+          - fuzz_header
+          - fuzz_mcuboot_header
+          - fuzz_smp_client_rx
+          - fuzz_tlv_scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang libclang-rt-18-dev
+
+      - run: cmake --preset linux-clang-fuzz
+      - run: cmake --build --preset linux-clang-fuzz --target ${{ matrix.target }}
+
+      # The corpus is copied out of the tree for the same reason the smoke job
+      # copies it: libFuzzer writes what it discovers into the directory it is
+      # given, and only a human deciding what is worth keeping should change
+      # the committed corpus.
+      - name: Soak
+        id: soak
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/corpus fuzz-artifacts
+          cp -r "tests/fuzz/corpus/${{ matrix.target }}/." /tmp/corpus/
+          "build/linux-clang-fuzz/tests/fuzz/${{ matrix.target }}" /tmp/corpus \
+            -max_total_time=${{ github.event.inputs.duration || '1800' }} \
+            -max_len=8192 -rss_limit_mb=2048 -print_final_stats=1 \
+            -artifact_prefix="$PWD/fuzz-artifacts/${{ matrix.target }}-" \
+            2>&1 | tee soak.log
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      # The corpus as the soak left it: an input that reached new coverage is
+      # worth looking at even when nothing crashed, and -merge=1 against it is
+      # how the committed corpus gets pruned.
+      - name: Upload the grown corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: /tmp/corpus
+          retention-days: 14
+
+      - name: Upload the reproducer
+        if: steps.soak.outputs.status != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            fuzz-artifacts/
+            soak.log
+          if-no-files-found: warn
+
+      - name: Open an issue for the find
+        if: steps.soak.outputs.status != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const target = '${{ matrix.target }}';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `nightly-fuzz-soak: ${target} found a crash`;
+            // One open issue per target: a crash that reproduces every night
+            // should not open a new issue every night.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'fuzz',
+            });
+            if (existing.data.some((issue) => issue.title === title)) {
+              core.info(`an open issue already tracks ${target}`);
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['fuzz'],
+              body: [
+                `\`${target}\` exited non-zero during the nightly soak.`,
+                '',
+                `Run: ${run}`,
+                '',
+                'The reproducer is attached to that run as the',
+                `\`crash-${target}\` artifact. To reproduce:`,
+                '',
+                '```sh',
+                'cmake --preset linux-clang-fuzz',
+                'cmake --build --preset linux-clang-fuzz',
+                `build/linux-clang-fuzz/tests/fuzz/${target} <reproducer>`,
+                '```',
+                '',
+                'Commit the reproducer to',
+                `\`tests/fuzz/corpus/${target}/\` with the fix',
+                '(docs/quality-gates.md section 8).',
+              ].join('\n'),
+            });

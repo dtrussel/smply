@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P13 — Fuzzing, hardening and coverage push** |
-| Last completed phase | P12 — `FirmwareUpdater` orchestration |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included**. 559 tests, 11 CI jobs green. **The portable product is functionally complete.** |
+| **Next phase to work on** | **P14 — `Dispatcher` and the portable example** |
+| Last completed phase | P13 — Fuzzing, hardening and coverage push |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking**. 590 tests, 12 CI jobs plus a nightly soak. **The portable product is functionally complete, and its untrusted-input surface is fuzzed and enforced.** |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -33,7 +33,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P10](#p10) | Image upload state machine | Complete | P8, P9 |
 | [P11](#p11) | `ServerSimulator` and component test harness | Complete | P7, P8, P10 |
 | [P12](#p12) | `FirmwareUpdater` orchestration | Complete | P11 |
-| [P13](#p13) | Fuzzing, hardening and coverage push | Planned | P10 |
+| [P13](#p13) | Fuzzing, hardening and coverage push | Complete | P10 |
 | [P14](#p14) | `Dispatcher` and the portable example | Planned | P12 |
 | [P15](#p15) | WinRT BLE transport | Planned | P14 |
 | [P16](#p16) | WinRT BLE DFU example application | Planned | P15 |
@@ -1497,7 +1497,7 @@ the fixture and the bounded `run_until()` loop.
 <a id="p13"></a>
 ## P13 — Fuzzing, hardening and coverage
 
-**Status: Planned** · **Depends on:** P10 (may run in parallel with P12)
+**Status: Complete** (2026-09-06) · **Depends on:** P10 (may run in parallel with P12)
 
 **Objective.** Prove the untrusted-input surface is safe, and close coverage
 gaps.
@@ -1526,6 +1526,91 @@ revealed; [`quality-gates.md`](quality-gates.md) coverage numbers made real.
 
 **Acceptance.** A 2-hour soak per target with no findings; every configured
 limit has an enforcement test.
+
+### Outcome
+
+**Completed.** `tests/fuzz/` with all seven targets, their corpora and a
+`linux-clang-fuzz` preset; `tests/unit/test_limits.cpp` (new, one case per
+[`architecture.md`](architecture.md) §9 constant); the coverage thresholds
+enforced; the two CI jobs the matrix had been reserving names for. 31 new tests
+(**590** total), all green across **all seven** Linux presets and in CI.
+
+**The phase found a real defect, and it was a silent one.**
+`limits::kMaxCborNesting` was 16 while QCBOR's own `QCBOR_MAX_ARRAY_NESTING` is
+15, so smply's documented bound was never the one that bound. That is worse than
+a redundant constant: `Reader::enter_map(key)`'s QCBOR-error path is
+deliberately **non-sticky**, because it doubles as a probe for an optional map
+(`extract_mgmt_error` asks every response for an `err` map that SMP v1 devices
+never carry). A document nested deeper than QCBOR allows therefore made the
+reader stop descending with `status()` still **clean** — a hostile response
+turned into silently missing fields, and a caller following the house rule of
+"check `status()` at the end" would have seen nothing wrong. Fixed by dropping
+the cap to **14**; fourteen and not fifteen, because reaching the cap needs a
+document one level deeper than the cap, and at fifteen that document is one
+QCBOR refuses first. Only a strictly lower value routes the refusal through
+smply's own sticky `record()`. Recorded in [`security.md`](security.md) and in
+the constant's own comment.
+
+That single finding is the argument for the exercise. Twenty-two of the other
+23 constants in §9 were already enforced; what the audit was worth was the one
+that read as enforced and was not.
+
+**The coverage question turned out not to be a fork.** The roadmap framed
+`src/cbor/` at 82 % as "raise it or drop the row". Reading the uncovered-branch
+list rather than the number showed 21 of the 23 missing branches reachable
+straight through the API — 13 of them the same over-long-key guard repeated at
+every accessor. Tests for them took the directory to **97.7 % branch**. All four
+elevated gates now pass: `src/cbor/` 97.7 %, `src/smp/` 96.3 %,
+`upload_session.*` 95.5 %, `src/dfu/` 92.3 %; whole core **98.4 % line, 87.5 %
+branch**, from 96.3 / 84.3 at P12.
+
+**A standing caveat was wrong, and the phase depended on it being wrong.**
+`handoff.md` had said Clang's `compiler-rt` "is not installable in this
+container", making the Clang sanitizer preset and libFuzzer CI-only. Nobody had
+tried the package. `apt-get update && apt-get install -y libclang-rt-18-dev`
+installs it — the same package `ci.yml` had been installing for its sanitizers
+job all along. All seven Linux presets now build and run locally, and the caveat
+is corrected rather than deleted.
+
+**Remaining in this phase.** None.
+
+**Deviations, each recorded in the document it contradicts.**
+
+1. **The soak is a schedule, not a measurement** (agreed with the user).
+   Acceptance asked for ≥ 2 h per target locally, once. What shipped is
+   ~20 min per target locally across two waves on four cores — 23.0 M runs on
+   `fuzz_tlv_scan`, 5.3 M on `fuzz_cbor_image_state`, 1.3 M on
+   `fuzz_assembler`, 0.86 M on `fuzz_smp_client_rx`, and the three small
+   targets saturating at 10^8 — with **no findings**, plus a standing
+   `nightly-fuzz-soak` workflow at 30 min per target and a blocking
+   `linux-clang-fuzz-smoke` job on every push. The reasoning: a one-off two
+   hours proves less than a job that keeps running, and the CI matrix had
+   reserved both job names since P0. [`testing.md`](testing.md) §5 and
+   [`quality-gates.md`](quality-gates.md) §8 record the arrangement.
+2. **`LCOV_EXCL_LINE` was not enough for the invariant guards.** It excludes the
+   line it sits on and nothing else, so marking the `if` left the guard's body
+   in the branch denominator — most of what the exclusion was for. The guards
+   are wrapped in `LCOV_EXCL_START` / `LCOV_EXCL_STOP` instead, except in
+   `upload_driver.cpp` where the guard's `else` arm is the ordinary path and
+   must stay counted. A marker on a comment line above the code is silently
+   ignored, which cost a measurement cycle. §6 says so now.
+3. **`enter_map(key)` stays non-sticky**, against the P8 follow-up's "make it
+   sticky, or document why not". Making it sticky would fail the reader for
+   every SMP v1 response ever decoded. Documented at the declaration in
+   `src/cbor/cbor.hpp`, at the site, and in `limits.hpp` where the nesting fix
+   depends on it.
+4. **The `syntaxError:tests/*` cppcheck suppression is deleted, not narrowed.**
+   The P7 note blamed missing include paths; supplying them did not fix it. The
+   cause was the preprocessor configuration — cppcheck explores Catch2's own
+   option macros, and in `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL`,
+   `TEST_CASE` is undefined and the file genuinely has no parse. No build uses
+   that combination; `-U` on the two macros removes exactly it. What replaced
+   the suppression is narrower: findings inside `_deps/` headers are not
+   reported, for the same reason those headers are `SYSTEM` for clang-tidy.
+5. **The `life.expired()` guards in `FirmwareUpdater` needed no markers.** The
+   P12 follow-up expected five of six to be unreachable; they are all covered,
+   because the destructor completes outstanding work and the tests destroy the
+   updater mid-flight. The row is closed as "not needed", not as done.
 
 ---
 
@@ -1736,29 +1821,33 @@ them.
 | ~~P2~~ | ~~`Header` has no `is_response()` / `response_to()` helper.~~ **Done in P6**: both added to `smp/header.hpp`; the client correlates on `response_to(request.op)`. | — |
 | P6 | Two obligations are documented on `SmpClient` but belong in the normative transport contract in `transport.hpp` and `design.md` §9, where a transport author will actually read them: (a) `Transport::send()` **must not** deliver inbound bytes before returning; (b) a transport must outlive every client bound to it, because the client detaches on destruction and on rebind. Consider instead making the contract symmetric — a transport that notifies its listener as it is destroyed would remove (b) entirely. | P15 |
 | ~~P6~~ | ~~`quality-gates.md` §6 states branch-coverage thresholds without defining the metric.~~ **Resolved in P7's documentation pass**: §6 now pins the metric to what `tools/coverage.sh` reports (gcovr with `--exclude-throw-branches`), the script passes that flag, and §6 records the measured position. | — |
-| P6 | `src/cbor/` is at 80.9 % branch coverage against the ≥ 90 % elevated gate in `quality-gates.md` §6. The one area below its gate. Unenforced today; P13 must either raise it or move the directory out of the elevated list — not quietly drop the row. | P13 |
-| P7 | Deliberate invariant guards are unreachable by construction and drag branch coverage down — `src/groups/os/` is at 71.6 % with *only* guards uncovered. **This is not an open question**: `quality-gates.md` §6 already rules that forcing coverage of unreachable defensive code is unwanted and that such lines should carry an exclusion marker with a comment. The task is to apply the markers to the eight guards in `os_management.cpp` (and any later equivalents), not to decide policy. | P13 |
+| ~~P6~~ | ~~`src/cbor/` is at 80.9 % branch coverage against the ≥ 90 % elevated gate.~~ **Resolved in P13, and neither of the two options was needed.** Reading the uncovered-branch list showed 21 of 23 missing branches reachable from a test — 13 of them the same over-long-key guard repeated at every accessor. `test_cbor.cpp` gained them; the directory is at **97.7 % branch** and stays on the elevated list. | — |
+| ~~P7~~ | ~~Deliberate invariant guards are unreachable by construction and drag branch coverage down.~~ **Done in P13**: 14 guards across `os_management.cpp`, `image_management.cpp`, `upload_driver.cpp` and `upload_session.cpp` carry exclusion markers. The lesson worth keeping: `LCOV_EXCL_LINE` excludes only the line it is on, so the guards needed `LCOV_EXCL_START`/`STOP` around the whole block, and a marker on the comment line above is silently ignored. `src/groups/os/` went from 71.6 % to 80.7 % branch. | — |
 | ~~P7~~ | ~~A failed build leaves the previous test binary in place, so `ctest` reports the old suite passing.~~ **Recorded in `handoff.md` § Standing caveats**; no code change needed, it is a habit. | — |
-| P7 | **`tools/coverage.sh` produced no report at all, from P0 until P7.** `--txt "$BUILD_DIR"` made gcovr treat the build directory as that option's output file; the script exits 0 by design, so the CI coverage job stayed green while reporting nothing. Fixed in P7's documentation pass. The lesson generalises: a gate that cannot fail is not a gate, and `verify_gates.sh` covers the *checkers* but not this reporter — consider extending it. | P13 |
-| P7 | **cppcheck cannot parse some Catch2 test translation units.** It runs without the project's include paths, so `TEST_CASE`/`SECTION`/`REQUIRE` are unknown macros, and it explores preprocessor configurations no build uses (it reports `toomanyconfigs` on the same run). On `test_os_group.cpp` that yields a `syntaxError` at the first `TEST_CASE`; passing `-I` and a smaller check set makes it vanish, which is what identifies it as a parser artefact rather than a defect. Suppressed narrowly (`syntaxError:tests/*`) with the reason written in `tools/cppcheck-suppressions.txt`. The better fix is to give `lint.sh` the include paths and exclude `_deps/`, but that made cppcheck report findings inside Catch2's own headers, so it needs its own pass — do it before P13 leans on cppcheck for anything. | P13 |
+| ~~P7~~ | ~~**`tools/coverage.sh` produced no report at all, from P0 until P7**, and `verify_gates.sh` covers the checkers but not this reporter.~~ **Done in P13**: `verify_gates.sh` now stages a two-branch probe under `src/`, compiles it with `--coverage`, and asserts the reporter *rejects* it below the thresholds, *accepts* it above them, and *refuses to answer* with gcovr absent. Enforcement itself is on (`--enforce` in CI). | — |
+| ~~P7~~ | ~~**cppcheck cannot parse some Catch2 test translation units**, suppressed as `syntaxError:tests/*`.~~ **Done in P13, and the diagnosis was wrong**: include paths alone did not fix it. The cause was the preprocessor configuration — cppcheck explores Catch2's option macros, and in `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL` there is no `TEST_CASE` to parse. `lint.sh` now passes the include paths *and* `-U` on those two macros; the suppression is deleted, replaced by a narrower one for findings inside `_deps/` headers. | — |
 | ~~P8~~ | ~~`cbor::Reader::for_each_map_in_array` rejected an array of exactly `max_elements`: the cap was tested before entering an element, so the end of the array was never looked for and the last legal element failed.~~ **Fixed in P8**, in `src/cbor/reader.cpp`, with the boundary case added to `test_cbor.cpp` — the original test used 8 elements against a cap of 3, which passes either way. Found because an image-state response with exactly `limits::kMaxImages` entries did not decode. | — (fixed) |
-| P8 | `cbor::Reader::enter_map(key)` is the one failure path that does **not** call `record()`: a missing or non-map nested key returns a failed `Result` but leaves `status()` clean. Every other error is sticky. Nothing uses it yet — P8's nested decoding goes through `for_each_map_in_array` — but a caller that follows the house rule of "check `status()` at the end" would miss this one. Make it sticky, or document why it is not. | P13 |
+| ~~P8~~ | ~~`cbor::Reader::enter_map(key)` is the one failure path that does not `record()`. Make it sticky, or document why not.~~ **Documented in P13**, not made sticky: it doubles as a probe for an optional map (`extract_mgmt_error` asks every response for an `err` map that SMP v1 devices never carry), so recording would fail the reader for every v1 response. Written at the declaration, at the site, and in `limits.hpp` — where the nesting fix depends on it. | — |
 | P8 | `upload_image_id` in a slot-info response means two different things: the global slot index plus one under `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`, and the image number without it (protocol-notes §6). smply reports the number verbatim and does not try to tell the two apart. P10 must decide whether the upload path may use it at all, or whether it stays advisory. | P10 |
 | P8 | `ImageState` has no `operator==`, so a test comparing two whole states has to compare `slots` and `split_status` separately. Trivial to add if P11's component tests want it. | when needed |
 | P9 | **Compressed images are unhandled.** MCUboot has `IMAGE_F_COMPRESSED_LZMA1/LZMA2/ARM_THUMB_FLT` and a separate `IMAGE_TLV_DECOMP_SHA`, whose relationship to the slot hash is the same question encrypted images raise (A13). smply carries the flags through and does not interpret them, so a compressed image's hash correlation is unverified rather than known-wrong. Decide whether to flag it like `encrypted`, or to document it as untested. | P12 |
-| P9 | `fuzz_mcuboot_header` and `fuzz_tlv_scan` are specified in `testing.md` §5 but not built. The TLV scanner is the strongest candidate in the library for fuzzing — it indexes with file-supplied offsets — and it is written to be a pure function over an `ImageSource`, so a target is a few lines. | P13 |
+| ~~P9~~ | ~~`fuzz_mcuboot_header` and `fuzz_tlv_scan` are specified in `testing.md` §5 but not built.~~ **Done in P13**, along with the other five. `fuzz_tlv_scan` was written first, as P9 advised; it survived 23.0 M runs with no findings. | — |
 | P9 | `image::narrow<To>()` exists because GCC's `-Wuseless-cast` rejects a `static_cast` between `std::uint64_t` and `std::size_t` on a 64-bit host. It is in `src/image/` because that is where it was needed; if a second area needs the same thing, promote it rather than copying it. | when needed |
 | P9 | The TLV entry cap counts loop iterations, so the one iteration spent stepping over the unprotected area's header consumes a unit of the budget. Immaterial at 256, but if the cap is ever tightened it should count entries. | when needed |
 | ~~P10~~ | ~~**`ImageManagement` is now stateful, and nothing enforces the lifetime rule it introduces.**~~ **Done in P11**: `test_round_trip.cpp`'s "destroying the group mid-upload completes the callback once" destroys the whole fixture with an upload in flight, under both sanitizer presets. | — |
 | P12 | The upload's retry and restart counters are not plumbed out to `UpdateReport`, so a caller cannot see that an update succeeded only after three retransmissions. `UploadResult` would have to carry them first. | when a caller asks |
-| P12 | `UpdateReport::upload_skipped` reflects only the updater's **pre-flight** decision. When the *server* completes an upload on the first packet (rule 9a) the client cannot tell — `UploadResult` does not say whether any data was sent. Adding that would also let a caller distinguish "already present" from "transferred". | P13 |
-| P12 | The `life.expired()` guards in `FirmwareUpdater`'s callbacks are exercised for one callback type out of six; the other five are unreachable without destroying the updater with that specific request in flight. They are invariant guards of the kind §6 says should carry a coverage-exclusion marker. | P13 |
+| P12 | `UpdateReport::upload_skipped` reflects only the updater's **pre-flight** decision. When the *server* completes an upload on the first packet (rule 9a) the client cannot tell — `UploadResult` does not say whether any data was sent. Adding that would also let a caller distinguish "already present" from "transferred". *(Re-filed by P13: it is an API change, not hardening.)* | P14 |
+| ~~P12~~ | ~~The `life.expired()` guards in `FirmwareUpdater`'s callbacks are exercised for one callback type out of six and should carry exclusion markers.~~ **Not needed, established in P13**: all of them are covered. The destructor completes outstanding work, and the tests destroy the updater mid-flight, so the guards run. No markers added. | — |
 | P11 | The simulator models **one image and two slots**, and refuses an upload naming any other image with `NoFreeSlot` rather than writing slot 1 regardless. So `UploadOptions::image` has no end-to-end coverage: a device with two image pairs reports an `image` key that varies per entry and carries a second swap state. | P12, if the DFU flow grows multi-image support |
 | P11 | `ServerSimulator::pump()` answers everything queued in one turn, so `buf_count` and any notion of the device being busy with a previous packet are not modelled. A device that refused a second request while one was outstanding would exercise the client's `max_in_flight` path from the far side. | when needed |
 | P11 | The component suite left `src/` coverage unchanged at 95.6 % line / 82.3 % branch — it covers *sequences*, which line coverage cannot see. Worth remembering before anyone reads a flat coverage number as a measure of what the component tests are worth. | — |
 | P10 | The upload driver keeps the chunk in a second buffer before encoding it, because `cbor::Writer` needs the bytes up front. A `put_bytes_from()` that let a caller fill the byte string in place would remove a 512-byte copy per chunk. Immaterial at these sizes; revisit only if a profile says so. | when needed |
-| P10 | `fuzz_cbor_upload_response` is specified in `testing.md` §5 and not built. The response decode is small, but it is device-supplied and feeds a state machine with budgets — a good target. | P13 |
+| ~~P10~~ | ~~`fuzz_cbor_upload_response` is specified in `testing.md` §5 and not built.~~ **Done in P13**, going through a live upload so the offset it decodes actually drives the session; it asserts the session never reports more transferred than the image holds. | — |
 | P10 | A retransmission necessarily carries a new sequence number, so a device that deduplicates on `seq` would see two distinct requests at the same offset. Harmless against Zephyr, which keys on offset, but worth checking on real hardware. | P17 |
-| P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
-| P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
+| P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. *(P13 reviewed it and left it filed: nothing has profiled it.)* | when profiled |
+| ~~P1~~ | ~~Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI.~~ **Wrong, corrected in P13**: `apt-get update && apt-get install -y libclang-rt-18-dev` installs it — the package `ci.yml` had been installing for its own sanitizers job since P0. Nobody had tried it. All seven Linux presets, libFuzzer included, build and run locally now. **The P6 half of this row still stands**: GCC's ASan does not report stack-use-after-scope for a dangling callback capture, so the two sanitizer jobs are not interchangeable. | — |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
+| P13 | **The fuzz corpora are not pruned.** The local soak added ~1 100 inputs across the seven directories, kept because each reached new coverage, but `-merge=1` was run only once at the end of the phase. The smoke job replays every committed input on every push, so the corpus is a CI cost as well as a regression suite. Re-merge when a directory's replay time becomes noticeable. | when it costs |
+| P13 | `fuzz_smp_client_rx` drives a client with **one** pending request, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5) — that needs several requests completed and a late response for a retired one. The unit suite covers it; the fuzzer does not. | when the target is next touched |
+| P13 | **The elevated per-directory coverage gates are measured, not enforced.** `coverage.sh --enforce` applies only the two whole-core thresholds, because gcovr has no per-directory threshold and four extra invocations would turn one number into five that can disagree. A directory could fall below 90 % branch with CI green; only a person reading §6 would notice. Consider a per-directory pass if one ever regresses unnoticed. | when one regresses |
+| P13 | `nightly-fuzz-soak` opens an issue on a find and dedupes on one open issue per target, which means a *second, different* crash in a target with an issue already open is silent until the first is closed. Acceptable while finds are rare; revisit if they stop being. | when finds are common |

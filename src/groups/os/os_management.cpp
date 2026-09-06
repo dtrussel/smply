@@ -82,6 +82,9 @@ RequestHandle OsManagement::reset(const ResetOptions& options, Callback<void> on
         writer.put_bool("force", true);
     }
     const auto payload = writer.close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize. Kept as a
         // guard rather than deleted, so a future change to the sizing fails
@@ -89,6 +92,7 @@ RequestHandle OsManagement::reset(const ResetOptions& options, Callback<void> on
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "os: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Os,
@@ -119,6 +123,9 @@ RequestHandle OsManagement::mcumgr_parameters(Callback<McumgrParameters> on_done
 {
     std::array<std::byte, kRequestBufferSize> buffer{};
     const auto payload = encode_empty(MutBytes{buffer});
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize. Kept as a
         // guard rather than deleted, so a future change to the sizing fails
@@ -126,6 +133,7 @@ RequestHandle OsManagement::mcumgr_parameters(Callback<McumgrParameters> on_done
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "os: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Read,
                            .group = Group::Os,
@@ -146,6 +154,8 @@ RequestHandle OsManagement::mcumgr_parameters(Callback<McumgrParameters> on_done
         }
 
         cbor::Reader reader{response->payload};
+        // LCOV_EXCL_START -- unreachable guard; see the note above the buffer
+        // guards for why the whole block and not just the condition.
         if (const auto entered = reader.enter_map(); !entered.has_value()) {
             // Unreachable today: SmpClient::interpret() has already run
             // extract_mgmt_error() over this payload, which fails unless it is
@@ -154,6 +164,7 @@ RequestHandle OsManagement::mcumgr_parameters(Callback<McumgrParameters> on_done
             callback(fail(entered.error()));
             return;
         }
+        // LCOV_EXCL_STOP
         const std::optional<std::uint64_t> buf_size = reader.uint("buf_size");
         const std::optional<std::uint64_t> buf_count = reader.uint("buf_count");
         static_cast<void>(reader.leave_map());
@@ -189,6 +200,9 @@ RequestHandle OsManagement::echo(std::string_view text, Callback<std::string> on
     std::array<std::byte, kRequestBufferSize> buffer{};
     cbor::Writer writer{MutBytes{buffer}};
     const auto payload = writer.open_map().put_text("d", text).close_map().finish();
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
     if (!payload.has_value()) {
         // Unreachable: see the static_assert on kRequestBufferSize. Kept as a
         // guard rather than deleted, so a future change to the sizing fails
@@ -196,6 +210,7 @@ RequestHandle OsManagement::echo(std::string_view text, Callback<std::string> on
         return reject(*client_, std::move(on_done),
                       Error{ErrorCode::Internal, "os: request buffer too small"});
     }
+    // LCOV_EXCL_STOP
 
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Os,
@@ -213,6 +228,8 @@ RequestHandle OsManagement::echo(std::string_view text, Callback<std::string> on
         }
 
         cbor::Reader reader{response->payload};
+        // LCOV_EXCL_START -- unreachable guard; see the note above the buffer
+        // guards for why the whole block and not just the condition.
         if (const auto entered = reader.enter_map(); !entered.has_value()) {
             // Unreachable today: SmpClient::interpret() has already run
             // extract_mgmt_error() over this payload, which fails unless it is
@@ -221,6 +238,7 @@ RequestHandle OsManagement::echo(std::string_view text, Callback<std::string> on
             callback(fail(entered.error()));
             return;
         }
+        // LCOV_EXCL_STOP
         const std::optional<std::string_view> echoed = reader.text("r");
         static_cast<void>(reader.leave_map());
 

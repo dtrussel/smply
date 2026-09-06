@@ -70,6 +70,27 @@ expect_fail() {
     fi
 }
 
+# expect_ok <description> <command...>
+# The mirror of expect_fail. A gate that rejects everything protects nothing
+# either -- it just gets disabled. Used where a violation and its absence are
+# both cheap to stage.
+expect_ok() {
+    local description="$1"
+    shift
+    local output
+    output="$(cd "$WORK" && "$@" 2>&1)"
+    local status=$?
+    if [[ $status -eq 0 ]]; then
+        printf '  PASS  %s\n' "$description"
+        PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s\n' "$description"
+        printf '        Expected success; the gate said: %s\n' \
+            "$(echo "$output" | grep -viE '^\s*$' | tail -1 | cut -c1-100)"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$WORK" -xf -; }
 
 echo "--- each gate must reject its violation ---"
@@ -92,7 +113,8 @@ cmake --build "$WORK/build" --target smply > /dev/null 2>&1  # back to green
 cat >> "$WORK/src/version.cpp" <<'EOF'
 namespace smply { int* tidy_violation(char* p); int* tidy_violation(char* p) { return reinterpret_cast<int*>(p); } }
 EOF
-expect_fail "clang-tidy rejects reinterpret_cast over raw bytes" tools/lint.sh build
+expect_fail "clang-tidy rejects reinterpret_cast over raw bytes" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 tools/lint.sh build
 restore src/version.cpp
 
 # 4. Public header discipline: third-party include
@@ -185,6 +207,94 @@ expect_fail "the consumer target fails to compile when it inherits strict flags"
 restore CMakeLists.txt
 restore tests/consumer/CMakeLists.txt
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
+
+
+# 14, 15 and 16. The coverage reporter.
+#
+# This is the gate with the worst history in the project: from P0 to P7 it
+# passed a directory in the position gcovr reads as an output filename, printed
+# nothing, and exited 0 -- so CI reported a coverage gate that had never
+# measured anything. Every other check in this script proves a *checker*
+# rejects a violation; none of them covered the reporter, which is exactly how
+# that survived seven phases.
+#
+# A real coverage build of the scratch tree would cost minutes. It is not
+# needed: what has to be proven is that coverage.sh distinguishes below the
+# threshold from above it, and refuses to answer when it cannot measure. A
+# two-branch probe compiled with --coverage gives all three answers in about a
+# second, and it lives under src/ so the script's own filter picks it up.
+if command -v gcovr >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
+    COVPROBE="$WORK/build-covprobe"
+    mkdir -p "$COVPROBE"
+
+    # take_branch is called with true only, so the false arm and the line it
+    # guards stay uncovered: 3 of 4 lines and 1 of 2 branches.
+    cat > "$WORK/src/coverage_probe.cpp" <<'PROBE'
+// SPDX-License-Identifier: Apache-2.0
+// Written by tools/verify_gates.sh into a throwaway copy of the tree; never
+// present in the working tree.
+namespace smply {
+int take_branch(bool go, int x);
+int take_branch(bool go, int x)
+{
+    if (go) {
+        return x + 1;
+    }
+    return x - 1;
+}
+} // namespace smply
+int main()
+{
+    return smply::take_branch(true, -1);
+}
+PROBE
+
+    # No -fprofile-dir: it mangles the .gcda path so that gcovr cannot infer a
+    # working directory and gives up with an error rather than a number. Left
+    # to itself, gcc writes the .gcda beside the .gcno, which is where the -o
+    # path puts it -- exactly what gcovr expects.
+    build_probe() {
+        rm -rf "$COVPROBE"
+        mkdir -p "$COVPROBE"
+        (cd "$WORK" && g++ --coverage -O0 -o build-covprobe/probe src/coverage_probe.cpp) \
+            >> "$SCRATCH/covprobe-build.log" 2>&1 &&
+            (cd "$WORK" && ./build-covprobe/probe > /dev/null 2>&1; true) &&
+            find "$COVPROBE" -name '*.gcda' | grep -q .
+    }
+
+    if build_probe; then
+
+        expect_fail "coverage.sh --enforce rejects coverage below the thresholds" \
+            tools/coverage.sh build-covprobe --enforce
+
+        # And is not simply always-red: the same reporter passes once the
+        # thresholds are met. Reaching both arms covers every line and branch.
+        sed -i 's|return smply::take_branch(true, -1);|return smply::take_branch(true, -1) + smply::take_branch(false, 1);|' \
+            "$WORK/src/coverage_probe.cpp"
+        build_probe
+
+        expect_ok "coverage.sh --enforce accepts coverage above the thresholds" \
+            tools/coverage.sh build-covprobe --enforce
+
+        # Without gcovr the measurement is a different one, so --enforce must
+        # refuse rather than enforce the documented threshold against a number
+        # that does not mean the same thing. Only gcovr is hidden -- env -i
+        # would drop the compiler too, and the check would pass for the wrong
+        # reason.
+        GCOVR_DIR="$(dirname "$(command -v gcovr)")"
+        NO_GCOVR_PATH="$(echo "$PATH" | tr ':' '\n' | grep -vxF "$GCOVR_DIR" | paste -sd:)"
+        expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
+            env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
+    else
+        printf '  SKIP  coverage reporter (the --coverage probe did not build)\n'
+        tail -5 "$SCRATCH/covprobe-build.log"
+    fi
+
+    rm -f "$WORK/src/coverage_probe.cpp"
+    rm -rf "$COVPROBE"
+else
+    printf '  SKIP  coverage reporter (needs gcovr and g++; pip install gcovr)\n'
+fi
 
 echo
 echo "=== $PASS gate(s) verified, $FAIL not protecting anything ==="

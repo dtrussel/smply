@@ -5,9 +5,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using smply::Error;
@@ -251,4 +253,42 @@ TEST_CASE("an unknown SMP code is preserved rather than rejected", "[error]")
     const auto code = smply::smp_error(unknown);
     REQUIRE(code.has_value());
     REQUIRE(static_cast<std::uint16_t>(*code) == 4242);
+}
+
+TEST_CASE("every named group has a distinct name, and unnamed ones are 'unknown'", "[error][group]")
+{
+    // Every enumerator, not a spot-check: `group_name` is the one place the
+    // names live, and a switch over an enumeration is exactly where a copied
+    // case label goes unnoticed. Twelve of these are groups smply does not
+    // implement, so nothing else in the suite reaches them.
+    const std::vector<std::pair<Group, std::string_view>> named{
+        {Group::Os, "os"},
+        {Group::Image, "image"},
+        {Group::Stat, "stat"},
+        {Group::Settings, "settings"},
+        {Group::Log, "log"},
+        {Group::Crash, "crash"},
+        {Group::Split, "split"},
+        {Group::Run, "run"},
+        {Group::Fs, "fs"},
+        {Group::Shell, "shell"},
+        {Group::Enumeration, "enumeration"},
+        {Group::Transport, "transport"},
+        {Group::ZephyrBasic, "zephyr-basic"},
+        {Group::PerUser, "per-user"},
+    };
+
+    std::vector<std::string_view> seen;
+    for (const auto& [group, expected] : named) {
+        const std::string_view name = smply::group_name(group);
+        INFO("group " << smply::to_underlying(group));
+        REQUIRE(name == expected);
+        REQUIRE(std::find(seen.begin(), seen.end(), name) == seen.end());
+        seen.push_back(name);
+    }
+
+    // The enumeration is open by design, so an unnamed value is answered rather
+    // than rejected -- the numeric value is what the caller reports.
+    REQUIRE(std::string_view{smply::group_name(static_cast<Group>(4242))} == "unknown");
+    REQUIRE(std::string_view{smply::group_name(static_cast<Group>(65535))} == "unknown");
 }

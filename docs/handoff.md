@@ -100,6 +100,15 @@ entry when it stops being true.
   struct**, or a malformed response reads as a successful one full of defaults.
 * Decoded views (`std::string_view`, `ConstBytes`) point into the assembler's
   buffer and are valid only for the callback. Copy anything that outlives it.
+* **A bound that is not the tightest bound is not a bound.**
+  `limits::kMaxCborNesting` was 16 against QCBOR's own cap of 15, so smply's
+  documented limit never bound — and because `Reader::enter_map(key)`'s
+  QCBOR-error path is deliberately non-sticky (it doubles as a probe for the
+  optional `err` map that SMP v1 devices never carry), a too-deep document made
+  the reader stop descending with `status()` **clean**. Silently missing fields,
+  not a decode failure. It is 14 now: reaching the cap needs a document one
+  level deeper than the cap, so equalling QCBOR's is not enough. When adding a
+  limit, check what the layer *underneath* already enforces.
 
 **Layering**
 
@@ -183,14 +192,21 @@ entry when it stops being true.
   reports the *old* suite passing. Check the build's exit status separately;
   never read "N tests passed" as evidence anything was rebuilt. This has bitten
   in four consecutive phases.
-* **Build every preset.** `cmake --list-presets` shows **seven** Linux ones, and
-  six of them link here: `linux-clang-asan-ubsan` configures and compiles but
-  cannot link, because Clang's compiler-rt is not installable in this container
-  (`cannot find libclang_rt.asan_static-x86_64.a`). It is therefore **CI-only**,
-  and it is the one that catches dangling callback captures — so a green local
-  sanitizer run is necessary, not sufficient.
+* **Build every preset.** `cmake --list-presets` shows **seven** Linux ones and
+  **all seven link here**, `linux-clang-asan-ubsan` included.
 
-  **The two MSVC jobs are CI-only too**, and MSVC is a *third* opinion, not a
+  This corrects a caveat that stood from P1 to P12 and shaped three phases of
+  work. It said Clang's compiler-rt "is not installable in this container", so
+  dangling callback captures were a **CI-only** bug class. That was never true:
+  `libclang-rt-18-dev` is an ordinary Ubuntu package — the very one
+  `.github/workflows/ci.yml` has been installing for its sanitizers job all
+  along. The install fails with a 404 on a stale index and succeeds after
+  `apt-get update`, which is presumably how the original conclusion was reached.
+  **Run `apt-get update` before believing any "not installable" claim**, and
+  build the Clang sanitizer preset locally: it is no longer CI-only, and it is
+  the one that catches lifetime bugs GCC's ASan does not report at all.
+
+  **The two MSVC jobs remain CI-only**, and MSVC is a *third* opinion, not a
   rounding error on the other two. Its `/w14242` rejected
   `std::pair<std::uint16_t, std::uint8_t>{0, 6}` in P12 — the `int` literals
   narrow inside pair's constructor template, where the "constant that fits"
@@ -225,8 +241,8 @@ entry when it stops being true.
 
 **Tooling**
 
-* **Install `cppcheck` and `gcovr` first.** Neither is in the container, and
-  both fail soft: `tools/lint.sh` skips cppcheck silently, and
+* **Install `cppcheck`, `gcovr` and `libclang-rt-18-dev` first**, after an
+  `apt-get update`. The first two fail soft: `tools/lint.sh` skips cppcheck silently, and
   `tools/coverage.sh` falls back to plain `gcov`, whose branch metric is not
   comparable. `apt-get install -y cppcheck && pip install gcovr`.
 * Coverage means exactly what `tools/coverage.sh` reports (gcovr with
@@ -234,10 +250,38 @@ entry when it stops being true.
   different flag. Running gcovr by hand, put the search path **first**:
   `--txt <build-dir>` takes the directory as that option's output file and
   fails — the mistake that silently disabled `coverage.sh` from P0 to P7.
+* **The thresholds are enforced from P13**: CI runs
+  `tools/coverage.sh <build-dir> --enforce`, which fails below 85 % line or
+  75 % branch and **refuses to run at all without gcovr** rather than falling
+  back to a different measurement. `tools/verify_gates.sh` now proves the
+  reporter rejects, accepts and refuses, so it can no longer be silently inert.
+* **Delete the `.gcda` files before re-measuring.** Building over an existing
+  coverage build prints `libgcov profiling error: … overwriting an existing
+  profile data with a different checksum` and then mixes counts from two
+  versions of the code. `find <build-dir> -name '*.gcda' -delete`, then re-run
+  the tests. The warning scrolls past in build output; the number that follows
+  looks perfectly ordinary.
+* **`LCOV_EXCL_LINE` excludes the line it sits on and nothing else.** Not the
+  block it introduces, and *not* if it is on a comment line above the code —
+  there it is silently ignored. For a multi-line guard use `LCOV_EXCL_START` /
+  `LCOV_EXCL_STOP`, and put the `STOP` inside the guard when the `else` arm is
+  the ordinary path.
 * clang-tidy over the full tree takes minutes. Run it in the background and
-  collect the result rather than blocking on it. cppcheck cannot parse some
-  Catch2 files; `tools/cppcheck-suppressions.txt` says what is suppressed and
-  why.
+  collect the result rather than blocking on it — but **not at the same time as
+  `tools/verify_gates.sh`**. That script points the scratch build at the real
+  tree's `build/linux-clang/_deps` cache, and rewriting a header clang-tidy has
+  mmapped kills it with a **bus error** that looks like a compiler crash and is
+  not one. **cppcheck now parses the
+  Catch2 suites** — `tools/lint.sh` gives it the include paths and
+  `-UCATCH_CONFIG_DISABLE -UCATCH_CONFIG_PREFIX_ALL`, without which it explores
+  a configuration where `TEST_CASE` is undefined and reports a `syntaxError` at
+  the first one. A full cppcheck pass over `include src tests` takes about three
+  minutes; run it in the background too.
+* **The fuzz targets are not part of `ctest`.** `cmake --preset
+  linux-clang-fuzz`, then run a target with its corpus directory as the
+  argument. Give it a *copy* of `tests/fuzz/corpus/<target>/` unless you mean to
+  grow the committed corpus: libFuzzer writes what it discovers into the
+  directory it is given.
 * `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it. The
   device's `<???>` version placeholder needs a raw string literal.
 
@@ -1482,3 +1526,110 @@ guards that need coverage-exclusion markers now include six in
 `FirmwareUpdater` — the `life.expired()` checks, of which only one is reachable
 without contriving the exact request in flight. The fuzz targets are specified
 in `testing.md` §5 and none is built.
+
+### 2026-09-06 — P13: fuzzing, hardening and the coverage push
+
+**Status after this session:** P13 = `Complete`. Next phase: **P14 —
+`Dispatcher` and the portable example**.
+
+**Completed.** `tests/fuzz/` with all seven targets from `testing.md` §5, their
+corpora and a `linux-clang-fuzz` preset; `tests/unit/test_limits.cpp` (new, one
+case per `architecture.md` §9 constant); the coverage thresholds enforced;
+`linux-clang-fuzz-smoke` in `ci.yml` and a scheduled `nightly-fuzz.yml`. 31 new
+tests (**590** total, as `ctest` counts them), green across **all seven**
+Linux presets.
+
+**The audit found a real, silent defect.** `limits::kMaxCborNesting` was 16
+against QCBOR's own cap of 15, so the documented bound was never the effective
+one — and `Reader::enter_map(key)`'s QCBOR-error path is deliberately
+non-sticky, because it doubles as a probe for the optional `err` map that SMP v1
+devices never carry. A document nested deeper than QCBOR allows therefore made
+the reader stop descending with `status()` **clean**: silently missing fields,
+not a decode failure, and invisible to a caller following the house rule of
+"check `status()` at the end". It is **14** now — equalling QCBOR's cap is not
+enough, because reaching smply's needs a document one level deeper than it, and
+at fifteen that document is one QCBOR refuses first.
+
+**Changed.** `kMaxCborNesting` 16 → 14. 14 invariant guards across
+`os_management.cpp`, `image_management.cpp`, `upload_driver.cpp` and
+`upload_session.cpp` wrapped in coverage-exclusion markers. `tools/coverage.sh`
+enforces (and refuses to run without gcovr). `tools/verify_gates.sh` covers the
+coverage *reporter* — the one gate it never checked, and the one that was
+silently inert from P0 to P7. `tools/lint.sh` gives cppcheck include paths and
+`-U` on two Catch2 option macros, retiring the `syntaxError:tests/*`
+suppression. No public API changed.
+
+**Remaining in this phase.** None.
+
+**Soak.** ~20 minutes per target locally, two waves on four cores: 416 M
+executions in total, **no findings**. Deviates from the roadmap's "≥ 2 h per
+target, once" by agreement with the user — a standing `nightly-fuzz-soak` job
+outlives a one-off measurement, and the CI matrix had reserved the name since
+P0. The corpora were then merged (`-merge=1`), which cut 570 inputs to 476 while
+keeping the named hand-seeded ones; the smoke job replays all of them in about
+70 seconds.
+
+**Caveats — read these before P14.**
+
+* **A bound that is not the tightest bound is not a bound.** See the nesting
+  finding above. When adding a limit, check what the layer *underneath* already
+  enforces — and check whether the failure path is sticky, because an
+  unenforced bound plus a non-sticky error is silence, not an error.
+* **`LCOV_EXCL_LINE` excludes only the line it is on**, and is silently ignored
+  on a comment line above the code. Marking the `if` of a guard leaves its body
+  in the denominator, which is most of what the exclusion was for. Use
+  `LCOV_EXCL_START` / `STOP`, and put the `STOP` *inside* the guard where the
+  `else` arm is the ordinary path (`upload_driver.cpp` is the example).
+* **Stale `.gcda` files survive a rebuild** and mix counts from two versions of
+  the code. `libgcov profiling error: … different checksum` scrolls past in
+  build output and the number that follows looks ordinary. Delete them and
+  re-run the tests before measuring.
+* **libFuzzer writes into the corpus directory you give it.** Both CI jobs copy
+  `tests/fuzz/corpus/` out of the tree first; do the same by hand unless you
+  mean to grow the committed corpus.
+* **A cppcheck `syntaxError` may be a configuration it invented.** The P7 note
+  blamed missing include paths; supplying them changed nothing. cppcheck
+  explores Catch2's own option macros, and in
+  `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL` there is no `TEST_CASE` to
+  parse. Before suppressing a parser complaint, print the configurations it is
+  checking.
+* **Three of the seven targets go through a live `SmpClient`**, because the
+  decoders they exercise are file-local. That is deliberate and better — it
+  fuzzes framing, correlation and decode together — but it makes those targets
+  two orders of magnitude slower than the flat ones (0.86 M runs against 213 M
+  in the same 20 minutes). Budget accordingly.
+
+**The phase's own new tests tripped the oldest caveat in this file.**
+`test_limits.cpp` declared the vector its callback captures *after* the fixture,
+so `~SmpClient`'s `fail_all()` ran the callback over freed memory. Six other
+cases in the same file had the same shape and happened not to dangle only
+because their request completed first. It was invisible to five of the seven
+presets and reported by both sanitizer presets — the ones the corrected
+compiler-rt caveat has just made runnable locally, which is the first time this
+class of bug has been caught before CI. **Declare captured state before the
+fixture**, always, not only when you can see the dangling path.
+
+**One thing that was expected and did not happen.** The P12 follow-up predicted
+five of six `life.expired()` guards in `FirmwareUpdater` would be unreachable
+and need exclusion markers. All six are covered: the destructor completes
+outstanding work, and the tests destroy the updater mid-flight. The row is
+closed as *not needed*, not as done — a prediction about coverage is not
+evidence about it.
+
+**Docs updated.** `security.md` (T3, and a new section on what the audit found),
+`testing.md` (§5 rewritten against the shipped targets, with the CI jobs and the
+corpus policy), `quality-gates.md` (§1 both fuzz rows live, §3 the cppcheck
+change, §6 rewritten — thresholds enforced, both blocking questions settled,
+measured at P13, and the traps), `architecture.md` (§9 `kMaxCborNesting`),
+`limits.hpp` and `src/cbor/cbor.hpp` (the two findings, at the point of use),
+`roadmap.md` (P13 Complete with outcome and five deviations, eight follow-up
+rows closed, four filed, Current state), this log.
+
+**Recommended next.** **P14 — `Dispatcher` and the portable example.** Nothing
+from this phase blocks it. Worth knowing going in: the elevated per-directory
+coverage gates are *measured, not enforced* (`--enforce` applies only the two
+whole-core thresholds), so a directory can fall below 90 % branch with CI green
+— check §6's table by hand when P14 adds `src/util/`. `Dispatcher` is the first
+component with threads, so it is also the first place the "no threads in the
+core" rule in `CLAUDE.md` has to be read carefully: it lives under
+`include/smply/util/`, and P14's own scope says the TSan job comes with it.
