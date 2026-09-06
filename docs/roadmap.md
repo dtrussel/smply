@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P11 — `ServerSimulator` and the component harness** (see its [Start here](#p11)) |
-| Last completed phase | P10 — Image upload state machine |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan. 439 tests, 11 CI jobs green. |
+| **Next phase to work on** | **P12 — `FirmwareUpdater` orchestration** (see its [Start here](#p12)) |
+| Last completed phase | P11 — `ServerSimulator` and the component harness |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · **a simulated device and a component suite that drives the real stack into it**. 487 tests, 11 CI jobs green. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -31,7 +31,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P8](#p8) | Image management: state read/write, erase, slot info | Complete | P6 |
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Complete | P1 |
 | [P10](#p10) | Image upload state machine | Complete | P8, P9 |
-| [P11](#p11) | `ServerSimulator` and component test harness | Planned | P7, P8, P10 |
+| [P11](#p11) | `ServerSimulator` and component test harness | Complete | P7, P8, P10 |
 | [P12](#p12) | `FirmwareUpdater` orchestration | Planned | P11 |
 | [P13](#p13) | Fuzzing, hardening and coverage push | Planned | P10 |
 | [P14](#p14) | `Dispatcher` and the portable example | Planned | P12 |
@@ -1190,7 +1190,7 @@ invariant-guard set plus two `!active_` re-entry guards in the driver.
 <a id="p11"></a>
 ## P11 — `ServerSimulator` and the component harness
 
-**Status: Planned** · **Depends on:** P7, P8, P10
+**Status: Complete** (2026-09-06) · **Depends on:** P7, P8, P10
 
 **Objective.** A deterministic in-memory MCUmgr device, so the DFU state machine
 can be developed against realistic behaviour without hardware.
@@ -1225,9 +1225,10 @@ reproduces the source image exactly, in both SMP versions.
 **Exit.** Every layer below `FirmwareUpdater` is exercised end to end, so P12
 can be developed against behaviour rather than against mocks.
 
-**Start here.** The simulator is only worth having if it can produce the
-responses that make a *correct* client look broken, so build these three in from
-the start rather than bolting them on:
+**Start here** *(written before the phase; kept as the record of what it was
+built for)*. The simulator is only worth having if it can produce the responses
+that make a *correct* client look broken, so build these three in from the start
+rather than bolting them on:
 
 * **The already-present completion** (PN §6 rule 9a): given a full 32-byte
   `sha`, answer the first packet with `off == len` and `match == true`. Without
@@ -1245,6 +1246,100 @@ simulator — it is written as server behaviour, which is exactly what this phas
 implements. The client half of each rule already has a test in
 `tests/unit/test_upload_session.cpp`; the simulator is the other side of the
 same table.
+
+### Outcome
+
+**Completed.** `tests/support/server_simulator.{hpp,cpp}` (the device),
+`tests/support/test_cbor.{hpp,cpp}` (an independent CBOR codec),
+`tests/component/` as a second executable with `harness.hpp`,
+`test_simulator.cpp` and `test_round_trip.cpp`. 48 new tests (487 total). All
+gates green across the six Linux presets that link here, and in CI.
+
+**Acceptance met.** A full upload through the real client stack into the
+simulator reproduces the source image byte for byte, in **both** SMP versions,
+and the same holds across a forced restart, a device reboot mid-transfer, a
+disconnect-and-resume, and an offset correction that names a position *ahead*
+of what the client sent.
+
+**Remaining in this phase.** None.
+
+**Protocol work.** The upload rules in §6 held as recorded, and are now
+implemented from the server side. Four findings are new, three of which change
+what P12 can do:
+
+1. **`match` on the final chunk is computed even without a usable `sha`, and is
+   then `false`** (new rule 9c). The final-chunk check has no length guard: it
+   compares the flashed hash against the stored `sha` **zero-padded to 32
+   bytes** (S10). Trim the `sha`, or omit it, and a perfectly good upload
+   reports `match: false` — which rule 9 says means failure. Sending the full 32
+   bytes is not merely better, it is required for `match` to mean anything.
+2. **Slot flags are derived from the swap type, not stored** (§7, new table,
+   from S14). The `REVERT` row is the signature of a trial boot and is easy to
+   read backwards: the image that is *running* reports `active` with **no**
+   `confirmed`, and the slot holding the fallback reports `confirmed`.
+3. **Confirming a slot that is not the running one is denied by default**
+   (`IMAGE_CONFIRMATION_DENIED`, unless
+   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`). ⇒ **P12 cannot
+   implement "confirm immediately" by confirming the uploaded image before the
+   swap.** The portable order is test → reset → confirm, which is the safe one
+   anyway. §6's warning about confirming a pending image describes a build
+   option, not the default.
+4. **The swap-type state machine is now written down** (§7, from S21's
+   `boot_swap_tables`, `boot_swap_type_multi()` and `boot_set_next()`), together
+   with the two other set-state refusals: test-on-the-running-slot, and
+   `ALREADY_PENDING` for any change while a swap is scheduled — where
+   re-requesting exactly what is already scheduled is a **success that does
+   nothing**, so an idempotent retry is safe.
+
+**Deviations, all recorded in the docs they contradict.**
+
+1. **`ServerConfig` has no SMP version.** `testing.md` §2's sketch had one, but
+   the version on the wire is the client's to choose and a real server answers
+   in the version it was asked in. What a device does choose is whether it
+   *translates* an image-group code for a v1 request (A16), which is now
+   `translate_v1_errors`. Both suites run against both versions by setting
+   `SmpClientConfig::smp_version`.
+2. **Scripted faults are methods, not config fields.** A `ServerConfig` that
+   carried "restart at offset N" would stop being a description of a device and
+   become a test script. `answer_offset_once()`, `fail_next()`,
+   `drop_next_response()` and `reset_busy_once()` live on the simulator instead.
+3. **`answer_offset_once()` changes only the answer, never the flash.** An
+   injection that also moved the device's own offset would model a server that
+   lies about what it holds, and the byte-exact comparison could then never
+   pass. As it stands a client that follows the correction is put right on the
+   next round trip and still flashes a correct image, while one that computes
+   its own offsets flashes a corrupt one — which is precisely the asymmetry the
+   acceptance test needs.
+4. **The simulator is not a `Transport`.** It watches `FakeTransport::sent()`
+   and answers from `pump()`, because `Transport::send()` may not deliver
+   inbound bytes before returning; replying inline would re-enter reassembly,
+   which the assembler refuses.
+5. **The simulator's own tests live in `tests/component/`**, not in
+   `tests/unit/` beside `test_fake_transport.cpp`. They share a fixture with the
+   tests that use it, and the unit executable stays about `src/`.
+6. **`ImageState::operator==` was not added.** The P8 follow-up row offered it
+   "when needed"; the component tests assert on individual flags, which is what
+   makes a failure readable, so the row stays open rather than gaining unused
+   API.
+7. **The device models one image and two slots.** A second image pair is
+   recorded as follow-up work; nothing below P12 needs it, and `single_image`
+   still exercises the client's decoding of an explicit `image` key.
+
+**Two things worth knowing.**
+
+* **Reusing `image::Sha256` in the simulator is safe; reusing `cbor::Reader`
+  would not have been.** The distinction is what the reused code is anchored
+  to. SHA-256 is pinned by the published FIPS 180-4 vectors in
+  `test_sha256.cpp`, so a bug there fails that test first and cannot cancel out
+  here. The CBOR façade is anchored only by hand-built vectors in the unit
+  tests, so a symmetric encoder/decoder bug would sail straight through a round
+  trip that used it on both ends — which is exactly what this phase's
+  acceptance criterion is supposed to catch. Hence `test_cbor.*`.
+* **A `std::vector<std::pair<std::string, Value>>` inside `Value` compiles
+  under GCC and is rejected by Clang** — a `std::pair` of an incomplete type is
+  undefined, while `std::vector<T>` inside `T` is specifically allowed. The map
+  is now stored flattened as key, value, key, value, exactly as CBOR encodes
+  one. Another entry in the "build every preset" ledger.
 
 ---
 
@@ -1277,7 +1372,8 @@ Component (over the simulator): every scenario in
 each 10 % boundary then resume, forced restart, already-present, already-active,
 invalid image, lost reset response, `EBUSY` then `force`, rollback observed,
 confirmation denied, cancellation in every non-terminal state, and all of it
-repeated with `ServerConfig::version = V2` and with params unsupported.
+repeated in SMP v2 (`SmpClientConfig::smp_version`) and with params
+unsupported.
 
 **Docs.** [`design.md`](design.md) §8 diagram and table reconciled;
 [`api.md`](api.md) DFU section; [`architecture.md`](architecture.md) if
@@ -1289,6 +1385,29 @@ component boundaries moved.
 
 **Exit.** The portable product is functionally complete; everything after this
 is hardening, platform work and packaging.
+
+**Start here.** Three things P11 established change the design before it is
+written, and all three are in [`protocol-notes.md`](protocol-notes.md) §7:
+
+* **`ConfirmImmediately` cannot be implemented by confirming the uploaded image
+  before the swap.** An ordinary build denies a confirm on any slot that is not
+  the running one. Decide what that mode *does* mean — probably test → reset →
+  confirm without waiting for the caller's approval — before writing the state
+  machine around a command that will fail on real hardware.
+* **The signature of a trial boot reads backwards.** After the swap, the running
+  image is `active` with **no** `confirmed`, and the slot holding the image it
+  will fall back to is the one marked `confirmed`. That, not a `pending` flag,
+  is how `RolledBack` is detected.
+* **Set-state refuses more than S4 suggests**, and one refusal is a success:
+  re-requesting exactly the swap that is already scheduled returns OK and does
+  nothing, so an idempotent retry after a lost response is safe. Any *other*
+  change while a swap is scheduled is `ALREADY_PENDING`.
+
+Two more, from §6: a full 32-byte `sha` is what makes "does the device already
+hold this image?" answerable in one round trip (rule 9a) — the shortest path
+through the whole update — and it is also what makes `match` meaningful at all
+(rule 9c). Component tests go in `tests/component/`; `harness.hpp` already has
+the fixture and the bounded `run_until()` loop.
 
 ---
 
@@ -1547,7 +1666,10 @@ them.
 | P9 | `fuzz_mcuboot_header` and `fuzz_tlv_scan` are specified in `testing.md` §5 but not built. The TLV scanner is the strongest candidate in the library for fuzzing — it indexes with file-supplied offsets — and it is written to be a pure function over an `ImageSource`, so a target is a few lines. | P13 |
 | P9 | `image::narrow<To>()` exists because GCC's `-Wuseless-cast` rejects a `static_cast` between `std::uint64_t` and `std::size_t` on a 64-bit host. It is in `src/image/` because that is where it was needed; if a second area needs the same thing, promote it rather than copying it. | when needed |
 | P9 | The TLV entry cap counts loop iterations, so the one iteration spent stepping over the unprotected area's header consumes a unit of the budget. Immaterial at 256, but if the cap is ever tightened it should count entries. | when needed |
-| P10 | **`ImageManagement` is now stateful, and nothing enforces the lifetime rule it introduces.** It must outlive its upload, and an `UploadHandle` used after the group is gone is an inert value only because it carries no pointer. A component test in P11 that destroys the group mid-upload under ASan would pin the destructor's inline completion, which today only a unit test covers. | P11 |
+| ~~P10~~ | ~~**`ImageManagement` is now stateful, and nothing enforces the lifetime rule it introduces.**~~ **Done in P11**: `test_round_trip.cpp`'s "destroying the group mid-upload completes the callback once" destroys the whole fixture with an upload in flight, under both sanitizer presets. | — |
+| P11 | The simulator models **one image and two slots**, and refuses an upload naming any other image with `NoFreeSlot` rather than writing slot 1 regardless. So `UploadOptions::image` has no end-to-end coverage: a device with two image pairs reports an `image` key that varies per entry and carries a second swap state. | P12, if the DFU flow grows multi-image support |
+| P11 | `ServerSimulator::pump()` answers everything queued in one turn, so `buf_count` and any notion of the device being busy with a previous packet are not modelled. A device that refused a second request while one was outstanding would exercise the client's `max_in_flight` path from the far side. | when needed |
+| P11 | The component suite left `src/` coverage unchanged at 95.6 % line / 82.3 % branch — it covers *sequences*, which line coverage cannot see. Worth remembering before anyone reads a flat coverage number as a measure of what the component tests are worth. | — |
 | P10 | The upload driver keeps the chunk in a second buffer before encoding it, because `cbor::Writer` needs the bytes up front. A `put_bytes_from()` that let a caller fill the byte string in place would remove a 512-byte copy per chunk. Immaterial at these sizes; revisit only if a profile says so. | when needed |
 | P10 | `fuzz_cbor_upload_response` is specified in `testing.md` §5 and not built. The response decode is small, but it is device-supplied and feeds a state machine with budgets — a good target. | P13 |
 | P10 | A retransmission necessarily carries a new sequence number, so a device that deduplicates on `seq` would see two distinct requests at the same offset. Harmless against Zephyr, which keys on offset, but worth checking on real hardware. | P17 |

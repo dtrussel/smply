@@ -33,6 +33,7 @@ and 7 re-verified against the image-group implementation on **2026-09-05**.
 | S18 | `boot/bootutil/include/bootutil/image.h` | `struct image_header`, `struct image_tlv{,_info}`, `IMAGE_MAGIC`, `IMAGE_F_*`, the TLV type numbers | `mcu-tools/mcuboot@main` (verified 2026-09-05) |
 | S19 | `boot/bootutil/src/tlv.c` | `bootutil_tlv_iter_begin()`/`_next()` -- the authoritative TLV area layout and bounds checks | same |
 | S20 | `boot/bootutil/src/image_validate.c` | `allowed_unprot_tlvs` -- which TLVs may live in the unprotected area | same |
+| S21 | `boot/bootutil/src/bootutil_public.c` | `boot_swap_tables`, `boot_swap_type_multi()` and `boot_set_next()` -- how a swap type is derived and changed | same (verified 2026-09-06) |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -445,6 +446,16 @@ state machine is built on):
    is self-correcting: the already-present check in 9a then reports completion
    on the next round trip. Without `CONFIG_IMG_ENABLE_IMAGE_CHECK` the image is
    uploaded again instead, so a client needs a restart budget either way.
+9c. **`match` on the final chunk is computed even when no usable `sha` was
+   sent, and is then `false`.** The final-chunk check -- unlike 9a's -- has no
+   length guard: it hashes the flashed bytes and compares them against the
+   stored `sha` **zero-padded to 32 bytes** (S10). A client that trimmed its
+   `sha`, or omitted it entirely, therefore gets `match: false` on a perfectly
+   good upload. Read with rule 9 ("`match == false` means the upload failed")
+   that turns every such upload into a spurious failure. ⇒ **send the full
+   32-byte `sha`, or be prepared to ignore `match`**; smply always sends it,
+   and this is the concrete reason why.
+
 10. `"off"` is only present in successful responses; on error it may be absent
     (S4).
 11. `"upgrade": true` makes the server reject a non-newer version
@@ -584,6 +595,77 @@ Relevant DFU consequence: after `set-state(test)` + reset, MCUboot swaps and
 boots the new image with `confirmed == false`. If the device resets again
 **without** a confirm, MCUboot performs a `REVERT` back to the old image. This
 is the rollback safety net that makes test-then-confirm the correct default.
+
+The swap type is not stored as such: `boot_swap_type_multi()` (S21) derives it
+from the magic, `image_ok` and `copy_done` flags in the two slots' trailers.
+The table reduces to four rows:
+
+| Secondary magic | Secondary `image_ok` | Primary `image_ok` | Type |
+| --------------- | -------------------- | ------------------ | ---- |
+| good | unset | any | `TEST` |
+| good | set | any | `PERM` |
+| any (primary magic good, `copy_done` set) | any | unset | `REVERT` |
+| — otherwise — | | | `NONE` |
+
+`boot_set_next(fa, active, confirm)` (S21) is the only thing MCUmgr calls to
+change it, and it does exactly two things: confirming the **running** slot
+writes `image_ok` there, which is what turns `REVERT` into `NONE`; marking the
+other slot writes its magic, plus `image_ok` when the request also confirmed,
+which is `TEST` or `PERM` respectively. So the observable state machine a client
+sees is:
+
+| Before | A reboot does | After |
+| ------ | ------------- | ----- |
+| `NONE` | boots the active slot again | `NONE` |
+| `TEST` | swaps, boots the new image on trial | `REVERT` |
+| `PERM` | swaps, boots the new image for good | `NONE` |
+| `REVERT` | swaps **back** | `NONE` |
+
+### Slot flags are derived, not stored (S14)
+
+`img_mgmt_state_read()` computes every reported flag from the swap type. This
+is the table, and it is what a client must reason with -- there is no per-slot
+"pending bit" anywhere:
+
+| Swap type | Active slot | Other slot |
+| --------- | ----------- | ---------- |
+| `NONE` | `active`, `confirmed` | — |
+| `TEST` | `active`, `confirmed` | `pending` |
+| `PERM` | `active`, `confirmed` | `pending`, `permanent` |
+| `REVERT` | `active` | `confirmed` |
+
+> ⚠ **The `REVERT` row is the signature of a trial boot, and it is easy to
+> misread.** The image that is *running* reports `active` with **no**
+> `confirmed`, and the slot holding the image it will fall back to reports
+> `confirmed`. A client that treats "confirmed" as "this is the image we
+> want" has it exactly backwards during the one window where it matters.
+
+`bootable` is unrelated to all of this: it comes from the image header's
+`IMAGE_F_NON_BOOTABLE` flag, so it is a property of the flashed image rather
+than of the boot state.
+
+### Set-state is refused more often than S4 suggests (S14)
+
+`img_mgmt_set_next_boot_slot()` applies a policy the specification does not
+describe, and three of its rules change what a DFU flow can do:
+
+* **Confirming a slot that is not the running one is denied**, with
+  `IMG_MGMT_ERR_IMAGE_CONFIRMATION_DENIED`, unless the build sets
+  `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`. ⇒ **"upload then
+  confirm, skipping the trial" does not work on an ordinary device.** The only
+  portable way to make a new image permanent is test → reset → confirm, which
+  is the safe order anyway. §6's warning about confirming a pending image
+  describes a build option, not the default.
+* **Marking the running slot for test is denied**, with
+  `IMG_MGMT_ERR_IMAGE_SETTING_TEST_TO_ACTIVE_DENIED`.
+* **While a swap is already scheduled, changing it is refused** with
+  `IMG_MGMT_ERR_IMAGE_ALREADY_PENDING` -- including any `test` request during a
+  trial boot. Re-requesting exactly what is already scheduled is a **success**
+  that does nothing, so an idempotent retry is safe.
+
+A hash that names no slot is `IMG_MGMT_ERR_HASH_NOT_FOUND`, and on any of these
+failures the response carries the error **only**: the refreshed image list is
+not appended.
 
 ### What smply must *not* do
 

@@ -15,14 +15,16 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P10 complete.** The protocol core is done: SMP framing and streaming
+**Phases P0–P11 complete.** The protocol core is done: SMP framing and streaming
 reassembly, a bounded CBOR façade, request correlation with timeouts and
 cancellation, the OS and image management groups, MCUboot image parsing with
-SHA-256, and the image upload state machine. 439 tests, 11 CI jobs green.
+SHA-256, and the image upload state machine — with a simulated MCUmgr device
+that the component suite drives the real stack into, byte for byte. 487 tests,
+11 CI jobs green.
 
 What is not built yet: the DFU orchestration that ties it together
-(`FirmwareUpdater`), the component-test simulator, fuzzing, the WinRT BLE
-transport and the example applications. See
+(`FirmwareUpdater`), fuzzing, the WinRT BLE transport and the example
+applications. See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 

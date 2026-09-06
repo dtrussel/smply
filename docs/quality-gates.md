@@ -2,7 +2,7 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P10):** the gates marked *(P13)* / *(P15)* below are specified
+**Status (as of P11):** the gates marked *(P13)* / *(P15)* below are specified
 but not yet wired, because the targets they would exercise do not exist.
 Everything else is live and enforced. Each live gate has been observed rejecting
 a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
@@ -170,7 +170,7 @@ switch on, and both are P13's:
   throw branches do. §6 already rules that such lines carry an exclusion
   marker; applying them is the outstanding task.
 
-| Gate | Threshold | Measured 2026-09-05 (P10) |
+| Gate | Threshold | Measured 2026-09-06 (P11) |
 | ---- | --------- | ------------------------- |
 | Line coverage, whole core | **≥ 85 %** | 95.6 % ✓ |
 | Branch coverage, whole core | **≥ 75 %** | 82.3 % ✓ |
@@ -179,6 +179,14 @@ switch on, and both are P13's:
 
 P10 is the first phase whose own acceptance criterion was one of the elevated
 gates, and `upload_session.*` clears it at 94 % branch and 99 % line.
+
+**P11 added 48 component tests and moved these numbers not at all**, which is
+worth understanding rather than treating as a disappointment. The component
+suite exercises the same lines as the unit suite; what it adds is evidence about
+*sequences* — that the commands smply issues, in the order it issues them, are
+ones a server accepts, and that an image survives the round trip byte for byte.
+Line and branch coverage cannot see that. A flat coverage number is therefore
+not a measure of what the component tests are worth, in either direction.
 
 For reference, outside the elevated list: `src/image/` is at 98 % line and 93 %
 branch, `src/groups/image/` at 95 % line and 86 % branch, `src/groups/os/` at

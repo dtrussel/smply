@@ -726,8 +726,18 @@ performed a `REVERT` (PN §7).
 
 * `UpdateMode::TestThenConfirm` (**default**) — the flow above. Safe: a device
   that fails to boot or is never confirmed reverts on the next reset.
-* `UpdateMode::ConfirmImmediately` — `MarkingForTest` sends `confirm = true`;
-  `Confirming` is skipped. No rollback safety net. Opt-in only.
+* `UpdateMode::ConfirmImmediately` — **this design does not work on an ordinary
+  device, and P12 must settle what the mode means before implementing it.**
+  The intent was for `MarkingForTest` to send `confirm = true` and skip
+  `Confirming`. P11 established from the server source that a confirm on any
+  slot that is not the *running* one is refused with
+  `IMAGE_CONFIRMATION_DENIED` unless the build sets
+  `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
+  ([`protocol-notes.md`](protocol-notes.md) §7), so the command fails before the
+  swap ever happens. The workable reading is test → reset → confirm *without
+  waiting for the caller's approval* — the same commands as the default, minus
+  the pause — which keeps the rollback net during the trial boot and gives up
+  only the human check.
 * `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
   decides when to activate.
 

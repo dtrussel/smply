@@ -329,9 +329,12 @@ smply/
 ├── examples/                   (planned, P14/P16) cli_dfu/  winrt_ble_dfu/
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
-│   │                           — built as smply_test_support; ServerSimulator lands in P11
+│   │                           image_builder.hpp  fake_image_source.hpp
+│   │                           server_simulator.*  test_cbor.*
+│   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
-│   ├── component/              (planned, P11) full stack over FakeTransport + simulator
+│   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
+│   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   (planned, P13) libFuzzer targets + corpora
 │   └── hil/                    (planned, P17) hardware interoperability, opt-in
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh

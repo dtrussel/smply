@@ -7,6 +7,8 @@
 
 add_library(smply_test_support STATIC
     fake_transport.cpp
+    server_simulator.cpp
+    test_cbor.cpp
 )
 add_library(smply::test_support ALIAS smply_test_support)
 

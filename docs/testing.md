@@ -86,28 +86,65 @@ cancelled out by a matching builder bug. Every malformation knob overrides
 contract in the two ways it forbids, because `MemoryImageSource` cannot: an
 error path no test can reach is indistinguishable from one that does not work.
 
-### `ServerSimulator`
-A deterministic in-memory MCUmgr server built on `FakeTransport`. It implements
-groups 0 and 1 per [`protocol-notes.md`](protocol-notes.md), including the
-awkward parts: offset correction, session resume by `sha`, `off == 0` restart,
-`match` on the final chunk, reset-then-drop, and slot/hash bookkeeping across a
-simulated reboot and swap. It is configurable to emulate real-world variation:
+### `ServerSimulator` (`tests/support/server_simulator.*`)
+A deterministic in-memory MCUmgr device: groups 0 and 1 per
+[`protocol-notes.md`](protocol-notes.md) §§5-7, including the awkward parts --
+offset correction in both directions, session resume by `sha`, the `off == 0`
+restart, `match` on the final chunk, reset-then-drop, and the MCUboot swap and
+revert bookkeeping across a simulated reboot.
+
+**It does not answer from inside `send()`.** `Transport::send()` may not deliver
+inbound bytes before it returns, so a simulator that replied inline would
+re-enter reassembly, which the assembler refuses (`design.md` §2). It watches
+`FakeTransport::sent()` and answers from `pump()`, which is the device's turn:
+
+```cpp
+while (!done) {
+    sim.pump(clock.now());     // the device consumes and answers
+    client.poll(clock.now());  // the client sees the answer
+    clock.advance(1ms);
+}
+```
+
+`tests/component/harness.hpp` wraps that loop as `run_until()`, with an
+iteration budget so a stalled state machine fails in bounded time rather than
+hanging CI. A test driving a simulator must not call `clear_sent()`.
+
+`ServerConfig` describes a *device* -- what the firmware was built with:
 
 ```cpp
 struct ServerConfig {
-    Version   version = Version::V1;      // v1 rc vs v2 err
-    std::uint32_t buf_size = 256;
-    bool      supports_mcumgr_params = true;   // else ENOTSUP
-    bool      supports_slot_info     = false;
-    bool      image_check_enabled    = true;   // emits "match"
-    bool      single_image           = true;   // omits "image" in state
-    Duration  response_delay{0};
+    std::uint32_t buf_size = 256;            // MCUmgr parameters
+    bool supports_mcumgr_params = true;      // else ENOTSUP
+    bool supports_slot_info     = false;     // CONFIG_MCUMGR_GRP_IMG_SLOT_INFO
+    bool image_check_enabled    = true;      // emits "match"; enables rule 9a
+    bool single_image           = true;      // omits "image" in state
+    bool translate_v1_errors    = true;      // the A16 rebuild for a v1 request
+    std::uint32_t slot_size     = 0;         // 0 = unbounded
+    Duration response_delay{0};
 };
 ```
 
+The SMP **version is deliberately not a device setting**: the version on the
+wire is the client's to choose (`SmpClientConfig::smp_version`), and a real
+server answers in the version it was asked in. What a device does choose is
+whether it *translates* an image-group code for a v1 request (A16), which is
+what `translate_v1_errors` models.
+
+Scripted misbehaviour lives in methods rather than in the config, so that a
+config stays a description and does not become a script:
+`answer_offset_once()`, `fail_next()`, `drop_next_response()`,
+`reset_busy_once()`, plus `load_slot()`, `reboot()` and
+`rebind_transport()` for the device's own state. `answer_offset_once()` changes
+only the *answer*, never the flash: a client that follows the correction is put
+right on the next round trip, and one that computes its own offsets flashes a
+corrupt image -- which is exactly the asymmetry the acceptance test relies on.
+
 `ServerSimulator` is how the update state machine gets end-to-end coverage
 without hardware. It is **not** a reference implementation and is never linked
-into the library.
+into the library. It models **one image and two slots**, and refuses an upload naming any other
+image with `NoFreeSlot` rather than quietly writing slot 1; a second image pair
+is follow-up work, recorded in the roadmap.
 
 ## 3. Required unit coverage
 
@@ -230,25 +267,48 @@ Every transition in [`design.md`](design.md) §8, and every row of its
 failure/recovery table, driven directly as `(state, event)` pairs — no client,
 no transport. Exhaustive switch coverage is checked by the branch-coverage gate.
 
-## 4. Component tests
+## 4. Component tests (`tests/component/`)
 
-Full stack (`FirmwareUpdater` → `ImageManagement`/`OsManagement` → `SmpClient` →
-`FakeTransport` → `ServerSimulator`) under `ManualClock`:
+A second executable, so "the unit suite is green but the stack is not" is
+something CTest can say. Two files:
 
-* clean update, `TestThenConfirm`, verifying the exact command sequence issued;
-* clean update, `ConfirmImmediately` and `UploadOnly`;
-* upload interrupted by a disconnect at every 10 % boundary, then resumed;
-* server forces a restart from `off == 0` mid-upload;
-* image already present in the secondary slot ⇒ upload skipped;
-* image already active and confirmed ⇒ immediate `Completed`;
-* invalid image (server rejects the first chunk with a magic error);
-* reset response lost, link simply drops ⇒ still succeeds (protocol-notes §9 A3);
-* reset returns `EBUSY` ⇒ retried with `force`;
-* device boots the **old** image ⇒ `RolledBack`;
-* `IMAGE_CONFIRMATION_DENIED` ⇒ terminal with a clear report;
-* cancellation in every non-terminal state;
-* the same scenarios with `ServerConfig::version = V2` and with
-  `supports_mcumgr_params = false`.
+**`test_simulator.cpp`** checks the double against the specification it claims
+to implement, driven with hand-built requests and **no smply client at all** --
+a simulator bug is then diagnosed directly rather than through three layers of
+library. Every §6 rule from the server side, both error shapes side by side, and
+each optional command present and absent.
+
+**`test_round_trip.cpp`** drives the real stack
+(`ImageManagement`/`OsManagement` → `SmpClient` → `FakeTransport` →
+`ServerSimulator`) under `ManualClock`. Shipped as of P11:
+
+* **an upload reproduces the source image byte for byte, in both SMP
+  versions** -- the phase's acceptance criterion;
+* progress advances monotonically and ends at the total;
+* image already in the target slot ⇒ complete on the first packet, no data
+  sent (rule 9a);
+* a device without the image check re-uploads and reports no verdict;
+* the device reboots mid-upload ⇒ restart from zero, still byte-exact;
+* the server names an offset *ahead* of what was sent ⇒ followed, corrected,
+  still byte-exact;
+* a disconnect mid-upload ⇒ one `Disconnected`, then `resume()` on a new
+  transport completes it;
+* `mcumgr_parameters()` drives the chunk size; `ENOTSUP` ⇒ the conservative
+  default, and both uploads land byte-exact;
+* test → reboot → confirm keeps the new image; without the confirm the second
+  reboot **reverts**;
+* confirming a slot that is not running is denied (§7);
+* erase ⇒ the state read simply omits the slot;
+* a reset is accepted before the link drops, and an `EBUSY` reset is retried
+  with `force`;
+* destroying `ImageManagement` mid-upload completes the callback exactly once.
+
+Waiting on `FirmwareUpdater` (P12), which is what these need to be written
+against: the `TestThenConfirm` / `ConfirmImmediately` / `UploadOnly` mode
+matrix and its exact command sequence; a lost reset response
+(protocol-notes §9 A3); the device booting the **old** image ⇒ `RolledBack`;
+`IMAGE_CONFIRMATION_DENIED` reported as terminal; cancellation in every
+non-terminal state.
 
 ## 5. Fuzzing
 

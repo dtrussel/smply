@@ -148,6 +148,20 @@ entry when it stops being true.
 * **A retransmission repeats the payload, not the message.** The sequence number
   must differ — the timeout retired the old one, and a reply carrying it would
   be discarded as late (PN §4).
+* **`match` is only meaningful if a full 32-byte `sha` was sent** (PN §6, rule
+  9c). The final-chunk check compares against the stored `sha` zero-padded, with
+  no length guard, so a trimmed or absent `sha` makes a perfectly good upload
+  report `match: false` — which rule 9 says means failure. Always send all 32
+  bytes.
+* **The slot flags of a trial boot read backwards** (PN §7). After a test swap
+  the image that is *running* reports `active` with **no** `confirmed`, and the
+  slot holding the fallback reports `confirmed`. Flags are derived from the swap
+  type, not stored, so there is no "pending bit" to consult instead.
+* **Confirming a slot that is not the running one is denied** by an ordinary
+  build (`IMAGE_CONFIRMATION_DENIED`). The portable way to make an image
+  permanent is test → reset → confirm. Meanwhile re-requesting a swap that is
+  *already* scheduled is a success that does nothing, so an idempotent retry
+  after a lost response is safe; any other change is `ALREADY_PENDING`.
 * **"Absent means false" is only half the rule for image-state flags.** The
   specification says a false flag is omitted; the server omits it only under
   `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST` and otherwise sends it explicitly. Absent
@@ -169,14 +183,28 @@ entry when it stops being true.
   reports the *old* suite passing. Check the build's exit status separately;
   never read "N tests passed" as evidence anything was rebuilt. This has bitten
   in four consecutive phases.
-* **Build every preset.** GCC and Clang do not diagnose identically, in either
-  direction: `-Wuseless-cast` is GCC-only and rejects a `static_cast` between
-  `std::uint64_t` and `std::size_t` (the same type on a 64-bit host,
-  a real narrowing on a 32-bit one — `image::narrow<To>()` in
-  `src/image/source_reader.hpp` is the way round it), while **Clang's ASan
-  catches dangling callback captures that GCC's ASan does not report at all**.
-  Clang's compiler-rt is not installable here, so that bug class is **CI-only**
-  and a green local sanitizer run is necessary, not sufficient.
+* **Build every preset.** `cmake --list-presets` shows **seven** Linux ones, and
+  six of them link here: `linux-clang-asan-ubsan` configures and compiles but
+  cannot link, because Clang's compiler-rt is not installable in this container
+  (`cannot find libclang_rt.asan_static-x86_64.a`). It is therefore **CI-only**,
+  and it is the one that catches dangling callback captures — so a green local
+  sanitizer run is necessary, not sufficient.
+
+  The six that do link still disagree with each other, in both directions.
+  `-Wuseless-cast` is GCC-only and rejects a `static_cast` between
+  `std::uint64_t` and `std::size_t` — the same type on a 64-bit host, a real
+  narrowing on a 32-bit one; `image::narrow<To>()` in
+  `src/image/source_reader.hpp` is the way round it. Clang in turn rejects
+  things GCC compiles happily: `std::vector<std::pair<std::string, T>>` inside
+  `T` is undefined, because a `std::pair` of an incomplete type is, while
+  `std::vector<T>` inside `T` is specifically allowed.
+* **Never edit a source file while a background build is running.** Doing it
+  once cost an hour: the objects came out mixed, `cmake --build` then reported
+  **success** because Ninja saw nothing newer than what it had, and the binary
+  segfaulted in one preset only. This is the stale-binary trap wearing a
+  disguise — a green build that is not a build of the tree you have. If a
+  preset fails in a way that makes no sense, `rm -rf build` before believing
+  it.
 * **Read the uncovered-line list, not the percentage.** In P8 the gap between
   92 % and 95 % was a dozen genuinely reachable bounds checks, not the
   unreachable guards the number suggested. In P9 it exposed something worse:
@@ -1254,3 +1282,107 @@ will not do it for you, and drift accumulates silently between phases.
 unchanged by this pass. Its roadmap entry now carries the Start here that P10's
 outcome argued for: build rules 9a, 9b and offset correction into the simulator
 from the beginning rather than adding them once a DFU test needs them.
+
+### 2026-09-06 — P11: `ServerSimulator` and the component harness
+
+**Status after this session:** P11 = `Complete`. Next phase: **P12 —
+`FirmwareUpdater` orchestration**.
+
+**Completed.** `tests/support/server_simulator.{hpp,cpp}` (a deterministic
+in-memory MCUmgr device: groups 0 and 1, an MCUboot-like swap, and the awkward
+answers), `tests/support/test_cbor.{hpp,cpp}` (an independent CBOR codec), and
+`tests/component/` as a second executable — `harness.hpp`, `test_simulator.cpp`
+and `test_round_trip.cpp`. 48 new tests (487 total). All gates green across the
+six Linux presets that link here, and in CI.
+
+**The acceptance criterion is met**: a full upload through the real client stack
+into the simulator reproduces the source image byte for byte, in **both** SMP
+versions — and still does across a forced restart, a device reboot mid-transfer,
+a disconnect and resume, and an offset correction naming a position *ahead* of
+what the client sent.
+
+**Protocol work — four findings, three of which constrain P12.** The full text
+is in [`protocol-notes.md`](protocol-notes.md) §§6-7 and the roadmap's P11
+outcome; the ones to carry in your head:
+
+* **`match` is only meaningful with a full 32-byte `sha`** (new rule 9c). The
+  final-chunk check has no length guard and compares against the stored `sha`
+  zero-padded, so trimming or omitting it makes a good upload report
+  `match: false`.
+* **Slot flags are derived from the swap type, and a trial boot reads
+  backwards**: the running image is `active` with **no** `confirmed`, and the
+  slot holding the fallback is the `confirmed` one. That is how `RolledBack`
+  gets detected, and there is no stored flag to consult instead.
+* **Confirming a slot that is not running is denied by default.** P12 cannot
+  implement "confirm immediately" by confirming the uploaded image before the
+  swap; the portable order is test → reset → confirm.
+* The swap-type state machine is now written down (§7), from MCUboot's
+  `boot_swap_tables`, `boot_swap_type_multi()` and `boot_set_next()` — a new
+  source, S21.
+
+**Changed.** Seven deviations, all in the roadmap. Three reach other phases:
+`ServerConfig` has **no SMP version** (the client chooses it, and a server
+answers in the version it was asked in); scripted faults are **methods, not
+config fields**, so a config stays a description of a device; and
+`answer_offset_once()` changes only the *answer*, never the flash, which is what
+keeps the byte-exact comparison meaningful.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P12.**
+
+* **Where reuse is safe, and where it is not.** The simulator hashes with
+  `image::Sha256` and that is fine: SHA-256 is pinned by the published FIPS
+  180-4 vectors, so a bug there fails `test_sha256.cpp` first and cannot cancel
+  out. It does **not** use `cbor::Reader`/`Writer`, because those are anchored
+  only by hand-built vectors in the unit tests — encode and decode with them on
+  both ends of a round trip and a symmetric bug proves only that smply agrees
+  with itself, which is precisely what this phase's acceptance criterion exists
+  to catch. Apply the same test to anything else you are tempted to share with
+  a double: *what is it anchored to?*
+* **The simulator is not a `Transport`.** It watches `FakeTransport::sent()` and
+  answers from `pump()`, because `Transport::send()` may not deliver inbound
+  bytes before returning — replying inline re-enters reassembly, which the
+  assembler refuses. Two mechanics inside `pump()` are easy to get wrong and
+  are commented as such: snapshot `sent().size()` at entry (client callbacks
+  send the next chunk *during* the loop), and copy each message before
+  dispatching it (the same growth reallocates the vector it was borrowed from).
+* **A test driving the simulator must not call `clear_sent()`**, and every
+  transport the client is ever bound to must be declared before the fixture —
+  including the replacement link a reconnect test introduces.
+* **`run_until()` has an iteration budget, not a timeout.** A state machine that
+  stops making progress fails in bounded time instead of hanging CI. Keep it
+  that way.
+* **48 component tests moved `src/` coverage by nothing at all** (95.6 % line,
+  82.3 % branch, unchanged from P10). They cover *sequences*, which line
+  coverage cannot see. Do not read a flat coverage number as a measure of what
+  they are worth — in either direction.
+
+**Two traps, one of them new.**
+
+* **Never edit a source file while a background build is running.** The objects
+  came out mixed, `cmake --build` reported **success** because Ninja saw nothing
+  newer than what it had, and the binary segfaulted under one preset only. This
+  is the stale-binary trap in disguise: a green build that is not a build of the
+  tree you have. `rm -rf build` before believing a nonsensical failure.
+* **Clang rejects `std::vector<std::pair<std::string, T>>` inside `T`** — a
+  `std::pair` of an incomplete type is undefined — while GCC compiles it
+  happily. `std::vector<T>` inside `T` is the one nesting the standard allows.
+  The CBOR map is stored flattened as key, value, key, value instead, which is
+  how CBOR encodes one anyway.
+
+**Docs updated.** `protocol-notes.md` (rule 9c, the §7 swap and flag tables, the
+set-state refusals, S21 in the inventory), `testing.md` (§2 `ServerConfig`
+reconciled with the real one and the pump loop documented, §4 rewritten to
+separate what ships now from what waits for P12), `architecture.md` (§10
+layout), `quality-gates.md` (measured at P11, and why the numbers did not move),
+`roadmap.md` (P11 Complete with outcome, four findings, seven deviations, three
+new follow-ups and one closed; a **Start here** for P12), this log.
+
+**Recommended next.** **P12 — `FirmwareUpdater` orchestration.** Its roadmap
+entry now carries a Start here, and the short version is that two of P11's
+findings change the design before it is written: `ConfirmImmediately` cannot
+work by confirming before the swap, and `RolledBack` is detected from the
+inverted flags of a trial boot rather than from anything named "pending". Write
+the pure state machine first, as P10 did, and drive it into the simulator from
+`tests/component/` — `harness.hpp` already has the fixture and the bounded loop.
