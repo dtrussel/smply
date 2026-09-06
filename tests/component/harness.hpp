@@ -12,6 +12,7 @@
 #include "server_simulator.hpp"
 
 #include "smply/clock.hpp"
+#include "smply/dfu/firmware_updater.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/groups/os.hpp"
 #include "smply/image_source.hpp"
@@ -40,7 +41,8 @@ inline constexpr int kDefaultBudget = 4000;
 /// \return true if \p done became true within the budget.
 template<class Predicate>
 bool run_until(ServerSimulator& simulator, SmpClient& client, ManualClock& clock, Predicate done,
-               int budget = kDefaultBudget, Duration step = std::chrono::milliseconds{1})
+               int budget = kDefaultBudget, Duration step = std::chrono::milliseconds{1},
+               FirmwareUpdater* updater = nullptr)
 {
     for (int i = 0; i < budget; ++i) {
         if (done()) {
@@ -48,6 +50,9 @@ bool run_until(ServerSimulator& simulator, SmpClient& client, ManualClock& clock
         }
         simulator.pump(clock.now());
         client.poll(clock.now());
+        if (updater != nullptr) {
+            updater->poll(clock.now());
+        }
         clock.advance(step);
     }
     return done();
@@ -87,7 +92,7 @@ struct Fixture
 {
     explicit Fixture(ServerConfig config = {}, SmpClientConfig client_config = {})
         : simulator{transport, config}, client{transport, clock, client_config}, management{client},
-          os{client}
+          os{client}, updater{client, management, os}
     {}
 
     FakeTransport transport;
@@ -96,12 +101,14 @@ struct Fixture
     SmpClient client;
     ImageManagement management;
     OsManagement os;
+    FirmwareUpdater updater;
 
     /// One device-then-client turn.
     void step(Duration by = std::chrono::milliseconds{1})
     {
         simulator.pump(clock.now());
         client.poll(clock.now());
+        updater.poll(clock.now());
         clock.advance(by);
     }
 
@@ -109,7 +116,7 @@ struct Fixture
     bool run_until(Predicate done, int budget = kDefaultBudget,
                    Duration step = std::chrono::milliseconds{1})
     {
-        return smply::test::run_until(simulator, client, clock, done, budget, step);
+        return smply::test::run_until(simulator, client, clock, done, budget, step, &updater);
     }
 };
 

@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P12 — `FirmwareUpdater` orchestration** (see its [Start here](#p12)) |
-| Last completed phase | P11 — `ServerSimulator` and the component harness |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · **a simulated device and a component suite that drives the real stack into it**. 487 tests, 11 CI jobs green. |
+| **Next phase to work on** | **P13 — Fuzzing, hardening and coverage push** |
+| Last completed phase | P12 — `FirmwareUpdater` orchestration |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included**. 559 tests, 11 CI jobs green. **The portable product is functionally complete.** |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -32,7 +32,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Complete | P1 |
 | [P10](#p10) | Image upload state machine | Complete | P8, P9 |
 | [P11](#p11) | `ServerSimulator` and component test harness | Complete | P7, P8, P10 |
-| [P12](#p12) | `FirmwareUpdater` orchestration | Planned | P11 |
+| [P12](#p12) | `FirmwareUpdater` orchestration | Complete | P11 |
 | [P13](#p13) | Fuzzing, hardening and coverage push | Planned | P10 |
 | [P14](#p14) | `Dispatcher` and the portable example | Planned | P12 |
 | [P15](#p15) | WinRT BLE transport | Planned | P14 |
@@ -1346,7 +1346,7 @@ what P12 can do:
 <a id="p12"></a>
 ## P12 — `FirmwareUpdater` orchestration
 
-**Status: Planned** · **Depends on:** P11
+**Status: Complete** (2026-09-06) · **Depends on:** P11
 
 **Objective.** The end-to-end update, including the reset/reconnect protocol
 with the application.
@@ -1385,6 +1385,82 @@ component boundaries moved.
 
 **Exit.** The portable product is functionally complete; everything after this
 is hardening, platform work and packaging.
+
+### Outcome
+
+**Completed.** `include/smply/dfu/firmware_updater.hpp`,
+`src/dfu/update_state_machine.{hpp,cpp}` (the pure machine) and
+`src/dfu/firmware_updater.cpp` (the effects), with
+`tests/unit/test_update_state_machine.cpp` and
+`tests/component/test_firmware_update.cpp`. 72 new tests (559 total). All gates
+green across the six Linux presets that link here, and in CI.
+
+**The phase's own gate is met**: `src/dfu/` is at **93 % branch** against the
+≥ 90 % threshold, and whole-core coverage rose to **96.3 % line, 84.3 %
+branch** (from 95.6 / 82.3). Getting there took reading the uncovered-branch
+list rather than the number: the first measurement was **81 %**, and almost all
+of the gap was the "event not legal in this state" fall-through, which a single
+spot-check test had left unexercised in thirteen of the fourteen states.
+
+**The decision this phase had to make first — [ADR-0014](decisions/ADR-0014-confirmation-is-the-applications-call.md).**
+P11 established that a device refuses `confirm` on any slot that is not the
+running one, so `UpdateMode::ConfirmImmediately` could not do what `api.md`
+promised. Worse, the replacement P11 sketched ("the same as the default, minus
+the pause") was wrong, because the default flow had no pause: `Confirming`
+followed `VerifyingBooted` automatically, which made the two modes
+indistinguishable and left `TestThenConfirm` promising a test that nothing
+performed. **The default now stops at `AwaitingConfirmation` and hands the
+decision to the application**; `ConfirmImmediately` runs the identical sequence
+without asking. Both modes mean something, and the rollback net still protects
+the un-validated case either way.
+
+**Remaining in this phase.** None.
+
+**Deviations, each recorded in the document it contradicts.**
+
+1. **`FirmwareUpdater::confirm()`, `UpdateState::AwaitingConfirmation` and
+   `UpdateEvent::Kind::ConfirmationRequired` are new public API**, per ADR-0014.
+   `api.md` and `design.md` §8 are updated; the §8 diagram gains the state.
+2. **`Planning` is a real state with a real transition**, reached by an
+   `Effect::Continue` the driver feeds straight back in. A decision needing no
+   I/O would otherwise be invisible — and untestable as a state.
+3. **The planner has four cases, not one.** Two of them exist because an
+   application may be restarted *mid-update*: a device already running the
+   target unconfirmed lands directly in the confirmation window, and one already
+   holding it marked lands directly on the reset. That also makes the
+   `ImageAlreadyPending` recovery fall out for free rather than needing its own
+   path.
+4. **A reset that times out is treated like one whose link dropped** (A3
+   widened). The device may reset before its answer goes out; failing here would
+   abandon a device that is already swapping, and the verify after the reboot is
+   the real check.
+5. **`UpdateReport` gained `revert_pending` and `upload_skipped`, and lost
+   `chunk_retries`/`upload_restarts`.** The retry counters live inside the
+   upload and were never plumbed out; inventing fields the library does not fill
+   is worse than not having them. `revert_pending` is the one a caller cannot do
+   without: "cancelled" and "cancelled, and this device will undo the swap when
+   it next restarts" are different outcomes.
+6. **`UpdateReport::target_hash` is an `ImageHash`, not a `Hash`.** `api.md`
+   said the latter, which is the *upload* hash; what the report carries is what
+   the device reports for a slot. P8 made them different types precisely so this
+   could not be got wrong silently.
+7. **The updater learns about a dropped link by asking the client**, not by
+   listening to the transport. It never touches a connection (ADR-0004), and
+   `SmpClient::connected()` already knows.
+
+**Two things worth knowing.**
+
+* **`ServerSimulator::fail_next()` gained an operation filter, and it caught two
+  tests passing for the wrong reason.** The image group's read and write share
+  command 0, so "fail the next set-state" was silently failing the get-state
+  before it — both the refused-confirm and refused-mark tests were green without
+  ever reaching the path they are named after. This is the same trap P9 hit with
+  a fixture builder, and the same lesson: **a fault injector that cannot name
+  its target will hit the wrong one.**
+* **A `FakeTransport` is terminally disconnected once dropped**, exactly as a
+  real link is, so an update that goes round the reconnect loop twice — an
+  interrupted upload does — needs a fresh transport per cycle. The component
+  harness's `Application` helper takes a list of spares for that reason.
 
 **Start here.** Three things P11 established change the design before it is
 written, and all three are in [`protocol-notes.md`](protocol-notes.md) §7:
@@ -1667,6 +1743,9 @@ them.
 | P9 | `image::narrow<To>()` exists because GCC's `-Wuseless-cast` rejects a `static_cast` between `std::uint64_t` and `std::size_t` on a 64-bit host. It is in `src/image/` because that is where it was needed; if a second area needs the same thing, promote it rather than copying it. | when needed |
 | P9 | The TLV entry cap counts loop iterations, so the one iteration spent stepping over the unprotected area's header consumes a unit of the budget. Immaterial at 256, but if the cap is ever tightened it should count entries. | when needed |
 | ~~P10~~ | ~~**`ImageManagement` is now stateful, and nothing enforces the lifetime rule it introduces.**~~ **Done in P11**: `test_round_trip.cpp`'s "destroying the group mid-upload completes the callback once" destroys the whole fixture with an upload in flight, under both sanitizer presets. | — |
+| P12 | The upload's retry and restart counters are not plumbed out to `UpdateReport`, so a caller cannot see that an update succeeded only after three retransmissions. `UploadResult` would have to carry them first. | when a caller asks |
+| P12 | `UpdateReport::upload_skipped` reflects only the updater's **pre-flight** decision. When the *server* completes an upload on the first packet (rule 9a) the client cannot tell — `UploadResult` does not say whether any data was sent. Adding that would also let a caller distinguish "already present" from "transferred". | P13 |
+| P12 | The `life.expired()` guards in `FirmwareUpdater`'s callbacks are exercised for one callback type out of six; the other five are unreachable without destroying the updater with that specific request in flight. They are invariant guards of the kind §6 says should carry a coverage-exclusion marker. | P13 |
 | P11 | The simulator models **one image and two slots**, and refuses an upload naming any other image with `NoFreeSlot` rather than writing slot 1 regardless. So `UploadOptions::image` has no end-to-end coverage: a device with two image pairs reports an `image` key that varies per entry and carries a second swap state. | P12, if the DFU flow grows multi-image support |
 | P11 | `ServerSimulator::pump()` answers everything queued in one turn, so `buf_count` and any notion of the device being busy with a previous packet are not modelled. A device that refused a second request while one was outstanding would exercise the client's `max_in_flight` path from the far side. | when needed |
 | P11 | The component suite left `src/` coverage unchanged at 95.6 % line / 82.3 % branch — it covers *sequences*, which line coverage cannot see. Worth remembering before anyone reads a flat coverage number as a measure of what the component tests are worth. | — |

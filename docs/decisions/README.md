@@ -24,3 +24,4 @@ a new ADR that supersedes it and update the old one's status
 | [0011](ADR-0011-build-and-dependencies.md) | Target-based CMake, FetchContent, pinning | Accepted |
 | [0012](ADR-0012-test-and-fuzz-tooling.md) | Catch2 v3 and libFuzzer | Accepted |
 | [0013](ADR-0013-living-documentation.md) | Documentation is part of the product | Accepted |
+| [0014](ADR-0014-confirmation-is-the-applications-call.md) | Confirmation is the application's call | Accepted |

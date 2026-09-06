@@ -220,9 +220,10 @@ void ServerSimulator::answer_offset_once(std::uint64_t off)
     forced_offset_ = off;
 }
 
-void ServerSimulator::fail_next(ImageError code)
+void ServerSimulator::fail_next(ImageError code, std::optional<Operation> op)
 {
     forced_failure_ = code;
+    forced_failure_op_ = op;
 }
 
 void ServerSimulator::drop_next_response()
@@ -364,9 +365,11 @@ std::vector<std::byte> ServerSimulator::handle_os(const Header& header, ConstByt
 
 std::vector<std::byte> ServerSimulator::handle_image(const Header& header, ConstBytes payload)
 {
-    if (forced_failure_.has_value()) {
+    if (forced_failure_.has_value() &&
+        (!forced_failure_op_.has_value() || *forced_failure_op_ == header.op)) {
         const ImageError code = *forced_failure_;
         forced_failure_.reset();
+        forced_failure_op_.reset();
         return image_failure(header.version, code);
     }
 

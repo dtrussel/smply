@@ -21,7 +21,7 @@ intent, not a contract.
 | `groups/os.hpp` | **Shipped** (P7) |
 | `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
 | `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
-| `dfu/firmware_updater.hpp` | Proposed — P12 |
+| `dfu/firmware_updater.hpp` | Shipped — P12 |
 | `util/dispatcher.hpp` | Proposed — P14 |
 
 ---
@@ -743,15 +743,18 @@ Result<std::optional<ImageHash>> find_image_tlv_hash(ImageSource&,
 ```cpp
 namespace smply {
 
+// TestThenConfirm stops after the trial boot and asks; ConfirmImmediately
+// runs the same sequence and confirms without asking (ADR-0014).
 enum class UpdateMode { TestThenConfirm, ConfirmImmediately, UploadOnly };
 
 enum class UpdateState {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
-    AwaitingReconnect, VerifyingBooted, Confirming, VerifyingConfirmed,
-    Completed, Failed, Cancelled,
+    AwaitingReconnect, VerifyingBooted, AwaitingConfirmation, Confirming,
+    VerifyingConfirmed, Completed, Failed, Cancelled,
 };
 std::string_view to_string(UpdateState) noexcept;
+constexpr bool   is_terminal(UpdateState) noexcept;
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
@@ -768,16 +771,17 @@ struct UpdatePlan {
 struct UpdateReport {
     UpdateState  final_state{};
     std::uint64_t bytes_transferred{};
-    std::uint32_t chunk_retries{}, upload_restarts{};
-    std::optional<Hash> target_hash;
+    bool upload_skipped = false;    // the device already held the image
+    std::optional<ImageHash> target_hash;
     std::optional<ImageState> final_device_state;
     std::optional<Error> cause;     // set iff the update failed
     bool rolled_back = false;       // MCUboot reverted (protocol-notes §7)
+    bool revert_pending = false;    // a swap nobody confirmed; it will revert
 };
 
 struct UpdateEvent {
     enum class Kind { StateChanged, Progress, DisconnectExpected,
-                      ReconnectRequired, Finished };
+                      ReconnectRequired, ConfirmationRequired, Finished };
     Kind kind{};
     UpdateState from{}, to{};
     UploadProgress progress{};
@@ -789,10 +793,18 @@ class FirmwareUpdater {
 public:
     FirmwareUpdater(SmpClient&, ImageManagement&, OsManagement&);
 
-    // `source` and the target hash must outlive the update.
-    Result<void> start(ImageSource&, UpdatePlan, std::function<void(const UpdateEvent&)>);
+    // `source`, and whatever the callback captures, must outlive the update --
+    // and outlive the client and both groups, all of which finish outstanding
+    // work in their destructors.
+    Result<void> start(ImageSource&, const UpdatePlan&, UpdateEventCallback);
+
+    // Approves the running image after ConfirmationRequired. InvalidState
+    // unless the update is in AwaitingConfirmation (ADR-0014).
+    Result<void> confirm();
+
     void         cancel() noexcept;
     void         poll(TimePoint now);          // drives DFU-level timers
+    std::optional<TimePoint> next_deadline() const noexcept;
 
     // Called by the application after it has re-established the link and called
     // SmpClient::rebind_transport(). Legal only in AwaitingReconnect.
@@ -840,7 +852,8 @@ smply::OsManagement    os{client};
 smply::FirmwareUpdater updater{client, img, os};
 
 smply::MemoryImageSource source{firmware_bytes};
-smply::UpdatePlan plan;                       // TestThenConfirm by default
+smply::UpdatePlan plan;                       // TestThenConfirm by default,
+                                              // so ConfirmationRequired will arrive
 
 bool done = false;
 updater.start(source, plan, [&](const smply::UpdateEvent& ev) {
@@ -858,8 +871,17 @@ updater.start(source, plan, [&](const smply::UpdateEvent& ev) {
     case K::ReconnectRequired:
         app.reconnect_async(ev.reconnect_hint, [&](auto& new_transport) {
             client.rebind_transport(new_transport);
-            updater.resume_after_reconnect();
+            static_cast<void>(updater.resume_after_reconnect());
         });
+        break;
+    case K::ConfirmationRequired:
+        // The device is running the new image, unconfirmed. This is the only
+        // chance to decide it works; doing nothing leaves it to revert.
+        if (app.self_test_passes()) {
+            static_cast<void>(updater.confirm());
+        } else {
+            updater.cancel();
+        }
         break;
     case K::Finished:
         done = true;

@@ -1386,3 +1386,89 @@ work by confirming before the swap, and `RolledBack` is detected from the
 inverted flags of a trial boot rather than from anything named "pending". Write
 the pure state machine first, as P10 did, and drive it into the simulator from
 `tests/component/` — `harness.hpp` already has the fixture and the bounded loop.
+
+### 2026-09-06 — P12: `FirmwareUpdater` orchestration
+
+**Status after this session:** P12 = `Complete`. **The portable product is
+functionally complete.** Next phase: **P13 — fuzzing, hardening and the
+coverage push**.
+
+**Completed.** `include/smply/dfu/firmware_updater.hpp`,
+`src/dfu/update_state_machine.{hpp,cpp}` (the pure machine) and
+`src/dfu/firmware_updater.cpp` (the effects), plus
+`tests/unit/test_update_state_machine.cpp` and
+`tests/component/test_firmware_update.cpp`. 72 new tests (559 total). All gates
+green across the six Linux presets that link here, and in CI.
+
+**The gate is met**: `src/dfu/` at **93 % branch** against ≥ 90 %, and the whole
+core rose to **96.3 % line, 84.3 % branch**.
+
+**The decision that had to be made first — [ADR-0014](decisions/ADR-0014-confirmation-is-the-applications-call.md).**
+`UpdateMode::ConfirmImmediately` could not do what `api.md` promised, and the
+replacement P11 sketched was wrong too: it assumed the default flow had a pause
+to remove, when `Confirming` followed `VerifyingBooted` automatically. That made
+the two modes identical and left `TestThenConfirm` naming a test nothing
+performed. **The default now stops at `AwaitingConfirmation`** and the
+application calls `confirm()`; `ConfirmImmediately` runs the same sequence
+without asking.
+
+**Changed.** Seven deviations, all in the roadmap. The ones that reach other
+phases: the new public `confirm()` / `AwaitingConfirmation` /
+`ConfirmationRequired`; `UpdateReport` gained `revert_pending` and
+`upload_skipped` and lost the two retry counters nothing filled in; and
+`target_hash` is an `ImageHash`, not a `Hash` — `api.md` had the wrong one of
+the two hashes P8 deliberately made separate types.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P13.**
+
+* **A fault injector that cannot name its target will hit the wrong one.**
+  `ServerSimulator::fail_next()` failed "the next image-group command", and the
+  group's read and write share command 0 — so two tests that meant to refuse a
+  *set-state* were silently refusing the *get-state* before it. Both were green
+  without ever reaching the path they are named after. It now takes an
+  `Operation` filter. This is the same trap P9 hit with a fixture builder, in a
+  different costume; assume any injector without a precise target is hitting
+  something adjacent.
+* **The default update mode does not finish on its own.** An application that
+  ignores `ConfirmationRequired` parks in `AwaitingConfirmation` forever. That
+  is deliberate (ADR-0014) and it is the one place where the obvious default is
+  not the passive one — expect it to surprise someone, and keep the example in
+  `api.md` showing the handler.
+* **A `FakeTransport` is terminally disconnected once dropped**, as a real link
+  is. An update that goes round the reconnect loop twice — an interrupted upload
+  does, once for the transfer and once for the reset — needs a fresh transport
+  per cycle. `tests/component/test_firmware_update.cpp`'s `Application` helper
+  takes a list of spares for exactly that.
+* **`Planning` is a real state**, entered with `Effect::Continue` which the
+  driver feeds straight back into `advance()`. A decision that needs no I/O
+  would otherwise be invisible, and a state you cannot observe is a state you
+  cannot test.
+
+**One trap, and it is the standing one.**
+
+* **The first coverage measurement was 81 %, against a 90 % gate — and the gap
+  was one branch repeated.** The "event not legal in this state" fall-through
+  was exercised in one state out of fourteen, because the test that covered it
+  named a single state. Looping it over every state took `src/dfu/` from 81 % to
+  90 % by itself. The percentage said "write more tests"; the uncovered-branch
+  list said exactly which one, and it was a real hole — a state that silently
+  swallowed a stray event would have been a live bug. **Read the list.**
+
+**Docs updated.** `ADR-0014` (new) and the ADR index, `design.md` (§8 diagram,
+modes, event table and failure table), `api.md` (the DFU section now Shipped,
+with the new state, event and method, and an example that handles them),
+`architecture.md` (§10: `src/dfu/` no longer planned), `testing.md` (§3 and §4
+for both new suites), `quality-gates.md` (measured at P12, the elevated row now
+naming `src/dfu/`, and why the first measurement missed), `roadmap.md` (P12
+Complete with outcome, seven deviations, three new follow-ups, Current state),
+`README.md` (P0–P12, and an example that is now a whole update), this log.
+
+**Recommended next.** **P13 — fuzzing, hardening and the coverage push.** Two of
+its inputs are now concrete and both are in the follow-up table: `src/cbor/` is
+still the one directory below its elevated gate at 82 %, and the invariant
+guards that need coverage-exclusion markers now include six in
+`FirmwareUpdater` — the `life.expired()` checks, of which only one is reachable
+without contriving the exact request in flight. The fuzz targets are specified
+in `testing.md` §5 and none is built.

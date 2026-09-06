@@ -323,7 +323,7 @@ smply/
 │   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
 │   │                           sha256.{hpp,cpp}  source_reader.hpp
-│   ├── dfu/                    (planned, P12) update_state_machine.*  firmware_updater.cpp
+│   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
 │   └── util/                   (planned, P14) dispatcher.cpp
 ├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble
 ├── examples/                   (planned, P14/P16) cli_dfu/  winrt_ble_dfu/

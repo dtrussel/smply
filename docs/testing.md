@@ -267,6 +267,16 @@ Every transition in [`design.md`](design.md) §8, and every row of its
 failure/recovery table, driven directly as `(state, event)` pairs — no client,
 no transport. Exhaustive switch coverage is checked by the branch-coverage gate.
 
+Shipped in P12 as `tests/unit/test_update_state_machine.cpp`. Beyond the happy
+path: the planner's four cases and their `UploadOnly` variants; a slot table
+with no active slot, and one whose slot reports no hash; `ImageAlreadyPending`
+recovered exactly once; `Busy` reset forced exactly once; a lost reset response
+treated as success; a rollback recognised **from the flags** and distinguished
+from a swap that simply has not happened; the confirmation fork in both modes;
+cancellation from every non-terminal state; and an illegal event in **every**
+state, because "this one silently swallows a stray event" is precisely the hole
+a spot check leaves.
+
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is
@@ -303,12 +313,29 @@ each optional command present and absent.
   with `force`;
 * destroying `ImageManagement` mid-upload completes the callback exactly once.
 
-Waiting on `FirmwareUpdater` (P12), which is what these need to be written
-against: the `TestThenConfirm` / `ConfirmImmediately` / `UploadOnly` mode
-matrix and its exact command sequence; a lost reset response
-(protocol-notes §9 A3); the device booting the **old** image ⇒ `RolledBack`;
-`IMAGE_CONFIRMATION_DENIED` reported as terminal; cancellation in every
-non-terminal state.
+**`test_firmware_update.cpp`** (P12) drives the whole update into the
+simulator, with a small `Application` helper playing the part the updater
+refuses to play: reconnecting after the reset, and deciding whether the new
+image is good. Shipped:
+
+* a clean update in **both** SMP versions, asserting the command sequence and
+  that the device ends up running the new image, confirmed;
+* all three modes, including that `ConfirmImmediately` never asks and
+  `UploadOnly` never resets;
+* an image already in the secondary slot ⇒ no upload; already running and
+  confirmed ⇒ immediate completion;
+* an upload interrupted by a disconnect ⇒ two trips through the application,
+  and the flash still byte-exact;
+* `EBUSY` reset retried with `force`; a **lost** reset response treated as
+  success (A3); a device that never drops the link released by the grace timer;
+* the device reverting ⇒ `rolled_back`, recognised from the flags;
+* a refused confirm, and an application that declines to confirm ⇒ both
+  terminal with `revert_pending` set;
+* an application that cannot reconnect; a file that is not MCUboot firmware, is
+  unreadable, has a broken TLV area, or carries no hash TLV — each refused
+  before a single byte goes on the wire;
+* cancellation mid-update, destruction mid-update, and a callback that outlives
+  the updater while the client is still alive.
 
 ## 5. Fuzzing
 

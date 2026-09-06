@@ -196,7 +196,13 @@ public:
     void answer_offset_once(std::uint64_t off);
 
     /// Fails the next image-group command with \p code.
-    void fail_next(ImageError code);
+    ///
+    /// \param op When given, only a command with that operation is failed --
+    ///           the group's read and write share command 0, so "fail the next
+    ///           set-state" and "fail the next get-state" are otherwise the
+    ///           same request. Without it a test that means one can silently
+    ///           hit the other and pass for the wrong reason.
+    void fail_next(ImageError code, std::optional<Operation> op = std::nullopt);
 
     /// Silently drops the next response, as a lost packet would.
     void drop_next_response();
@@ -292,6 +298,7 @@ private:
 
     std::optional<std::uint64_t> forced_offset_;
     std::optional<ImageError> forced_failure_;
+    std::optional<Operation> forced_failure_op_;
     std::optional<bool> last_reset_force_;
     bool drop_next_ = false;
     bool reset_busy_ = false;

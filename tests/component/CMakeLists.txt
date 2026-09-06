@@ -9,6 +9,7 @@
 # statement CTest can make.
 
 add_executable(smply_component_tests
+    test_firmware_update.cpp
     test_round_trip.cpp
     test_simulator.cpp
 )

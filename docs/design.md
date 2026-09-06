@@ -704,8 +704,13 @@ callbacks).
                     │ VerifyingBooted  │  the target hash
                     └───────┬──────────┘
                             ▼
+                    ┌──────────────────┐  emits ConfirmationRequired; the
+                    │ AwaitingConfirmation│ APPLICATION validates and calls
+                    └───────┬──────────┘  confirm() (skipped when the mode is
+                            │             ConfirmImmediately)
+                            ▼
                     ┌──────────────────┐  IMG set-state{confirm=true}
-                    │ Confirming       │  (skipped in ConfirmImmediately mode)
+                    │ Confirming       │
                     └───────┬──────────┘
                             ▼
                     ┌──────────────────┐  IMG get-state → confirmed == true
@@ -724,20 +729,18 @@ performed a `REVERT` (PN §7).
 
 ### Modes
 
-* `UpdateMode::TestThenConfirm` (**default**) — the flow above. Safe: a device
-  that fails to boot or is never confirmed reverts on the next reset.
-* `UpdateMode::ConfirmImmediately` — **this design does not work on an ordinary
-  device, and P12 must settle what the mode means before implementing it.**
-  The intent was for `MarkingForTest` to send `confirm = true` and skip
-  `Confirming`. P11 established from the server source that a confirm on any
-  slot that is not the *running* one is refused with
-  `IMAGE_CONFIRMATION_DENIED` unless the build sets
+* `UpdateMode::TestThenConfirm` (**default**) — the flow above, stopping at
+  `AwaitingConfirmation` so the application can validate the running image and
+  call `confirm()`. Safe twice over: a device that fails to boot never reaches
+  the window, and one the application refuses to confirm reverts on the next
+  reset.
+* `UpdateMode::ConfirmImmediately` — the identical sequence, confirmed without
+  asking ([ADR-0014](decisions/ADR-0014-confirmation-is-the-applications-call.md)).
+  What an unattended updater wants. It is **not** a permanent swap up front:
+  P11 established that a confirm on any slot that is not the running one is
+  refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
-  ([`protocol-notes.md`](protocol-notes.md) §7), so the command fails before the
-  swap ever happens. The workable reading is test → reset → confirm *without
-  waiting for the caller's approval* — the same commands as the default, minus
-  the pause — which keeps the rollback net during the trial boot and gives up
-  only the human check.
+  ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
 * `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
   decides when to activate.
 
@@ -749,6 +752,7 @@ single event stream:
 | Event | Meaning | Application must |
 | ----- | ------- | ---------------- |
 | `Progress{sent, total}` | upload advanced | update UI |
+| `ConfirmationRequired` | the new image is running, unconfirmed | validate it, then `confirm()` — or `cancel()` and let it revert |
 | `StateChanged{from,to}` | any transition | update UI |
 | `DisconnectExpected` | reset accepted; the link is about to drop | stop treating a drop as an error |
 | `ReconnectRequired{hint_delay}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
@@ -764,14 +768,15 @@ single event stream:
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
 | `Uploading` | server `off == 0` | restart from the first packet, bounded by `max_restarts` |
 | `VerifyingUpload` | target hash absent from any slot | fatal `ImageMismatch` — the device did not store what we sent |
-| `MarkingForTest` | `IMAGE_ALREADY_PENDING` | re-read state; if the pending image is already ours, continue |
+| `MarkingForTest` | `IMAGE_ALREADY_PENDING` | re-read state **once**; the planner then sees our own image already marked and steps straight to `Resetting` |
 | `MarkingForTest` | `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` | fatal, with a clear diagnostic |
 | `Resetting` | `EBUSY` | one retry with `force = 1` (PN §5) |
-| `Resetting` | no response but the link drops | **treated as success** (PN §9 A3) |
+| `Resetting` | no response but the link drops, or the request times out | **treated as success** (PN §9 A3): the device may reset before its answer goes out, and the verify after the reboot is the real check |
 | `AwaitingDisconnect` | grace timeout with the link still up | proceed to `AwaitingReconnect` anyway; the verify step is the real check |
 | `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
 | `VerifyingBooted` | active image is the old one | `RolledBack` |
 | `VerifyingBooted` | active image is ours, `confirmed == true` already | skip `Confirming` |
+| `AwaitingConfirmation` | the application cancels, or never confirms | terminal; the device reverts on its next reset — `UpdateReport::revert_pending` says so |
 | `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
 
 Every terminal outcome yields an `UpdateReport` recording the final device

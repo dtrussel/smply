@@ -15,30 +15,37 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P11 complete.** The protocol core is done: SMP framing and streaming
-reassembly, a bounded CBOR façade, request correlation with timeouts and
-cancellation, the OS and image management groups, MCUboot image parsing with
-SHA-256, and the image upload state machine — with a simulated MCUmgr device
-that the component suite drives the real stack into, byte for byte. 487 tests,
-11 CI jobs green.
+**Phases P0–P12 complete — the portable library does what it exists to do.**
+SMP framing and streaming reassembly, a bounded CBOR façade, request
+correlation with timeouts and cancellation, the OS and image management groups,
+MCUboot image parsing with SHA-256, the image upload state machine, and
+`FirmwareUpdater`: the whole update, including the reset and the reconnect.
+559 tests, 11 CI jobs green.
 
-What is not built yet: the DFU orchestration that ties it together
-(`FirmwareUpdater`), fuzzing, the WinRT BLE transport and the example
+What is not built yet: fuzzing, the WinRT BLE transport and the example
 applications. See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 
-An upload works today without any of that:
+A whole update, with the application owning the pump and the connection:
 
 ```cpp
-MyTransport      transport{/* ... */};
-smply::SmpClient client{transport};
+MyTransport            transport{/* ... */};
+smply::SmpClient       client{transport};
 smply::ImageManagement image{client};
+smply::OsManagement    os{client};
+smply::FirmwareUpdater updater{client, image, os};
 smply::MemoryImageSource source{firmware_bytes};
 
-const auto handle = image.upload(source, {}, on_progress, on_done);
+updater.start(source, {}, [&](const smply::UpdateEvent& event) {
+    // Two things the library deliberately will not do for you: reconnect after
+    // the device resets, and decide the new image is good. See docs/api.md.
+});
+
 while (busy) {                       // the application owns the pump
-    client.poll(std::chrono::steady_clock::now());
+    const auto now = std::chrono::steady_clock::now();
+    client.poll(now);
+    updater.poll(now);
 }
 ```
 

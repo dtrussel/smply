@@ -2,7 +2,7 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P11):** the gates marked *(P13)* / *(P15)* below are specified
+**Status (as of P12):** the gates marked *(P13)* / *(P15)* below are specified
 but not yet wired, because the targets they would exercise do not exist.
 Everything else is live and enforced. Each live gate has been observed rejecting
 a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
@@ -170,11 +170,11 @@ switch on, and both are P13's:
   throw branches do. §6 already rules that such lines carry an exclusion
   marker; applying them is the outstanding task.
 
-| Gate | Threshold | Measured 2026-09-06 (P11) |
+| Gate | Threshold | Measured 2026-09-06 (P12) |
 | ---- | --------- | ------------------------- |
-| Line coverage, whole core | **≥ 85 %** | 95.6 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 82.3 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96 % ✓ · **`upload_session.*` 94 % ✓** · `src/cbor/` 82 % ✗ |
+| Line coverage, whole core | **≥ 85 %** | 96.3 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 84.3 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/smp/` 96 % ✓ · `upload_session.*` 94 % ✓ · **`src/dfu/` 93 % ✓** · `src/cbor/` 82 % ✗ |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 P10 is the first phase whose own acceptance criterion was one of the elevated
@@ -187,6 +187,13 @@ suite exercises the same lines as the unit suite; what it adds is evidence about
 ones a server accepts, and that an image survives the round trip byte for byte.
 Line and branch coverage cannot see that. A flat coverage number is therefore
 not a measure of what the component tests are worth, in either direction.
+
+**P12's gate was missed on the first measurement, at 81 %**, and the gap was not
+where the percentage suggested. Almost all of it was one branch repeated: the
+"event not legal in this state" fall-through, which a single spot-check test had
+left unexercised in thirteen of the fourteen states. Looping that test over
+every state took `src/dfu/` from 81 % to 90 % on its own. Read the
+uncovered-branch list.
 
 For reference, outside the elevated list: `src/image/` is at 98 % line and 93 %
 branch, `src/groups/image/` at 95 % line and 86 % branch, `src/groups/os/` at
