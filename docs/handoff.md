@@ -190,6 +190,16 @@ entry when it stops being true.
   and it is the one that catches dangling callback captures — so a green local
   sanitizer run is necessary, not sufficient.
 
+  **The two MSVC jobs are CI-only too**, and MSVC is a *third* opinion, not a
+  rounding error on the other two. Its `/w14242` rejected
+  `std::pair<std::uint16_t, std::uint8_t>{0, 6}` in P12 — the `int` literals
+  narrow inside pair's constructor template, where the "constant that fits"
+  exemption no longer applies — after both GCC and Clang compiled it silently.
+  An aggregate `struct` with the same two fields is fine, because aggregate
+  initialisation from constant expressions that fit is not narrowing. **Prefer
+  a named aggregate to a `std::pair` of narrow integers**, and expect the
+  Windows jobs to find something the Linux ones did not.
+
   The six that do link still disagree with each other, in both directions.
   `-Wuseless-cast` is GCC-only and rejects a `static_cast` between
   `std::uint64_t` and `std::size_t` — the same type on a 64-bit host, a real

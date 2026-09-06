@@ -202,24 +202,39 @@ private:
     }
 };
 
-/// The commands a run issued, as (group, command) pairs.
-[[nodiscard]] std::vector<std::pair<std::uint16_t, std::uint8_t>> commands(const Fixture& fixture)
+/// One request, identified the way the protocol identifies it.
+///
+/// An aggregate rather than a `std::pair`: MSVC's `/w14242` rejects
+/// `pair<uint16_t, uint8_t>{0, 6}`, because the `int` literals narrow through
+/// pair's constructor template. Aggregate initialisation from constant
+/// expressions that fit is not narrowing, so this compiles everywhere -- and it
+/// reads better than `.first` and `.second`.
+struct Command
 {
-    std::vector<std::pair<std::uint16_t, std::uint8_t>> out;
+    std::uint16_t group = 0;
+    std::uint8_t command = 0;
+
+    [[nodiscard]] friend bool operator==(const Command&, const Command&) = default;
+};
+
+/// Every request a run issued, in order.
+[[nodiscard]] std::vector<Command> commands(const Fixture& fixture)
+{
+    std::vector<Command> out;
     for (const smply::Header& header : fixture.simulator.requests()) {
-        out.emplace_back(static_cast<std::uint16_t>(header.group), header.command);
+        out.push_back(Command{static_cast<std::uint16_t>(header.group), header.command});
     }
     return out;
 }
 
-constexpr std::pair<std::uint16_t, std::uint8_t> kParams{0, 6};
-constexpr std::pair<std::uint16_t, std::uint8_t> kState{1, 0};
-constexpr std::pair<std::uint16_t, std::uint8_t> kUpload{1, 1};
-constexpr std::pair<std::uint16_t, std::uint8_t> kReset{0, 5};
+constexpr Command kParams{0, 6};
+constexpr Command kState{1, 0};
+constexpr Command kUpload{1, 1};
+constexpr Command kReset{0, 5};
 
-[[nodiscard]] bool issued(const Fixture& fixture, std::pair<std::uint16_t, std::uint8_t> command)
+[[nodiscard]] bool issued(const Fixture& fixture, Command command)
 {
-    const auto all = commands(fixture);
+    const std::vector<Command> all = commands(fixture);
     return std::find(all.begin(), all.end(), command) != all.end();
 }
 

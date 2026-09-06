@@ -1461,6 +1461,13 @@ the un-validated case either way.
   real link is, so an update that goes round the reconnect loop twice — an
   interrupted upload does — needs a fresh transport per cycle. The component
   harness's `Application` helper takes a list of spares for that reason.
+* **Three compilers, three different opinions, and two of them are CI-only.**
+  Clang rejected an unused `constexpr` GCC accepted; MSVC's `/w14242` then
+  rejected `std::pair<std::uint16_t, std::uint8_t>{0, 6}`, which both Linux
+  compilers took without a murmur — the `int` literals narrow inside pair's
+  constructor template. A named aggregate avoids it. The Windows jobs cannot be
+  run in the development container, so a fully green local run still leaves two
+  compilers unheard from.
 
 **Start here.** Three things P11 established change the design before it is
 written, and all three are in [`protocol-notes.md`](protocol-notes.md) §7:
