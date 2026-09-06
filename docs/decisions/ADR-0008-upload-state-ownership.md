@@ -28,6 +28,14 @@ with `Step = {Action (SendChunk|Complete|Fail|Restart), UploadRequest, Error}`.
 No client, no transport, no clock, no I/O. Every rule in the response table in
 [`../design.md`](../design.md) §6 is therefore a table-driven unit test.
 
+*(Amended by P10, 2026-09-05: there is no `Restart` action. A restart is "set
+`first_packet_pending`, zero `confirmed_off`, then send", and a separate action
+would let a driver handle it and forget to send — a hang rather than an error.
+`Step` also carries the device's `match`, and a third function, `record_sent`,
+tells the state what actually went on the wire so a timeout can retransmit
+byte-identically while `plan_next` stays `const`. The separation the decision is
+about is unchanged.)*
+
 **2. The state lives in `ImageManagement`, not in `FirmwareUpdater`.**
 An upload is a *group-level* operation that is meaningful on its own (the
 `UploadOnly` mode, and any caller who just wants to push an image).
@@ -69,9 +77,19 @@ or loops forever. Rejected as protocol-incorrect; the response table treats
   ([`../testing.md`](../testing.md) §3) with a ≥ 90 % branch-coverage gate.
 * Resumption after a reconnect is expressible as "re-send the first packet with
   the same `sha` and adopt whatever offset comes back" — one code path shared
-  with the restart case.
+  with the restart case. Adopting that offset deliberately does **not** charge
+  the no-progress budget: a resume landing back on the offset it already had is
+  a success, not a stalled server.
 * Progress is derived from `confirmed_off` only, so it can never move backwards
   spuriously or overstate what the device has stored.
 * `ImageManagement` gains the one piece of mutable state in the group layer;
   everything else there stays stateless. Documented in
   [`../architecture.md`](../architecture.md) §6.
+
+  *(Made concrete by P10: `UploadHandle` is therefore a generation-tagged token
+  carrying no pointer, and `cancel()`/`transferred()`/`uploading()` are methods
+  on `ImageManagement`. `api.md` had sketched a handle that owned the upload and
+  abandoned it on destruction, which cannot both be true of this decision — and
+  a handle holding an owner pointer would dangle rather than go inert, which is
+  the opposite of what `RequestHandle` was built to guarantee. `ImageManagement`
+  is now non-copyable, non-movable, and must outlive its upload.)*

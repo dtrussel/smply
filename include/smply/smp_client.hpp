@@ -251,6 +251,14 @@ public:
     /// False once the link has dropped, until `rebind_transport()`.
     [[nodiscard]] bool connected() const noexcept;
 
+    /// The current transport's `max_message_size()`, or 0 if it has no opinion.
+    ///
+    /// Exposed because upload chunk sizing needs it and only the client knows
+    /// which transport is bound -- `rebind_transport()` can change the answer.
+    /// It is one of three separate limits that must not be conflated
+    /// (docs/protocol-notes.md section 8).
+    [[nodiscard]] std::size_t transport_max_message_size() const noexcept;
+
     /// Requests currently outstanding.
     [[nodiscard]] std::size_t in_flight() const noexcept;
 

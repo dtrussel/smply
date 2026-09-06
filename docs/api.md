@@ -17,7 +17,7 @@ change — record the deviations in the roadmap when it does.
 | `transport.hpp` | **Shipped** (P4) |
 | `smp_client.hpp` | **Shipped** (P6, extended P7) |
 | `groups/os.hpp` | **Shipped** (P7) |
-| `groups/image.hpp` | **Shipped** (P8: state, erase, slot info) — the upload half below is still Proposed (P10) |
+| `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
 | `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
 | `dfu/firmware_updater.hpp` | Proposed — P12 |
 | `util/dispatcher.hpp` | Proposed — P14 |
@@ -384,6 +384,11 @@ public:
     void rebind_transport(Transport&);
 
     bool        connected() const noexcept;   // false once the link drops
+
+    // The bound transport's max_message_size(), or 0 if it has no opinion.
+    // Only the client knows which transport is bound; upload chunk sizing
+    // needs it (protocol-notes §8).
+    std::size_t transport_max_message_size() const noexcept;
     std::size_t in_flight() const noexcept;
 
     const SmpClientStats&  stats()  const noexcept;
@@ -558,7 +563,7 @@ Decoding bounds, all enforced before anything is copied or sized:
 `limits::kMaxImageHashLength` for a hash. Exceeding any of them, or a field of
 the wrong type, is `ErrorCode::CborDecode`; an absent optional field never is.
 
-### Proposed — P10 (upload)
+### Upload
 
 ```cpp
 namespace smply {
@@ -568,37 +573,76 @@ struct UploadOptions {
     bool          upgrade_only = false;      // protocol-notes §9 A11 — off by default
     std::optional<Hash> sha;                 // computed from the source when absent
     std::uint32_t chunk_size = 0;            // 0 => negotiate (design §6)
-    std::uint32_t max_chunk_retries = 3;
-    std::uint32_t max_restarts = 2;
-    Duration first_chunk_timeout = std::chrono::seconds{30};   // A7
-    Duration chunk_timeout       = std::chrono::seconds{5};
+
+    // The device's SMP buffer, from OsManagement::mcumgr_parameters(). The
+    // CALLER fetches it: it belongs to the OS group, and NotSupported from
+    // that command is a normal answer to fall back from (A8). Absent =>
+    // limits::kDefaultSmpMessageBudget. A present zero is ignored.
+    std::optional<std::uint32_t> server_buf_size;
+
+    std::uint32_t max_chunk_retries = limits::kMaxChunkRetries;   // 3
+    std::uint32_t max_restarts      = limits::kMaxUploadRestarts; // 2
+    std::uint32_t max_no_progress   = limits::kMaxNoProgress;     // 3
+    Duration first_chunk_timeout = limits::kFirstChunkTimeout;    // 30 s — A7
+    Duration chunk_timeout       = limits::kDefaultTimeout;       // 5 s
 };
 
-struct UploadProgress { std::uint64_t transferred, total; };
-struct UploadResult   { std::uint64_t transferred; std::optional<bool> match; };
+// `transferred` is the offset the DEVICE acknowledged, never what was sent, so
+// it cannot overstate what was stored or move backwards.
+struct UploadProgress { std::uint64_t transferred = 0, total = 0; };
 
-// Owns one upload. Move-only. Destroying it abandons the upload (no callback).
+struct UploadResult {
+    std::uint64_t transferred = 0;
+    std::optional<bool> match;   // absent on a device without the image check
+                                 // (A6); a false fails with ImageMismatch
+};
+
+// Generation-tagged, like RequestHandle: once an upload ends the handle is
+// inert forever. It holds no pointer to its ImageManagement, which is why the
+// operations live there -- a handle that outlived its group would otherwise
+// dangle instead of being an inert value.
 class UploadHandle {
 public:
-    void cancel() noexcept;
-    std::uint64_t transferred() const noexcept;
-    bool active() const noexcept;
+    UploadHandle() = default;
+    bool valid() const noexcept;
+    explicit operator bool() const noexcept;
 };
 
-// Added to ImageManagement by P10.
-//
-//   `source` must outlive the upload. Progress fires on every CONFIRMED
-//   advance; completion fires exactly once.
-UploadHandle upload(ImageSource& source, UploadOptions,
-                    std::function<void(UploadProgress)> on_progress,
-                    Callback<UploadResult> on_done);
+class ImageManagement {                     // upload half; see above for the rest
+public:
+    // `source` and this ImageManagement must both outlive the upload -- the
+    // session lives here, not in the handle (ADR-0008).
+    //
+    // on_progress fires on every CONFIRMED advance, never on send. It may fire
+    // once with everything: given a full sha, a device that already holds this
+    // image answers the first packet with "complete" (protocol-notes §6 9a).
+    //
+    // on_done fires EXACTLY ONCE -- including on Disconnected, on cancel(), and
+    // when this object is destroyed. A second upload while one runs is refused
+    // with InvalidState.
+    UploadHandle upload(ImageSource&, const UploadOptions&,
+                        std::function<void(UploadProgress)> on_progress,
+                        Callback<UploadResult> on_done);
 
-// Resume after a reconnect: re-sends the first packet with the same sha and
-// continues from the offset the device reports (protocol-notes §6 rule 6).
-void resume(UploadHandle&, SmpClient& rebound);
+    // A dropped link completes the upload with Disconnected but KEEPS the
+    // session. Once the application has rebound the transport, this re-sends
+    // the first packet with the same sha and continues from whatever offset the
+    // device reports (§6 rule 6). InvalidState for a stale handle or a session
+    // that ended any other way.
+    void resume(const UploadHandle&, Callback<UploadResult> on_done);
+
+    void          cancel(const UploadHandle&) noexcept;   // Cancelled on next poll()
+    std::uint64_t transferred(const UploadHandle&) const noexcept;
+    bool          uploading(const UploadHandle&) const noexcept;
+};
 
 } // namespace smply
 ```
+
+`ImageManagement` is neither copyable nor movable, because an upload session
+lives in it. Destroying it mid-upload cancels the outstanding request and
+completes the callback with `Cancelled`, inline — the same exception
+`~SmpClient` makes, and for the same reason: there is no later `poll()`.
 
 ## `smply/image_source.hpp`
 

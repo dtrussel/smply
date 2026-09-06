@@ -30,6 +30,7 @@
 #include "smply/bytes.hpp"
 #include "smply/clock.hpp"
 #include "smply/error.hpp"
+#include "smply/image_source.hpp"
 #include "smply/limits.hpp"
 #include "smply/result.hpp"
 #include "smply/smp_client.hpp"
@@ -38,6 +39,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -339,15 +342,136 @@ enum class ImageError : std::uint16_t
 /// not treat a missing image code as a malformed response.
 [[nodiscard]] std::optional<ImageError> image_error(const Error& error) noexcept;
 
+/// What to ask for when uploading an image.
+struct UploadOptions
+{
+    /// Which image to write. Zephyr supports two today; 0 is the usual one.
+    std::uint32_t image = 0;
+
+    /// Ask the server to refuse a version that is not newer than the running
+    /// one.
+    ///
+    /// Off by default: whether the comparison includes the build number is a
+    /// Kconfig option, so the same image can be accepted by one device and
+    /// refused by another (docs/protocol-notes.md section 9, A11).
+    bool upgrade_only = false;
+
+    /// SHA-256 of the whole file, as `sha256(ImageSource&)` computes it.
+    ///
+    /// Computed from the source when absent, which costs one extra pass. It is
+    /// worth sending: the full 32-byte value is what lets the device resume an
+    /// interrupted upload, skip an image it already holds, and verify what it
+    /// flashed. Omitting it disables all three.
+    std::optional<Hash> sha;
+
+    /// Payload bytes per chunk. Zero negotiates one from the budget below.
+    ///
+    /// An explicit value above `limits::kUploadChunkMax` or below
+    /// `limits::kUploadChunkMin` is rejected with `ErrorCode::InvalidArgument`.
+    std::uint32_t chunk_size = 0;
+
+    /// The device's SMP buffer size, from `OsManagement::mcumgr_parameters()`.
+    ///
+    /// The caller fetches it, because it belongs to the OS group and because
+    /// `SmpError::NotSupported` from that command is a normal answer to fall
+    /// back from, not an upload failure (A8). Absent means
+    /// `limits::kDefaultSmpMessageBudget`.
+    std::optional<std::uint32_t> server_buf_size;
+
+    std::uint32_t max_chunk_retries = limits::kMaxChunkRetries;
+    std::uint32_t max_restarts = limits::kMaxUploadRestarts;
+    std::uint32_t max_no_progress = limits::kMaxNoProgress;
+
+    /// Deadline for the first chunk, which may trigger an implicit slot erase
+    /// of unbounded duration (A7).
+    Duration first_chunk_timeout = limits::kFirstChunkTimeout;
+    /// Deadline for every other chunk.
+    Duration chunk_timeout = limits::kDefaultTimeout;
+};
+
+/// How far an upload has got.
+///
+/// `transferred` is the offset the **device** has acknowledged, never what was
+/// put on the wire, so it cannot overstate what was stored.
+struct UploadProgress
+{
+    std::uint64_t transferred = 0;
+    std::uint64_t total = 0;
+};
+
+/// What an upload achieved.
+struct UploadResult
+{
+    std::uint64_t transferred = 0;
+    /// The device's own verdict on the flashed bytes, when it has one.
+    ///
+    /// Absent on a device built without the image check, which is not a failure
+    /// (docs/protocol-notes.md section 9, A6) -- a `false` never reaches here,
+    /// because it fails the upload with `ErrorCode::ImageMismatch`.
+    std::optional<bool> match;
+};
+
+/// Identifies one upload.
+///
+/// Generation-tagged, like `RequestHandle`: once an upload finishes the handle
+/// is inert forever, so acting through a stale one is a no-op rather than an
+/// attack on whatever upload started since.
+///
+/// It carries no pointer to its `ImageManagement`, which is why the operations
+/// on it are methods there rather than here -- a handle that outlived its group
+/// would otherwise be a dangling pointer instead of an inert value.
+class UploadHandle
+{
+public:
+    UploadHandle() = default;
+
+    /// False for a default-constructed handle, and for one whose `upload()`
+    /// could not start.
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return generation_ != 0;
+    }
+
+    explicit operator bool() const noexcept
+    {
+        return valid();
+    }
+
+    [[nodiscard]] friend constexpr bool operator==(const UploadHandle&,
+                                                   const UploadHandle&) noexcept = default;
+
+private:
+    friend class ImageManagement;
+
+    explicit UploadHandle(std::uint64_t generation) noexcept : generation_{generation} {}
+
+    /// Zero means "never referred to an upload".
+    std::uint64_t generation_ = 0;
+};
+
 /// Image state, set-state, erase and slot info.
 ///
-/// Holds a reference to the client and no state of its own, so several may
-/// exist over one client and any may be destroyed at any time. Destroying it
-/// does not cancel requests it issued -- the returned `RequestHandle` does that.
+/// The one-shot commands hold no state: destroying this object does not cancel
+/// a request one of them issued -- the returned `RequestHandle` does that.
+///
+/// **`upload()` is different.** An upload is a long-running session, and it
+/// lives here rather than in its handle (ADR-0008), which makes this the only
+/// stateful object in the group layer. Three consequences: it is neither
+/// copyable nor movable, it must outlive any upload it started, and destroying
+/// it mid-upload cancels the outstanding request and completes the callback
+/// with `ErrorCode::Cancelled`.
 class ImageManagement
 {
 public:
     explicit ImageManagement(SmpClient& client) noexcept;
+
+    ImageManagement(const ImageManagement&) = delete;
+    ImageManagement(ImageManagement&&) = delete;
+    ImageManagement& operator=(const ImageManagement&) = delete;
+    ImageManagement& operator=(ImageManagement&&) = delete;
+
+    /// Cancels an upload in progress and completes its callback.
+    ~ImageManagement();
 
     /// Reads the device's slot table.
     ///
@@ -384,8 +508,70 @@ public:
     /// update.
     RequestHandle get_slot_info(Callback<SlotInfo> on_done);
 
+    /// Uploads an image, one chunk at a time.
+    ///
+    /// \p source is borrowed until the upload ends and must outlive it, as
+    /// must this `ImageManagement` -- the session lives here, not in the
+    /// handle (ADR-0008).
+    ///
+    /// \p on_progress fires on every **confirmed** advance, never on send, so
+    /// it cannot move backwards or overstate what the device holds. It may fire
+    /// once with everything: given a full `sha`, a device that already holds
+    /// this exact image answers the first packet with "complete"
+    /// (docs/protocol-notes.md section 6).
+    ///
+    /// \p on_done fires exactly once, including when the link drops
+    /// (`ErrorCode::Disconnected`), when `cancel()` is called
+    /// (`ErrorCode::Cancelled`), and when this object is destroyed.
+    ///
+    /// Only one upload at a time: a second call while one is running is
+    /// rejected with `ErrorCode::InvalidState`.
+    ///
+    /// The returned handle is invalid when the upload could not even be
+    /// started -- a rejected argument, an unreadable source, a budget too small
+    /// for a chunk. The reason still reaches \p on_done on the next `poll()`,
+    /// as it does for `SmpClient::request()`.
+    UploadHandle upload(ImageSource& source, const UploadOptions& options,
+                        std::function<void(UploadProgress)> on_progress,
+                        Callback<UploadResult> on_done);
+
+    /// Restarts a disconnected upload on the current transport.
+    ///
+    /// A dropped link completes the upload with `ErrorCode::Disconnected` but
+    /// keeps the session, so once the application has re-established the link
+    /// (`SmpClient::rebind_transport()`) this re-sends the first packet with
+    /// the same `sha` and continues from whatever offset the device reports
+    /// (docs/protocol-notes.md section 6, rule 6). If the device forgot the
+    /// session it answers zero and the upload restarts, bounded by
+    /// `UploadOptions::max_restarts`.
+    ///
+    /// \p on_done is the callback given to `upload()`; it fires again for this
+    /// attempt. A stale handle, or a session that ended any other way, is
+    /// rejected with `ErrorCode::InvalidState`.
+    void resume(const UploadHandle& handle, Callback<UploadResult> on_done);
+
+    /// Abandons an upload. Its callback receives `Cancelled` on the next
+    /// `poll()`; a stale or invalid handle is a no-op.
+    ///
+    /// No cleanup command is sent: the device's stale session is harmless and
+    /// is superseded by the next upload's `sha`.
+    void cancel(const UploadHandle& handle) noexcept;
+
+    /// Bytes the device has acknowledged, or 0 for a stale handle.
+    [[nodiscard]] std::uint64_t transferred(const UploadHandle& handle) const noexcept;
+
+    /// True while \p handle names an upload that has not finished.
+    [[nodiscard]] bool uploading(const UploadHandle& handle) const noexcept;
+
 private:
+    class Upload;
+
     SmpClient* client_;
+    /// The one piece of mutable state in the group layer (ADR-0008). Held by
+    /// pointer so this header does not need the session's definition.
+    std::unique_ptr<Upload> upload_;
+    /// Never reused, so a handle from a finished upload stays inert.
+    std::uint64_t upload_generation_ = 0;
 };
 
 } // namespace smply

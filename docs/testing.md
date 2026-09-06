@@ -139,18 +139,41 @@ array, 10 000 entries, 4 KiB version string, 200-byte hash) ⇒ bounded error;
 `set_state` encoding with and without `hash`; reset with/without `force`.
 
 ### UploadSession (pure function — the densest suite)
-Table-driven over `(state, response) → step`:
+Table-driven over `(state, response) → step`, with no client, transport or
+clock:
 happy path to completion · server returns a **larger** offset than sent ·
 server returns a **smaller** offset (rewind) · server returns the **same**
 offset repeatedly ⇒ bounded then `Fail` · server returns `off == 0` mid-upload
 ⇒ full first packet re-sent with `len`+`sha`, bounded by `max_restarts` ·
 `off > image_size` ⇒ `MalformedMessage` · missing `off` on success ⇒
 `MalformedMessage` · `match == false` ⇒ `ImageMismatch` · `match` absent ⇒ ok ·
-`EBUSY`/`ENOMEM` ⇒ bounded retry, other `rc` ⇒ immediate `Fail` · chunk timeout
-⇒ retransmit the identical request, bounded · final chunk shorter than
-`chunk_size` · image smaller than one chunk · chunk sizing when
-`buf_size` is tiny ⇒ `MessageTooLarge` rather than a sub-32-byte chunk ·
-resume after disconnect with a matching `sha`.
+**`off == image_size` on the very first response** (the device already holds the
+image) ⇒ `Complete` with nothing transferred · `EBUSY`/`ENOMEM` ⇒ bounded retry,
+other `rc` ⇒ immediate `Fail` · chunk timeout ⇒ retransmit the identical
+request, bounded · a retransmitted first packet stays a first packet · progress
+resets both the retry and the no-progress budgets · final chunk shorter than
+`chunk_size` · image smaller than one chunk · resume adopts the device's offset
+**without** charging the no-progress budget, upwards or downwards.
+
+Chunk sizing: the first-packet overhead against a hand-derived CBOR envelope ·
+the overhead growing with each field the packet carries · each of the three
+budget inputs winning in turn · a transport with no opinion not shrinking it ·
+`buf_size` too small ⇒ `MessageTooLarge` rather than a sub-32-byte chunk · a
+budget of exactly 32 bytes of payload accepted.
+
+### The upload driver (over `FakeTransport`)
+What reaches the wire and when the callbacks fire, not what the rules are:
+the first packet byte-for-byte against a hand-derived vector · later packets
+carrying only `off` and `data` · `upgrade` present only when asked for · the
+first chunk taking `kFirstChunkTimeout` and the rest `chunk_timeout` · a
+timeout retransmitting an **identical payload under a new sequence number** ·
+progress only on confirmed advance, and not on a repeated offset · completion
+**exactly once** under success, cancel, double-cancel, disconnect and
+destruction · a stale handle unable to cancel a later upload · a second
+concurrent upload refused · resume re-sending a first packet and continuing
+from the device's offset · an empty source, an out-of-range chunk size, a
+short-reading source and a failing source all refused · a wrong-typed `off`
+⇒ `CborDecode` · an absent `sha` computed from the source.
 
 ### Image file handling
 Fixtures are **built in code**, not checked in: `tests/support/image_builder.hpp`

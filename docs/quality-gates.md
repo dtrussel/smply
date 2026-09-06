@@ -162,15 +162,18 @@ meaningless, so `tools/coverage.sh` reports and CI publishes the artefact
 without failing. The thresholds below switch on in P13, when there is protocol
 logic and state-machine code worth measuring.
 
-| Gate | Threshold | Measured 2026-09-05 (P9) |
-| ---- | --------- | ------------------------ |
-| Line coverage, whole core | **≥ 85 %** | 95.4 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 82.7 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96 % ✓ · `src/cbor/` 82 % ✗ |
+| Gate | Threshold | Measured 2026-09-05 (P10) |
+| ---- | --------- | ------------------------- |
+| Line coverage, whole core | **≥ 85 %** | 95.6 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 82.3 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/update_state_machine.*` | **≥ 90 %** | `src/smp/` 96 % ✓ · **`upload_session.*` 94 % ✓** · `src/cbor/` 82 % ✗ |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
+P10 is the first phase whose own acceptance criterion was one of the elevated
+gates, and `upload_session.*` clears it at 94 % branch and 99 % line.
+
 For reference, outside the elevated list: `src/image/` is at 98 % line and 93 %
-branch, `src/groups/image/` at 95 % line and 89 % branch, `src/groups/os/` at
+branch, `src/groups/image/` at 95 % line and 86 % branch, `src/groups/os/` at
 85 % line.
 
 **`gcovr` is not installed in the development container**, and `coverage.sh`

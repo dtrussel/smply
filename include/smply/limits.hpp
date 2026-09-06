@@ -85,6 +85,20 @@ inline constexpr Duration kEraseTimeout = std::chrono::seconds{60};
 /// Upper bound on an upload chunk before the device's buf_size is known.
 inline constexpr std::uint32_t kUploadChunkMax = 512;
 
+/// Retransmissions of one upload chunk before the upload fails.
+///
+/// A retransmission is always safe: the offset is unchanged, so either the
+/// server never saw the request, or it saw it and answers with the offset it
+/// actually holds (docs/design.md section 6).
+inline constexpr std::uint32_t kMaxChunkRetries = 3;
+
+/// Times the server may restart an upload from offset zero before it fails.
+inline constexpr std::uint32_t kMaxUploadRestarts = 2;
+
+/// Consecutive responses that do not advance the offset before the upload
+/// fails. Bounds a server that rewinds or repeats forever.
+inline constexpr std::uint32_t kMaxNoProgress = 3;
+
 /// Smallest workable upload chunk. The server rejects a first chunk that does
 /// not carry the whole 32-byte MCUboot header (protocol-notes section 6, rule 2).
 inline constexpr std::uint32_t kUploadChunkMin = 32;

@@ -65,6 +65,8 @@ target_sources(smply
         src/cbor/writer.cpp
         src/core.cpp
         src/groups/image/image_management.cpp
+        src/groups/image/upload_driver.cpp
+        src/groups/image/upload_session.cpp
         src/groups/os/os_management.cpp
         src/image/image_source.cpp
         src/image/mcuboot_header.cpp

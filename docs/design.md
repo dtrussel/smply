@@ -464,31 +464,49 @@ it can be exhaustively unit-tested with no client, transport or clock:
 ```cpp
 struct UploadState {
     std::uint64_t confirmed_off = 0;   // server-acknowledged offset (authoritative)
-    std::uint64_t in_flight_off = 0;   // offset of the request currently out
-    std::uint32_t in_flight_len = 0;
-    std::uint32_t chunk_size    = 0;
+    std::uint64_t in_flight_off = 0;   // what the outstanding request asked for,
+    std::uint32_t in_flight_len = 0;   // so a timeout can repeat it exactly
+    bool          in_flight_first_packet = false;
     std::uint32_t consecutive_no_progress = 0;
-    std::uint32_t restarts      = 0;
+    std::uint32_t restarts = 0;
+    std::uint32_t retries  = 0;
     bool          first_packet_pending = true;  // next request must be a full first packet
     Phase         phase = Phase::Idle;
 };
 
-enum class Action { SendChunk, Complete, Fail, Restart };
-struct Step { Action action; UploadRequest request; Error error; };
+enum class Action { SendChunk, Complete, Fail };
+struct Step { Action action; UploadRequest request; Error error; std::optional<bool> match; };
 
-Step plan_next(const UploadState&, const UploadConfig&);            // what to send
+Step plan_next  (const UploadState&, const UploadConfig&);          // what to send
+void record_sent(UploadState&, const UploadRequest&);               // what went out
 Step on_response(UploadState&, const UploadResponse&, const UploadConfig&);
 ```
+
+**A restart is not its own action.** It is "set `first_packet_pending`, zero
+`confirmed_off`, then send", and giving it a separate `Action` would let a
+driver handle it and forget to send — a hang rather than an error. The chunk
+size lives in `UploadConfig`, not in the state: it is negotiated once and never
+changes.
+
+`record_sent` exists because `plan_next` is `const`: the driver tells the state
+what it actually put on the wire, which is what makes a byte-identical
+retransmission possible.
 
 ### Chunk sizing
 
 ```
 budget      = min(server_buf_size (OS params, PN §5) or default 256,
-                  transport.max_message_size(),
-                  config.upload_chunk_max)
+                  transport.max_message_size() when it has an opinion,
+                  limits::kUploadChunkMax)
 overhead    = 8 (SMP header) + cbor_overhead_first_packet(len, sha, image, upgrade)
-chunk_size  = clamp(budget - overhead, 32, config.upload_chunk_max)
+chunk_size  = clamp(budget - overhead, 32, limits::kUploadChunkMax)
 ```
+
+**`server_buf_size` is supplied by the caller**, in `UploadOptions`, not fetched
+by the image group. It belongs to the OS group, and `SmpError::NotSupported`
+from that command is a normal answer to fall back from (A8) rather than an
+upload failure — keeping the fallback in one place is worth more than saving the
+caller a line. A present-but-zero value is ignored like an absent one.
 
 `cbor_overhead_first_packet` is computed exactly, by encoding a probe map with
 the real `len`/`sha`/`image` values and a zero-length `data` bstr, then adding
@@ -517,7 +535,8 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
 | `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. |
-| `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if `restarts > max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. |
+| `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if over `max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. Also what a device that forgot the session answers, and what a **retransmitted final chunk** gets once the server has reset — where the first packet then completes the upload immediately via the already-present check (PN §6 rule 9a). |
+| the request was a first packet | adopt `rsp_off` whatever it is, and do **not** charge the no-progress budget: adopting the device's answer is the entire point of sending a first packet. |
 | `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
 | `rsp_off <= confirmed_off` | server rewound or repeated. `consecutive_no_progress++`; if over the budget ⇒ `Fail`. Else `confirmed_off = rsp_off`, set `first_packet_pending = (rsp_off == 0)`, `SendChunk` from `rsp_off`. |
 
@@ -526,18 +545,38 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 
 ### Failures that are not responses
 
-* **Timeout** — retry the same request up to `max_chunk_retries` (default 3)
-  with exponential backoff. The `off` is unchanged, so a retransmission is
-  always safe: either the server never saw it, or it saw it and will answer with
-  the offset it actually has, which the table above handles.
-* **Disconnect** — the session is *suspended*, not destroyed. `FirmwareUpdater`
-  can resume it after reconnection by sending a first packet with the same
-  `sha`; the server replies with its offset and the session continues from there
-  (PN §6 rule 6). If the device forgot the session, it answers `off == 0` and
-  the restart path applies.
+* **Timeout** — retry the same request up to `max_chunk_retries` (default 3).
+  The `off` is unchanged, so a retransmission is always safe: either the server
+  never saw it, or it saw it and will answer with the offset it actually has,
+  which the table above handles.
+
+  The **payload** is byte-identical; the SMP header is not, and must not be. The
+  timeout retired the old sequence number, so a reply carrying it would be
+  discarded as late (PN §4). A retransmission is a new request carrying the same
+  bytes.
+* **Disconnect** — `on_done` fires once with `Disconnected`, and the session is
+  **kept**: `confirmed_off` and `sha` survive, so `ImageManagement::resume()`
+  can send a first packet with the same `sha` once the application has rebound
+  the transport. The server replies with its offset and the session continues
+  from there (PN §6 rule 6); if the device forgot the session it answers
+  `off == 0` and the restart path applies.
+
+  Earlier drafts of this section said the session was "suspended" and no
+  callback fired. That breaks the promise that completion happens exactly once —
+  a caller who never resumes would wait forever — so the completion is reported
+  and the *session*, not the callback, is what survives.
+
+  **Adopting an offset from a first packet never counts against the no-progress
+  budget.** A resume that correctly lands back on the offset it already had
+  would otherwise look like a server that has stopped advancing.
 * **Cancellation** — the session terminates; no cleanup command is sent (the
   device's stale session is harmless and is superseded by the next upload's
   `sha`).
+* **A failure before the first request goes out** — an unreadable source, a
+  budget too small for a chunk — is **deferred**, not reported inline. Rule 4 of
+  §5 has no exception for the first chunk, and `upload()` returns an invalid
+  handle in that case, exactly as `SmpClient::request()` does for a request it
+  could not attempt.
 
 Progress is reported as `{ confirmed_off, image_size }` on every confirmed
 advance — never on send, so progress never moves backwards spuriously.

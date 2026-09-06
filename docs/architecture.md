@@ -104,7 +104,7 @@ dependencies between peers, and no cycles.
 | **cbor façade** (`src/cbor/`) | bounded encode/decode of the CBOR shapes smply uses; `MgmtError` extraction | SMP header, groups' meaning |
 | **SmpClient** (`src/smp/client.*`) | sequence allocation, pending-request table, per-request deadlines, cancellation, retired-seq set, dispatch of decoded responses, transport binding | firmware, images, files |
 | **OsManagement** (`src/groups/os/`) | reset, mcumgr params, echo | DFU policy |
-| **ImageManagement** (`src/groups/image/`) | image state get/set, upload request/response encoding, `UploadSession` state machine, erase, slot info | files on disk, reconnection |
+| **ImageManagement** (`src/groups/image/`) | image state get/set, upload request/response encoding, the upload state machine, erase, slot info | files on disk, reconnection |
 | **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply | SMP, CBOR, transports |
 | **FirmwareUpdater** (`src/dfu/`) | the update state machine, reset/disconnect/reconnect protocol with the application, progress reporting | GATT, WinRT, threads, sockets |
 | **Transport** (interface) | delivering one whole SMP message outbound; delivering inbound bytes; reporting link errors | SMP semantics, sequence numbers |
@@ -184,7 +184,7 @@ Decision: [ADR-0004](decisions/ADR-0004-threading-model.md).
 | State | Owner | Lifetime |
 | ----- | ----- | -------- |
 | reassembly buffer, pending requests, next seq, retired seqs | `SmpClient` | client |
-| upload offset, session hash, chunk size, retry counters | `UploadSession`, owned by `ImageManagement` | one upload |
+| upload offset, session hash, chunk size, retry counters | `UploadState`, owned by `ImageManagement` (ADR-0008) | one upload; survives a disconnect so `resume()` can use it |
 | DFU state, plan, target hash, progress | `FirmwareUpdater` | one update |
 | firmware bytes | the **application** (`ImageSource`, e.g. a memory-mapped file) | ≥ the update |
 | GATT session, MTU, device handle | the transport adapter | connection |
@@ -200,6 +200,10 @@ Rules:
   the duration of the call**. A transport that queues must copy.
 * Destroying a `SmpClient` with pending requests completes each of them with
   `ErrorCode::Cancelled` before returning — no callback fires after destruction.
+  Destroying an `ImageManagement` mid-upload does the same for that upload, and
+  for the same reason: there is no later `poll()` to defer the completion to.
+  `ImageManagement` is consequently neither copyable nor movable, and must
+  outlive any upload it started.
 * All types are move-only where they own protocol state; no copying of
   in-flight state.
 
@@ -302,7 +306,8 @@ smply/
 │   │                           — reader/writer ARE the QCBOR backend; there is no
 │   │                             separate backend file (P5 deviation)
 │   ├── groups/os/              os_management.cpp
-│   ├── groups/image/           image_management.cpp; upload_session.* planned (P10)
+│   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
+│   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
 │   │                           sha256.{hpp,cpp}  source_reader.hpp
 │   ├── dfu/                    (planned, P12) update_state_machine.*  firmware_updater.cpp

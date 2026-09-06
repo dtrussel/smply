@@ -407,10 +407,15 @@ state machine is built on):
    incorrect offset. Respond with a success code and the correct offset."*
    The server drops the data and returns a **success** response carrying the
    `"off"` it expects. ⇒ **The server-returned `off` is authoritative. Never
-   compute `next_off = off + sent`.**
+   compute `next_off = off + sent`.** A device that has forgotten the session
+   entirely -- it rebooted, or the session was reset -- has `area_id == -1` and
+   an offset of zero, so a continuation gets `off == 0` and falls into rule 7
+   with no special case needed (S11).
 6. **Resume**: when `off == 0` and the supplied `"sha"` matches the in-progress
    session's hash, the server returns success with the current offset and does
-   not restart (S11).
+   not restart (S11). The match is on the stored bytes *and* the stored length:
+   the server "accepts SHA trimmed to any length by client" (S10) and remembers
+   whatever it was given.
 7. **Restart from zero can be requested by the server at any time.** S4,
    verbatim: *"It is possible that a server will respond to an upload with `off`
    of 0 … a client must re-send all the required and optional fields that it
@@ -423,6 +428,23 @@ state machine is built on):
    `CONFIG_IMG_ENABLE_IMAGE_CHECK` is enabled (S10). `match == false` means the
    flashed bytes do not hash to the supplied `"sha"` ⇒ the upload must be
    treated as failed.
+9a. **An upload can finish on the first packet, with no data transferred.**
+   When `off == 0` and `"sha"` is a **full 32 bytes**, the server runs
+   `flash_img_check()` over the target slot before writing anything; if the slot
+   already holds exactly this image it answers `off == len` with
+   `match == true` and resets its session (S10). A client must therefore handle
+   "complete" on its very first response, and progress can jump straight from
+   0 to 100 %. It also means a full `sha` answers "does the device already have
+   this image?" without a separate image-state round trip. A truncated `sha`
+   disables this check, and the `match` check with it.
+9b. **A retransmitted final chunk is answered with `off == 0`, not `off == len`.**
+   The server calls `img_mgmt_reset_upload()` once the image is complete (S10),
+   so a duplicate arriving after its response was lost is inspected against a
+   cleared session, mismatches, and gets the "wrong offset" answer of zero
+   (rule 5). Read as rule 7 requires — restart with a full first packet — that
+   is self-correcting: the already-present check in 9a then reports completion
+   on the next round trip. Without `CONFIG_IMG_ENABLE_IMAGE_CHECK` the image is
+   uploaded again instead, so a client needs a restart budget either way.
 10. `"off"` is only present in successful responses; on error it may be absent
     (S4).
 11. `"upgrade": true` makes the server reject a non-newer version

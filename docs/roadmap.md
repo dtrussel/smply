@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P10 — Image upload state machine** (see its [entry](#p10)) |
-| Last completed phase | P9 — MCUboot image file handling and SHA-256 |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · Image group (everything but upload) · MCUboot image parsing, SHA-256 and TLV scan. 369 tests, 11 CI jobs green. |
+| **Next phase to work on** | **P11 — `ServerSimulator` and the component harness** (see its [entry](#p11)) |
+| Last completed phase | P10 — Image upload state machine |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan. 439 tests, 11 CI jobs green. |
 | Blocked phases | none |
 | Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
 
@@ -30,7 +30,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P7](#p7) | OS management: reset, params, echo | Complete | P6 |
 | [P8](#p8) | Image management: state read/write, erase, slot info | Complete | P6 |
 | [P9](#p9) | MCUboot image file handling and SHA-256 | Complete | P1 |
-| [P10](#p10) | Image upload state machine | Planned | P8, P9 |
+| [P10](#p10) | Image upload state machine | Complete | P8, P9 |
 | [P11](#p11) | `ServerSimulator` and component test harness | Planned | P7, P8, P10 |
 | [P12](#p12) | `FirmwareUpdater` orchestration | Planned | P11 |
 | [P13](#p13) | Fuzzing, hardening and coverage push | Planned | P10 |
@@ -1050,7 +1050,7 @@ that cannot fail is worth no more than a gate that cannot fail.
 <a id="p10"></a>
 ## P10 — Image upload state machine
 
-**Status: Planned** · **Depends on:** P8, P9
+**Status: Complete** (2026-09-05) · **Depends on:** P8, P9
 
 **Objective.** Correct, resumable, bounded image upload — the protocol core of
 the product.
@@ -1088,6 +1088,102 @@ computes `next_off` arithmetically.
 
 **Exit.** Upload works standalone (`UploadOnly`) before any DFU orchestration
 exists.
+
+### Outcome
+
+**Completed.** `src/groups/image/upload_session.{hpp,cpp}` (the pure decision
+logic), `src/groups/image/upload_driver.{hpp,cpp}` (the I/O half),
+`ImageManagement::upload`/`resume`/`cancel` and the upload types in
+`groups/image.hpp`. 70 new tests (439 total). All gates green across the five
+Linux presets.
+
+**The phase's own gate is met**: `upload_session.*` is at **94 % branch and
+99 % line**, against the ≥ 90 % elevated threshold — the first time that gate
+has applied to new code. The single uncovered line is the probe-encode guard
+that `kProbeBufferSize` makes unreachable.
+
+**Remaining in this phase.** None.
+
+**Protocol work.** Three behaviours were missing from
+[`protocol-notes.md`](protocol-notes.md) §6, all read out of `img_mgmt.c` and
+`zephyr_img_mgmt.c` (S10, S11):
+
+1. **An upload can finish on the first packet, having transferred nothing.**
+   With `off == 0` and a **full 32-byte** `sha`, the server runs
+   `flash_img_check()` over the target slot before writing; if the image is
+   already there it answers `off == len`, `match == true` and resets. Recorded
+   as rule 9a. It also means a full `sha` answers "does the device already hold
+   this image?" without the image-state round trip P12 would otherwise need.
+2. **A retransmitted final chunk is answered with `off == 0`, not `off == len`**
+   (rule 9b), because the server resets its session on completion and then
+   inspects the duplicate against a cleared one. Read as rule 7 demands — restart
+   with a first packet — that is self-correcting via 9a, in one round trip.
+   Without `CONFIG_IMG_ENABLE_IMAGE_CHECK` it re-uploads instead, which is why a
+   restart budget is needed either way.
+3. **A device that forgot the session** (`area_id == -1`) answers a continuation
+   with `off == 0`, so "the device rebooted mid-upload" needs no separate rule.
+   Noted on rule 5.
+
+Also recorded: the server "accepts SHA trimmed to any length", but only does the
+resume match and the already-present check at the full 32 bytes.
+
+**Deviations, all recorded in the docs they contradict.**
+
+1. **There is no `Restart` action.** A restart is "set `first_packet_pending`,
+   zero `confirmed_off`, then send"; a separate action would let a driver handle
+   it and forget to send, which is a hang rather than an error. ADR-0008
+   amended.
+2. **`UploadHandle` is a generation-tagged token, not an owner.** `api.md` said
+   the handle owned the upload and abandoned it on destruction; ADR-0008 says
+   the state lives in `ImageManagement`. Both cannot hold. A handle carrying an
+   owner pointer would *dangle* rather than go inert, which is the opposite of
+   what `RequestHandle` was built to guarantee — so the operations are methods
+   on `ImageManagement` and the handle carries only a generation.
+3. **A disconnect completes `on_done` with `Disconnected` and keeps the
+   session.** `design.md` §6 said the session was "suspended" and implied no
+   callback, which breaks the exactly-once promise: a caller who never resumes
+   would wait forever. §6 reconciled.
+4. **`server_buf_size` is a caller-supplied `UploadOptions` field.** It belongs
+   to the OS group, and `NotSupported` from that command is a normal answer to
+   fall back from (A8); keeping that fallback in one place beats saving the
+   caller a line and beats making group 1 depend on group 0.
+5. **Adopting an offset from a first packet never charges the no-progress
+   budget.** A resume that correctly lands back on the offset it already had
+   would otherwise look like a stalled server. Not in the original table.
+6. **`SmpClient` gained `transport_max_message_size()`.** Chunk sizing needs it
+   and only the client knows which transport is bound — `rebind_transport()` can
+   change the answer.
+7. **A fourth pure function, `record_sent`.** `plan_next` is `const` per
+   ADR-0008, so the driver has to tell the state what actually went out; that is
+   what makes a byte-identical retransmission possible.
+
+**Three things worth knowing.**
+
+* **Clang's ASan failed two tests that GCC's ASan passed** — the CI-only bug
+  class P1 recorded, encountered for the first time. A second `Outcome`
+  declared after the fixture is destroyed before `~ImageManagement` completes
+  the upload that still holds its callback. The lifetime rule now has two
+  levels: a callback's captures must outlive **both** the client and the group.
+  Chasing it surfaced a genuine defect too — a first-chunk read failure
+  completed the callback *inside* `upload()`, which `design.md` §5 rule 4
+  forbids. The driver now defers while `start()`/`resume()` is on the stack, and
+  `upload()` returns an invalid handle, matching `SmpClient::request()`.
+* **A retransmission repeats the *payload*, not the message.** The SMP header
+  necessarily differs: the timeout retired the old sequence number, so a reply
+  carrying it would be discarded as late (§4). The first version of the test
+  asserted whole-message equality and was wrong about the protocol, not about
+  the code.
+* **A test violated the transport lifetime rule and only GCC noticed.** A
+  `FakeTransport` declared *after* the fixture is destroyed before the client
+  still bound to it, and `~SmpClient` then calls a pure virtual on it. Clang's
+  build ran it happily; the GCC coverage build aborted. The rule is stated in
+  `smp_client.hpp` — "declaring the transport before the client is enough" — and
+  the test now says why in a comment.
+
+**On coverage.** Whole core **95.6 % line, 82.3 % branch**;
+`src/groups/image/` at 95 % line and 86 % branch, with `upload_session.*` at the
+94 % branch its own gate requires. The uncovered remainder is the familiar
+invariant-guard set plus two `!active_` re-entry guards in the driver.
 
 ---
 
@@ -1427,6 +1523,10 @@ them.
 | P9 | `fuzz_mcuboot_header` and `fuzz_tlv_scan` are specified in `testing.md` §5 but not built. The TLV scanner is the strongest candidate in the library for fuzzing — it indexes with file-supplied offsets — and it is written to be a pure function over an `ImageSource`, so a target is a few lines. | P13 |
 | P9 | `image::narrow<To>()` exists because GCC's `-Wuseless-cast` rejects a `static_cast` between `std::uint64_t` and `std::size_t` on a 64-bit host. It is in `src/image/` because that is where it was needed; if a second area needs the same thing, promote it rather than copying it. | when needed |
 | P9 | The TLV entry cap counts loop iterations, so the one iteration spent stepping over the unprotected area's header consumes a unit of the budget. Immaterial at 256, but if the cap is ever tightened it should count entries. | when needed |
+| P10 | **`ImageManagement` is now stateful, and nothing enforces the lifetime rule it introduces.** It must outlive its upload, and an `UploadHandle` used after the group is gone is an inert value only because it carries no pointer. A component test in P11 that destroys the group mid-upload under ASan would pin the destructor's inline completion, which today only a unit test covers. | P11 |
+| P10 | The upload driver keeps the chunk in a second buffer before encoding it, because `cbor::Writer` needs the bytes up front. A `put_bytes_from()` that let a caller fill the byte string in place would remove a 512-byte copy per chunk. Immaterial at these sizes; revisit only if a profile says so. | when needed |
+| P10 | `fuzz_cbor_upload_response` is specified in `testing.md` §5 and not built. The response decode is small, but it is device-supplied and feeds a state machine with budgets — a good target. | P13 |
+| P10 | A retransmission necessarily carries a new sequence number, so a device that deduplicates on `seq` would see two distinct requests at the same offset. Harmless against Zephyr, which keys on offset, but worth checking on real hardware. | P17 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. | P13 |
 | P1 | Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI. **P6 correction: `linux-gcc-asan-ubsan` does not "cover sanitizers locally".** GCC's ASan does not report stack-use-after-scope for a dangling callback capture — verified by running the failing case under GCC with `-fsanitize-address-use-after-scope` and `detect_stack_use_after_scope=1`, which passed while Clang aborted. The two jobs are not interchangeable, and this class of bug is CI-only. | — (accepted) |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

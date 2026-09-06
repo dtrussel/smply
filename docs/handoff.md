@@ -151,12 +151,26 @@ delete an entry when it stops being true.
   The server may translate it onto `mcumgr_err_t` and rebuild the response, so
   `image_error()` returning `nullopt` for a real image failure is normal. Check
   `smp_error()` as well, and never treat the absence as a malformed reply.
+* **The upload server's `off` is authoritative in every direction** — larger
+  than what was sent, smaller, or zero (PN §6 rule 5). Never compute
+  `next_off = off + sent`. Two consequences that look like bugs and are not: an
+  upload can complete on its *first* packet when the device already holds the
+  image (rule 9a), and a retransmitted *final* chunk is answered with `off == 0`
+  because the server has already reset its session (rule 9b).
+* **A retransmission repeats the payload, not the message.** The sequence number
+  must differ — the timeout retired the old one, and a reply carrying it would
+  be discarded as late (§4).
 
 **Tooling traps**
 
 * **A failed build leaves the previous test binary in place**, so `ctest` then
   reports the *old* suite passing. Check the build's exit status separately;
   never read "N tests passed" as evidence anything was rebuilt.
+* **Declare every transport before the client that binds to it**, including one
+  a rebind test introduces halfway through: `~SmpClient` detaches from the
+  transport it currently holds. Getting this wrong aborts with "pure virtual
+  method called" — under GCC. Clang ran the same undefined behaviour without a
+  murmur.
 * **GCC's and Clang's sanitizers do not diagnose identically.** GCC's ASan does
   not report a dangling callback capture even with
   `-fsanitize-address-use-after-scope`. Clang's compiler-rt is not installable
@@ -1062,3 +1076,106 @@ shapes everything is **the server-returned `off` is authoritative — never
 compute `next_off = off + sent`**. `upload_session.*` is specified as a pure
 function precisely so the whole response table in
 [`testing.md`](testing.md) §3 can be driven with no client, transport or clock.
+
+### 2026-09-05 — P10: image upload state machine
+
+**Status after this session:** P10 = `Complete`. Next phase: **P11 —
+`ServerSimulator` and the component harness**.
+
+**Completed.** `src/groups/image/upload_session.{hpp,cpp}` (pure decision
+logic), `src/groups/image/upload_driver.{hpp,cpp}` (the I/O half), and
+`ImageManagement::upload`/`resume`/`cancel` with the upload types in
+`groups/image.hpp`. 70 new tests (439 total). All gates green across the five
+Linux presets, and **the phase's own elevated gate is met**: `upload_session.*`
+is at 94 % branch and 99 % line against the ≥ 90 % threshold.
+
+Upload now works standalone, which was the phase's exit criterion: a caller can
+push an image with no DFU orchestration in existence.
+
+**Protocol work.** Three behaviours were missing from §6 and are now rules 5,
+9a and 9b — the roadmap's P10 outcome has them in full. The two that will shape
+P12 are in the caveats below.
+
+**Changed.** Seven deviations, in the roadmap. The three that reach other
+phases: **there is no `Restart` action**, **`UploadHandle` is a token rather
+than an owner**, and **a disconnect completes the callback rather than silently
+suspending**.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P11 and P12.**
+
+* **An upload can finish on the first packet, having sent no data** (§6 rule
+  9a). Given a full 32-byte `sha`, the server checks whether the slot already
+  holds this exact image and jumps to the end. P12 gets "is the device already
+  holding this image?" for free — no image-state round trip needed — and P11's
+  simulator must model it or the DFU tests will never exercise the path.
+* **A retransmitted final chunk is answered with `off == 0`** (rule 9b), because
+  the server resets its session on completion. That reads as "restart", which is
+  correct: the first packet then completes via 9a in one round trip. The
+  simulator should reproduce this, because it is the one place a *successful*
+  upload can look like a failure.
+* **The server's `off` is authoritative in every direction** — larger than what
+  was sent, smaller, or zero. Nothing computes `next_off = off + sent`, and
+  nothing should start.
+* **A disconnect completes `on_done` with `Disconnected` and keeps the
+  session.** `resume()` re-sends a first packet with the same `sha` and adopts
+  whatever comes back. P12 drives that; it does **not** need to track the
+  offset itself.
+* **Adopting an offset from a first packet does not charge the no-progress
+  budget.** A resume landing back where it started is a success, not a stall.
+  This is not in design.md's original table; it is now.
+* **`ImageManagement` is stateful from this phase on.** It is neither copyable
+  nor movable, it must outlive its upload, and destroying it mid-upload
+  completes the callback inline — the same exception `~SmpClient` makes.
+
+**Three traps, all of which cost a cycle.**
+
+* **Clang's ASan caught two tests that GCC's ran happily** — the CI-only bug
+  class P1 recorded, seen for the first time. A second `Outcome` declared
+  *after* the fixture is destroyed before `~ImageManagement` completes the
+  upload still holding its callback. The rule now has two levels: whatever a
+  callback touches must outlive **both** the client and the group. Declare it
+  first, always.
+
+  Chasing that also exposed a real invariant violation: a first-chunk read
+  failure completed the callback **inside** `upload()`, which §5 rule 4
+  forbids. `UploadDriver` now defers while `start()`/`resume()` is on the stack,
+  and `upload()` returns an invalid handle in that case — the same shape
+  `SmpClient::request()` has always had.
+
+* **A retransmission repeats the *payload*, not the message.** The SMP header
+  necessarily differs: the timeout retired the old sequence number, so a reply
+  carrying it would be discarded as late (§4). The first version of the test
+  asserted whole-message equality — the test was wrong about the protocol, not
+  the code. Assert on payloads when you mean "the same request".
+* **A `FakeTransport` declared *after* the fixture aborts on "pure virtual
+  method called" — under GCC only.** `~SmpClient` detaches from the transport it
+  currently holds, so every transport it was ever bound to must outlive it;
+  `smp_client.hpp` says so and the resume test violated it. Clang ran the same
+  UB without complaint. **Declare every transport before the client**, including
+  the one a rebind test introduces halfway through.
+
+**On coverage.** Whole core 95.6 % line, 82.3 % branch. `upload_session.*` meets
+its own gate; the driver is at 94 % line, and its uncovered remainder is the
+unreachable buffer guard plus two `!active_` re-entry guards. Reading the
+uncovered-line list again paid for itself: it produced two tests worth having on
+their own merits — a wrong-typed `off` (the reader poisons rather than reporting
+absence) and a device reporting `buf_size == 0`.
+
+**Docs updated.** `protocol-notes.md` (§6 rules 5, 9a, 9b, and the `sha` length
+note), `design.md` (§6: no `Restart`, `record_sent`, the disconnect semantics,
+where `server_buf_size` comes from, the retransmission's sequence number, the
+first-packet row in the response table), `api.md` (the upload half of
+`groups/image.hpp` now Shipped, and `SmpClient::transport_max_message_size()`),
+`architecture.md` (§6 state ownership, §10 layout), `ADR-0008` (two amendments),
+`testing.md` (§3 rewritten for both suites), `quality-gates.md`, `roadmap.md`
+(P10 Complete with outcome, seven deviations, four follow-ups, Current state),
+this log.
+
+**Recommended next.** **P11 — `ServerSimulator` and the component harness.**
+Everything below it is now testable in isolation; what nothing yet proves is the
+*sequence* — that `FirmwareUpdater` will issue the right commands in the right
+order. Model rules 9a and 9b in the simulator from the start: they are the two
+places a correct client looks like a broken one, and a simulator that cannot
+produce them will let P12 ship a plausible bug.

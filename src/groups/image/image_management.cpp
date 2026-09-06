@@ -3,13 +3,18 @@
 #include "smply/groups/image.hpp"
 
 #include "cbor/cbor.hpp"
+#include "groups/image/upload_driver.hpp"
+#include "groups/image/upload_session.hpp"
 #include "smply/error.hpp"
+#include "smply/mcuboot_image.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -479,7 +484,146 @@ std::optional<ImageError> image_error(const Error& error) noexcept
     return static_cast<ImageError>(mgmt->rc);
 }
 
+/// One upload, plus the generation that makes a stale handle inert.
+class ImageManagement::Upload
+{
+public:
+    Upload(SmpClient& client, ImageSource& source, const image::UploadConfig& config,
+           const UploadOptions& options, std::function<void(UploadProgress)> on_progress,
+           Callback<UploadResult> on_done, std::uint64_t upload_generation) noexcept
+        : driver{client,
+                 source,
+                 config,
+                 options.first_chunk_timeout,
+                 options.chunk_timeout,
+                 std::move(on_progress),
+                 std::move(on_done)},
+          generation{upload_generation}
+    {}
+
+    image::UploadDriver driver;
+    std::uint64_t generation;
+};
+
 ImageManagement::ImageManagement(SmpClient& client) noexcept : client_{&client} {}
+
+ImageManagement::~ImageManagement()
+{
+    if (upload_) {
+        // Completes the callback inline: there is no later poll() to defer to.
+        upload_->driver.abandon();
+    }
+}
+
+UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& options,
+                                     std::function<void(UploadProgress)> on_progress,
+                                     Callback<UploadResult> on_done)
+{
+    const auto refuse = [this, &on_done](Error error) {
+        return reject(*client_, std::move(on_done), std::move(error)), UploadHandle{};
+    };
+
+    if (upload_ && upload_->driver.active()) {
+        return refuse(Error{ErrorCode::InvalidState, "image: an upload is already running"});
+    }
+
+    const std::uint64_t image_size = source.size();
+    if (image_size == 0) {
+        // The server rejects a first chunk that does not carry the 32-byte
+        // MCUboot header, so an empty source can never succeed.
+        return refuse(Error{ErrorCode::InvalidArgument, "image: empty image source"});
+    }
+    if (image_size > limits::kMaxImageSize) {
+        return refuse(Error{ErrorCode::InvalidArgument, "image: image implausibly large"});
+    }
+    if (options.chunk_size != 0 && (options.chunk_size < limits::kUploadChunkMin ||
+                                    options.chunk_size > limits::kUploadChunkMax)) {
+        return refuse(Error{ErrorCode::InvalidArgument, "image: chunk size out of range"});
+    }
+
+    image::UploadConfig config;
+    config.image_size = image_size;
+    config.image = options.image;
+    config.sha = options.sha;
+    config.upgrade_only = options.upgrade_only;
+    config.max_chunk_retries = options.max_chunk_retries;
+    config.max_restarts = options.max_restarts;
+    config.max_no_progress = options.max_no_progress;
+
+    if (!config.sha.has_value()) {
+        // Worth the extra pass over the source: the full hash is what lets the
+        // device resume, skip an image it already holds, and verify what it
+        // flashed (docs/protocol-notes.md section 6).
+        auto digest = sha256(source);
+        if (!digest.has_value()) {
+            return refuse(digest.error());
+        }
+        config.sha = *digest;
+    }
+
+    const image::FirstPacketFields fields{.image_size = image_size,
+                                          .image = config.image,
+                                          .sha = config.sha,
+                                          .upgrade_only = config.upgrade_only};
+    if (options.chunk_size != 0) {
+        config.chunk_size = options.chunk_size;
+    } else {
+        const image::ChunkBudget budget{.server_buf_size = options.server_buf_size,
+                                        .transport_max_message_size =
+                                            client_->transport_max_message_size(),
+                                        .configured_max = limits::kUploadChunkMax};
+        const auto chunk = image::compute_chunk_size(budget, fields);
+        if (!chunk.has_value()) {
+            return refuse(chunk.error());
+        }
+        config.chunk_size = *chunk;
+    }
+
+    ++upload_generation_;
+    upload_ = std::make_unique<Upload>(*client_, source, config, options, std::move(on_progress),
+                                       std::move(on_done), upload_generation_);
+    upload_->driver.start();
+    if (!upload_->driver.active()) {
+        // It failed before a byte went out -- an unreadable source, say. The
+        // reason is already queued for the next poll(); the handle is invalid,
+        // exactly as SmpClient::request() does for a request it could not even
+        // attempt.
+        return {};
+    }
+    return UploadHandle{upload_generation_};
+}
+
+void ImageManagement::resume(const UploadHandle& handle, Callback<UploadResult> on_done)
+{
+    if (upload_ == nullptr || handle.generation_ != upload_->generation ||
+        !upload_->driver.resumable()) {
+        reject(*client_, std::move(on_done),
+               Error{ErrorCode::InvalidState, "image: no upload to resume"});
+        return;
+    }
+    upload_->driver.restart(std::move(on_done));
+}
+
+void ImageManagement::cancel(const UploadHandle& handle) noexcept
+{
+    if (upload_ != nullptr && handle.generation_ == upload_->generation) {
+        upload_->driver.cancel();
+    }
+}
+
+std::uint64_t ImageManagement::transferred(const UploadHandle& handle) const noexcept
+{
+    if (upload_ == nullptr || handle.generation_ != upload_->generation) {
+        return 0;
+    }
+    return upload_->driver.transferred();
+}
+
+bool ImageManagement::uploading(const UploadHandle& handle) const noexcept
+{
+    return upload_ != nullptr && handle.generation_ == upload_->generation &&
+           upload_->driver.active();
+}
 
 RequestHandle ImageManagement::get_state(Callback<ImageState> on_done)
 {

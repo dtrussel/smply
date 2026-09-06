@@ -16,6 +16,8 @@ add_executable(smply_unit_tests
     test_smp_client.cpp
     test_smp_codec.cpp
     test_tlv.cpp
+    test_upload_driver.cpp
+    test_upload_session.cpp
     test_version.cpp
 )
 
