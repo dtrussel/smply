@@ -3,6 +3,7 @@
 #include "smply/smp_client.hpp"
 
 #include "cbor/mgmt_error.hpp"
+#include "detail/client_thread.hpp"
 #include "smp/assembler.hpp"
 #include "smply/error.hpp"
 
@@ -58,6 +59,7 @@ public:
 
     RequestHandle request(const RequestSpec& spec, ResponseCallback on_response)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         if (!connected_) {
             return defer(std::move(on_response),
                          Error{ErrorCode::Disconnected, "smp client: link is down"});
@@ -127,6 +129,7 @@ public:
 
     void cancel(RequestHandle handle)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         Pending* entry = resolve(handle);
         if (entry == nullptr) {
             return; // stale or already completed: a no-op by design
@@ -144,6 +147,7 @@ public:
 
     void defer_work(std::function<void()> work)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         if (work) {
             deferred_.push_back(std::move(work));
         }
@@ -151,6 +155,7 @@ public:
 
     void poll(TimePoint now)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         deliver_deferred();
 
         // Snapshot first: completing a request runs a callback that may issue
@@ -193,6 +198,7 @@ public:
 
     void rebind_transport(Transport& transport)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         fail_all(Error{ErrorCode::Disconnected, "smp client: transport rebound"});
         transport_->set_listener(nullptr);
         transport_ = &transport;
@@ -219,6 +225,10 @@ public:
 
     void on_bytes(ConstBytes bytes)
     {
+        // The adapter's obligation, and the one this check exists for: a driver
+        // thread that reaches the core without marshalling first trips here
+        // rather than corrupting the assembler (ADR-0004).
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         if (auto fed = assembler_.feed(bytes, *this); !fed.has_value()) {
             ++stats_.malformed;
             // Framing is broken and SMP has no sync word, so nothing further on
@@ -231,6 +241,7 @@ public:
 
     void on_transport_error(Error error)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         // Recoverable and not tied to any particular request, so nothing is
         // completed: an outstanding request either still gets its answer or
         // times out. Recorded so a diagnostic can show it happened.
@@ -239,6 +250,7 @@ public:
 
     void on_disconnected(const Error& error)
     {
+        SMPLY_ASSERT_CLIENT_THREAD(client_thread_);
         connected_ = false;
         assembler_.reset();
         // Inline rather than deferred: this is a transport callback, not a call
@@ -494,6 +506,10 @@ private:
     bool connected_ = true;
     std::optional<Error> last_transport_error_;
     SmpClientStats stats_;
+
+    /// Captured when the client is constructed. Empty in release builds; see
+    /// src/detail/client_thread.hpp for why it lives here and nowhere else.
+    detail::ClientThreadGuard client_thread_;
 };
 
 // ---------------------------------------------------------------------------

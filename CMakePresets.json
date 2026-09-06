@@ -43,6 +43,14 @@
       }
     },
     {
+      "name": "linux-clang-tsan",
+      "inherits": "linux-clang",
+      "displayName": "Linux / Clang + ThreadSanitizer",
+      "cacheVariables": {
+        "SMPLY_SANITIZER": "thread"
+      }
+    },
+    {
       "name": "linux-clang-fuzz",
       "inherits": "linux-clang",
       "displayName": "Linux / Clang + libFuzzer + ASan + UBSan",
@@ -118,6 +126,10 @@
       "configurePreset": "linux-clang-asan-ubsan"
     },
     {
+      "name": "linux-clang-tsan",
+      "configurePreset": "linux-clang-tsan"
+    },
+    {
       "name": "linux-clang-fuzz",
       "configurePreset": "linux-clang-fuzz"
     },
@@ -164,6 +176,13 @@
     {
       "name": "linux-clang-asan-ubsan",
       "configurePreset": "linux-clang-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-clang-tsan",
+      "configurePreset": "linux-clang-tsan",
       "output": {
         "outputOnFailure": true
       }

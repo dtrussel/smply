@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P14 — `Dispatcher` and the portable example** |
-| Last completed phase | P13 — Fuzzing, hardening and coverage push |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking**. 590 tests, 12 CI jobs plus a nightly soak. **The portable product is functionally complete, and its untrusted-input surface is fuzzed and enforced.** |
+| **Next phase to work on** | **P14b — the portable example (`examples/cli_dfu/`)** |
+| Last completed phase | P14a — `Dispatcher`, the client-context check, the upload-skip fix |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job**. 604 tests, 13 CI jobs plus a nightly soak. **The portable product is functionally complete, and its untrusted-input surface is fuzzed and enforced.** |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -34,13 +34,14 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P11](#p11) | `ServerSimulator` and component test harness | Complete | P7, P8, P10 |
 | [P12](#p12) | `FirmwareUpdater` orchestration | Complete | P11 |
 | [P13](#p13) | Fuzzing, hardening and coverage push | Complete | P10 |
-| [P14](#p14) | `Dispatcher` and the portable example | Planned | P12 |
-| [P15](#p15) | WinRT BLE transport | Planned | P14 |
+| [P14a](#p14a) | `Dispatcher`, the client-context check, the upload-skip fix | Complete | P12 |
+| [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Planned | P14a |
+| [P15](#p15) | WinRT BLE transport | Planned | P14a |
 | [P16](#p16) | WinRT BLE DFU example application | Planned | P15 |
 | [P17](#p17) | Hardware interoperability suite | Planned | P16 |
 | [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17 |
 
-Phases P1–P13 are portable and can be developed and verified entirely on Linux.
+Phases P1–P14b are portable and can be developed and verified entirely on Linux.
 P15–P17 require Windows; P17 additionally requires hardware.
 
 ---
@@ -1614,43 +1615,213 @@ is corrected rather than deleted.
 
 ---
 
-<a id="p14"></a>
-## P14 — `Dispatcher` and the portable example
+<a id="p14a"></a>
+## P14a — `Dispatcher`, the client-context check and the upload-skip fix
 
-**Status: Planned** · **Depends on:** P12
+**Status: Complete** (2026-09-06) · **Depends on:** P12
 
-**Objective.** Give adapter authors the marshalling helper, and prove the pump
-model with a runnable program on Linux.
+**Objective.** Give adapter authors the marshalling helper the threading model
+has assumed since P0, and make ADR-0004's stated mitigation real.
 
-**Scope.** `include/smply/util/dispatcher.hpp`, `src/util/dispatcher.cpp`,
-`examples/cli_dfu/` (a console DFU driver over a stub/loopback transport).
+**Scope.** `include/smply/util/dispatcher.hpp` and `src/util/dispatcher.cpp`,
+built as the separate target `smply::util`; `SMPLY_ASSERT_CLIENT_THREAD()`;
+`UploadResult::already_present` so `UpdateReport::upload_skipped` stops lying
+about rule 9a.
 
-**Out of scope.** WinRT.
+**Out of scope.** The example (P14b). Anything WinRT.
 
 **Tasks.** Implement `Dispatcher` (mutex + queue + wake callback, MPSC,
-`drain()` on the client context only); write the example as the canonical pump
-loop shown in [`api.md`](api.md).
+`drain()` on the client context only); add the debug-only owning-thread check;
+carry the server's own already-present verdict out through `UploadResult`.
 
-**Files.** as above, `tests/unit/test_dispatcher.cpp`, CI job for TSan on the
-dispatcher test.
+**Files.** as above, `tests/unit/test_dispatcher.cpp`, a `linux-clang-tsan`
+preset and CI job.
 
 **Tests.** Multi-producer posting under TSan; `drain()` returns the count and
 runs each closure once; `clear()` drops without running; a closure posted from
-inside `drain()` runs on the next drain, not recursively.
+inside `drain()` runs on the next drain, not recursively; a rule-9a completion
+is reported as a skip rather than a transfer.
 
-**Docs.** [`api.md`](api.md) dispatcher section;
-[`architecture.md`](architecture.md) §5 reference to it.
+**Docs.** [`api.md`](api.md) dispatcher section and `UploadResult`;
+[`architecture.md`](architecture.md) §5; a `Dispatcher` section in
+[`design.md`](design.md); [`quality-gates.md`](quality-gates.md) §7 for the
+TSan job.
 
 **Gates.** All P13 gates + the new TSan job.
 
-**Acceptance.** The example performs a complete simulated update end to end.
+**Acceptance.** `Dispatcher` passes its suite under TSan; the wrong-thread check
+fires in a debug build and compiles out in release.
+
+### Outcome
+
+**Completed.** `include/smply/util/dispatcher.hpp` and `src/util/dispatcher.cpp`
+as the separate target **`smply::util`**; `SMPLY_ASSERT_CLIENT_THREAD()` in
+`src/detail/client_thread.hpp`, applied at eight entry points in `SmpClient`;
+`UploadResult::already_present`, plumbed through to
+`UpdateReport::upload_skipped`; a `linux-clang-tsan` preset and CI job. 14 new
+tests (**604** total), green on **all nine** presets, with `src/util/` at
+**100 % line and 100 % branch** and the whole core unchanged at 98.4 % / 87.5 %.
+
+**Three things were checked by breaking them, because a green run proves
+nothing on its own.**
+
+* Removing the lock from `Dispatcher::post()` fails the TSan job immediately —
+  so the job is really instrumenting. Worth knowing *how* it fails: the
+  concurrent `push_back` corrupts the allocator, so TSan reports
+  `allocation-size-too-big`, not `data race`. A TSan finding that does not use
+  the words "data race" is still a TSan finding.
+* Disabling the one new line in `update_state_machine.cpp` fails the new rule-9a
+  component test on exactly the assertion it is named for, with its other ten
+  assertions still passing — so the test reaches the code it claims to.
+* `check_docs.py`'s phase regex was `P\d+`, which does not merely miss `P14a`
+  and `P14b` — **it fails to match the heading at all, so R2 silently stops
+  checking those phases while still reporting a pass.** Splitting the phase
+  would have disabled the gate for both halves of it. Fixed to `P\d+[a-z]?` and
+  verified by marking P14a Complete with remaining work and watching it be
+  rejected. Same failure mode as the P1 fixture that rotted in
+  `verify_gates.sh`: a pattern that stops matching does not announce itself.
+
+**Remaining in this phase.** None.
+
+**Deviations, each recorded in the document it contradicts.**
+
+1. **`Dispatcher`'s shipped API is larger than `api.md`'s proposal**: a
+   destructor (which discards, like `clear()`), `pending()`, deleted copy and
+   move, and four documented behaviours the signatures cannot show —
+   one-drain-is-one-turn, re-entrant `drain()` refused, `on_wake` running on the
+   posting thread, and captures destroyed outside the lock. `api.md` is updated
+   and its preamble now says every proposal so far has changed on contact with
+   the code, this one included.
+2. **`SMPLY_ASSERT_CLIENT_THREAD(guard)` takes its guard**, where ADR-0004 wrote
+   it nullary. A macro that reaches for a member of a fixed name hides what it
+   is checking; the ADR's intent is unaffected.
+3. **The check is in `SmpClient` only**, not in the group clients or the
+   updater, for the ODR reason in the refinement above. It covers the same
+   misuse because everything reaches the wire through those eight entry points.
+4. **`smply::util` is defined in the top-level `CMakeLists.txt`**, not in a
+   `src/util/CMakeLists.txt`. The project has no per-directory CMake files under
+   `src/`; adding one for a single source would have been the odd one out.
+5. **P14 was split into P14a and P14b** (see below), which required the
+   `check_docs.py` fix above.
+
+### Why P14 was split
+
+P14 was one phase — the helper *and* the example — until the helper was built and
+the example was costed. The helper, its tests and the upload fix came to ~860
+lines before a word of documentation. The example needs a stub device, and a
+stub device needs a CBOR codec, because smply's own façade is internal
+(`src/cbor/`) and an example links only the public target: roughly another 700
+lines. Together, with docs, that is over twice the ~1000-line ceiling
+[`handoff.md`](handoff.md) sets, and the protocol there says to split in the
+roadmap rather than push on.
+
+The split is also the useful one. **P15 needs the `Dispatcher`, not the CLI** —
+the WinRT adapter is the first real caller — so the half that unblocks the next
+phase ships on its own.
+
+### Refinement, written before starting (handoff protocol, start-of-session step 8)
+
+1. **`SMPLY_ASSERT_CLIENT_THREAD()` gets implemented.** ADR-0004 lists it under
+   *Consequences* as an accepted mitigation; it appeared nowhere but in that ADR.
+   It goes **inside `SmpClient` only**, checked at `request()`, `defer()`,
+   `poll()`, `cancel()`, `rebind_transport()` and the three `TransportListener`
+   callbacks. `SmpClient` is pimpl'd, so nothing changes in a public class
+   layout; `OsManagement` and `ImageManagement` are *not* pimpl'd, and a
+   debug-only member in either would differ in size between Debug and Release —
+   an ODR hazard for a consumer who mixes them. Every group operation and every
+   updater effect reaches the wire through one of those eight, so the coverage is
+   the same. `<thread>` appears only in an internal header under `src/`, only
+   under `!defined(NDEBUG)`.
+
+2. **The `UploadResult` row filed against this phase is absorbed.**
+   `UpdateReport::upload_skipped` documented itself as covering the server's own
+   rule-9a check and did not; it reflected only the updater's pre-flight
+   decision.
+
+Two consequences, stated before the diff existed:
+
+* **`CLAUDE.md` rule 7 ("no threads … in `include/smply/` or `src/`") is the
+  short version of `architecture.md` §5 and contradicts this phase literally.**
+  §5 is the real rule — the *core* starts no threads and ships `Dispatcher` as a
+  separate utility target that the core does not depend on. Rule 7 gets reworded
+  to match §5, rather than quietly broken.
+* **`src/util/dispatcher.cpp` counts towards the coverage gate** (the filter is
+  `src/`), unlike `examples/`, which is excluded.
+
+---
+
+<a id="p14b"></a>
+## P14b — The portable example
+
+**Status: Planned** · **Depends on:** P14a
+
+**Objective.** Prove the pump model as a program rather than as a test harness.
+Nothing in the tree has ever run smply against a real clock, from a real
+`main()`, with inbound bytes arriving on a thread the library does not control —
+which is the arrangement every real consumer has.
+
+**Scope.** `examples/cli_dfu/`: a console DFU driver over a loopback transport
+and a stub device running on its own thread, marshalling through
+`smply::Dispatcher`. Plus the `FileImageSource` that
+[open question O4](#open-questions) says the example provides.
+
+**Out of scope.** WinRT (P16). A real serial or TCP transport.
+
+**Tasks.** The four pieces, and the four sizing facts behind them:
+
+* **`LoopbackTransport`** — `send()` hands a whole message to the device thread
+  and returns; it must **not** deliver inbound bytes before returning
+  ([`design.md`](design.md) §9). Like a real link (and like `FakeTransport`) it
+  is terminally disconnected once dropped, so the reconnect cycle needs a fresh
+  one.
+* **`StubDevice`** — its own thread. Get-state, upload with offset accounting,
+  set-state, reset, and the MCUboot slot/swap bookkeeping for a trial boot. It
+  answers **no `match`** — a device built without
+  `CONFIG_IMG_ENABLE_IMAGE_CHECK`, legitimate per
+  [protocol-notes](protocol-notes.md) A6 — which is what keeps it free of the
+  file-hash path and therefore of any private header. It parses the uploaded
+  image with the **public** `parse_mcuboot_header()` and
+  `find_image_tlv_hash()`, so it can report a slot hash without
+  `src/image/sha256.hpp`.
+* **A minimal CBOR codec.** The biggest single item, and the reason this is its
+  own phase: smply's façade is internal, and an example links only the public
+  target. Definite-length maps with text keys over uint, bstr, tstr, bool and an
+  array of maps is all the protocol needs here.
+* **`main.cpp`** — the canonical pump loop from [`api.md`](api.md):
+  `dispatcher.drain()`, `client.poll(now)`, `updater.poll(now)`, handling
+  `ReconnectRequired` and `ConfirmationRequired`.
+
+**`ServerSimulator` is deliberately not reused.**
+`tests/support/server_simulator.cpp` includes the private header
+`image/sha256.hpp`, `smply_test_support` links `smply::smply_internal`, and
+examples build when `SMPLY_BUILD_TESTS` is `OFF`. The stub is explicitly **not**
+a protocol reference; the simulator remains the thing the tests trust, and the
+example should say so where a later session would otherwise try to reconcile
+them.
+
+**Files.** `examples/CMakeLists.txt` (already present), `examples/cli_dfu/*`.
+
+**Tests.** The example runs as a `ctest` test with a bounded run, so "performs a
+complete simulated update end to end" is checked on every push rather than
+asserted in a document. It is also the tree's only multi-threaded program, so
+the TSan job from P14a gains a second target.
+
+**Docs.** [`api.md`](api.md) usage section pointing at real code rather than a
+sketch; [`architecture.md`](architecture.md) §10 layout;
+[`testing.md`](testing.md) for the example-as-a-test.
+
+**Gates.** All P14a gates, plus the example under TSan.
+
+**Acceptance.** The example performs a complete simulated update end to end,
+including the reset, the reconnect and the confirmation, with no wall-clock
+dependence beyond a bounded timeout.
 
 ---
 
 <a id="p15"></a>
 ## P15 — WinRT BLE transport
 
-**Status: Planned** · **Depends on:** P14 · **Requires Windows**
+**Status: Planned** · **Depends on:** P14a · **Requires Windows**
 
 **Objective.** A reference `Transport` over C++/WinRT GATT.
 
@@ -1798,7 +1969,7 @@ comment in code.
 | ~~O1~~ | ~~Which licence for smply itself?~~ | ~~P0~~ | **Resolved in P0: Apache-2.0.** Permissive, proprietary-linking friendly, explicit patent grant. `LICENSE` + `NOTICE` added; every source file carries an SPDX identifier. |
 | O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. **P8 adds a concrete cost to staying on v1**: a server built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates image-group codes onto `mcumgr_err_t` and drops the group, so `HASH_NOT_FOUND` is indistinguishable from a generic failure (protocol-notes §9, A16). |
 | O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
-| ~~O4~~ | ~~Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library?~~ | ~~P9~~ | **Resolved in P9: `MemoryImageSource` only.** `ImageSource` is two virtual functions, so a file-backed source is a dozen lines in the application, and adding one to the core would drag in file I/O, paths and error mapping across three platforms for no protocol benefit (architecture.md §2). The P14 example provides one. |
+| ~~O4~~ | ~~Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library?~~ | ~~P9~~ | **Resolved in P9: `MemoryImageSource` only.** `ImageSource` is two virtual functions, so a file-backed source is a dozen lines in the application, and adding one to the core would drag in file I/O, paths and error mapping across three platforms for no protocol benefit (architecture.md §2). The **P14b** example provides one. |
 | O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | P12 | Representable already; the question is test/HIL coverage. |
 | O6 | Expose a `std::error_code` interop layer? | after P12 | Only if a consumer asks. |
 
@@ -1846,6 +2017,9 @@ them.
 | P10 | A retransmission necessarily carries a new sequence number, so a device that deduplicates on `seq` would see two distinct requests at the same offset. Harmless against Zephyr, which keys on offset, but worth checking on real hardware. | P17 |
 | P1 | `to_string(const Error&)` allocates. The zero-allocation path is `to_string(ErrorCode)`, which callers must choose deliberately. If logging becomes hot, consider a caller-buffer overload. *(P13 reviewed it and left it filed: nothing has profiled it.)* | when profiled |
 | ~~P1~~ | ~~Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI.~~ **Wrong, corrected in P13**: `apt-get update && apt-get install -y libclang-rt-18-dev` installs it — the package `ci.yml` had been installing for its own sanitizers job since P0. Nobody had tried it. All seven Linux presets, libFuzzer included, build and run locally now. **The P6 half of this row still stands**: GCC's ASan does not report stack-use-after-scope for a dangling callback capture, so the two sanitizer jobs are not interchangeable. | — |
+| P14a | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics and tests. If an adapter is ever seen branching on it — "drain only if pending" — that is a bug in the adapter, but it may also be a sign the class should offer a blocking `wait_and_drain()` instead of tempting people. | when an adapter asks |
+| P14a | The client-context assertion covers `SmpClient` only. A caller that used `ImageManagement` from a second thread but never reached the client on it — constructing one, say, or reading `transferred()` — would not trip it. Closing that needs the group clients to be pimpl'd, which is a bigger change than the check is worth today. | when the groups are next reworked |
+| P14a | `smply::util` is not installed or exported, because nothing is until P18. An adapter consuming smply from an install tree cannot link `Dispatcher` yet, which P15 will notice first. | P18 |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
 | P13 | **The fuzz corpora are not pruned.** The local soak added ~1 100 inputs across the seven directories, kept because each reached new coverage, but `-merge=1` was run only once at the end of the phase. The smoke job replays every committed input on every push, so the corpus is a CI cost as well as a regression suite. Re-merge when a directory's replay time becomes noticeable. | when it costs |
 | P13 | `fuzz_smp_client_rx` drives a client with **one** pending request, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5) — that needs several requests completed and a late response for a retired one. The unit suite covers it; the fuzzer does not. | when the target is next touched |

@@ -203,6 +203,12 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
         if (event.kind == Event::Kind::UploadFinished) {
             context.upload_in_progress = false;
             context.bytes_transferred = event.transferred;
+            // The pre-flight check is not the only way a transfer gets skipped:
+            // the server runs the same check on the first packet and can answer
+            // "complete" before any image data is really sent (rule 9a). Until
+            // P14 the report claimed a transfer in that case, because
+            // UploadResult had no way to say otherwise.
+            context.upload_skipped = context.upload_skipped || event.already_present;
             if (upload_only(plan)) {
                 return Step{UpdateState::Completed, Effect::Finish};
             }

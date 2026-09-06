@@ -205,8 +205,16 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
         }
         state.confirmed_off = reported;
         state.phase = Phase::Done;
-        return Step{
-            .action = Action::Complete, .request = {}, .error = {}, .match = response.match};
+        // Completing while answering a first packet is the server's
+        // already-present check, not a transfer that finished. The two are
+        // indistinguishable from `off` alone -- both report the whole image --
+        // so the distinction has to be drawn here, where it is still known.
+        const bool on_first_packet = state.in_flight_first_packet;
+        return Step{.action = Action::Complete,
+                    .request = {},
+                    .error = {},
+                    .match = response.match,
+                    .completed_on_first_packet = on_first_packet};
     }
 
     if (reported == 0) {

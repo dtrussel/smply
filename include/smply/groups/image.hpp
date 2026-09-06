@@ -403,6 +403,17 @@ struct UploadProgress
 struct UploadResult
 {
     std::uint64_t transferred = 0;
+
+    /// The device already held this image: it answered the **first** packet
+    /// with the image complete, so nothing beyond that packet was sent
+    /// (docs/protocol-notes.md section 6, rule 9a).
+    ///
+    /// The server runs that check itself, on any request at offset zero
+    /// carrying a full `sha`, and it is the reason an upload can finish in one
+    /// round trip. Without this flag a caller cannot tell that from a transfer
+    /// that happened to be one chunk long -- `transferred` reads as the whole
+    /// image either way, because the device acknowledged the whole image.
+    bool already_present = false;
     /// The device's own verdict on the flashed bytes, when it has one.
     ///
     /// Absent on a device built without the image check, which is not a failure

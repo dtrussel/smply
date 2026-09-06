@@ -313,6 +313,30 @@ TEST_CASE("a device that already holds the image completes the first packet", "[
     REQUIRE(step.action == Action::Complete);
     REQUIRE(step.match == true);
     REQUIRE(state.confirmed_off == kImageSize);
+
+    // And it says *which kind* of completion this was. `off` alone cannot
+    // distinguish it from a transfer that finished -- both report the whole
+    // image -- so the fact is recorded here, where the answer is still known.
+    REQUIRE(step.completed_on_first_packet);
+}
+
+TEST_CASE("a transfer that finishes normally is not reported as already present",
+          "[upload][session]")
+{
+    // The other side of the flag: the last chunk of a real transfer completes
+    // with the same `off == image_size`, and must not look like the device
+    // already had the image.
+    UploadState state = mid_upload(kImageSize - 40);
+    const Step chunk = plan_next(state, config());
+    REQUIRE_FALSE(chunk.request.first_packet);
+    record_sent(state, chunk.request);
+
+    UploadResponse response = offset(kImageSize);
+    response.match = true;
+    const Step step = on_response(state, response, config());
+
+    REQUIRE(step.action == Action::Complete);
+    CHECK_FALSE(step.completed_on_first_packet);
 }
 
 TEST_CASE("an offset beyond the image is malformed", "[upload][session][hostile]")

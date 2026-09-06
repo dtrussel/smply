@@ -175,9 +175,18 @@ Decision: [ADR-0004](decisions/ADR-0004-threading-model.md).
   (WinRT's thread pool, a serial reader thread) is the *adapter's*
   responsibility, because only the adapter knows its threading environment.
 * smply ships `smply::Dispatcher` (a mutex + queue + wake callback) in a small
-  utility target so adapters do not each reinvent the marshalling. The WinRT
-  example uses it.
-* No hidden threads anywhere in the core.
+  utility target, `smply::util`, so adapters do not each reinvent the
+  marshalling. **Nothing in `libsmply` links it** — the separation is a build
+  rule, not a convention, so a change that made the core depend on it fails to
+  build. Adapters and examples opt in.
+* No hidden threads anywhere in the core. The one mention of a thread inside
+  `libsmply` is `SMPLY_ASSERT_CLIENT_THREAD()`, which captures the constructing
+  thread's id in `SmpClient` and asserts that later calls come from it. It is
+  compiled out entirely when `NDEBUG` is defined, and it lives in `SmpClient`
+  alone because that class is pimpl'd: the group clients are not, and a
+  debug-only member in one of their public definitions would change its size
+  between Debug and Release. Every group operation and every updater effect
+  reaches the wire through `SmpClient`, so one guard covers all of them.
 
 ## 6. State ownership and lifetime
 
@@ -310,7 +319,7 @@ smply/
 │   ├── mcuboot_image.hpp       McubootImageInfo, parse_mcuboot_header, sha256,
 │   │                           find_image_tlv_hash
 │   ├── dfu/firmware_updater.hpp    (planned, P12)
-│   └── util/dispatcher.hpp     (planned, P14) thread-marshalling helper for adapters
+│   └── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
 ├── src/
 │   ├── core.cpp                system_clock, group_name, to_string
 │   ├── version.cpp
@@ -324,9 +333,10 @@ smply/
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
 │   │                           sha256.{hpp,cpp}  source_reader.hpp
 │   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
-│   └── util/                   (planned, P14) dispatcher.cpp
+│   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
+│   └── detail/client_thread.hpp    debug-only client-context assertion
 ├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble
-├── examples/                   (planned, P14/P16) cli_dfu/  winrt_ble_dfu/
+├── examples/                   (cli_dfu/ planned P14b; winrt_ble_dfu/ P16)
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp

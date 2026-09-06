@@ -157,6 +157,12 @@ TEST_CASE("an image the device already holds completes on the first packet", "[c
     CHECK(outcome.value->transferred == firmware.size());
     CHECK(outcome.value->match == true);
 
+    // `transferred` reads as the whole image, because the device acknowledged
+    // the whole image -- which is why a caller needs this flag to tell "already
+    // present" from "uploaded". It is what makes UpdateReport::upload_skipped
+    // true in this case; before P14 the report claimed a transfer.
+    CHECK(outcome.value->already_present);
+
     // One request, and not one byte of image data written.
     CHECK(fixture.simulator.requests().size() == 1);
     CHECK(fixture.simulator.bytes_written() == 0);

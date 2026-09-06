@@ -113,6 +113,32 @@ if(SMPLY_FORCE_FALLBACK_EXPECTED)
     target_compile_definitions(smply PUBLIC SMPLY_FORCE_FALLBACK_EXPECTED=1)
 endif()
 
+# --- smply::util: the adapter helper, NOT part of the core ------------------
+#
+# Dispatcher is the one concurrent component in the tree, and ADR-0004 says the
+# core does not depend on it. A separate target is how that stops being a
+# convention: nothing links smply_util into smply, so a change that made the
+# core use it would fail to build rather than pass review.
+#
+# Adapters and examples opt in by linking smply::util.
+add_library(smply_util STATIC src/util/dispatcher.cpp)
+add_library(smply::util ALIAS smply_util)
+
+target_link_libraries(smply_util
+    PUBLIC
+        smply::smply
+    PRIVATE
+        # smply's own code, so the strict warning set applies -- but PRIVATE,
+        # so it does not reach whoever links smply::util.
+        smply_internal_options
+)
+
+target_compile_features(smply_util PUBLIC cxx_std_20)
+set_target_properties(smply_util PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+find_package(Threads REQUIRED)
+target_link_libraries(smply_util PUBLIC Threads::Threads)
+
 # Internal access for tests only. Not installed, not for consumers.
 add_library(smply_internal INTERFACE)
 add_library(smply::smply_internal ALIAS smply_internal)
@@ -140,6 +166,10 @@ endif()
 if(SMPLY_BUILD_FUZZERS AND NOT SMPLY_BUILD_TESTS)
     # The targets link smply::test_support for FakeTransport and ManualClock.
     message(FATAL_ERROR "SMPLY_BUILD_FUZZERS requires SMPLY_BUILD_TESTS")
+endif()
+
+if(SMPLY_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
 
 if(SMPLY_BUILD_TESTS)

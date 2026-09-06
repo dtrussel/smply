@@ -22,6 +22,7 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
+| `linux-clang-tsan` | ubuntu-latest | Clang 18 | C++20 | the suite under ThreadSanitizer; it exists for `Dispatcher` (§7) |
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
 | `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
@@ -275,10 +276,19 @@ exclusion marker and a comment instead.
 * **MSan** is *not* adopted: it requires an instrumented libc++ and the library
   has no uninitialised-read surface that ASan and the fuzzers miss. Revisit only
   if a real defect escapes.
-* **TSan** is *not* adopted: the core is single-threaded by contract
-  ([ADR-0004](decisions/ADR-0004-threading-model.md)) and has no shared state.
-  `Dispatcher` (the one concurrent component) gets a dedicated TSan job when it
-  is implemented in P14.
+* **TSan** is not part of the *reasoning* about the core: it is single-threaded
+  by contract ([ADR-0004](decisions/ADR-0004-threading-model.md)) and has no
+  shared state. It exists for `Dispatcher`, the one concurrent component smply
+  ships, and the `linux-clang-tsan` job (P14a) runs the whole suite under it
+  anyway — it costs seconds, and a future component that quietly acquires a
+  thread should fail there rather than in somebody's adapter.
+
+  TSan and ASan cannot be combined, so this is a separate preset rather than a
+  variant of `linux-clang-asan-ubsan`. It was verified to fire: removing the
+  lock from `Dispatcher::post()` fails the job immediately. Note *how* it fails
+  — the concurrent `push_back` corrupts the allocator, so the report is an
+  `allocation-size-too-big` rather than a clean `data race`. A TSan finding that
+  does not say "data race" is still a TSan finding.
 
 Note that sanitizer *link* options do propagate to consumers of an instrumented
 static library, and must — a consumer of an ASan-instrumented `libsmply.a` has

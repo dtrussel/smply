@@ -148,6 +148,24 @@ is follow-up work, recorded in the roadmap.
 
 ## 3. Required unit coverage
 
+### `Dispatcher` (`src/util/`)
+The only concurrent component in the tree, and the only place where a test can
+be wrong without being red — a race that does not happen today happens in
+somebody's adapter next year. So the properties are asserted structurally
+wherever possible rather than by hoping a schedule interleaves usefully:
+`drain()` returns the count and runs each closure exactly once, in post order;
+`clear()` and the destructor drop without running; a closure posted from inside
+`drain()` runs on the *next* drain; a closure that reposts itself takes one turn
+per drain; a re-entrant `drain()` returns 0 and loses nothing; the wake callback
+fires on `post()`, on the posting thread, and not on `drain()`; a capture may
+`post()` from its destructor, on both `drain()` and `clear()` (which is how a
+lock held across destruction would show up — as a deadlock, not a failure).
+
+The one genuinely racy case, many producers against one consumer, asserts a
+conservation law no interleaving may break: everything posted runs exactly once.
+`linux-clang-tsan` is what looks for the rest.
+
+
 ### SMP codec
 Round-trip of all `(op, version, group, seq, command, length)` combinations
 (property-style over a bounded generator); reserved `res` bits set ⇒ error;

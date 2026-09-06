@@ -362,6 +362,42 @@ TEST_CASE("an image already in the secondary slot is not uploaded again", "[dfu]
     CHECK_FALSE(outcome.reached(UpdateState::Uploading));
 }
 
+TEST_CASE("the server's own already-present check is reported as a skip too", "[dfu][update]")
+{
+    // The case P12 got wrong and P13 re-filed. With the pre-flight check turned
+    // off the updater has no idea the device already holds the image, so it
+    // starts an upload -- and the *server* ends it on the first packet with its
+    // own check (rule 9a). The device wrote nothing, so a report claiming a
+    // transfer is a lie, and it is the one a user reads.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    fixture.simulator.load_slot(1, update);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.skip_if_already_present = false;
+
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+
+    // The upload really was attempted -- that is the difference from the test
+    // above, and what makes this the server's answer rather than the client's.
+    CHECK(outcome.reached(UpdateState::Uploading));
+    CHECK(issued(fixture, kUpload));
+    CHECK(fixture.simulator.bytes_written() == 0);
+
+    CHECK(outcome.report->upload_skipped);
+}
+
 TEST_CASE("an image already running and confirmed finishes immediately", "[dfu][update]")
 {
     const std::vector<std::byte> current = make_firmware(kBodySize, 3, 0, 0, 3);

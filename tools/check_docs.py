@@ -127,7 +127,13 @@ def rule_2_roadmap_consistency() -> list[str]:
     text = roadmap.read_text(encoding="utf-8")
 
     # Phase sections start with '## P<n> — <title>' and carry a status line.
-    sections = re.split(r"^##\s+(P\d+)\s*[—-]\s*", text, flags=re.M)
+    #
+    # The trailing letter matters: P14 was split into P14a and P14b, and a
+    # pattern of P\d+ alone does not merely miss them -- it fails to match the
+    # heading at all, so both sections are silently skipped and R2 stops
+    # checking them while still reporting a pass. That is the same failure mode
+    # as the P1 fixture that rotted in verify_gates.sh.
+    sections = re.split(r"^##\s+(P\d+[a-z]?)\s*[—-]\s*", text, flags=re.M)
     # sections = [preamble, id, body, id, body, ...]
     for i in range(1, len(sections) - 1, 2):
         phase_id, body = sections[i], sections[i + 1]

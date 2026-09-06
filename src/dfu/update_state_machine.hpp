@@ -98,6 +98,9 @@ struct Event
     const ImageState* state = nullptr;
     /// `UploadFinished`.
     std::uint64_t transferred = 0;
+    /// `UploadFinished`: the server's own already-present check completed the
+    /// upload on the first packet (rule 9a), so nothing was really transferred.
+    bool already_present = false;
     /// `Failed` and `ReconnectFailed`.
     Error error;
 };

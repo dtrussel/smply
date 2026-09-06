@@ -3,14 +3,17 @@
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
 
-**Most of this file is shipped API; two headers are still a proposal — check
-the table before you rely on a signature.** A *shipped* section must match the
-header exactly; if you change the header, change it here in the same commit
-([ADR-0013](decisions/ADR-0013-living-documentation.md)). A *proposed* section
-is a sketch to be validated by the phase that implements it, and is expected to
-change — record the deviations in the roadmap when it does. Every proposal so
-far has changed on contact with the code, so read a proposed signature as an
-intent, not a contract.
+**Everything in this file is now shipped API** — `util/dispatcher.hpp` was the
+last proposal, and P14a shipped it. A shipped section must match its header
+exactly; if you change the header, change it here in the same commit
+([ADR-0013](decisions/ADR-0013-living-documentation.md)).
+
+Worth remembering when the next proposal is written: **every one of them changed
+on contact with the code.** `util/dispatcher.hpp` was no exception — the sketch
+was three methods and a constructor, and what shipped needed a destructor, a
+`pending()`, deleted copies, and four paragraphs of behaviour the signatures
+could not show. Read a proposed signature as an intent, not a contract, and
+record the deviations in the roadmap.
 
 | Header | Status |
 | ------ | ------ |
@@ -22,7 +25,7 @@ intent, not a contract.
 | `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
 | `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
 | `dfu/firmware_updater.hpp` | Shipped — P12 |
-| `util/dispatcher.hpp` | Proposed — P14 |
+| `util/dispatcher.hpp` | **Shipped** (P14a) — separate target `smply::util` |
 
 ---
 
@@ -602,8 +605,11 @@ struct UploadProgress { std::uint64_t transferred = 0, total = 0; };
 
 struct UploadResult {
     std::uint64_t transferred = 0;
-    std::optional<bool> match;   // absent on a device without the image check
-                                 // (A6); a false fails with ImageMismatch
+    bool already_present = false;  // the server completed the first packet with
+                                   // its own already-present check (rule 9a),
+                                   // so nothing beyond it was sent
+    std::optional<bool> match;     // absent on a device without the image check
+                                   // (A6); a false fails with ImageMismatch
 };
 
 // Generation-tagged, like RequestHandle: once an upload ends the handle is
@@ -822,6 +828,11 @@ public:
 
 ## `smply/util/dispatcher.hpp` — adapter helper (not used by the core)
 
+**Shipped in a separate target.** `libsmply` does not link it; adapters and
+examples opt in with `target_link_libraries(... smply::util)`. That is what
+ADR-0004's "the core does not depend on it" means in practice, and making it a
+build rule rather than a convention is deliberate.
+
 ```cpp
 namespace smply {
 
@@ -830,13 +841,35 @@ namespace smply {
 class Dispatcher {
 public:
     explicit Dispatcher(std::function<void()> on_wake = {});
-    void post(std::function<void()>);   // any thread
+
+    Dispatcher(const Dispatcher&) = delete;
+    Dispatcher(Dispatcher&&) = delete;
+    Dispatcher& operator=(const Dispatcher&) = delete;
+    Dispatcher& operator=(Dispatcher&&) = delete;
+    ~Dispatcher();                      // discards what is queued, like clear()
+
+    void        post(std::function<void()> work);  // any thread
     std::size_t drain();                // client context only; returns count run
     void        clear() noexcept;
+    std::size_t pending() const;        // diagnostics; racy by nature
 };
 
 } // namespace smply
 ```
+
+Four behaviours a caller has to know, none of which the signatures show:
+
+* **`drain()` takes the queue and runs it unlocked.** A closure may `post()`
+  freely; what it posts runs on the **next** drain. So one `drain()` is one turn
+  of the pump — a closure that reposts itself cannot starve `client.poll()`.
+* **A re-entrant `drain()` returns 0 and runs nothing**, leaving the work for the
+  outer call. Same answer `MessageAssembler` gives a re-entrant `feed()`
+  (`design.md` §2).
+* **`on_wake` runs inside `post()`, on the posting thread**, without the
+  dispatcher's lock. Set an event or signal a condition variable; do not do work
+  there, and do not block on the client context.
+* **`clear()` and `~Dispatcher()` discard without running.** For teardown: the
+  closures name a link that is going away.
 
 ---
 

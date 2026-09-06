@@ -430,6 +430,7 @@ private:
             Event event;
             event.kind = Event::Kind::UploadFinished;
             event.transferred = result->transferred;
+            event.already_present = result->already_present;
             self.dispatch(event);
         });
     }

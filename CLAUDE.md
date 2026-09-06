@@ -26,8 +26,16 @@ short version.
    in [`docs/protocol-notes.md`](docs/protocol-notes.md).
 6. **Treat everything from the device as untrusted.** Bound every length before
    using it; never allocate on a device-supplied size.
-7. **Keep the core platform-independent.** No WinRT, no Windows, no BLE, no
-   threads and no clock in `include/smply/` or `src/`.
+7. **Keep the core platform-independent.** No WinRT, no Windows, no BLE and no
+   clock in `include/smply/` or `src/`. The core also **starts no threads and
+   contains no mutex, atomic or condition variable** — but that is a rule about
+   the *core*, not about the directories: `smply::Dispatcher`
+   (`include/smply/util/`, `src/util/`) is a mutex and a queue, shipped as a
+   separate target that adapters opt into and `libsmply` never links
+   ([ADR-0004](docs/decisions/ADR-0004-threading-model.md),
+   [`architecture.md`](docs/architecture.md) §5). The only other mention of a
+   thread under `src/` is the debug-only client-context assertion, compiled out
+   in release.
 8. **Finish with the end-of-session checklist** in
    [`docs/handoff.md`](docs/handoff.md), including a session-log entry.
 

@@ -1633,3 +1633,84 @@ whole-core thresholds), so a directory can fall below 90 % branch with CI green
 component with threads, so it is also the first place the "no threads in the
 core" rule in `CLAUDE.md` has to be read carefully: it lives under
 `include/smply/util/`, and P14's own scope says the TSan job comes with it.
+
+### 2026-09-06 — P14a: `Dispatcher`, the client-context check and the upload-skip fix
+
+**Status after this session:** P14a = `Complete`. **P14 was split**; next phase:
+**P14b — the portable example**.
+
+**Completed.** `include/smply/util/dispatcher.hpp` and `src/util/dispatcher.cpp`
+as the separate target `smply::util`; `SMPLY_ASSERT_CLIENT_THREAD()` in
+`src/detail/client_thread.hpp`, applied at eight entry points in `SmpClient`;
+`UploadResult::already_present` plumbed through to
+`UpdateReport::upload_skipped`; a `linux-clang-tsan` preset and CI job. 14 new
+tests (**604** total), green on all nine presets. `src/util/` measures 100 %
+line and 100 % branch; the whole core is unchanged at 98.4 % / 87.5 %.
+
+**The phase was split, and that is the main thing to know.** P14 was the helper
+*and* the example. The helper, its tests and the upload fix came to ~860 lines
+before any documentation; the example needs a stub device, and a stub device
+needs a **CBOR codec**, because smply's façade is internal (`src/cbor/`) and an
+example links only the public target — roughly another 700 lines. Together that
+is over twice the ~1000-line ceiling this file sets. The split is also the
+useful one: **P15 needs the `Dispatcher`, not the CLI.**
+
+**Changed.** `UploadResult` gains a public field. `CLAUDE.md` rule 7 reworded:
+it said "no threads in `include/smply/` or `src/`", which this phase contradicts
+literally — the real rule, in `architecture.md` §5, is that the *core* starts no
+threads and ships `Dispatcher` as a separate target `libsmply` never links.
+`check_docs.py`'s phase regex extended to `P\d+[a-z]?`.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P14b.**
+
+* **A pattern that stops matching does not announce itself.**
+  `check_docs.py` split phases on `^##\s+(P\d+)\s*[—-]`, which does not merely
+  miss `P14a` — it fails to match the heading, so R2 skips the section entirely
+  and still reports a pass. Splitting the phase would have quietly disabled the
+  gate for both halves. This is the third time this shape of bug has appeared
+  (the P1 `verify_gates.sh` fixture, the P9 fixture builder): **when you change
+  what something is named, check what was matching the old name.**
+* **TSan does not always say "data race".** Removing the lock from
+  `Dispatcher::post()` corrupts the allocator before the race is reported, so
+  TSan says `allocation-size-too-big`. Do not read the absence of the words
+  "data race" as the absence of a finding.
+* **`LCOV`-style negative controls are cheap and worth it.** Both new behaviours
+  were verified by breaking them and watching exactly the named assertion fail.
+  The rule-9a component test failed on its own assertion with its other ten
+  still passing, which is what says the test reaches the code rather than the
+  setup.
+* **Never run `tools/lint.sh` and `tools/verify_gates.sh` at the same time.**
+  Already in the caveats from P13; it cost time again this session to remember
+  why. `verify_gates.sh` points its scratch build at the real tree's
+  `build/linux-clang/_deps`, and rewriting a header clang-tidy has mmapped kills
+  it with a bus error that looks like a compiler crash.
+* **`OsManagement` and `ImageManagement` are not pimpl'd.** That is why the
+  client-context guard lives in `SmpClient` alone: a debug-only member in a
+  public class definition changes its size between Debug and Release, and a
+  consumer who mixes them gets an ODR violation rather than a diagnostic. Worth
+  remembering for any future debug-only state.
+* **The example is going to need a CBOR codec of its own.** `tests/support/`
+  cannot be reused: `server_simulator.cpp` includes the private
+  `image/sha256.hpp`, `smply_test_support` links `smply::smply_internal`, and
+  examples build when `SMPLY_BUILD_TESTS` is `OFF`. P14b's roadmap entry
+  records the way round it — answer no `match` (A6), and parse the uploaded
+  image with the *public* `parse_mcuboot_header()` and `find_image_tlv_hash()`.
+
+**Docs updated.** `api.md` (dispatcher Shipped and matching the header,
+`UploadResult`, and a preamble that no longer claims any proposals remain),
+`architecture.md` (§5 and the §10 layout), `design.md` (§6 rule-9a row, §8
+`upload_skipped`, and a new marshalling subsection under §9),
+`quality-gates.md` (§1 the TSan row, §7 TSan is real now and how it was verified
+to fire), `testing.md` (§3 `Dispatcher`'s required coverage),
+`dependencies.md` (`Threads::Threads`, and why `check_deps.py` does not see it),
+`CLAUDE.md` (rule 7), `roadmap.md` (the split, P14a Complete with outcome and
+five deviations, P14b planned, three new follow-ups), `README.md`, this log.
+
+**Recommended next.** **P14b — the portable example.** Its roadmap entry carries
+the four pieces and the sizing facts behind them. Two things worth deciding
+early: the example generates a throwaway MCUboot image so it can run with no
+arguments in CI (nothing in `examples/` may depend on `tests/`), and the
+device's own thread is what makes `Dispatcher` and the TSan job earn their
+keep — a single-threaded example would demonstrate neither.

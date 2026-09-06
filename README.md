@@ -15,18 +15,21 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P13 complete — the portable library does what it exists to do, and
-its untrusted-input surface is fuzzed.**
+**Phases P0–P14a complete — the portable library does what it exists to do, its
+untrusted-input surface is fuzzed, and adapter authors have the marshalling
+helper the threading model assumes.**
 SMP framing and streaming reassembly, a bounded CBOR façade, request
 correlation with timeouts and cancellation, the OS and image management groups,
 MCUboot image parsing with SHA-256, the image upload state machine, and
 `FirmwareUpdater`: the whole update, including the reset and the reconnect.
 Seven libFuzzer targets over every decoder that reads bytes it did not write,
-with the coverage thresholds and a fuzz smoke run now blocking.
-590 tests, 12 CI jobs green plus a nightly soak.
+with the coverage thresholds and a fuzz smoke run now blocking. And
+`smply::Dispatcher`: the thread-marshalling helper every transport adapter
+needs, shipped as a separate target the core does not link.
+604 tests, 13 CI jobs green plus a nightly soak.
 
-What is not built yet: the `Dispatcher` helper, the WinRT BLE transport and the
-example applications. See
+What is not built yet: the example applications, and the WinRT BLE transport.
+See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 

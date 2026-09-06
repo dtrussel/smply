@@ -86,6 +86,29 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --preset ${{ matrix.preset }}
 
+  tsan:
+    name: linux-clang-tsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          # The TSan runtime ships in the same compiler-rt package as ASan's.
+          sudo apt-get install -y ninja-build clang libclang-rt-18-dev
+      - run: cmake --preset linux-clang-tsan
+      - run: cmake --build --preset linux-clang-tsan
+      # The core is single-threaded by contract (ADR-0004), so TSan is not part
+      # of the standard gate -- it exists for Dispatcher, which is the one
+      # concurrent component smply ships (docs/quality-gates.md section 7).
+      # The whole suite runs under it anyway: it costs seconds, and a future
+      # component that quietly acquires a thread should fail here rather than in
+      # an adapter.
+      - name: Test under ThreadSanitizer
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: ctest --preset linux-clang-tsan
+
   fuzz-smoke:
     name: linux-clang-fuzz-smoke
     runs-on: ubuntu-latest

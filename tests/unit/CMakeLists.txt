@@ -4,6 +4,7 @@ add_executable(smply_unit_tests
     test_assembler.cpp
     test_cbor.cpp
     test_clock.cpp
+    test_dispatcher.cpp
     test_error.cpp
     test_fake_transport.cpp
     test_image_group.cpp
@@ -26,6 +27,9 @@ add_executable(smply_unit_tests
 target_link_libraries(smply_unit_tests
     PRIVATE
         smply::smply_internal
+        # Dispatcher is not part of the core, so testing it means linking the
+        # separate target a real adapter would link.
+        smply::util
         smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain

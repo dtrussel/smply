@@ -538,7 +538,7 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 | protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
-| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. |
+| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present`. |
 | `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if over `max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. Also what a device that forgot the session answers, and what a **retransmitted final chunk** gets once the server has reset — where the first packet then completes the upload immediately via the already-present check (PN §6 rule 9a). |
 | the request was a first packet | adopt `rsp_off` whatever it is, and do **not** charge the no-progress budget: adopting the device's answer is the entire point of sending a first packet. |
 | `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
@@ -781,8 +781,18 @@ single event stream:
 | `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
 
 Every terminal outcome yields an `UpdateReport` recording the final device
-image state, the number of bytes transferred, restart/retry counts, and, on
-failure, the state it failed in plus the underlying `Error`.
+image state, the number of bytes transferred, and, on failure, the state it
+failed in plus the underlying `Error`. (The restart and retry counts live inside
+the upload and were never plumbed out — a P12 deviation, still filed.)
+
+**`upload_skipped` has two sources, and both matter.** The updater's own
+pre-flight check skips a transfer when the slot table it just read already shows
+the target hash. The *server* runs the same check independently, on any first
+packet carrying a full `sha`, and can answer "complete" before any image data is
+written (§6, rule 9a) — which happens whenever `skip_if_already_present` is off,
+or when a reconnect makes the client resend a first packet. Until P14a the
+report only knew about the first, so the second was reported as a transfer of
+the whole image. It now takes `UploadResult::already_present` into account.
 
 ## 9. Transport contract
 
@@ -801,6 +811,52 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
 | Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
 | Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "unknown"; the core then uses its configured default. |
+
+### The adapter's marshalling obligation, and `smply::Dispatcher`
+
+The last row of that table is the one that costs adapter authors time. The core
+has exactly one client context and no lock (ADR-0004), so a driver that raises
+its callbacks on its own thread — WinRT's thread pool, a serial reader thread —
+must hand the bytes across before touching `TransportListener`. smply ships the
+helper rather than leaving each adapter to invent it.
+
+```cpp
+smply::Dispatcher inbound{[&] { wake_the_pump(); }};
+
+// driver thread
+inbound.post([this, bytes = std::vector<std::byte>{data, data + size}] {
+    listener_->on_bytes(smply::ConstBytes{bytes});   // now on the client context
+});
+
+// pump thread
+inbound.drain();
+client.poll(now);
+```
+
+Note the copy. Inbound buffers are borrowed for the duration of the transport
+callback (the table above), so anything crossing a thread boundary has to own
+its bytes.
+
+`Dispatcher` lives in its own target, `smply::util`; `libsmply` does not link
+it. Its contract is in [`api.md`](api.md), and three parts of it are load-bearing
+for an adapter:
+
+* **one `drain()` is one turn.** The queue is taken before anything runs, so
+  what a closure posts waits for the next drain and cannot starve
+  `SmpClient::poll()` — which is where every deadline lives.
+* **`on_wake` runs on the posting thread**, inside `post()`, without the
+  dispatcher's lock. Signal something; do not do work, and do not block on the
+  client context. An adapter that took the client's lock there would have built
+  a lock-order inversion.
+* **`clear()` discards.** On teardown the queued closures name a link that is
+  going away, and running them is worse than dropping them.
+
+**Misuse is caught in debug builds.** `SMPLY_ASSERT_CLIENT_THREAD()` fires if a
+`TransportListener` callback, or any `SmpClient` entry point, is reached from a
+thread other than the one that constructed the client — which is exactly the
+mistake an adapter makes when it forgets to marshal. It compiles out under
+`NDEBUG`; see `src/detail/client_thread.hpp` for why it lives in `SmpClient`
+alone.
 
 ## 10. WinRT BLE adapter design (`transports/winrt_ble/`)
 

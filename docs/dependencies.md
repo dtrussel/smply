@@ -49,8 +49,16 @@ for behavioural comparison only ([`protocol-notes.md`](protocol-notes.md) §1).
 | Name | Purpose | Licence | Target |
 | ---- | ------- | ------- | ------ |
 | **C++/WinRT** (Windows SDK) | BLE GATT | Microsoft Windows SDK licence | `smply::winrt_ble`, `examples/winrt_ble_dfu` only |
+| **Threads** (`Threads::Threads`, i.e. pthreads on Linux) | `std::mutex` in `Dispatcher` | part of the platform's C library | `smply::util` only |
 
-Never linked by `smply::smply`; enforced by the `core-without-winrt` CI job.
+Never linked by `smply::smply`; enforced for WinRT by the `core-without-winrt`
+CI job, and for Threads by the fact that `smply::util` is a separate target the
+core does not link (`architecture.md` §5).
+
+Neither is a `FetchContent` dependency, so neither is covered by
+`tools/check_deps.py` — that gate reads `FetchContent_Declare` names. They are
+listed here because this file is the inventory of *everything smply links*, not
+only of what it downloads.
 
 ## Acquisition and pinning
 

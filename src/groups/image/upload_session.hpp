@@ -129,6 +129,10 @@ struct Step
     UploadRequest request;
     Error error;
     std::optional<bool> match;
+    /// `Complete` only: the device reported the image complete while answering
+    /// a first packet, which is the server's own already-present check firing
+    /// (rule 9a). Surfaced as `UploadResult::already_present`.
+    bool completed_on_first_packet = false;
 };
 
 /// Inputs to the exact first-packet CBOR overhead.

@@ -220,7 +220,9 @@ void UploadDriver::advance(const Step& step)
             on_progress_(
                 UploadProgress{.transferred = state_.confirmed_off, .total = config_.image_size});
         }
-        finish(UploadResult{.transferred = state_.confirmed_off, .match = step.match});
+        finish(UploadResult{.transferred = state_.confirmed_off,
+                            .already_present = step.completed_on_first_packet,
+                            .match = step.match});
         return;
     case Action::Fail:
         finish(fail(step.error));
