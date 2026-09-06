@@ -15,10 +15,30 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Scaffolding complete (roadmap phase P0). Protocol implementation starts at P1.**
+**Phases P0–P10 complete.** The protocol core is done: SMP framing and streaming
+reassembly, a bounded CBOR façade, request correlation with timeouts and
+cancellation, the OS and image management groups, MCUboot image parsing with
+SHA-256, and the image upload state machine. 439 tests, 11 CI jobs green.
 
-The build system, quality gates and CI are in place and enforced; the library
-itself is still a placeholder. See [`docs/roadmap.md`](docs/roadmap.md).
+What is not built yet: the DFU orchestration that ties it together
+(`FirmwareUpdater`), the component-test simulator, fuzzing, the WinRT BLE
+transport and the example applications. See
+[`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
+next.
+
+An upload works today without any of that:
+
+```cpp
+MyTransport      transport{/* ... */};
+smply::SmpClient client{transport};
+smply::ImageManagement image{client};
+smply::MemoryImageSource source{firmware_bytes};
+
+const auto handle = image.upload(source, {}, on_progress, on_done);
+while (busy) {                       // the application owns the pump
+    client.poll(std::chrono::steady_clock::now());
+}
+```
 
 ## Building
 
@@ -71,7 +91,8 @@ modifies the working tree.
   request tracking, upload state machine, DFU state machine.
 * [`docs/protocol-notes.md`](docs/protocol-notes.md) — authoritative spec
   inventory, verified wire details, ambiguities and version dependencies.
-* [`docs/api.md`](docs/api.md) — proposed public C++ headers.
+* [`docs/api.md`](docs/api.md) — the public C++ headers, each marked
+  shipped or proposed.
 * [`docs/testing.md`](docs/testing.md) — unit, component, fuzz and HIL strategy.
 * [`docs/quality-gates.md`](docs/quality-gates.md) — CI matrix, warnings,
   static analysis, coverage, sanitizers, Definition of Done.

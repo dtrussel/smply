@@ -75,6 +75,17 @@ driven; and **"delayed response"** is calling it later. **Malformed headers and
 malformed CBOR** are ordinary byte buffers — the transport has no opinion about
 content.
 
+### Image doubles (`tests/support/image_builder.hpp`, `fake_image_source.hpp`)
+
+`ImageBuilder` assembles an MCUboot image byte by byte — header fields, a body,
+and the two TLV areas — independently of the parser, so a decoder bug cannot be
+cancelled out by a matching builder bug. Every malformation knob overrides
+**exactly one** field; see §3 "Image file handling" for why that matters.
+
+`FailingImageSource` and `ShortReadingImageSource` break the `ImageSource`
+contract in the two ways it forbids, because `MemoryImageSource` cannot: an
+error path no test can reach is indistinguishable from one that does not work.
+
 ### `ServerSimulator`
 A deterministic in-memory MCUmgr server built on `FakeTransport`. It implements
 groups 0 and 1 per [`protocol-notes.md`](protocol-notes.md), including the

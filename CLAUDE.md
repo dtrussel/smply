@@ -53,10 +53,15 @@ See [`docs/design.md`](docs/design.md) §11.
 and `ctest` must all pass. `tools/verify_gates.sh` proves the gates themselves
 still work — run it if you touch anything under `tools/` or `cmake/`.
 
-Two ways this has gone wrong before, both cheap to avoid:
+Three ways this has gone wrong before, all cheap to avoid:
 
-* **`tools/lint.sh` skips cppcheck silently when it is not installed**, so a
-  clean local run can still fail CI. `apt-get install -y cppcheck` first.
+* **Neither `cppcheck` nor `gcovr` is installed here, and both fail soft** —
+  `lint.sh` skips cppcheck silently, `coverage.sh` falls back to plain `gcov`
+  and reports a number that is not comparable. So a clean local run can still
+  fail CI. `apt-get install -y cppcheck && pip install gcovr` first.
 * **A failed build leaves the old test binary in place**, so `ctest` then
   reports the *previous* suite passing. Check the build's exit status
   separately — never read "N tests passed" as proof anything was rebuilt.
+* **Build every preset, not just one.** GCC and Clang reject different things,
+  in both directions, and Clang's ASan finds dangling callback captures that
+  GCC's does not report at all.

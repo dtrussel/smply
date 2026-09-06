@@ -255,21 +255,34 @@ Detail: [`security.md`](security.md).
 
 ## 9. Configuration limits (defensive bounds)
 
-Compile-time defaults in `include/smply/limits.hpp`, overridable per
-`SmpClient` via `SmpClientConfig`:
+Compile-time defaults in `include/smply/limits.hpp`. Some are overridable per
+instance — the "Override" column says where; the rest are hard bounds on what
+smply will accept from a device or a file.
 
-| Limit | Default | Purpose |
-| ----- | ------- | ------- |
-| `max_smp_payload` | 8192 B | reject oversized `length` before buffering |
-| `max_assembly_buffer` | 16 KiB | cap partial-message buffering |
-| `max_cbor_nesting` | 16 | bound decoder recursion |
-| `max_in_flight` | 1 | bound pending-request table |
-| `max_retired_seqs` | 64 | bound late-response suppression |
-| `default_timeout` | 5 s | per request |
-| `first_chunk_timeout` | 30 s | implicit slot erase (protocol-notes §9 A7) |
-| `erase_timeout` | 60 s | synchronous erase command |
-| `upload_chunk_max` | 512 B | upper bound before `buf_size` negotiation |
-| `max_image_size` | 16 MiB | sanity bound on a supplied firmware file |
+| Constant | Default | Purpose | Override |
+| -------- | ------- | ------- | -------- |
+| `kMaxSmpPayload` | 8192 B | reject an oversized `length` before buffering | `SmpClientConfig` |
+| `kMaxAssemblyBuffer` | 16 KiB | cap partial-message buffering | `SmpClientConfig` |
+| `kMaxCborNesting` | 16 | bound decoder recursion | — |
+| `kMaxInFlight` | 1 | bound the pending-request table | `SmpClientConfig` |
+| `kMaxRetiredSeqs` | 64 | bound late-response suppression | `SmpClientConfig` |
+| `kDefaultTimeout` | 5 s | per request | `SmpClientConfig`, `UploadOptions` |
+| `kMaxImages` | 16 | entries in an image-state or slot-info response | — |
+| `kMaxSlotsPerImage` | 8 | slots per image in slot info | — |
+| `kMaxVersionStringLength` | 32 B | a device-reported version string | — |
+| `kMaxImageHashLength` | 64 B | a device-reported image hash (SHA-512 case) | — |
+| `kMaxReasonLength` | 128 B | a device-supplied `rsn` string | — |
+| `kMaxEchoLength` | 128 B | echo, in both directions | — |
+| `kMaxImageSize` | 16 MiB | sanity bound on a firmware file | — |
+| `kMaxImageTlvs` | 256 | TLV entries scanned in an image trailer | — |
+| `kUploadChunkMin` | 32 B | the MCUboot header must fit the first chunk (A7) | — |
+| `kUploadChunkMax` | 512 B | upper bound before `buf_size` negotiation | — |
+| `kDefaultSmpMessageBudget` | 256 B | assumed when the device does not report `buf_size` (A8) | `UploadOptions` |
+| `kFirstChunkTimeout` | 30 s | implicit slot erase (A7) | `UploadOptions` |
+| `kEraseTimeout` | 60 s | the synchronous erase command (A12) | `EraseOptions` |
+| `kMaxChunkRetries` | 3 | retransmissions of one chunk | `UploadOptions` |
+| `kMaxUploadRestarts` | 2 | server-requested restarts from zero | `UploadOptions` |
+| `kMaxNoProgress` | 3 | consecutive responses that do not advance | `UploadOptions` |
 
 ## 10. Repository layout
 
@@ -339,10 +352,14 @@ targets, so consumers never inherit them. Install/export produces
 * SMP v1 by default; v2 opt-in (protocol-notes §9 A1).
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
-* Multi-image (image ≥ 1) upload is representable but only image 0 is exercised
-  by the default `UpdatePlan` and by the HIL suite.
+* Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
+  but nothing yet exercises it; O5 tracks whether P12 tests it or documents it
+  as untested.
 * No serial/UART transport in the initial scope.
 * The core does not manage connections; reconnection is the application's job.
+  A dropped link completes the upload with `Disconnected` and keeps the session,
+  so `ImageManagement::resume()` can continue it once the application has
+  rebound the transport.
 
 ## 12. Planned future extensions
 

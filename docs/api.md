@@ -3,19 +3,21 @@
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
 
-**Half of this file is shipped API and half is still a proposal — check which
-before you rely on a signature.** A *shipped* section must match the header
-exactly; if you change the header, change it here in the same commit
+**Most of this file is shipped API; two headers are still a proposal — check
+the table before you rely on a signature.** A *shipped* section must match the
+header exactly; if you change the header, change it here in the same commit
 ([ADR-0013](decisions/ADR-0013-living-documentation.md)). A *proposed* section
 is a sketch to be validated by the phase that implements it, and is expected to
-change — record the deviations in the roadmap when it does.
+change — record the deviations in the roadmap when it does. Every proposal so
+far has changed on contact with the code, so read a proposed signature as an
+intent, not a contract.
 
 | Header | Status |
 | ------ | ------ |
-| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1, extended P7) |
+| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1; `limits.hpp` extended by every group phase since) |
 | `smp/header.hpp` | **Shipped** (P2, extended P6) |
 | `transport.hpp` | **Shipped** (P4) |
-| `smp_client.hpp` | **Shipped** (P6, extended P7) |
+| `smp_client.hpp` | **Shipped** (P6; `defer()` P7, `transport_max_message_size()` P10) |
 | `groups/os.hpp` | **Shipped** (P7) |
 | `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
 | `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
@@ -183,12 +185,19 @@ using Hash       = std::array<std::byte, 32>;
 ## `smply/limits.hpp`
 
 The defensive bounds from [`architecture.md`](architecture.md) §9, as named
-constants in `namespace smply::limits`: `kMaxSmpPayload`, `kMaxAssemblyBuffer`,
-`kMaxCborNesting`, `kMaxInFlight`, `kMaxRetiredSeqs`, `kMaxImages`,
-`kMaxSlotsPerImage`, `kMaxVersionStringLength`, `kMaxReasonLength`,
-`kDefaultTimeout`, `kFirstChunkTimeout`, `kEraseTimeout`, `kUploadChunkMax`,
-`kUploadChunkMin`, `kDefaultSmpMessageBudget`, `kMaxImageSize`. These are the
-defaults; `SmpClientConfig` and `UploadOptions` override them per instance.
+constants in `namespace smply::limits`. **The header carries the values**; they
+are grouped here so the whole defensive surface can be reviewed at once.
+
+| Bounds | Constants |
+| ------ | --------- |
+| Framing and buffering | `kMaxSmpPayload` · `kMaxAssemblyBuffer` · `kMaxCborNesting` |
+| Request lifecycle | `kMaxInFlight` · `kMaxRetiredSeqs` · `kDefaultTimeout` |
+| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` |
+| Image files | `kMaxImageSize` · `kMaxImageTlvs` |
+| Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kEraseTimeout` |
+
+These are defaults: `SmpClientConfig` and `UploadOptions` override the ones that
+belong to an instance. The rest are hard bounds on what smply will accept.
 
 ## `smply/smp/header.hpp`
 
@@ -880,10 +889,14 @@ img.get_state([](smply::Result<smply::ImageState> r) {
 });
 ```
 
-### Cancellation
+### Cancelling an upload
 
 ```cpp
-auto handle = img.upload(source, {}, on_progress, on_done);
+const auto handle = img.upload(source, {}, on_progress, on_done);
 // later, from the same thread:
-handle.cancel();          // on_done fires once with ErrorCode::Cancelled
+img.cancel(handle);       // on_done fires once with ErrorCode::Cancelled
 ```
+
+`UploadHandle` carries only a generation, so the operations live on
+`ImageManagement` — a handle holding a pointer to its group would dangle once
+the group went away, instead of going quietly inert (ADR-0008).

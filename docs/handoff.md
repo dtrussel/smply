@@ -84,10 +84,10 @@ cheaper than silent divergence.
 
 ## Standing caveats
 
-Everything below is true of the code as it stands and has already cost a
-session once. The log records *how* each was found; this list is what you need
-before writing anything. Add to it when a discovery outlives its phase — and
-delete an entry when it stops being true.
+Everything below is true of the code as it stands and has already cost a session
+once. The log records *how* each was found; this list is what you need before
+writing anything. Add to it when a discovery outlives its phase — and delete an
+entry when it stops being true.
 
 **Trusting device data**
 
@@ -106,9 +106,9 @@ delete an entry when it stops being true.
 * Groups are thin. They allocate no sequence numbers, set no deadlines and
   interpret no `rc` — `SmpClient` has done all three before a response arrives.
   `src/groups/os/os_management.cpp` is the shape to copy.
-* A callback never runs inside the call that started the operation. When a group
-  must reject an argument, queue the failure with `SmpClient::defer()` rather
-  than invoking the callback inline.
+* A callback never runs inside the call that started the operation — argument
+  rejections and first-chunk failures included. `SmpClient::defer()` exists for
+  exactly that.
 * `SmpClientConfig::max_in_flight` is **1** by default; a second concurrent
   request fails with `InvalidState` rather than queueing.
 * A response whose `seq` matches but whose group, command or op does not is
@@ -117,13 +117,17 @@ delete an entry when it stops being true.
 
 **Lifetime**
 
-* A transport, and anything a callback captures, must **outlive** the
-  `SmpClient`. Its destructor detaches from the transport *and* completes
-  outstanding requests, so both are touched during destruction. Declare them
-  before the client. Two separate bugs came from this, each caught by only one
-  compiler.
+* **A transport, and anything a callback captures, must outlive the
+  `SmpClient`** — and, since P10, the `ImageManagement` too, because an upload
+  session lives there and its destructor completes the callback. Declare them
+  *before* both. Includes a transport a rebind test introduces halfway through:
+  `~SmpClient` detaches from whichever one it currently holds.
 
-**Protocol sources**
+  Three separate bugs have come from this, each caught by only one compiler:
+  getting it wrong shows up as "pure virtual method called" under GCC, or as a
+  stack-use-after-scope under Clang's ASan, or as nothing at all.
+
+**Protocol facts that bite**
 
 * Where Zephyr's documentation and Zephyr's source disagree, **the source wins,
   and you must read both.** Reset's `force` is the case in point (PN §9, A15):
@@ -131,18 +135,19 @@ delete an entry when it stops being true.
   anything else. Reading only the `.rst` yields a flag that never works.
 * MCUmgr uses **two different hashes** — the upload `sha`, SHA-256 over the whole
   file, and image-state `hash`, MCUboot's `IMAGE_TLV_SHA` over header and body.
-  Conflating them is the classic client bug. Since P8 they are different types:
+  Conflating them is the classic client bug, so they are different types:
   `Hash` (fixed 32 bytes) and `ImageHash` (32 **or 64**, because
-  `IMAGE_SHA_LEN` is 64 for a SHA-512 bootloader). Do not merge them. P9 makes
-  both available: `sha256(ImageSource&)` gives the first,
-  `find_image_tlv_hash()` the second.
-* **The MCUboot TLV trailer is not what the design document implies** (PN §7,
-  now written from `bootutil_tlv_iter_begin()`): `it_tlv_tot` includes its own
-  four-byte area header, `ih_protect_tlv_size` must equal the protected area's
-  `it_tlv_tot` exactly, and the protected and unprotected areas are walked as
-  one contiguous run. A scan also cannot spin — every advance is at least the
-  four-byte entry header — so `limits::kMaxImageTlvs` bounds work, not
-  termination.
+  `IMAGE_SHA_LEN` is 64 for a SHA-512 bootloader). Do not merge them.
+  `sha256(ImageSource&)` gives the first, `find_image_tlv_hash()` the second.
+* **The upload server's `off` is authoritative in every direction** — larger
+  than what was sent, smaller, or zero (PN §6 rule 5). Never compute
+  `next_off = off + sent`. Two consequences that look like bugs and are not: an
+  upload can complete on its *first* packet when the device already holds the
+  image (rule 9a), and a retransmitted *final* chunk is answered `off == 0`
+  because the server has already reset its session (rule 9b).
+* **A retransmission repeats the payload, not the message.** The sequence number
+  must differ — the timeout retired the old one, and a reply carrying it would
+  be discarded as late (PN §4).
 * **"Absent means false" is only half the rule for image-state flags.** The
   specification says a false flag is omitted; the server omits it only under
   `CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST` and otherwise sends it explicitly. Absent
@@ -151,58 +156,52 @@ delete an entry when it stops being true.
   The server may translate it onto `mcumgr_err_t` and rebuild the response, so
   `image_error()` returning `nullopt` for a real image failure is normal. Check
   `smp_error()` as well, and never treat the absence as a malformed reply.
-* **The upload server's `off` is authoritative in every direction** — larger
-  than what was sent, smaller, or zero (PN §6 rule 5). Never compute
-  `next_off = off + sent`. Two consequences that look like bugs and are not: an
-  upload can complete on its *first* packet when the device already holds the
-  image (rule 9a), and a retransmitted *final* chunk is answered with `off == 0`
-  because the server has already reset its session (rule 9b).
-* **A retransmission repeats the payload, not the message.** The sequence number
-  must differ — the timeout retired the old one, and a reply carrying it would
-  be discarded as late (§4).
+* **The MCUboot TLV trailer is not what the design document implies** (PN §7,
+  written from `bootutil_tlv_iter_begin()`): `it_tlv_tot` includes its own
+  four-byte area header, `ih_protect_tlv_size` must equal the protected area's
+  `it_tlv_tot` exactly, and the two areas are walked as one contiguous run. A
+  scan also cannot spin — every advance is at least the four-byte entry header —
+  so `limits::kMaxImageTlvs` bounds work, not termination.
 
-**Tooling traps**
+**Before you trust a green run**
 
 * **A failed build leaves the previous test binary in place**, so `ctest` then
   reports the *old* suite passing. Check the build's exit status separately;
-  never read "N tests passed" as evidence anything was rebuilt.
-* **Declare every transport before the client that binds to it**, including one
-  a rebind test introduces halfway through: `~SmpClient` detaches from the
-  transport it currently holds. Getting this wrong aborts with "pure virtual
-  method called" — under GCC. Clang ran the same undefined behaviour without a
-  murmur.
-* **GCC's and Clang's sanitizers do not diagnose identically.** GCC's ASan does
-  not report a dangling callback capture even with
-  `-fsanitize-address-use-after-scope`. Clang's compiler-rt is not installable
-  here, so that bug class is **CI-only**. A green local sanitizer run is
-  necessary, not sufficient.
-* **cppcheck IS installable** in the container (`apt-get install -y cppcheck`),
-  despite an earlier note to the contrary — install it rather than discovering
-  its findings in CI. It cannot parse some Catch2 files; see
-  `tools/cppcheck-suppressions.txt` for what is suppressed and why.
-* clang-tidy over the full tree now takes minutes. Run it in the background and
-  collect the result, rather than blocking on it.
-* Coverage means exactly what `tools/coverage.sh` reports (gcovr with
-  `--exclude-throw-branches`). Quoting a branch percentage from a differently
-  configured run is not comparable — the same objects move ~12 points. **gcovr
-  is not installed in the container** and the script falls back to plain `gcov`
-  without failing, so `pip install gcovr` before believing a number.
-* Read the **uncovered-line list**, not the percentage. In P8 the gap between
+  never read "N tests passed" as evidence anything was rebuilt. This has bitten
+  in four consecutive phases.
+* **Build every preset.** GCC and Clang do not diagnose identically, in either
+  direction: `-Wuseless-cast` is GCC-only and rejects a `static_cast` between
+  `std::uint64_t` and `std::size_t` (the same type on a 64-bit host,
+  a real narrowing on a 32-bit one — `image::narrow<To>()` in
+  `src/image/source_reader.hpp` is the way round it), while **Clang's ASan
+  catches dangling callback captures that GCC's ASan does not report at all**.
+  Clang's compiler-rt is not installable here, so that bug class is **CI-only**
+  and a green local sanitizer run is necessary, not sufficient.
+* **Read the uncovered-line list, not the percentage.** In P8 the gap between
   92 % and 95 % was a dozen genuinely reachable bounds checks, not the
-  unreachable guards the percentage suggested. In P9 it exposed something
-  worse: three tests that passed **without reaching the check they were named
-  after**, because a fixture-builder convenience kept two fields agreeing. A
+  unreachable guards the number suggested. In P9 it exposed something worse:
+  three tests that passed **without reaching the check they were named after**,
+  because a fixture-builder convenience kept two fields agreeing. *A
   malformation knob must change exactly one field, or it cannot express an
-  inconsistency.
-* `gcovr … --txt <build-dir>` fails with "Is a directory" — `--txt` takes the
-  next argument as its output file. The same mistake silently disabled
-  `tools/coverage.sh` from P0 to P7. Put the search path first, or omit `--txt`.
-* **`-Wuseless-cast` is GCC-only** and rejects a `static_cast` between
-  `std::uint64_t` and `std::size_t`, which are the same type on a 64-bit host
-  and a real narrowing on a 32-bit one. `image::narrow<To>()` in
-  `src/image/source_reader.hpp` is the way round it.
-* `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it.
-  The device's `<???>` version placeholder needs a raw string literal.
+  inconsistency.*
+
+**Tooling**
+
+* **Install `cppcheck` and `gcovr` first.** Neither is in the container, and
+  both fail soft: `tools/lint.sh` skips cppcheck silently, and
+  `tools/coverage.sh` falls back to plain `gcov`, whose branch metric is not
+  comparable. `apt-get install -y cppcheck && pip install gcovr`.
+* Coverage means exactly what `tools/coverage.sh` reports (gcovr with
+  `--exclude-throw-branches`). The same objects move ~12 points under a
+  different flag. Running gcovr by hand, put the search path **first**:
+  `--txt <build-dir>` takes the directory as that option's output file and
+  fails — the mistake that silently disabled `coverage.sh` from P0 to P7.
+* clang-tidy over the full tree takes minutes. Run it in the background and
+  collect the result rather than blocking on it. cppcheck cannot parse some
+  Catch2 files; `tools/cppcheck-suppressions.txt` says what is suppressed and
+  why.
+* `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it. The
+  device's `<???>` version placeholder needs a raw string literal.
 
 ---
 
@@ -1179,3 +1178,79 @@ Everything below it is now testable in isolation; what nothing yet proves is the
 order. Model rules 9a and 9b in the simulator from the start: they are the two
 places a correct client looks like a broken one, and a simulator that cannot
 produce them will let P12 ship a plausible bug.
+
+### 2026-09-06 — Documentation pass: bringing the set back level with the code
+
+**Status after this session:** no phase changed. P10 remains `Complete`; **P11**
+is next. This was an accuracy-then-clarity review of all ten documents against
+the code as it stands after P8, P9 and P10, not phase work.
+
+**Completed.** Read the doc set the way [ADR-0013](decisions/ADR-0013-living-documentation.md)
+requires it to be true — every shipped section read next to the header it
+describes, every example checked against the real signatures — and fixed twelve
+defects. Three were substantive.
+
+**The three that mattered.**
+
+1. **`README.md` was ten phases stale.** It still said "Scaffolding complete
+   (roadmap phase P0) … the library itself is still a placeholder", which is the
+   first thing anyone reads. It now states P0–P10, says plainly what is *not*
+   built (`FirmwareUpdater`, the simulator, fuzzing, the WinRT transport, the
+   examples) and carries a working upload snippet — an upload is the thing the
+   library can do today, and nothing showed it.
+2. **`api.md`'s cancellation example did not compile.** It called
+   `handle.cancel()`; `UploadHandle` is a token and the operation lives on the
+   group, so it is `img.cancel(handle)`. The example now says why, because that
+   shape is deliberate (ADR-0008) and will look like an oversight otherwise.
+3. **Two ADR-0013 violations of the same kind: a shipped section that no longer
+   matched its header.** `api.md`'s `limits.hpp` list was six constants short,
+   and `architecture.md` §9 listed limits under snake_case names that have never
+   existed in the code *and* implied every one was overridable through
+   `SmpClientConfig` — five of them are not. Both are now tables generated from
+   the real `kXxx` names, and §9 gained an "Override" column, which is the
+   question a reader actually has.
+
+**Changed.** The rest were clarity, each in service of a reader with a
+particular question:
+
+* **`handoff.md` § Standing caveats restructured.** It had accreted to the point
+  of repeating itself — the transport-lifetime rule appeared under both
+  *Lifetime* and *Tooling traps*, stated differently. The lifetime rule is now
+  one entry with P10's second level ("must outlive the `SmpClient` — and, since
+  P10, the `ImageManagement` too"); *Protocol sources* became **Protocol facts
+  that bite** and is ordered by how often each one bites; *Tooling traps* split
+  into **Before you trust a green run** (the three that make a green run a lie)
+  and **Tooling** (setup). Nothing was dropped.
+* **`architecture.md` §11** no longer describes `UpdatePlan` and the HIL suite as
+  though they exist, and records what a disconnect does to an upload.
+* **`quality-gates.md`** is "as of P10" rather than "from P0", and the reason
+  coverage thresholds are not yet enforced is now the two real blockers
+  (`src/cbor/` under its elevated gate; the missing exclusion markers) instead of
+  "P0's placeholder library", which stopped being true at P1.
+* **`design.md` §5**'s `ImageManagement` sketch carries the real
+  `upload`/`resume`/`cancel` signatures.
+* **`testing.md`** documents the image doubles P9 added — `ImageBuilder`,
+  `FailingImageSource`, `ShortReadingImageSource` — which existed with no entry
+  anywhere.
+* **`roadmap.md`** gained a P11 **Start here** and an Exit criterion, and the
+  open-question count is corrected (O4 was resolved in P9; four remain).
+* **`CLAUDE.md`**'s "two ways this has gone wrong" is now three, adding gcovr's
+  soft failure and "build every preset, not just one".
+
+**Discovered / follow-up.** None new. No code changed: `format --check`, the
+three `check_*.py` gates and all 439 tests pass, as they must for a
+documentation-only change.
+
+**Caveats.** The doc gate (`check_docs.py`, R1–R4) proves the *structure* — that
+every ADR is referenced, every phase has an outcome, and so on. It cannot tell
+that a shipped section has drifted from its header, which is exactly what two of
+the three real defects were. **Read the header next to the section**; the gate
+will not do it for you, and drift accumulates silently between phases.
+
+**Docs updated.** `README.md`, `CLAUDE.md`, `api.md`, `architecture.md`,
+`design.md`, `handoff.md`, `quality-gates.md`, `roadmap.md`, `testing.md`.
+
+**Recommended next.** **P11 — `ServerSimulator` and the component harness**,
+unchanged by this pass. Its roadmap entry now carries the Start here that P10's
+outcome argued for: build rules 9a, 9b and offset correction into the simulator
+from the beginning rather than adding them once a DFU test needs them.

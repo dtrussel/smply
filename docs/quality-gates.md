@@ -2,10 +2,10 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (from P0):** the gates marked *(P13)* / *(P15)* below are specified but
-not yet wired, because the targets they would exercise do not exist. Everything
-else is live and enforced. Each live gate has been observed rejecting a
-deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
+**Status (as of P10):** the gates marked *(P13)* / *(P15)* below are specified
+but not yet wired, because the targets they would exercise do not exist.
+Everything else is live and enforced. Each live gate has been observed rejecting
+a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
 `gate-self-check` CI job runs it on every push.
 
 ## 1. Build matrix (required)
@@ -157,10 +157,18 @@ one flag, because every potentially-throwing call contributes two branches a
 suite that raises no exceptions can never take. A threshold that does not name
 its tool and flags means whichever number CI happens to produce.
 
-**Not enforced until P13.** Thresholds against P0's placeholder library are
-meaningless, so `tools/coverage.sh` reports and CI publishes the artefact
-without failing. The thresholds below switch on in P13, when there is protocol
-logic and state-machine code worth measuring.
+**Not enforced until P13.** `tools/coverage.sh` reports and CI publishes the
+artefact without failing. Two things must be settled before the thresholds can
+switch on, and both are P13's:
+
+* `src/cbor/` is below its elevated gate and has been since P6. P13 either
+  raises it or moves the directory out of the elevated list — it does not
+  quietly drop the row.
+* Deliberate invariant guards — unreachable by construction, kept because a
+  decoder that assumes its input was validated elsewhere is one refactor away
+  from trusting a device — count against the branch denominator exactly as
+  throw branches do. §6 already rules that such lines carry an exclusion
+  marker; applying them is the outstanding task.
 
 | Gate | Threshold | Measured 2026-09-05 (P10) |
 | ---- | --------- | ------------------------- |

@@ -10,11 +10,11 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P11 — `ServerSimulator` and the component harness** (see its [entry](#p11)) |
+| **Next phase to work on** | **P11 — `ServerSimulator` and the component harness** (see its [Start here](#p11)) |
 | Last completed phase | P10 — Image upload state machine |
 | Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan. 439 tests, 11 CI jobs green. |
 | Blocked phases | none |
-| Open decisions | O1 resolved (Apache-2.0). Five remain — see [§ Open questions](#open-questions) |
+| Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
 ## Phase summary
 
@@ -1221,6 +1221,30 @@ the simulated reboot/revert rules match [`protocol-notes.md`](protocol-notes.md)
 
 **Acceptance.** A full upload through the real client stack into the simulator
 reproduces the source image exactly, in both SMP versions.
+
+**Exit.** Every layer below `FirmwareUpdater` is exercised end to end, so P12
+can be developed against behaviour rather than against mocks.
+
+**Start here.** The simulator is only worth having if it can produce the
+responses that make a *correct* client look broken, so build these three in from
+the start rather than bolting them on:
+
+* **The already-present completion** (PN §6 rule 9a): given a full 32-byte
+  `sha`, answer the first packet with `off == len` and `match == true`. Without
+  it, P12 will never exercise "the device already holds this image", which is
+  the shortest path through the whole update.
+* **The lost-final-chunk answer** (rule 9b): after a completed upload the server
+  resets, so a duplicate final chunk gets `off == 0` — not `off == len`. This is
+  the one place a successful upload looks like a restart.
+* **Offset correction** (rule 5): answer a wrong offset with *success* and the
+  offset the server actually wants, including one **larger** than the client
+  sent.
+
+Read [`protocol-notes.md`](protocol-notes.md) §6 as the specification for the
+simulator — it is written as server behaviour, which is exactly what this phase
+implements. The client half of each rule already has a test in
+`tests/unit/test_upload_session.cpp`; the simulator is the other side of the
+same table.
 
 ---
 

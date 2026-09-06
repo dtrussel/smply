@@ -390,7 +390,10 @@ class ImageManagement {                    // src/groups/image/
     RequestHandle erase(const EraseOptions&, Callback<void>);
     RequestHandle erase(Callback<void>);
     RequestHandle get_slot_info(Callback<SlotInfo>);
-    UploadHandle upload(ImageSource&, UploadOptions, ...);    // see §6, P10
+    UploadHandle upload(ImageSource&, const UploadOptions&,   // see §6
+                        std::function<void(UploadProgress)>, Callback<UploadResult>);
+    void         resume(const UploadHandle&, Callback<UploadResult>);
+    void         cancel(const UploadHandle&) noexcept;
 };
 ```
 
