@@ -118,6 +118,14 @@
       "cacheVariables": {
         "SMPLY_BUILD_WINRT": "OFF"
       }
+    },
+    {
+      "name": "windows-winrt",
+      "inherits": "windows-msvc",
+      "displayName": "Windows / MSVC, with the WinRT BLE transport",
+      "cacheVariables": {
+        "SMPLY_BUILD_WINRT": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -168,6 +176,10 @@
     {
       "name": "core-without-winrt",
       "configurePreset": "core-without-winrt"
+    },
+    {
+      "name": "windows-winrt",
+      "configurePreset": "windows-winrt"
     }
   ],
   "testPresets": [
@@ -251,6 +263,13 @@
     {
       "name": "core-without-winrt",
       "configurePreset": "core-without-winrt",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-winrt",
+      "configurePreset": "windows-winrt",
       "output": {
         "outputOnFailure": true
       }

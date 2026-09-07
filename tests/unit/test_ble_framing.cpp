@@ -11,14 +11,18 @@
 
 #include "common/ble_framing.hpp"
 #include "common/link_state.hpp"
+#include "common/smp_ble_uuid.hpp"
 
 #include "smply/bytes.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <numeric>
+#include <string_view>
 #include <vector>
 
 using smply::ConstBytes;
@@ -264,4 +268,122 @@ TEST_CASE("a closed link stays closed", "[ble][link]")
     CHECK(link.is_closing_or_closed());
     link.finish_close(); // harmless
     CHECK(link.phase() == LinkPhase::Closed);
+}
+
+// --- the SMP UUIDs ----------------------------------------------------------
+
+namespace {
+
+/// Parses the canonical text form of a UUID, one hex digit at a time.
+///
+/// Deliberately shares nothing with `smp_ble_uuid.hpp`: the point of the cases
+/// below is that the byte arrays and the strings are two independent
+/// transcriptions of protocol-notes section 8, so a typo in either one has to
+/// show up as a disagreement. A parser built out of the thing under test would
+/// prove only that it agrees with itself -- the same discipline
+/// `test_image_group.cpp` applies to its golden responses.
+[[nodiscard]] std::vector<std::uint8_t> parse_uuid(std::string_view text)
+{
+    std::vector<std::uint8_t> out;
+    int high = -1;
+    for (const char c : text) {
+        if (c == '-') {
+            continue;
+        }
+        int digit = 0;
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'A' && c <= 'F') {
+            digit = c - 'A' + 10;
+        } else if (c >= 'a' && c <= 'f') {
+            digit = c - 'a' + 10;
+        } else {
+            return {}; // not a hex digit: caller's REQUIRE on size() catches it
+        }
+        if (high < 0) {
+            high = digit;
+        } else {
+            out.push_back(static_cast<std::uint8_t>((high * 16) + digit));
+            high = -1;
+        }
+    }
+    return high < 0 ? out : std::vector<std::uint8_t>{};
+}
+
+} // namespace
+
+TEST_CASE("the SMP UUIDs match their specification spelling", "[ble][uuid]")
+{
+    // protocol-notes section 8: service 8D53DC1D-1DB7-4CD3-868B-8A527460AA84,
+    // characteristic DA2E7828-FBCE-4E01-AE9E-261174997C48. Getting either wrong
+    // yields a device that is found but never answers -- and, without this,
+    // would not be discoverable until there is a radio in front of it (P17).
+    const std::vector<std::uint8_t> service = parse_uuid(smply::transport::kSmpServiceUuidString);
+    REQUIRE(service.size() == 16);
+    CHECK(std::equal(service.begin(), service.end(), smply::transport::kSmpServiceUuid.begin()));
+
+    const std::vector<std::uint8_t> characteristic =
+        parse_uuid(smply::transport::kSmpCharacteristicUuidString);
+    REQUIRE(characteristic.size() == 16);
+    CHECK(std::equal(characteristic.begin(), characteristic.end(),
+                     smply::transport::kSmpCharacteristicUuid.begin()));
+
+    // And they are not the same UUID, which a copy-paste would make them.
+    CHECK(smply::transport::kSmpServiceUuid != smply::transport::kSmpCharacteristicUuid);
+}
+
+TEST_CASE("a UUID splits into platform GUID fields without reordering the tail", "[ble][uuid]")
+{
+    // The classic UUID bug: the first three fields are integers, so on a
+    // little-endian host their bytes end up reversed in memory, while the last
+    // eight are a plain array and must not be touched. Pinned by hand from the
+    // written form rather than from the array, so a wrong shift shows up here.
+    const smply::transport::Uuid128Fields service =
+        smply::transport::uuid_fields(smply::transport::kSmpServiceUuid);
+
+    CHECK(service.data1 == 0x8D53DC1DU);
+    CHECK(service.data2 == 0x1DB7U);
+    CHECK(service.data3 == 0x4CD3U);
+    CHECK(service.data4 ==
+          std::array<std::uint8_t, 8>{0x86, 0x8B, 0x8A, 0x52, 0x74, 0x60, 0xAA, 0x84});
+
+    const smply::transport::Uuid128Fields characteristic =
+        smply::transport::uuid_fields(smply::transport::kSmpCharacteristicUuid);
+
+    CHECK(characteristic.data1 == 0xDA2E7828U);
+    CHECK(characteristic.data2 == 0xFBCEU);
+    CHECK(characteristic.data3 == 0x4E01U);
+    CHECK(characteristic.data4 ==
+          std::array<std::uint8_t, 8>{0xAE, 0x9E, 0x26, 0x11, 0x74, 0x99, 0x7C, 0x48});
+}
+
+TEST_CASE("the field split is exactly reversible", "[ble][uuid]")
+{
+    // The property, rather than two hand-pinned values: reassembling the fields
+    // in canonical order must give back the original bytes. This is what would
+    // catch a shift that is wrong in a way both hand-written cases happen to
+    // agree with.
+    for (const smply::transport::Uuid128& uuid :
+         {smply::transport::kSmpServiceUuid, smply::transport::kSmpCharacteristicUuid}) {
+        const smply::transport::Uuid128Fields fields = smply::transport::uuid_fields(uuid);
+        const smply::transport::Uuid128 rebuilt = {
+            static_cast<std::uint8_t>(fields.data1 >> 24U),
+            static_cast<std::uint8_t>((fields.data1 >> 16U) & 0xFFU),
+            static_cast<std::uint8_t>((fields.data1 >> 8U) & 0xFFU),
+            static_cast<std::uint8_t>(fields.data1 & 0xFFU),
+            static_cast<std::uint8_t>(fields.data2 >> 8U),
+            static_cast<std::uint8_t>(fields.data2 & 0xFFU),
+            static_cast<std::uint8_t>(fields.data3 >> 8U),
+            static_cast<std::uint8_t>(fields.data3 & 0xFFU),
+            fields.data4[0],
+            fields.data4[1],
+            fields.data4[2],
+            fields.data4[3],
+            fields.data4[4],
+            fields.data4[5],
+            fields.data4[6],
+            fields.data4[7],
+        };
+        CHECK(rebuilt == uuid);
+    }
 }

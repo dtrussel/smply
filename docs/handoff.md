@@ -1867,3 +1867,60 @@ the fragmentation again; `examples/cli_dfu/loopback_transport.*` is the shape an
 adapter has, and `SMPLY_ASSERT_CLIENT_THREAD()` will catch a missed marshal in a
 debug build. If no Windows machine is available, the honest alternative is P18's
 packaging half, which is portable and which P15a has already started.
+
+### 2026-09-07 — P15b: the WinRT BLE transport
+
+**Status after this session:** P15b = `Complete`, with one caveat large enough
+that it belongs in the first line: **the adapter has never been run.** Next
+phase: **P16 — the WinRT BLE DFU example**, which also needs Windows.
+
+**Completed.** `transports/winrt_ble/` as `smply::winrt_ble` —
+`winrt_ble_transport.{hpp,cpp}`, `detail/winrt_prelude.hpp`, a link-and-call
+smoke test, a README — plus `transports/common/smp_ble_uuid.hpp`, the
+`windows-winrt` preset and CI job, and a `verify_gates.sh` case fencing the new
+lint exclusion. 3 new tests (**623** total), green on all eight Linux presets.
+
+**What "Complete" means here, and what it does not.** The `windows-winrt` job
+compiles the adapter at `/W4 /WX` and runs a smoke test that links it and checks
+it rejects a bad configuration. A GitHub runner has no Bluetooth radio, so
+nothing has gone over GATT: discovery, the CCCD write, notification delivery,
+the write path, disconnect handling and MTU behaviour are **all unverified**
+until P17. If you are reading this before touching the adapter, assume every
+line of the WinRT half is unproven, because it is.
+
+**The one thing worth copying from this session.** Faced with code that could
+not be verified at all, the useful move was to find the part that did not have
+to be. A mistyped UUID was the likeliest defect and would have survived to P17;
+a 128-bit UUID is sixteen bytes, and bytes are portable. It now lives in
+`transports/common/` in two independent spellings that check each other, with
+the little-endian GUID split — the *second* likeliest defect — pinned by hand
+and by a reversibility property. When the next unverifiable phase arrives, look
+for that seam first.
+
+**Caveats — read these before P16 or before touching the adapter.**
+
+* **`design.md` §10 was wrong in two places, and only implementing it showed
+  that.** Its shutdown sequence said "drain the dispatcher queue", which assumes
+  the adapter owns the dispatcher; it does not, the application does, and it may
+  run several links through one. And it said to cache the fragment size behind a
+  `MaxPduSizeChanged` subscription, which buys a stale-value risk and an extra
+  revoker to avoid one property read per message. Both corrected. Treat the rest
+  of §10 as a design sketch that has now been implemented once, not as verified
+  fact.
+* **`transports/winrt_ble/` is the only code in the repository clang-tidy and
+  cppcheck do not see.** Both run from a Linux build. The exclusion in
+  `tools/lint.sh` is an exact directory prefix and `verify_gates.sh` proves it
+  is a directory rather than the substring `winrt` — a portable decoy file whose
+  name contains `winrt` must survive it. **Do not widen that filter.** MSVC
+  `/W4 /WX` is the only static analysis the adapter gets.
+* **Build every preset, still.** GCC's `-Wuseless-cast` rejected one cast in the
+  new UUID header that Clang accepted without comment. Sixth phase running that
+  the two compilers have disagreed.
+* **`connect()` blocks, so it needs a multi-threaded apartment.** On an STA it
+  deadlocks silently, with no diagnostic at all. The README says so; nothing in
+  the code can enforce it.
+* **The adapter reports no `HRESULT`.** `Error::where()` is a static literal and
+  `reason()` is documented as the device's `rsn` string, so every WinRT failure
+  arrives as a call-site tag with the OS's own explanation discarded. That is
+  the detail you will want first when this finally meets a radio; the follow-up
+  is filed.

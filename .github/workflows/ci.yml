@@ -2,9 +2,12 @@
 #
 # See docs/quality-gates.md for what each job enforces and why.
 #
-# One job from the full matrix in quality-gates.md section 1 is absent because
-# the target it would exercise does not exist yet:
-#   windows-winrt -> arrives with the WinRT transport in P15
+# Every job in the full matrix in quality-gates.md section 1 is present.
+#
+# Read windows-winrt for exactly what it is: a GitHub runner has no Bluetooth
+# radio, so that job COMPILES the WinRT adapter and links a smoke executable
+# against it. It never puts a byte on the air. Green means "it builds", not
+# "it works"; the behavioural coverage arrives with the hardware suite (P17).
 #
 # The nightly soak lives in its own workflow (nightly-fuzz.yml) because it is
 # scheduled and advisory, not part of this required run.
@@ -41,6 +44,9 @@ jobs:
           - { os: ubuntu-latest,  preset: linux-gcc-cxx23-std-expected }
           - { os: windows-latest, preset: windows-msvc }
           - { os: windows-latest, preset: core-without-winrt }
+          # Compiles smply::winrt_ble and runs its link-and-call smoke test.
+          # See the note at the top of this file for what it does not prove.
+          - { os: windows-latest, preset: windows-winrt }
     steps:
       - uses: actions/checkout@v4
 

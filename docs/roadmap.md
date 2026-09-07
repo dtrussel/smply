@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P15b — WinRT BLE transport** (**needs Windows**; cannot be built here) |
-| Last completed phase | P15a — portable BLE framing, transport contract, install/export |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
+| **Next phase to work on** | **P16 — WinRT BLE DFU example** (**needs Windows**; cannot be built here) |
+| Last completed phase | P15b — the WinRT BLE transport (**compiled by CI, never run: no radio**) |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **`smply::winrt_ble`, the reference BLE adapter — compiled at `/W4 /WX` by CI and never once run against a radio.** 623 tests, 16 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -37,13 +37,15 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P14a](#p14a) | `Dispatcher`, the client-context check, the upload-skip fix | Complete | P12 |
 | [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Complete | P14a |
 | [P15a](#p15a) | Portable BLE framing, transport contract, install/export | Complete | P14a |
-| [P15b](#p15b) | WinRT BLE transport | Planned (**needs Windows**) | P15a |
+| [P15b](#p15b) | WinRT BLE transport | **Complete** (compiled, never run) | P15a |
 | [P16](#p16) | WinRT BLE DFU example application | Planned (**needs Windows**) | P15b |
 | [P17](#p17) | Hardware interoperability suite | Planned | P16 |
 | [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17 |
 
 Phases P1–P15a are portable and can be developed and verified entirely on Linux.
-P15b–P17 require Windows; P17 additionally requires hardware.
+P15b–P17 require Windows; P17 additionally requires hardware. P15b was
+nevertheless *written* on Linux — see its outcome for exactly what that means
+about how much of it is verified.
 
 ---
 
@@ -2070,7 +2072,7 @@ and not the core's — so `transports/common/`, and
 <a id="p15b"></a>
 ## P15b — WinRT BLE transport
 
-**Status: Planned** · **Depends on:** P15a · **Requires Windows**
+**Status: Complete** (2026-09-07) · **Depends on:** P15a · **Requires Windows**
 
 **Objective.** A reference `Transport` over C++/WinRT GATT.
 
@@ -2111,6 +2113,98 @@ adapter README covering the threading and shutdown obligations.
 
 **Acceptance.** The core still builds with `SMPLY_BUILD_WINRT=OFF` on all three
 platforms; no `winrt::` symbol is reachable from a public header.
+
+### Outcome
+
+**Completed, and written blind.** `transports/winrt_ble/` as `smply::winrt_ble`:
+`winrt_ble_transport.{hpp,cpp}`, a warning-isolating `detail/winrt_prelude.hpp`,
+a link-and-call smoke test, a README, the `windows-winrt` preset and CI job.
+Plus `transports/common/smp_ble_uuid.hpp` and 3 new tests (**623** total), green
+on all eight Linux presets.
+
+**Say the limit out loud, because a green badge will not.** No radio has seen
+this code. The `windows-winrt` job compiles the adapter at `/W4 /WX` and runs a
+smoke test that links it and checks it refuses what it should; a GitHub runner
+has no Bluetooth hardware, so **not one byte has gone over GATT**. Discovery,
+notifications, the write path, disconnect handling and MTU behaviour are all
+unverified until P17. The README states this in a table, the CI file states it
+at the top of the matrix, and `quality-gates.md` §1 states it in the job's row —
+three places, because this is the claim most likely to be misread later.
+
+**What was made verifiable instead.** The single likeliest defect in a blind
+adapter is a mistyped UUID, and it would have been undiscoverable until P17. A
+128-bit UUID is sixteen bytes, so it moved into `transports/common/`: the two
+UUIDs as byte arrays *and* as their specification spelling, checked against each
+other by a parser that shares no code with them, plus `uuid_fields()` — the
+little-endian split every platform GUID structure needs, which is the second
+likeliest defect — pinned by hand and by a reversibility property. A one-byte
+typo fails two independent cases; that was confirmed by making one.
+
+**Two errors in `design.md` §10, found by implementing it.**
+
+1. **The shutdown sequence said "drain the dispatcher queue".** That assumes the
+   adapter owns the dispatcher. It does not — the application does, and it may
+   run several links through one, as `examples/cli_dfu/main.cpp` does — so
+   clearing it would discard another transport's callbacks and draining it from
+   inside `close()` would run arbitrary application closures at the worst
+   possible moment. Replaced with a strong reference captured by each posted
+   closure plus a `LinkState::may_deliver()` check inside it: a closure that
+   outlives the link keeps its state alive, finds it closed, and does nothing.
+   Same guarantee, no longer resting on owning something the application owns.
+2. **It said to cache the fragment size and re-read it on `MaxPduSizeChanged`.**
+   Reading `MaxPduSize` once per `send()` is always correct and removes an event
+   handler *and* its revoker from the shutdown sequence, which is the part of
+   the adapter with the most ways to be wrong. One property read per message.
+
+§10 also stated `TransportBusy` backwards — as what happens "if the stack
+rejects a write". It cannot be: `send()` must not block, so a rejected write is
+discovered after it has returned and arrives as `on_transport_error()`.
+`TransportBusy` means a previous *message* is still going out. Corrected.
+
+**A gate had to be opened, so it was fenced.** `tools/lint.sh` now excludes
+`transports/winrt_ble/` from clang-tidy and cppcheck: both run from a Linux
+build, where those translation units are absent from the compile database and
+the projection headers cannot be parsed. This is **the first code in the
+repository outside clang-tidy's reach**. `clang-format` still covers it and MSVC
+`/W4 /WX` stands in, and `verify_gates.sh` gained a case proving the exclusion
+is a *directory* and not the substring `winrt`: a portable decoy file whose name
+contains `winrt` must survive it. Without that, a filter written `grep -v winrt`
+would quietly stop analysing real code — the failure shape that has now cost
+this project six defects.
+
+**One defect in the new code, caught by building every preset.** GCC's
+`-Wuseless-cast` rejected the outer cast in `uuid_fields()`'s `data1`: its
+operands are already `std::uint32_t`, while `data2` and `data3` genuinely need
+theirs because a `std::uint16_t` promotes to `int` before the shift. Clang
+accepted all three. The asymmetry is now commented at the site, since it looks
+like an inconsistency.
+
+**Remaining in this phase.** None.
+
+**The unverified half is not remaining work.** There is nothing further that can
+be done here: verifying GATT behaviour needs hardware, which is P17's whole
+purpose. It is this phase's permanent condition rather than an unfinished task,
+and it is recorded as a follow-up so that it cannot be mistaken for either.
+
+**Deviations, each recorded where it contradicts something.**
+
+1. **`design.md` §10 corrected in two places** (above), rather than implemented
+   as written.
+2. **The adapter's own header is pimpl'd and names no WinRT type**, so it costs
+   an ordinary MSVC translation unit nothing to include. The class is
+   `smply::transport::WinRtBleTransport`, sharing `transport_common`'s
+   namespace — **not** `smply::winrt`, in which an unqualified `winrt::guid`
+   would resolve to `smply::winrt::guid` and fail in a way that reads as a
+   compiler bug.
+3. **`WinRtBleConfig` carries no connection timeout.** One was planned and
+   dropped: WinRT's `.get()` has no timeout, implementing one properly needs
+   machinery that cannot be tested here, and `FromBluetoothAddressAsync` already
+   fails fast for an unreachable address. A timeout that has never been observed
+   to fire is worse than none.
+4. **The smoke test is a `ctest` test, not a compile-only target.** A
+   compile-only job misses everything that fails at link time — a missing
+   `WindowsApp.lib`, an undefined out-of-line destructor, a pimpl incomplete
+   where it must be complete.
 
 ---
 
@@ -2284,6 +2378,12 @@ them.
 | P15a | **The install check covers `find_package` only.** `add_subdirectory` and `FetchContent` consumption are untested, and both are how a consumer is most likely to start. P18's task list already names all three. | P18 |
 | P15a | An installed **sanitizer** build no longer carries the sanitizer's link options to consumers, because they ride on `smply_internal_options`, now held to `$<BUILD_INTERFACE:>` so the export is possible at all. Nobody ships one; if that changes, the options need a home outside that target. | when somebody ships one |
 | P15a | `smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter. P15b's adapter is in-tree so it does not care, but a third-party adapter would. Decide with the rest of the packaging. | P18 |
+| P15b | **`smply::winrt_ble` has never been run.** CI compiles it and links a smoke test; no radio has seen a byte of it. Discovery, the CCCD write, notification delivery, the write path, disconnect handling and MTU behaviour are all unverified. This is the phase's permanent condition, not an oversight. | P17 |
+| P15b | **The adapter is outside clang-tidy and cppcheck** (`tools/lint.sh` excludes `transports/winrt_ble/`), because both run from a Linux build. Running clang-tidy on the Windows runner — LLVM is preinstalled there — would recover the analysis. Weigh it against a second toolchain in CI. | P18 |
+| P15b | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is documented as the device's `rsn` string, so the adapter drops the `HRESULT` behind every WinRT failure and reports only a call-site tag. That is exactly the detail wanted when debugging a transport nobody can attach a debugger to. Either widen `reason()`'s contract or add a detail field. | when the adapter is next touched |
+| P15b | `close()` waits at most five seconds for a write already on the air, then proceeds. Bounded rather than unconditional because an application that cannot be shut down is worse than one that abandons a stuck write — but the number is a guess made without a radio. Revisit with real hardware. | P17 |
+| P15b | `smply::winrt_ble` is **not installed or exported**, like `smply::transport_common` before it. P16's example is in-tree so it does not care; a third-party consumer would. | P18 |
+| P15b | The adapter connects by **Bluetooth address only**. Scanning, name resolution and pairing are P16's, but if the example finds it needs a `connect_by_name`, it belongs here rather than there. | P16 |
 | P15a | `-Wnull-dereference` is gone from the GCC set. If a future GCC stops false-positiving inside libstdc++ under `-O2`, it is worth restoring — it is a genuinely useful check, and it was dropped for the compiler's behaviour rather than for its value. | when GCC improves |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
 | P13 | **The fuzz corpora are not pruned.** The local soak added ~1 100 inputs across the seven directories, kept because each reached new coverage, but `-merge=1` was run only once at the end of the phase. The smoke job replays every committed input on every push, so the corpus is a CI cost as well as a regression suite. Re-merge when a directory's replay time becomes noticeable. | when it costs |

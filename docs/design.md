@@ -870,10 +870,10 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 
 | smply concept | WinRT operation |
 | ------------- | --------------- |
-| open | `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)` |
+| open | `WinRtBleTransport::connect()`: `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)`. The UUIDs come from `transports/common/smp_ble_uuid.hpp`, whose bytes and endian split are unit-tested on every platform |
 | enable notifications | `WriteClientCharacteristicConfigurationDescriptorAsync(Notify)` + subscribe `ValueChanged` |
 | `send(message)` | split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
-| fragment size | `GattSession::MaxPduSize − 3`; clamp to `[20, 512]`; re-read on `MaxPduSizeChanged` |
+| fragment size | `GattSession::MaxPduSize − 3`, clamped to `[20, 512]` by `transports/common`'s `fragment_size()`; read once per `send()` (see below) |
 | `max_message_size()` | a configured cap (default 1024) — *not* the MTU; a whole SMP message may span many fragments |
 | inbound | `ValueChanged` → copy the `IBuffer` → post to `Dispatcher` → `on_bytes()` on the client context |
 | disconnect | `ConnectionStatusChanged == Disconnected` → post → `on_disconnected()` |
@@ -887,15 +887,55 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   (architecture §5).
 * Event tokens are held in `winrt::event_revoker`s so revocation is exception-safe
   and happens before the owning object is destroyed.
-* `close()` is the **only** safe shutdown path: revoke tokens → wait for
-  in-flight async operations to observe a cancellation flag → drain the
-  dispatcher queue → mark closed. It is synchronous and idempotent, and after it
-  returns no callback can fire. The destructor calls it.
+* `close()` is the **only** safe shutdown path: mark the link closing → stop
+  accepting events → revoke tokens → wait for the in-flight write to observe a
+  cancellation flag → close the session and device → mark closed. It is
+  synchronous and idempotent (`LinkState::begin_close()` is what makes the
+  second call a no-op), and after it returns no callback can fire. The
+  destructor calls it.
+
+  **It does not drain or clear the dispatcher, and must not.** An earlier
+  version of this section said "drain the dispatcher queue", which assumes the
+  adapter owns it. It does not: the `Dispatcher` belongs to the application and
+  may carry several transports' work at once — `examples/cli_dfu/main.cpp` runs
+  every link it opens through one — so clearing it would discard another
+  transport's callbacks, and draining it from inside `close()` would run
+  arbitrary application closures at the worst possible moment. Instead each
+  posted closure captures a strong reference to the adapter's state and asks
+  `LinkState::may_deliver()` before touching the listener; a closure that
+  outlives the link keeps its state alive, finds the link closed and returns
+  having done nothing. The guarantee is unchanged, and it no longer depends on
+  owning something the application owns.
+
+* **The event handlers hold a weak reference** to that state. A strong one would
+  be a cycle — the state owns the revoker, which owns the handler — and the
+  state would never be destroyed.
+
+* A handler running on a pool thread must not read `LinkState`, which belongs to
+  the client context. It consults an atomic `accepting` flag instead, cleared
+  *before* the revokers run, so correctness does not depend on whether
+  `revoke()` waits for a handler that is already executing.
 * `winrt::apartment_context`/`resume_background` are used inside the adapter
   only; no coroutine crosses the core boundary.
 * Write-without-response has no flow control at the GATT level. The adapter
-  paces fragments using `GattCharacteristic::WriteValueWithResultAsync`'s
-  completion, and surfaces `TransportBusy` if the stack rejects a write.
+  paces fragments by awaiting each `GattCharacteristic::WriteValueWithResultAsync`
+  before starting the next, in one detached coroutine per message — `send()` may
+  not block (§9), so the writes outlive the call that started them.
+
+  Two consequences follow, and they are easy to state the wrong way round.
+  `TransportBusy` means **a previous message is still going out**: the core
+  keeps one request in flight (ADR-0010), so it is a request to retry, not a
+  broken link. A *write* the stack rejects is discovered after `send()` has
+  already returned, so it cannot be its return value — it arrives later as
+  `on_transport_error()`, or `on_disconnected()` when the status says the device
+  is unreachable, posted through the same dispatcher as inbound bytes and never
+  delivered inline.
+
+* **`MaxPduSize` is read once per message, not cached.** Keeping a cached copy
+  fresh would need a `MaxPduSizeChanged` subscription, and so another handler
+  and another revoker in the shutdown sequence above, to avoid a stale fragment
+  size. One property read per message is cheaper than that, and cannot go
+  stale.
 
 The example `examples/winrt_ble_dfu/` is a console application: scan by name or
 address → connect → build `SmpClient` + `FirmwareUpdater` → run a simple pump

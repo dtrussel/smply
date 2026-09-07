@@ -20,7 +20,7 @@ project(smply
 option(SMPLY_BUILD_TESTS    "Build smply's tests"            ${PROJECT_IS_TOP_LEVEL})
 option(SMPLY_BUILD_EXAMPLES "Build smply's examples"         ${PROJECT_IS_TOP_LEVEL})
 option(SMPLY_BUILD_FUZZERS  "Build libFuzzer targets"        OFF)
-option(SMPLY_BUILD_WINRT    "Build the WinRT BLE transport (P15)" OFF)
+option(SMPLY_BUILD_WINRT    "Build the WinRT BLE transport (Windows only)" OFF)
 option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests (P17)" OFF)
 option(SMPLY_USE_SYSTEM_QCBOR "Use find_package(qcbor) instead of FetchContent" OFF)
 # P1 introduces the expected<> fallback; the option exists now so CI can pin it.
@@ -167,9 +167,10 @@ if(SMPLY_BUILD_WINRT)
     if(NOT WIN32)
         message(FATAL_ERROR "SMPLY_BUILD_WINRT requires Windows")
     endif()
-    # P15 adds transports/winrt_ble. The option exists now so the
-    # core-without-winrt CI job is meaningful from P0 onwards.
-    message(STATUS "smply: SMPLY_BUILD_WINRT is set but the transport arrives in P15")
+    # The target itself is added by transports/CMakeLists.txt below. Only the
+    # host check lives here, so that a wrong -D fails at the option rather than
+    # inside a subdirectory that was never going to be entered.
+    message(STATUS "smply: building the WinRT BLE transport (smply::winrt_ble)")
 endif()
 
 if(SMPLY_BUILD_FUZZERS AND NOT SMPLY_BUILD_TESTS)

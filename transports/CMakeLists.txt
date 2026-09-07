@@ -21,5 +21,11 @@ target_include_directories(smply_transport_common INTERFACE ${CMAKE_CURRENT_SOUR
 target_link_libraries(smply_transport_common INTERFACE smply::smply)
 target_compile_features(smply_transport_common INTERFACE cxx_std_20)
 
-# P15b adds transports/winrt_ble. The option is validated in the top-level
-# CMakeLists so the core-without-winrt gate is meaningful without it.
+# --- platform adapters -------------------------------------------------------
+#
+# The option is validated in the top-level CMakeLists (it refuses a non-Windows
+# host there), so the core-without-winrt gate is meaningful whether or not the
+# directory below is ever entered.
+if(SMPLY_BUILD_WINRT)
+    add_subdirectory(winrt_ble)
+endif()

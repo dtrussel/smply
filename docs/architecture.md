@@ -336,9 +336,11 @@ smply/
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
 │   └── detail/client_thread.hpp    debug-only client-context assertion
 ├── transports/
-│   ├── common/                 ble_framing.hpp  link_state.hpp — portable, header-only
-│   │                           smply::transport_common; built and tested everywhere
-│   └── winrt_ble/              (planned, P15b) Windows-only target smply::winrt_ble
+│   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp —
+│   │                           portable, header-only smply::transport_common;
+│   │                           built and tested everywhere
+│   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
+│                               Compiled by CI, never run: see its README
 ├── support/minicbor/           a CBOR codec independent of src/cbor/, shared by the
 │                               test doubles and the example. Target smply::minicbor;
 │                               part of neither the library nor either consumer.
