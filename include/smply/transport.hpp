@@ -103,6 +103,16 @@ public:
     /// Does not block. It returns once the message has been accepted for
     /// transmission, which is not the same as delivered.
     ///
+    /// **It must not deliver inbound bytes before it returns.** Calling
+    /// `TransportListener::on_bytes()` (or either failure callback) from inside
+    /// `send()` re-enters the core's reassembly while it is mid-write, which
+    /// `MessageAssembler` refuses with `InvalidState` -- and would be a
+    /// use-after-free if it did not (docs/design.md section 2). A loopback or
+    /// in-process transport is where this is easy to get wrong, because the
+    /// answer is available immediately; queue it and deliver it from the
+    /// application's own turn instead. `tests/support/fake_transport.*` and
+    /// `examples/cli_dfu/loopback_transport.*` both show the shape.
+    ///
     /// \param message Borrowed for the duration of this call only. An
     ///                implementation that defers transmission **must** copy it.
     /// \return Success once accepted; `ErrorCode::TransportBusy` when the
@@ -129,6 +139,17 @@ public:
     [[nodiscard]] virtual std::size_t max_message_size() const noexcept = 0;
 
     /// Sets the listener, or clears it with nullptr.
+    ///
+    /// **A transport must outlive every client bound to it.** `~SmpClient`
+    /// detaches by calling this with `nullptr`, and `rebind_transport()`
+    /// detaches from the transport it replaces the same way -- so a transport
+    /// destroyed first leaves those calls dangling. Declaring the transport
+    /// before the client is enough, and an application that reconnects keeps
+    /// every link it has opened alive, as `examples/cli_dfu/main.cpp` does.
+    ///
+    /// (This obligation is the transport's half of the lifetime rule stated on
+    /// `SmpClient`. It is repeated here because an adapter author reads this
+    /// header and may never read that one.)
     ///
     /// At most one listener at a time. The listener must outlive the transport,
     /// or be cleared before it is destroyed.

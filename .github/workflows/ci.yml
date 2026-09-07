@@ -30,6 +30,10 @@ jobs:
         include:
           - { os: ubuntu-latest,  preset: linux-gcc }
           - { os: ubuntu-latest,  preset: linux-clang }
+          # Release, because that is what a consumer builds. Nothing in this
+          # project compiled above -O0 until P15a, and the first attempt did
+          # not: an optimisation-only warning had never had the chance to fire.
+          - { os: ubuntu-latest,  preset: linux-gcc-release }
           - { os: ubuntu-latest,  preset: linux-gcc-fallback-expected }
           # Builds the same tests against std::expected. Without this the
           # standard backing is never exercised, because std::expected does not
@@ -154,6 +158,23 @@ jobs:
           name: fuzz-smoke-artifacts
           path: fuzz-artifacts/
           if-no-files-found: ignore
+
+  install-check:
+    name: out-of-tree consumption
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+      # Installs into a throwaway prefix, then configures a separate CMake
+      # project against it with find_package(smply), builds it and runs it.
+      # Nothing in the main build proves the export works -- in-tree consumers
+      # use the build-tree targets, where even a wrong exported target name
+      # resolves (docs/quality-gates.md section 13).
+      - name: Consume an installed smply from outside the tree
+        run: tools/check_install.sh "${{ runner.temp }}/install-check"
 
   coverage:
     name: coverage

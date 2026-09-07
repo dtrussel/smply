@@ -43,6 +43,14 @@
       }
     },
     {
+      "name": "linux-gcc-release",
+      "inherits": "linux-gcc",
+      "displayName": "Linux / GCC, Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "linux-clang-tsan",
       "inherits": "linux-clang",
       "displayName": "Linux / Clang + ThreadSanitizer",
@@ -126,6 +134,10 @@
       "configurePreset": "linux-clang-asan-ubsan"
     },
     {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release"
+    },
+    {
       "name": "linux-clang-tsan",
       "configurePreset": "linux-clang-tsan"
     },
@@ -176,6 +188,13 @@
     {
       "name": "linux-clang-asan-ubsan",
       "configurePreset": "linux-clang-asan-ubsan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "configurePreset": "linux-gcc-release",
       "output": {
         "outputOnFailure": true
       }

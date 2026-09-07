@@ -1,0 +1,26 @@
+@PACKAGE_INIT@
+
+# SPDX-License-Identifier: Apache-2.0
+#
+# The installed package. Provides smply::smply and smply::util.
+#
+# smply::minicbor and the test doubles are deliberately not installed: they are
+# development scaffolding, not part of what a consumer gets (P14b's follow-up).
+
+include(CMakeFindDependencyMacro)
+
+# QCBOR is a PRIVATE dependency, but smply is a static library, so a consumer
+# still needs it at link time -- CMake records it as $<LINK_ONLY:qcbor::qcbor>.
+#
+# It resolves either way round: when smply was built with the bundled QCBOR,
+# QCBOR's own install rules ran alongside ours and put its config package in
+# this same prefix; when built with SMPLY_USE_SYSTEM_QCBOR=ON it is wherever the
+# system keeps it. Both are found here.
+find_dependency(qcbor)
+
+# smply::util (Dispatcher) uses std::mutex.
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/smplyTargets.cmake")
+
+check_required_components(smply)

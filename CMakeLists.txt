@@ -93,7 +93,7 @@ target_include_directories(smply
 )
 
 # PRIVATE: strict warnings and instrumentation must not reach consumers.
-target_link_libraries(smply PRIVATE smply_internal_options)
+target_link_libraries(smply PRIVATE $<BUILD_INTERFACE:smply_internal_options>)
 
 # QCBOR is an implementation detail (ADR-0007): PRIVATE, and it must never
 # appear in a public header (enforced by tools/check_public_headers.py).
@@ -130,11 +130,20 @@ target_link_libraries(smply_util
     PRIVATE
         # smply's own code, so the strict warning set applies -- but PRIVATE,
         # so it does not reach whoever links smply::util.
-        smply_internal_options
+        $<BUILD_INTERFACE:smply_internal_options>
 )
 
 target_compile_features(smply_util PUBLIC cxx_std_20)
-set_target_properties(smply_util PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# EXPORT_NAME, not just the ALIAS. install(EXPORT) names an exported target
+# <namespace><target-name>, which would give smply::smply_util -- the in-tree
+# ALIAS smply::util does not travel with it. Without this the package builds and
+# installs happily and a consumer's find_package() then fails on a target name
+# that works everywhere inside this repository. tests/install/ is what found it.
+set_target_properties(smply_util PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    EXPORT_NAME util
+)
 
 find_package(Threads REQUIRED)
 target_link_libraries(smply_util PUBLIC Threads::Threads)
@@ -176,6 +185,11 @@ if(SMPLY_BUILD_TESTS)
     enable_testing()
 endif()
 
+# Portable helpers for transport adapters. Built everywhere, tested on Linux --
+# the arithmetic a BLE adapter needs is not Windows-specific, and putting it
+# here is what lets it be verified without a radio (P15a).
+add_subdirectory(transports)
+
 # Shared by the tests and the examples; part of neither, and never linked into
 # the library. Added when either wants it, which is why it is not inside the
 # SMPLY_BUILD_TESTS block below.
@@ -197,5 +211,57 @@ if(SMPLY_BUILD_TESTS)
     endif()
 endif()
 
-# Install/export is deliberately deferred to P18, together with the
-# out-of-tree consumption tests. See docs/roadmap.md.
+# --- Install and export -----------------------------------------------------
+#
+# Enough for an out-of-tree adapter to consume smply: the library and the
+# marshalling helper it needs (P15a). The full three-way consumption matrix, the
+# SBOM and the version policy remain P18's.
+#
+# What is NOT installed, and deliberately: smply::minicbor and every test
+# target. They are development scaffolding.
+#
+# Note on the interface. smply links smply_internal_options as
+# $<BUILD_INTERFACE:...> so the strict warning set stays in the build tree and
+# out of this export -- install(EXPORT) rejects a target that is not itself
+# exported, and exporting an options target carrying -Werror to consumers would
+# be worse than the error. One consequence: an installed *sanitizer* build would
+# not carry the runtime's link options either. Nobody ships one, and the
+# sanitizer presets do not install.
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS smply smply_util
+    EXPORT smplyTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(DIRECTORY include/smply DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# version.hpp is configured into the build tree, so it ships from there.
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/smply/version.hpp"
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply)
+
+install(EXPORT smplyTargets
+    NAMESPACE smply::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smply
+)
+
+configure_package_config_file(
+    cmake/smplyConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/smplyConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smply
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/smplyConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/smplyConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/smplyConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smply
+)
+

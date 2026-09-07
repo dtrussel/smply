@@ -55,6 +55,7 @@ if command -v gcovr >/dev/null 2>&1; then
     gcovr --root "$REPO" \
           "$BUILD_DIR" \
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \
+          --filter "$REPO/transports/common/" \
           --exclude '.*/_deps/.*' \
           --exclude-throw-branches \
           --print-summary --txt \

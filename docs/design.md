@@ -808,6 +808,8 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | Ordering? | The transport **must** preserve byte order. GATT and UART both do. |
 | Buffer lifetime? | Borrowed for the duration of the call, in both directions. A transport that defers a send must copy. |
 | Concurrency? | Single-threaded: all calls in and out happen on the client context (architecture §5). |
+| May `send()` answer inline? | **No.** It must not invoke any `TransportListener` method before it returns: that re-enters reassembly mid-write, which `MessageAssembler` refuses (§2). An in-process transport queues the answer and delivers it from the application's next turn. |
+| Who outlives whom? | **The transport outlives every client bound to it.** `~SmpClient` and `rebind_transport()` both detach by calling `set_listener(nullptr)`, so a transport destroyed first leaves those calls dangling. |
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
 | Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
 | Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "unknown"; the core then uses its configured default. |

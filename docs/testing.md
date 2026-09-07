@@ -317,6 +317,21 @@ clean update needs and no more. If the two ever disagree, the simulator is right
 growing the stub to match it would be building a second test double outside
 `tests/`.
 
+### BLE framing and link state (`transports/common/`)
+
+The part of the BLE transport that needs no radio, and therefore the part that
+can be tested at all before P15b exists: fragment sizing at the 23-byte minimum
+ATT MTU (⇒ 20) and at the sizes real stacks negotiate; the clamp at both ends,
+including a PDU of zero, which without it would give a fragment size of zero and
+an adapter that never progresses; short, exact-multiple and remainder messages,
+because an exact multiple is where an off-by-one puts a zero-length GATT write on
+the air; and a many-fragment message reassembling byte for byte, which is what
+"no additional framing" (protocol-notes §8) actually means.
+
+Plus `LinkState`: `close()` idempotent, and callbacks refused from the moment it
+*begins* rather than when it ends — the rule adapters get wrong, because there
+are usually callbacks already in flight at that point.
+
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is

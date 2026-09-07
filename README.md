@@ -30,9 +30,9 @@ needs, shipped as a separate target the core does not link. And
 `examples/cli_dfu/`, which drives a whole update — upload, reset, reconnect,
 trial boot, confirmation — against a stub device on another thread, and runs on
 every push.
-605 tests, 13 CI jobs green plus a nightly soak.
+620 tests, 15 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push.
 
-What is not built yet: the WinRT BLE transport and the Windows example. See
+What is not built yet: the WinRT BLE transport and the Windows example — both need Windows. See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 

@@ -48,11 +48,22 @@ endif()
 
 get_target_property(_smply_iface_libs smply INTERFACE_LINK_LIBRARIES)
 if(_smply_iface_libs)
+    # Checked entry by entry rather than by carving $<LINK_ONLY:...> out of the
+    # whole string. A PRIVATE link appears as one list entry beginning
+    # $<LINK_ONLY:, which propagates linking but not compile options -- the
+    # correct and expected form. The previous version pattern-matched
+    # "$<LINK_ONLY:[^>]*>" across the joined string, which stopped at the first
+    # '>' and so misread the *nested* genex P15a introduced
+    # ($<LINK_ONLY:$<BUILD_INTERFACE:smply_internal_options>>, needed to keep the
+    # options out of the install export). It reported a leak that was not there.
+    # A per-entry prefix test cannot be confused by nesting.
     foreach(_internal "smply_internal_options" "smply::internal_options")
-        # A PRIVATE link appears wrapped in $<LINK_ONLY:...>, which propagates
-        # linking but not compile options -- that form is correct and expected.
-        string(REGEX MATCHALL "\\$<LINK_ONLY:[^>]*>" _link_only "${_smply_iface_libs}")
-        string(REPLACE "${_link_only}" "" _propagating "${_smply_iface_libs}")
+        set(_propagating "")
+        foreach(_entry IN LISTS _smply_iface_libs)
+            if(NOT _entry MATCHES "^\\$<LINK_ONLY:")
+                list(APPEND _propagating "${_entry}")
+            endif()
+        endforeach()
         if("${_propagating}" MATCHES "${_internal}")
             message(FATAL_ERROR
                 "smply propagates '${_internal}' to consumers through "

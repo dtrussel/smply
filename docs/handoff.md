@@ -1797,3 +1797,73 @@ and `SMPLY_ASSERT_CLIENT_THREAD()` will catch the marshalling mistake in a debug
 build rather than as corruption. The P18 follow-up about installing
 `smply::util` matters to P15 first: an adapter consuming smply from an install
 tree currently cannot link `Dispatcher`.
+
+### 2026-09-07 — P15a: portable BLE framing, the transport contract, install/export
+
+**Status after this session:** P15a = `Complete`. Next phase: **P15b — the WinRT
+BLE transport**, which **cannot be built or run in this environment**.
+
+**Completed.** `transports/common/` (`ble_framing.hpp`, `link_state.hpp`) as the
+header-only `smply::transport_common`; `tests/unit/test_ble_framing.cpp`; the two
+transport obligations moved into `transport.hpp` and `design.md` §9;
+install/export for `smply::smply` and `smply::util`, with `tests/install/` and
+`tools/check_install.sh`; a `linux-gcc-release` preset and CI job. 15 new tests
+(**620** total), green on all ten presets. `transports/common/` measures 100 %
+line and branch.
+
+**P15 was split because this machine is Linux and P15 requires Windows.** P15a
+is the part that can be genuinely verified here; P15b is the WinRT glue. The
+split also means P15b starts with its arithmetic already proven, which matters
+for code that will be written with no debugger and no radio.
+
+**Caveats — read these before P15b.**
+
+* **Nothing in this project had ever been compiled above `-O0`.** Every preset
+  inherited `CMAKE_BUILD_TYPE: Debug` from a single `base` preset, so thirteen CI
+  jobs had never built Release. The first attempt failed. There is now a
+  `linux-gcc-release` preset and job; **check it after anything that touches
+  templates or lifetime**, because Debug will not tell you.
+* **`-Wnull-dereference` is gone from the GCC warning set**, deliberately and
+  with the evidence in `cmake/warnings.cmake`. It fires only under optimisation,
+  only on GCC, and only inside libstdc++'s `basic_string` inlined into our code.
+  Do not add it back without checking a Release build first.
+* **An in-tree consumer proves nothing about the exported package.** Build-tree
+  `ALIAS` names resolve there, so `smply_util` shipping as `smply::smply_util`
+  instead of `smply::util` configured, built and installed perfectly and failed
+  only under `find_package` from a separate project. **`install(EXPORT)` names a
+  target `<namespace><target-name>`; the alias does not travel.** Use
+  `EXPORT_NAME`, and run `tools/check_install.sh` after touching any target.
+* **QCBOR was never the packaging problem**, contrary to the P0 follow-up. It
+  installs and exports itself, so `find_dependency(qcbor)` is all our config
+  needs. The rejection came from our own `smply_internal_options`, fixed with
+  `$<BUILD_INTERFACE:>`.
+* **A nested generator expression broke the flag-leak guard.** Its
+  `$<LINK_ONLY:[^>]*>` pattern stopped at the first `>` and reported a leak that
+  was not there. It now tests each list entry for a `$<LINK_ONLY:` prefix.
+  General lesson, and the fourth time this shape has appeared: **when you change
+  the form of a thing, check what was pattern-matching the old form.**
+* **`verify_gates.sh` fixtures rot silently, and now cannot.** Changing the
+  `smply_internal_options` link broke the `sed` in both flag-leak fixtures: they
+  matched nothing and the cases reported "not protecting anything". The script
+  now has a `substitute()` helper that fails outright when a substitution
+  matches nothing — **use it for any fixture that rewrites real source.**
+* **`transports/` finally exists.** It had been in `tools/sources.sh`'s roots
+  list since P0 and never matched anything; the format and lint gates now see it
+  for the first time. `tools/lint.sh` needed it added to cppcheck's paths
+  separately.
+
+**Docs updated.** `transport.hpp` and `design.md` §9 (the two obligations, stated
+normatively where an adapter author reads them), `architecture.md` §10 layout,
+`testing.md` §3, `quality-gates.md` (§1 two new jobs, §6 the coverage filter and
+why `transports/common/` is in it, new §13 on out-of-tree consumption),
+`cmake/warnings.cmake`, `roadmap.md` (P15 split into P15a Complete and P15b,
+four deviations, four new follow-ups), this log.
+
+**Recommended next.** **P15b — the WinRT BLE transport.** It needs Windows.
+Before starting, read its roadmap entry: a `windows-winrt` CI job *compiles* it
+but never *runs* it — there is no radio on a GitHub runner — so a green job means
+"it builds", not "it works". Use `smply::transport_common` rather than writing
+the fragmentation again; `examples/cli_dfu/loopback_transport.*` is the shape an
+adapter has, and `SMPLY_ASSERT_CLIENT_THREAD()` will catch a missed marshal in a
+debug build. If no Windows machine is available, the honest alternative is P18's
+packaging half, which is portable and which P15a has already started.

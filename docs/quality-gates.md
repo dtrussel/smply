@@ -15,6 +15,7 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | --- | -- | -------- | -------- | ----- |
 | `linux-gcc` | ubuntu-latest | GCC 13 | C++20 | core + tests |
 | `linux-clang` | ubuntu-latest | Clang 18 | C++20 | core + tests |
+| `linux-gcc-release` | ubuntu-latest | GCC 13 | C++20 | **Release**, because that is what a consumer builds. Every other preset is Debug; until P15a nothing here had compiled above `-O0`, and the first Release build failed on an optimisation-only warning. |
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
@@ -26,6 +27,7 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
 | `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
+| `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then `find_package`s it from a separate project and runs the result (§13) |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
 
@@ -164,8 +166,14 @@ logic without a test is a review blocker, not a CI blocker
 
 ## 6. Coverage (required, with judgement)
 
-Measured on `linux-gcc-coverage`, over `src/` and `include/smply/` only
-(tests, examples and `transports/` excluded).
+Measured on `linux-gcc-coverage`, over `src/`, `include/smply/` and
+`transports/common/` (tests, examples, `support/` and the *platform* adapters
+under `transports/` excluded).
+
+`transports/common/` is in because it is portable library code with real tests
+(P15a's BLE framing), and leaving it out would mean new logic with a full suite
+that the gate cannot see. The platform adapters stay out: a WinRT translation
+unit cannot be compiled, let alone instrumented, on the coverage runner.
 
 **The metric is exactly what `tools/coverage.sh` reports**: gcovr with
 `--exclude-throw-branches`. Pinning this matters more than it sounds — on the
@@ -401,3 +409,35 @@ A change — feature, phase, or fix — is done only when **all** hold:
 9. No known contradiction between docs and code is left undocumented.
 10. A handoff note is appended to [`handoff.md`](handoff.md), and the repository
     alone is sufficient for the next session — no reliance on chat history.
+
+## 13. Out-of-tree consumption (required)
+
+*(P15a.)* `tools/check_install.sh` builds smply in **Release**, installs it into
+a throwaway prefix, then configures a **separate CMake project**
+(`tests/install/`) against that prefix with `find_package(smply)`, builds it and
+**runs** it.
+
+Every part of that is load-bearing:
+
+* **Separate project.** Anything built inside our own tree consumes the
+  build-tree targets, where the in-tree `ALIAS` names resolve. It proves nothing
+  about the export. The first run of this check caught exactly that:
+  `install(EXPORT)` names an exported target `<namespace><target-name>`, so
+  `smply_util` shipped as `smply::smply_util` while every consumer in the
+  repository says `smply::util`. Fixed with `EXPORT_NAME`; invisible without
+  this gate.
+* **Running it.** A package that exports the headers but forgets the archive can
+  still configure and build a program that never calls into it. The check calls
+  a symbol from each installed target, and compares `smply::version()` (from the
+  archive) against `SMPLY_VERSION_STRING` (from the header), so a prefix mixing
+  two installs fails.
+* **Release.** It is what a consumer builds, and see §1.
+
+`smply::minicbor` and the test doubles are **not** installed; they are
+development scaffolding. The installed prefix does contain QCBOR's headers and
+config package — QCBOR's own install rules run alongside ours — which is a
+packaging fact, not an API leak: ADR-0007 keeps QCBOR out of `include/smply/`
+and §10 still enforces it.
+
+Only the `find_package` mode is covered. `add_subdirectory` and `FetchContent`,
+the SBOM and the version policy remain P18's.

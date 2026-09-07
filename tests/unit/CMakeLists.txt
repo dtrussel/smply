@@ -2,6 +2,7 @@
 
 add_executable(smply_unit_tests
     test_assembler.cpp
+    test_ble_framing.cpp
     test_cbor.cpp
     test_clock.cpp
     test_dispatcher.cpp
@@ -30,6 +31,7 @@ target_link_libraries(smply_unit_tests
         # Dispatcher is not part of the core, so testing it means linking the
         # separate target a real adapter would link.
         smply::util
+        smply::transport_common
         smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain

@@ -42,9 +42,24 @@ else()
         -Wdouble-promotion
         -Wformat=2
         -Wimplicit-fallthrough
-        -Wnull-dereference
         -Wextra-semi
     )
+
+    # -Wnull-dereference is NOT in that list, and its absence is deliberate.
+    #
+    # It only fires under optimisation, and P15a's first Release build -- the
+    # first this project has ever done -- showed why that matters: with GCC 13
+    # at -O3 it reports "potential null pointer dereference" inside libstdc++'s
+    # basic_string copy constructor, inlined through smply::Error's implicit
+    # copy. The pointer is std::string's own `_M_dataplus._M_p`; no pointer of
+    # smply's is involved, there is nothing to fix in our code, and declaring
+    # the dependency SYSTEM does not help because the offending code has been
+    # inlined into our translation unit by then. Clang at -O3 is clean.
+    #
+    # Keeping it would mean either -Wno-error for one check, which contradicts
+    # warnings-as-errors, or leaving the library uncompilable in Release with
+    # GCC -- which is what a consumer builds. Dropped, with the evidence
+    # recorded, rather than suppressed at a call site that is not ours.
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(smply_internal_options INTERFACE
             -Wduplicated-cond

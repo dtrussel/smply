@@ -58,7 +58,7 @@ if [[ -n "${SMPLY_LINT_SKIP_CPPCHECK:-}" ]]; then
 elif command -v cppcheck >/dev/null 2>&1; then
     echo "running $(cppcheck --version)"
 
-    cppcheck_includes=(-I include -I src -I support -I tests/support -I tests/component -I tests/fuzz)
+    cppcheck_includes=(-I include -I src -I support -I transports -I tests/support -I tests/component -I tests/fuzz)
     # Catch2 is fetched into the build tree; its generated config header lives
     # beside it. Both are optional -- a source-only checkout still lints.
     for dir in "$BUILD_DIR/_deps/catch2-src/src" \
@@ -82,7 +82,7 @@ elif command -v cppcheck >/dev/null 2>&1; then
              --suppressions-list=tools/cppcheck-suppressions.txt \
              --error-exitcode=1 \
              --quiet \
-             include src support tests || status=1
+             include src support transports tests || status=1
 else
     echo "note: cppcheck not installed -- skipping (CI runs it; see docs/quality-gates.md)"
 fi

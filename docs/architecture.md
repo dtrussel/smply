@@ -335,7 +335,10 @@ smply/
 │   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
 │   └── detail/client_thread.hpp    debug-only client-context assertion
-├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble
+├── transports/
+│   ├── common/                 ble_framing.hpp  link_state.hpp — portable, header-only
+│   │                           smply::transport_common; built and tested everywhere
+│   └── winrt_ble/              (planned, P15b) Windows-only target smply::winrt_ble
 ├── support/minicbor/           a CBOR codec independent of src/cbor/, shared by the
 │                               test doubles and the example. Target smply::minicbor;
 │                               part of neither the library nor either consumer.

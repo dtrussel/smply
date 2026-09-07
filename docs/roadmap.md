@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P15 — WinRT BLE transport** (requires Windows) |
-| Last completed phase | P14b — the portable example |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 605 tests, 13 CI jobs plus a nightly soak. **The portable product is complete.** Everything remaining is Windows or hardware. |
+| **Next phase to work on** | **P15b — WinRT BLE transport** (**needs Windows**; cannot be built here) |
+| Last completed phase | P15a — portable BLE framing, transport contract, install/export |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -36,13 +36,14 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P13](#p13) | Fuzzing, hardening and coverage push | Complete | P10 |
 | [P14a](#p14a) | `Dispatcher`, the client-context check, the upload-skip fix | Complete | P12 |
 | [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Complete | P14a |
-| [P15](#p15) | WinRT BLE transport | Planned | P14a |
-| [P16](#p16) | WinRT BLE DFU example application | Planned | P15 |
+| [P15a](#p15a) | Portable BLE framing, transport contract, install/export | Complete | P14a |
+| [P15b](#p15b) | WinRT BLE transport | Planned (**needs Windows**) | P15a |
+| [P16](#p16) | WinRT BLE DFU example application | Planned (**needs Windows**) | P15b |
 | [P17](#p17) | Hardware interoperability suite | Planned | P16 |
 | [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17 |
 
-Phases P1–P14b are portable and can be developed and verified entirely on Linux.
-P15–P17 require Windows; P17 additionally requires hardware.
+Phases P1–P15a are portable and can be developed and verified entirely on Linux.
+P15b–P17 require Windows; P17 additionally requires hardware.
 
 ---
 
@@ -1895,10 +1896,181 @@ count is the only thing that catches it.
 
 ---
 
-<a id="p15"></a>
-## P15 — WinRT BLE transport
+<a id="p15a"></a>
+## P15a — Portable BLE framing, the transport contract, install/export
 
-**Status: Planned** · **Depends on:** P14a · **Requires Windows**
+**Status: Complete** (2026-09-07) · **Depends on:** P14a
+
+**Objective.** Everything about the BLE transport that can be *verified* without
+Windows, and the packaging an out-of-tree adapter needs before P15b can be
+consumed at all.
+
+**Scope.** `transports/common/` (header-only `smply::transport_common`): BLE
+fragment sizing and a `LinkState` for the `close()` contract. The two transport
+obligations the P6 follow-up filed here, moved into the normative contract.
+`install(TARGETS … EXPORT)` for `smply::smply` and `smply::util`, with a config
+package and one out-of-tree consumption test.
+
+**Out of scope.** Every line of WinRT (P15b). `Transport::connected()` (P4's
+row, still filed). The other two consumption modes, the SBOM and the
+documentation audit (P18).
+
+**Tasks.** `fragment_size()` = `MaxPduSize − 3` clamped to `[20, 512]`; a
+`Fragmenter` that walks one SMP message as spans without copying; the
+`Open → Closing → Closed` state machine; the contract move; install/export.
+
+**Files.** `transports/common/*`, `tests/unit/test_ble_framing.cpp`,
+`cmake/smplyConfig.cmake.in`, `tests/install/*`.
+
+**Tests.** Fragment sizes at the 23-byte minimum ATT MTU (⇒ 20), 247 and 517;
+the clamp at both ends; short, exact-multiple and remainder messages; a
+many-fragment message reassembling byte for byte. The close state machine's
+idempotency and its refusal of everything afterwards. An out-of-tree project
+that `find_package(smply)`s, links `smply::smply` and `smply::util`, and runs.
+
+**Docs.** `transport.hpp` and [`design.md`](design.md) §9 for the contract;
+[`architecture.md`](architecture.md) §10 layout;
+[`quality-gates.md`](quality-gates.md) §6 for the coverage filter.
+
+**Gates.** All P14b gates.
+
+**Acceptance.** The framing suite passes; an out-of-tree consumer builds and
+runs against an installed prefix.
+
+### Outcome
+
+**Completed.** `transports/common/` (`ble_framing.hpp`, `link_state.hpp`) as the
+header-only `smply::transport_common`; `tests/unit/test_ble_framing.cpp`; the
+two transport obligations moved into `transport.hpp` and `design.md` §9;
+install/export for `smply::smply` and `smply::util` with `cmake/smplyConfig.cmake.in`;
+`tests/install/` and `tools/check_install.sh`; a `linux-gcc-release` preset. 15
+new tests (**620** total), green on **all ten** presets. `transports/common/`
+measures 100 % line and 100 % branch.
+
+**Three defects found, none of them the one that was expected.**
+
+1. **The P0 follow-up predicted the wrong obstacle.** It expected
+   `install(EXPORT)` to reject `$<LINK_ONLY:qcbor::qcbor>`. QCBOR v1.6.1 sets
+   both `BUILD_INTERFACE` and `INSTALL_INTERFACE` and carries unconditional
+   install/export rules plus its own config package, so — brought in by
+   `FetchContent_MakeAvailable` — it installs itself alongside us and
+   `find_dependency(qcbor)` resolves it. CMake never objected. **The actual
+   rejection was our own `smply_internal_options`**, which carries the strict
+   warning set and lands in the interface as `$<LINK_ONLY:…>`. Fixed by linking
+   it `$<BUILD_INTERFACE:smply_internal_options>`.
+2. **Nothing in this project had ever been built above `-O0`.** All presets
+   inherited `CMAKE_BUILD_TYPE: Debug` from one `base` preset, so thirteen CI
+   jobs had never compiled at `-O2`. The first Release build failed: GCC's
+   `-Wnull-dereference` fires inside libstdc++'s `basic_string` copy
+   constructor, inlined through `smply::Error`'s implicit copy. Clang Release is
+   clean. The pointer is `std::string`'s own and the code is a system header's,
+   so there is nothing of ours to fix and `SYSTEM` does not help once it is
+   inlined. `-Wnull-dereference` was dropped with the evidence written into
+   `cmake/warnings.cmake`, and a `linux-gcc-release` preset and CI job now stand
+   where the gap was. **A consumer builds Release**, which is why this was fixed
+   here rather than filed.
+3. **The exported target name was wrong, and only an out-of-tree test could see
+   it.** `install(EXPORT)` names an exported target `<namespace><target-name>`,
+   so `smply_util` shipped as `smply::smply_util` while every consumer in the
+   repository says `smply::util` — the in-tree `ALIAS` does not travel. Fixed
+   with `EXPORT_NAME`. It configured, built and installed perfectly; only
+   `find_package` from a separate project failed.
+
+**A fourth defect, and the gate self-check is what found it.** Changing
+`smply_internal_options` to `$<BUILD_INTERFACE:…>` broke the `sed` in
+`verify_gates.sh`'s two flag-leak fixtures: they matched nothing, injected no
+violation, and the guard had nothing to reject. `gate-self-check` reported them
+as *not protecting anything* — exactly what it exists for, and exactly the rot
+the P1 follow-up predicted. Both fixtures were repaired, and `verify_gates.sh`
+gained a `substitute()` helper that **fails the whole script when a substitution
+matches nothing**, so this class of rot can no longer be silent. Three of this
+session's four defects were the same shape: a pattern that stopped matching
+after something was reworded.
+
+**And the flag-leak guard earned its keep.** Wrapping the options target in
+`$<BUILD_INTERFACE:…>` produced a *nested* generator expression, and the guard's
+`$<LINK_ONLY:[^>]*>` pattern stopped at the first `>` and reported a leak that
+was not there. The guard was made robust — it now tests each list entry for a
+`$<LINK_ONLY:` prefix, which nesting cannot confuse — rather than relaxed.
+
+**Remaining in this phase.** None.
+
+**Deviations, each recorded in the document it contradicts.**
+
+1. **The framing lives in `transports/common/`, not `transports/winrt_ble/`, and
+   its test is `test_ble_framing.cpp`, not `test_winrt_ble_framing.cpp`.** None
+   of it is Windows-specific, ADR-0005 makes fragmenting the transport's job
+   rather than the core's, and every future adapter needs the same arithmetic.
+2. **`-Wnull-dereference` left the warning set** (finding 2). A warning that
+   only fires under optimisation, only on one compiler, and only inside a system
+   header inlined into our code, cannot be kept alongside warnings-as-errors
+   without making the library uncompilable in Release.
+3. **The coverage filter now includes `transports/common/`**, where
+   `quality-gates.md` §6 previously excluded all of `transports/`. Portable,
+   fully tested library code should be measured; platform adapters stay out
+   because they cannot be compiled on the coverage runner at all.
+4. **An installed sanitizer build no longer carries the sanitizer's link
+   options**, because those ride on the same `smply_internal_options` target now
+   held to the build interface. Nobody ships an ASan build and the sanitizer
+   presets do not install, but §7's claim that those options propagate is now
+   true of the build tree only.
+
+### Refinement, written before starting (handoff protocol, start-of-session step 8)
+
+**P15 is split because this environment is Linux and P15 requires Windows.**
+The handoff protocol says a phase whose prerequisites are unmet is `Blocked` —
+but P15 is not uniformly blocked, and its own Files line says so: it already
+anticipated `test_winrt_ble_framing.cpp` because *"the fragmentation maths is
+testable without a radio"*. P15a is the part that can be genuinely verified
+here; P15b is the WinRT glue. Splitting also de-risks P15b, which will be
+written with no debugger and no radio: the arithmetic it rests on is proven
+first.
+
+Decided with the user: split, and take the adapter-sized slice of install/export
+rather than all of P18's packaging.
+
+**The framing code is not under `winrt_ble/` and its test is not named for
+WinRT.** It is platform-independent, every future adapter (serial, TCP) needs
+the same arithmetic, and ADR-0005 says fragmenting is the transport's business
+and not the core's — so `transports/common/`, and
+`tests/unit/test_ble_framing.cpp`.
+
+### Two findings from the first hour, both of which the install work depends on
+
+1. **The obstacle the P0 follow-up predicted is not the obstacle.** It expected
+   `install(EXPORT)` to reject `$<LINK_ONLY:qcbor::qcbor>`. QCBOR v1.6.1 turns
+   out to set both `BUILD_INTERFACE` and `INSTALL_INTERFACE` on its target and
+   to carry unconditional `install(TARGETS … EXPORT qcborTargets)` plus its own
+   config package — so, brought in by `FetchContent_MakeAvailable`, it installs
+   itself alongside us and `find_dependency(qcbor)` resolves it. CMake never
+   complains about it. **What it does reject is our own
+   `smply_internal_options`**, an INTERFACE target that carries the strict
+   warning set and lands in the interface as `$<LINK_ONLY:…>`. Fixed by linking
+   it as `$<BUILD_INTERFACE:smply_internal_options>`: the flags stay in the
+   build tree and never reach the export. One consequence to record —
+   sanitizer *link* options ride on that same target, so an installed
+   sanitizer-instrumented build would no longer tell consumers to link the
+   runtime. Nobody ships one, and the sanitizer presets do not install.
+
+2. **Nothing in this project has ever been built in Release.** All nine presets
+   inherit `CMAKE_BUILD_TYPE: Debug` from a single `base` preset, so thirteen CI
+   jobs have never once compiled at `-O2` or above. The first Release build
+   fails: GCC's `-Wnull-dereference` fires inside libstdc++'s `basic_string`
+   copy constructor, inlined through `smply::Error`'s implicit copy. Clang
+   Release is clean. It is a heuristic that only fires under optimisation, and
+   the code it points at is a system header's, not ours — but "the library does
+   not compile in Release with GCC" is precisely the defect that matters when
+   the phase's other half exists to make the library installable. **A consumer
+   builds Release.** Both the warning-set change and a Release preset and CI job
+   are therefore in scope here rather than filed, because packaging something
+   nobody can compile is not delivering it.
+
+---
+
+<a id="p15b"></a>
+## P15b — WinRT BLE transport
+
+**Status: Planned** · **Depends on:** P15a · **Requires Windows**
 
 **Objective.** A reference `Transport` over C++/WinRT GATT.
 
@@ -1906,24 +2078,33 @@ count is the only thing that catches it.
 [`design.md`](design.md) §10.
 
 **Out of scope.** Scanning/pairing UI, connection policy (the example's job).
+The fragmentation arithmetic and the `close()` state machine — P15a shipped
+both in `transports/common/`, tested; **use them rather than writing them
+again.**
 
 **Tasks.** Service and characteristic discovery by the UUIDs in
 [`protocol-notes.md`](protocol-notes.md) §8; CCCD write + `ValueChanged`
-subscription; fragmenting `send()` by `MaxPduSize − 3` using write-without-
-response; `max_message_size()` as a configured cap; inbound copy → `Dispatcher`
-→ `on_bytes()`; `ConnectionStatusChanged` → `on_disconnected()`;
-`event_revoker`-based lifetime; a synchronous, idempotent `close()` after which
-no callback can fire; MTU change handling.
+subscription; `send()` fragmenting via `transport_common`'s `Fragmenter` over
+write-without-response; `max_message_size()` as a configured cap; inbound copy →
+`Dispatcher` → `on_bytes()`; `ConnectionStatusChanged` → `on_disconnected()`;
+`event_revoker`-based lifetime; wiring `LinkState` into a synchronous,
+idempotent `close()`; MTU change handling.
 
-**Files.** `transports/winrt_ble/*`, `tests/unit/test_winrt_ble_framing.cpp`
-(the fragmentation maths is testable without a radio).
+**Files.** `transports/winrt_ble/*`, `.github/workflows/ci.yml`
+(`windows-winrt`).
 
-**Tests.** Pure-logic tests for fragment splitting at various MTUs (including
-the minimum 23-byte ATT MTU) and for the `close()` state machine. Anything
-requiring a radio is deferred to P17.
+**Tests.** None that can run. The pure logic is already tested by P15a; what
+remains needs a radio, which is P17.
 
-**Docs.** [`design.md`](design.md) §10 reconciled; adapter README covering
-threading and shutdown obligations.
+**Read this before starting.** **P15b cannot be verified on Linux at all**, and
+a `windows-winrt` CI job *compiles* it but never *runs* it — there is no
+Bluetooth radio on a GitHub runner. So a green CI job means "it builds", not
+"it works". Either develop it on a Windows machine with a real device, or accept
+that every behavioural claim stays unverified until P17. Say which in the
+outcome; do not let a green compile job read as a working transport.
+
+**Docs.** [`design.md`](design.md) §10 reconciled against what was built; an
+adapter README covering the threading and shutdown obligations.
 
 **Gates.** `windows-winrt` **and** `core-without-winrt` both green;
 `check_public_headers.py` confirms no WinRT type in `include/smply/`.
@@ -1936,7 +2117,7 @@ platforms; no `winrt::` symbol is reachable from a public header.
 <a id="p16"></a>
 ## P16 — WinRT BLE DFU example application
 
-**Status: Planned** · **Depends on:** P15 · **Requires Windows**
+**Status: Planned** · **Depends on:** P15b · **Requires Windows**
 
 **Objective.** A usable console tool that performs a real update, and the
 reference for how an application drives smply across a reboot.
@@ -2100,6 +2281,10 @@ them.
 | P14b | The example demonstrates only the **happy path**. A `--fail-confirm` mode showing MCUboot's revert — the device booting the new image, the application declining to confirm, the next reset undoing it — would demonstrate the one safety property the whole design turns on, and needs the stub to model a boot failure. | when the example is next touched |
 | P14b | `examples/cli_dfu/stub_device.cpp` answers the five commands one clean update needs. It does **not** model `erase`, a second image pair, session resume by `sha`, or offset correction beyond the trivial case. That is deliberate — `ServerSimulator` is the reference — but a reader may mistake the stub for one. | — (by design) |
 | P14b | `support/minicbor/` is not installed or exported, and neither is `smply::util`. An adapter consuming smply from an install tree gets neither. P18 has to decide whether `smply::util` is part of the installed package (it should be — P15's adapter needs it) and whether `minicbor` stays out (it should). | P18 |
+| P15a | **The install check covers `find_package` only.** `add_subdirectory` and `FetchContent` consumption are untested, and both are how a consumer is most likely to start. P18's task list already names all three. | P18 |
+| P15a | An installed **sanitizer** build no longer carries the sanitizer's link options to consumers, because they ride on `smply_internal_options`, now held to `$<BUILD_INTERFACE:>` so the export is possible at all. Nobody ships one; if that changes, the options need a home outside that target. | when somebody ships one |
+| P15a | `smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter. P15b's adapter is in-tree so it does not care, but a third-party adapter would. Decide with the rest of the packaging. | P18 |
+| P15a | `-Wnull-dereference` is gone from the GCC set. If a future GCC stops false-positiving inside libstdc++ under `-O2`, it is worth restoring — it is a genuinely useful check, and it was dropped for the compiler's behaviour rather than for its value. | when GCC improves |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
 | P13 | **The fuzz corpora are not pruned.** The local soak added ~1 100 inputs across the seven directories, kept because each reached new coverage, but `-merge=1` was run only once at the end of the phase. The smoke job replays every committed input on every push, so the corpus is a CI cost as well as a regression suite. Re-merge when a directory's replay time becomes noticeable. | when it costs |
 | P13 | `fuzz_smp_client_rx` drives a client with **one** pending request, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5) — that needs several requests completed and a late response for a retired one. The unit suite covers it; the fuzzer does not. | when the target is next touched |

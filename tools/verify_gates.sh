@@ -93,6 +93,31 @@ expect_ok() {
 
 restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$WORK" -xf -; }
 
+# substitute <file> <sed-expression>
+# Applies the expression and FAILS THE SCRIPT if it changed nothing.
+#
+# A fixture that injects its violation by rewriting real source rots the moment
+# that source is reworded: sed matches nothing, the scratch tree stays valid, the
+# gate has nothing to reject, and the case reports PASS while testing nothing.
+# It has happened twice -- P1's roadmap fixture, and P15a's, when
+# smply_internal_options gained a $<BUILD_INTERFACE:> wrapper. A silent no-op is
+# the one failure this script must never have, so it is now loud.
+substitute() {
+    local file="$1"
+    local expression="$2"
+    local before after
+    before="$(cat "$file")"
+    sed -i "$expression" "$file"
+    after="$(cat "$file")"
+    if [[ "$before" == "$after" ]]; then
+        echo "FATAL: fixture is stale -- this substitution matched nothing:" >&2
+        echo "         file: ${file#"$WORK"/}" >&2
+        echo "         sed:  $expression" >&2
+        echo "       The gate below would have passed while testing nothing." >&2
+        exit 1
+    fi
+}
+
 echo "--- each gate must reject its violation ---"
 
 # 1. clang-format
@@ -144,7 +169,7 @@ expect_fail "check_deps rejects a dependency absent from docs/dependencies.md" \
 restore cmake/dependencies.cmake
 
 # 7. Dependency inventory: pinned to a tag rather than a commit hash
-sed -i 's|^set(SMPLY_QCBOR_COMMIT .*|set(SMPLY_QCBOR_COMMIT "v1.6.1")|' "$WORK/cmake/dependencies.cmake"
+substitute "$WORK/cmake/dependencies.cmake" 's|^set(SMPLY_QCBOR_COMMIT .*|set(SMPLY_QCBOR_COMMIT "v1.6.1")|'
 expect_fail "check_deps rejects a tag pin instead of a full commit hash" \
     python3 tools/check_deps.py
 restore cmake/dependencies.cmake
@@ -173,8 +198,8 @@ expect_fail "check_docs R3 rejects a reference to a non-existent ADR" \
 restore docs/architecture.md
 
 # 10. Docs R3: invalid ADR status
-sed -i 's|^\*\*Status:\*\* Accepted (2026-09-04)|**Status:** Probably fine|' \
-    "$WORK/docs/decisions/ADR-0001-cpp-standard.md"
+substitute "$WORK/docs/decisions/ADR-0001-cpp-standard.md" \
+    's|^\*\*Status:\*\* Accepted.*|**Status:** Probably fine|'
 expect_fail "check_docs R3 rejects an invalid ADR Status line" python3 tools/check_docs.py
 restore docs/decisions/ADR-0001-cpp-standard.md
 
@@ -191,8 +216,10 @@ restore include/smply/version.hpp.in
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error
 # message, the compile of tests/consumer is the ground truth behind it.
-sed -i 's|target_link_libraries(smply PRIVATE smply_internal_options)|target_link_libraries(smply PUBLIC smply_internal_options)|' \
-    "$WORK/CMakeLists.txt"
+# The real line links it PRIVATE *and* wraps it in $<BUILD_INTERFACE:> so the
+# install export is possible (P15a). The violation drops both.
+substitute "$WORK/CMakeLists.txt" \
+    's|target_link_libraries(smply PRIVATE .*smply_internal_options.*)|target_link_libraries(smply PUBLIC smply_internal_options)|'
 
 expect_fail "the configure-time guard rejects strict flags leaking to consumers" \
     cmake "${CONFIGURE_ARGS[@]}"
