@@ -2122,6 +2122,14 @@ a link-and-call smoke test, a README, the `windows-winrt` preset and CI job.
 Plus `transports/common/smp_ble_uuid.hpp` and 3 new tests (**623** total), green
 on all eight Linux presets.
 
+**What CI actually did, read from the log rather than the badge** (run #27,
+16/16 green): configure printed `building the WinRT BLE transport`, MSVC 14.51
+compiled `winrt_ble_transport.cpp` at `/W4 /WX`, `smply_winrt_ble.lib` and
+`smply_winrt_ble_smoke.exe` both linked -- so `WindowsApp.lib` resolves and the
+pimpl is complete where it must be -- and `winrt_ble_smoke` ran as test 1 of 624
+in 0.12 s, failing fast rather than hanging. It compiled on the first attempt,
+which was not the expectation going in.
+
 **Say the limit out loud, because a green badge will not.** No radio has seen
 this code. The `windows-winrt` job compiles the adapter at `/W4 /WX` and runs a
 smoke test that links it and checks it refuses what it should; a GitHub runner

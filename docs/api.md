@@ -15,6 +15,14 @@ was three methods and a constructor, and what shipped needed a destructor, a
 could not show. Read a proposed signature as an intent, not a contract, and
 record the deviations in the roadmap.
 
+**Scope: `include/smply/` only.** The headers under `transports/` -- the
+portable helpers in `transports/common/` and the platform adapters beside them --
+are not part of this surface. They are consumed by *adapter authors* rather than
+by applications, they ship as separate targets that `libsmply` never links, and
+they are documented at their declarations plus [`design.md`](design.md) §10.
+Said here because the absence of `Fragmenter` and `WinRtBleTransport` below is a
+decision, not an omission.
+
 | Header | Status |
 | ------ | ------ |
 | `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1; `limits.hpp` extended by every group phase since) |
