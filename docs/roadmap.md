@@ -2253,6 +2253,15 @@ out in full), `scanner.cpp`, its own `winrt_prelude.hpp`, a README — plus
 `FileImageSource` moved out of `cli_dfu`. 14 new tests (**637** total), green on
 all eight Linux presets.
 
+**What CI actually did, read from the log rather than the badge** (run #29,
+16/16 green): MSVC compiled `examples/winrt_ble_dfu/main.cpp` and `scanner.cpp`
+at `/W4 /WX` and linked `winrt_ble_dfu.exe`; `smply_dfu_app.lib` built and
+linked into it; 638 tests passed on Windows, one more than Linux's 637 because
+the adapter's smoke test is registered there. Checking this matters more than it
+sounds: a wrong `add_subdirectory` guard would have left the example unbuilt and
+the job just as green. It compiled on the first attempt, which was not the
+expectation going in.
+
 **Its acceptance criterion is not met and cannot be here.** No device has run
 this: CI compiles and links the tool on a runner with no radio, and never
 executes it. The criterion's own clause applies — it is recorded against P17.
