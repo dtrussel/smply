@@ -80,10 +80,26 @@ else
 fi
 
 if [[ $ENFORCE -eq 1 ]]; then
+    # gcovr distinguishes "under threshold" from "something went wrong", and so
+    # must this script: 2 is the line threshold, 4 the branch one, 6 both.
+    # Anything else is gcovr failing, and reporting that as a shortfall sends
+    # the next person looking for missing tests that are not missing. It
+    # happened: a moved source left a stale .gcno in the build tree, gcovr
+    # refused to read it, and this said "below the thresholds".
     if [[ ${GCOVR_STATUS:-1} -ne 0 ]]; then
         echo >&2
-        echo "error: below the thresholds in docs/quality-gates.md section 6" >&2
-        echo "       (${LINE_MIN}% line, ${BRANCH_MIN}% branch)." >&2
+        case ${GCOVR_STATUS:-1} in
+        2 | 4 | 6)
+            echo "error: below the thresholds in docs/quality-gates.md section 6" >&2
+            echo "       (${LINE_MIN}% line, ${BRANCH_MIN}% branch)." >&2
+            ;;
+        *)
+            echo "error: gcovr failed (exit ${GCOVR_STATUS:-1}); the coverage above, if" >&2
+            echo "       any, means nothing. This is NOT a threshold failure." >&2
+            echo "       A stale .gcno for a moved or renamed source is the usual" >&2
+            echo "       cause: rm -rf the build directory and configure again." >&2
+            ;;
+        esac
         exit 1
     fi
     echo

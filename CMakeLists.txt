@@ -168,12 +168,26 @@ if(SMPLY_BUILD_FUZZERS AND NOT SMPLY_BUILD_TESTS)
     message(FATAL_ERROR "SMPLY_BUILD_FUZZERS requires SMPLY_BUILD_TESTS")
 endif()
 
+# Before any add_subdirectory() that might call add_test(). CMake silently
+# ignores add_test() issued before enable_testing() -- no warning, no error, the
+# test simply never appears in the suite. examples/cli_dfu registers one, and it
+# went missing exactly once before this line moved up here.
+if(SMPLY_BUILD_TESTS)
+    enable_testing()
+endif()
+
+# Shared by the tests and the examples; part of neither, and never linked into
+# the library. Added when either wants it, which is why it is not inside the
+# SMPLY_BUILD_TESTS block below.
+if(SMPLY_BUILD_TESTS OR SMPLY_BUILD_EXAMPLES)
+    add_subdirectory(support)
+endif()
+
 if(SMPLY_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
 if(SMPLY_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests/support)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/component)

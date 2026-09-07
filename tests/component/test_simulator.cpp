@@ -10,8 +10,8 @@
 #include "fake_transport.hpp"
 #include "manual_clock.hpp"
 #include "message_builder.hpp"
+#include "minicbor/minicbor.hpp"
 #include "server_simulator.hpp"
-#include "test_cbor.hpp"
 
 #include "harness.hpp"
 
@@ -44,7 +44,7 @@ using smply::test::ManualClock;
 using smply::test::ServerConfig;
 using smply::test::ServerSimulator;
 using smply::test::SwapType;
-namespace tcbor = smply::test::tcbor;
+namespace tcbor = smply::minicbor;
 
 namespace {
 

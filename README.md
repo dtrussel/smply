@@ -15,9 +15,10 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P14a complete — the portable library does what it exists to do, its
-untrusted-input surface is fuzzed, and adapter authors have the marshalling
-helper the threading model assumes.**
+**Phases P0–P14 complete — the portable library is done: it does what it exists
+to do, its untrusted-input surface is fuzzed, adapter authors have the
+marshalling helper the threading model assumes, and there is a runnable example
+that performs a whole update.**
 SMP framing and streaming reassembly, a bounded CBOR façade, request
 correlation with timeouts and cancellation, the OS and image management groups,
 MCUboot image parsing with SHA-256, the image upload state machine, and
@@ -25,11 +26,13 @@ MCUboot image parsing with SHA-256, the image upload state machine, and
 Seven libFuzzer targets over every decoder that reads bytes it did not write,
 with the coverage thresholds and a fuzz smoke run now blocking. And
 `smply::Dispatcher`: the thread-marshalling helper every transport adapter
-needs, shipped as a separate target the core does not link.
-604 tests, 13 CI jobs green plus a nightly soak.
+needs, shipped as a separate target the core does not link. And
+`examples/cli_dfu/`, which drives a whole update — upload, reset, reconnect,
+trial boot, confirmation — against a stub device on another thread, and runs on
+every push.
+605 tests, 13 CI jobs green plus a nightly soak.
 
-What is not built yet: the example applications, and the WinRT BLE transport.
-See
+What is not built yet: the WinRT BLE transport and the Windows example. See
 [`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase plan and what is
 next.
 
@@ -73,6 +76,20 @@ instead.
 Every CI configuration has a matching preset, so a CI failure reproduces
 locally with one command. `cmake --list-presets` shows them all.
 
+### Running the example
+
+```sh
+build/linux-clang/examples/cli_dfu/cli_dfu
+```
+
+With no arguments it invents a device and an image to install, and performs the
+whole update against a stub device running on a second thread — upload, mark for
+test, reset, reconnect, trial boot, confirm. `--image PATH` installs a real
+firmware file instead; `--mode` picks one of the three `UpdateMode`s.
+
+`examples/cli_dfu/main.cpp` is the file to read: the other four are the stub
+device it drives.
+
 ### Checks
 
 ```sh
@@ -96,6 +113,7 @@ modifies the working tree.
 | reviewing the design               | [`docs/architecture.md`](docs/architecture.md) |
 | implementing a protocol detail     | [`docs/protocol-notes.md`](docs/protocol-notes.md) |
 | looking for the API                | [`docs/api.md`](docs/api.md)               |
+| wanting working code               | [`examples/cli_dfu/main.cpp`](examples/cli_dfu/main.cpp) |
 | wondering *why* something is so    | [`docs/decisions/`](docs/decisions/)       |
 
 ## Documentation index

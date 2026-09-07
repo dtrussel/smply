@@ -13,6 +13,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as the `cli_dfu_demo` test |
 | HIL / interoperability | `tests/hil/` | minutes | manual + nightly on a self-hosted runner |
 
 ## 2. Test doubles (`tests/support/`)
@@ -294,6 +295,27 @@ from a swap that simply has not happened; the confirmation fork in both modes;
 cancellation from every non-terminal state; and an illegal event in **every**
 state, because "this one silently swallows a stray event" is precisely the hole
 a spot check leaves.
+
+### The example as a test (`examples/cli_dfu/`)
+
+`cli_dfu_demo` runs the example with `--quiet` and checks its exit code, which is
+zero only for an update that reached `Completed`. That makes "the example
+performs a complete simulated update end to end" a check rather than a claim, and
+it covers ground no other suite does:
+
+* it is the **only multi-threaded program in the tree**, so it is what the
+  `linux-clang-tsan` job has to work with beyond `Dispatcher`'s unit tests;
+* it is the only place `Dispatcher`'s **wake callback** has a real caller;
+* it runs on a **real clock**, not `ManualClock` — so a deadline that only works
+  because a test advanced time by exactly 1 ms would show up here;
+* it exercises the **application's half of the reconnect protocol**: a dropped
+  link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
+
+Its device is `examples/cli_dfu/stub_device.*`, and that device is **not** a
+protocol reference — `ServerSimulator` is. The stub answers the five commands one
+clean update needs and no more. If the two ever disagree, the simulator is right;
+growing the stub to match it would be building a second test double outside
+`tests/`.
 
 ## 4. Component tests (`tests/component/`)
 

@@ -1,20 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
-#ifndef SMPLY_TESTS_TEST_CBOR_HPP
-#define SMPLY_TESTS_TEST_CBOR_HPP
+#ifndef SMPLY_MINICBOR_HPP
+#define SMPLY_MINICBOR_HPP
 
 /// \file
-/// A CBOR writer and reader for tests, deliberately **independent** of
-/// `src/cbor/`.
+/// A small CBOR writer and reader, deliberately **independent** of `src/cbor/`.
 ///
 /// Both halves are written straight from RFC 8949's major-type table rather
 /// than from smply's façade, and neither shares a line with it. That
-/// independence is the whole point: from P11 the component tests drive a real
-/// client into a simulated server, and if the simulator decoded requests and
-/// encoded responses with the same reader and writer the client uses, the round
-/// trip would prove only that smply agrees with itself. A symmetric bug -- a
-/// writer that emits a wrong head and a reader that accepts it -- would sail
-/// straight through. Anchored on this side by hand-built byte vectors, it
-/// cannot.
+/// independence is the whole point: the component tests drive a real client
+/// into a simulated server, and if the simulator decoded requests and encoded
+/// responses with the same reader and writer the client uses, the round trip
+/// would prove only that smply agrees with itself. A symmetric bug -- a writer
+/// that emits a wrong head and a reader that accepts it -- would sail straight
+/// through. Anchored on this side by hand-built byte vectors, it cannot.
+///
+/// **Two consumers, and the rule holds for both** (it moved here from
+/// `tests/support/` in P14b): the test doubles in `tests/support/`, and the stub
+/// device in `examples/cli_dfu/`. It lives outside both because an example may
+/// not depend on `tests/` -- examples build when `SMPLY_BUILD_TESTS` is `OFF` --
+/// and because a file named `test_cbor` had no business in a shipped example.
+///
+/// It is **not** part of the library and is never linked into it. smply's own
+/// CBOR is `src/cbor/`, over QCBOR (ADR-0007).
 ///
 /// The subset is exactly what MCUmgr uses: definite lengths, unsigned and
 /// negative integers, byte and text strings, booleans, arrays and maps with
@@ -34,7 +41,7 @@
 #include <utility>
 #include <vector>
 
-namespace smply::test::tcbor {
+namespace smply::minicbor {
 
 /// Builds CBOR by hand.
 ///
@@ -239,6 +246,6 @@ public:
 /// message was built wrong.
 [[nodiscard]] std::optional<Value> parse(ConstBytes bytes);
 
-} // namespace smply::test::tcbor
+} // namespace smply::minicbor
 
-#endif // SMPLY_TESTS_TEST_CBOR_HPP
+#endif // SMPLY_MINICBOR_HPP

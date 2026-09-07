@@ -336,7 +336,12 @@ smply/
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
 │   └── detail/client_thread.hpp    debug-only client-context assertion
 ├── transports/winrt_ble/       (planned, P15) Windows-only target smply::winrt_ble
-├── examples/                   (cli_dfu/ planned P14b; winrt_ble_dfu/ P16)
+├── support/minicbor/           a CBOR codec independent of src/cbor/, shared by the
+│                               test doubles and the example. Target smply::minicbor;
+│                               part of neither the library nor either consumer.
+├── examples/cli_dfu/           the portable DFU example: main.cpp is the pump loop;
+│                               the other four files are the stub device it drives
+│                               (winrt_ble_dfu/ planned, P16)
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp

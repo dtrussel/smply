@@ -875,6 +875,12 @@ Four behaviours a caller has to know, none of which the signatures show:
 
 ## Representative usage
 
+**All of this is now runnable.** `examples/cli_dfu/main.cpp` is the sketch below
+as a working program — the same pump, against a stub device on another thread,
+with the reconnect and the confirmation actually handled rather than elided. It
+runs on every push as the `cli_dfu_demo` test. Where the two differ, the example
+is the one that compiles.
+
 ### Portable: one update, application-driven pump
 
 ```cpp
@@ -932,6 +938,14 @@ while (!done) {                                // the pump: one thread, no magic
     app.wait_until(client.next_deadline());
 }
 ```
+
+Two things the sketch leaves out and the example does not. **`wait_until` waits on
+the earlier of `client.next_deadline()` and `updater.next_deadline()`**, woken
+early by `Dispatcher`'s wake callback — waiting on the client's alone would sleep
+through the updater's reconnect grace timer. And **the handler above does not
+reconnect or confirm inline**: it records what was asked and the loop acts on its
+next turn, because both are the application's own work and neither belongs inside
+a callback that is running inside `poll()`.
 
 ### Low-level: a single request
 

@@ -6,3 +6,5 @@
 # They are smply's own code, so the strict warning set and the format and lint
 # gates apply to them -- but PRIVATE, so nothing about that reaches a real
 # consumer copying the code out.
+
+add_subdirectory(cli_dfu)

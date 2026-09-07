@@ -1714,3 +1714,86 @@ early: the example generates a throwaway MCUboot image so it can run with no
 arguments in CI (nothing in `examples/` may depend on `tests/`), and the
 device's own thread is what makes `Dispatcher` and the TSan job earn their
 keep — a single-threaded example would demonstrate neither.
+
+### 2026-09-07 — P14b: the portable example
+
+**Status after this session:** P14b = `Complete`. **The portable product is
+complete**; everything remaining is Windows or hardware. Next phase: **P15 —
+WinRT BLE transport**, which requires Windows.
+
+**Completed.** `examples/cli_dfu/` — `main.cpp` (the pump loop), `stub_device.*`
+(a device on its own thread), `loopback_transport.*`, `file_image_source.*` and
+`demo_image.*` — plus the CBOR codec promoted out of `tests/support/` into
+`support/minicbor/` as the target `smply::minicbor`. It runs as the
+`cli_dfu_demo` test (**605** total), green on all nine presets and clean under
+both ASan/UBSan and TSan.
+
+**This is the first thing in the tree to run smply on a real clock**, from a real
+`main()`, with inbound bytes arriving on a thread the library does not own. It is
+also the only caller `Dispatcher`'s wake callback has anywhere, which is what
+P14a shipped it for.
+
+**Changed.** A new top-level directory, `support/`, for code shared by the tests
+and the examples and part of neither. `tests/support/test_cbor.*` moved there and
+became `smply::minicbor`; the 115 call sites did not move, because all three
+consumers already reached it through a `namespace tcbor = …` alias.
+
+**Remaining in this phase.** None.
+
+**Caveats — read these before P15.**
+
+* **`add_test()` before `enable_testing()` is silently ignored.** No warning, no
+  error, the test simply never appears in the suite. `cli_dfu_demo` went missing
+  exactly once that way, and the only thing that catches it is the test count.
+  `enable_testing()` now sits above every `add_subdirectory()` in the top-level
+  `CMakeLists.txt`, with a comment. **Check the count after adding a test.**
+* **A new top-level source directory must be added to `tools/sources.sh`.** That
+  script lists its roots explicitly, and a missing one is not an error — the
+  format and lint gates never see the directory and go on passing. Same shape as
+  P14a's `check_docs.py` regex and P1's rotted `verify_gates.sh` fixture: **when
+  you add or rename something, check what was matching the old set.** The list
+  now carries a comment saying so.
+* **A definite-length CBOR map that lies about its size fails somewhere else.**
+  `encode_state()` declared eight pairs and wrote nine; the error surfaced two
+  commands later as `"array element not a map"`. P11 hit the same off-by-one in
+  `ServerSimulator`. Count the pairs against the block that writes them.
+* **A simulated device must forget a dropped link *before* it pretends to
+  reboot.** The application reconnects the moment it sees the disconnect — which
+  is *during* the reboot delay — so cleaning up afterwards wipes the link it just
+  attached and swallows the first request on it. It presented as a plain timeout
+  at `VerifyingBooted`, which is a long way from the cause.
+* **`Result<T>` needs `T` nothrow-move-constructible** (ADR-0002), and
+  `std::ifstream`'s move constructor is not `noexcept`. `FileImageSource` holds
+  its stream by `unique_ptr` for that reason alone. Any consumer wrapping a
+  standard type in a `Result` will meet this.
+* **A moved source leaves its `.gcno` behind, and gcovr refuses to read the
+  orphan.** `coverage.sh` reported that as *below the thresholds* until this
+  session taught it to tell gcovr's threshold exit codes from its error ones.
+  `rm -rf` the build directory after moving or renaming a source.
+* **A new consumer moves the coverage number without any coverage being lost.**
+  Whole-core moved 98.4 / 87.5 → 98.1 / 87.2 when the example was added, entirely
+  because `detail/expected.hpp` grew from 469 counted lines to 492: the example
+  instantiates `Result<T>` for types no test uses, and an uninstantiated template
+  counts on neither side of the ratio. Adding a caller adds denominator.
+* **`examples/cli_dfu/stub_device.*` is not a protocol reference and must not
+  become one.** `ServerSimulator` is. The stub answers five commands; if the two
+  disagree, the simulator is right. Its file comment says so, because the
+  temptation to reconcile them will be real.
+
+**Docs updated.** `api.md` (the usage section now points at code that compiles,
+and records the two things the sketch elides), `architecture.md` (§10 layout:
+`support/minicbor/`, `examples/cli_dfu/`), `testing.md` (§1 the example as a
+level, §3 what it covers that nothing else does), `quality-gates.md` (§6 measured
+at P14b, why a new consumer moves the number, and the stale-`.gcno` trap),
+`roadmap.md` (P14b Complete with outcome and six deviations, three new
+follow-ups, Current state),
+`README.md` (status, how to run it, and a "wanting working code" row), this log.
+
+**Recommended next.** **P15 — WinRT BLE transport.** It needs Windows, so it
+cannot be developed here. Two things from this phase carry straight into it:
+`examples/cli_dfu/loopback_transport.*` is the shape a real adapter has —
+`send()` returns without delivering, and inbound goes through a `Dispatcher` —
+and `SMPLY_ASSERT_CLIENT_THREAD()` will catch the marshalling mistake in a debug
+build rather than as corruption. The P18 follow-up about installing
+`smply::util` matters to P15 first: an adapter consuming smply from an install
+tree currently cannot link `Dispatcher`.

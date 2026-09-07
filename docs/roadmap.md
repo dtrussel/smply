@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P14b — the portable example (`examples/cli_dfu/`)** |
-| Last completed phase | P14a — `Dispatcher`, the client-context check, the upload-skip fix |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job**. 604 tests, 13 CI jobs plus a nightly soak. **The portable product is functionally complete, and its untrusted-input surface is fuzzed and enforced.** |
+| **Next phase to work on** | **P15 — WinRT BLE transport** (requires Windows) |
+| Last completed phase | P14b — the portable example |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 605 tests, 13 CI jobs plus a nightly soak. **The portable product is complete.** Everything remaining is Windows or hardware. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -35,7 +35,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P12](#p12) | `FirmwareUpdater` orchestration | Complete | P11 |
 | [P13](#p13) | Fuzzing, hardening and coverage push | Complete | P10 |
 | [P14a](#p14a) | `Dispatcher`, the client-context check, the upload-skip fix | Complete | P12 |
-| [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Planned | P14a |
+| [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Complete | P14a |
 | [P15](#p15) | WinRT BLE transport | Planned | P14a |
 | [P16](#p16) | WinRT BLE DFU example application | Planned | P15 |
 | [P17](#p17) | Hardware interoperability suite | Planned | P16 |
@@ -1753,7 +1753,7 @@ Two consequences, stated before the diff existed:
 <a id="p14b"></a>
 ## P14b — The portable example
 
-**Status: Planned** · **Depends on:** P14a
+**Status: Complete** (2026-09-07) · **Depends on:** P14a
 
 **Objective.** Prove the pump model as a program rather than as a test harness.
 Nothing in the tree has ever run smply against a real clock, from a real
@@ -1815,6 +1815,83 @@ sketch; [`architecture.md`](architecture.md) §10 layout;
 **Acceptance.** The example performs a complete simulated update end to end,
 including the reset, the reconnect and the confirmation, with no wall-clock
 dependence beyond a bounded timeout.
+
+### Outcome
+
+**Completed.** `examples/cli_dfu/` — `main.cpp` (the pump), `stub_device.*`,
+`loopback_transport.*`, `file_image_source.*` and `demo_image.*` — plus the CBOR
+codec promoted out of `tests/support/` into `support/minicbor/` as
+`smply::minicbor`. It runs as the `cli_dfu_demo` test (**605** total), green on
+all nine presets, and clean under both ASan/UBSan and TSan.
+
+The acceptance criterion is met and visible: the program prints
+`QueryingParameters → InspectingImages → Planning → Uploading → VerifyingUpload
+→ MarkingForTest → Resetting → AwaitingDisconnect → AwaitingReconnect →
+VerifyingBooted → AwaitingConfirmation → Confirming → VerifyingConfirmed →
+Completed`, reconnecting and confirming where those say it does.
+
+**The example is the first thing in the tree to run smply on a real clock**, from
+a real `main()`, with inbound bytes arriving on a thread the library does not
+own. It is also the only caller `Dispatcher`'s wake callback has anywhere.
+
+**Two bugs found by running it, both in the example, both instructive.**
+
+* **A CBOR map that lied about its size.** `encode_state()` declared eight pairs
+  and wrote nine. The failure surfaced two commands later as
+  `"array element not a map"` — a definite-length map decodes as garbage from the
+  miscount onward, and the error names wherever the garbage ran out. **P11 hit
+  this exact off-by-one in `ServerSimulator`**, which is why the corrected line
+  now carries a comment saying so.
+* **A race between the device's reboot and the application's reconnect.** The
+  device cleared `link_` and its inbox *after* its reboot delay — but the
+  application reconnects the moment it sees the disconnect, which is during that
+  delay, so the cleanup wiped the link just attached and swallowed the first
+  request on it. Presented as a plain timeout at `VerifyingBooted`. The device
+  now forgets the dead link *before* sleeping, which is also what a real one
+  does.
+
+**And one in the build.** `add_test()` before `enable_testing()` is **silently
+ignored** by CMake — no warning, no error, the test simply never appears.
+`cli_dfu_demo` went missing exactly once that way; `enable_testing()` moved above
+the `add_subdirectory()` calls, with a comment. Worth knowing generally: the test
+count is the only thing that catches it.
+
+**Remaining in this phase.** None.
+
+**Deviations, each recorded in the document it contradicts.**
+
+1. **The CBOR codec was promoted, not rewritten** (decided with the user). The
+   plan's own recommendation was a purpose-built codec inside the example;
+   sharing the existing one avoids a second codec in the tree at the cost of a
+   new top-level directory. `support/minicbor/` is that directory, and it is
+   part of neither the library nor either consumer.
+2. **A new top-level source directory is a tooling event.** `tools/sources.sh`
+   lists its roots explicitly, and a directory missing from that list is not an
+   error — the format and lint gates simply never see it and go on passing.
+   `support` was added there and to `tools/lint.sh`, and the list now carries a
+   comment saying why it must be.
+3. **`FileImageSource` holds its `std::ifstream` by pointer.** `Result<T>`
+   requires `T` to be nothrow-move-constructible (ADR-0002) and `std::ifstream`'s
+   move constructor is not `noexcept`, so the obvious member makes
+   `Result<FileImageSource>` fail to compile. Every consumer meets this
+   eventually; the example says so where it happens.
+4. **The stub device does not use `ManualClock` or any injected clock.** Running
+   on `steady_clock` is the point — a deadline that only works because a test
+   advanced time by exactly 1 ms would pass every existing suite and fail here.
+   The bounded overall timeout is what keeps it a test rather than a hang.
+5. **The plan predicted whole-core coverage would not move, and it moved** —
+   98.4 / 87.5 to 98.1 / 87.2, with no library code changed. `support/` and
+   `examples/` are correctly outside the filter; the cause is
+   `include/smply/detail/expected.hpp` growing from 469 counted lines to 492,
+   because the example instantiates `Result<T>` for types no test uses and an
+   uninstantiated template counts on neither side. **A new consumer adds
+   denominator.** Recorded in `quality-gates.md` §6 so the next such move is not
+   read as a regression.
+6. **`tools/coverage.sh` gained a diagnostic**, which is tooling rather than
+   example work but was found by this phase and would have cost the next session
+   an hour: a stale `.gcno` from the moved codec made gcovr fail, and the script
+   reported it as *below the thresholds*. It now separates gcovr's threshold exit
+   codes from its error ones.
 
 ---
 
@@ -2020,6 +2097,9 @@ them.
 | P14a | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics and tests. If an adapter is ever seen branching on it — "drain only if pending" — that is a bug in the adapter, but it may also be a sign the class should offer a blocking `wait_and_drain()` instead of tempting people. | when an adapter asks |
 | P14a | The client-context assertion covers `SmpClient` only. A caller that used `ImageManagement` from a second thread but never reached the client on it — constructing one, say, or reading `transferred()` — would not trip it. Closing that needs the group clients to be pimpl'd, which is a bigger change than the check is worth today. | when the groups are next reworked |
 | P14a | `smply::util` is not installed or exported, because nothing is until P18. An adapter consuming smply from an install tree cannot link `Dispatcher` yet, which P15 will notice first. | P18 |
+| P14b | The example demonstrates only the **happy path**. A `--fail-confirm` mode showing MCUboot's revert — the device booting the new image, the application declining to confirm, the next reset undoing it — would demonstrate the one safety property the whole design turns on, and needs the stub to model a boot failure. | when the example is next touched |
+| P14b | `examples/cli_dfu/stub_device.cpp` answers the five commands one clean update needs. It does **not** model `erase`, a second image pair, session resume by `sha`, or offset correction beyond the trivial case. That is deliberate — `ServerSimulator` is the reference — but a reader may mistake the stub for one. | — (by design) |
+| P14b | `support/minicbor/` is not installed or exported, and neither is `smply::util`. An adapter consuming smply from an install tree gets neither. P18 has to decide whether `smply::util` is part of the installed package (it should be — P15's adapter needs it) and whether `minicbor` stays out (it should). | P18 |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |
 | P13 | **The fuzz corpora are not pruned.** The local soak added ~1 100 inputs across the seven directories, kept because each reached new coverage, but `-merge=1` was run only once at the end of the phase. The smoke job replays every committed input on every push, so the corpus is a CI cost as well as a regression suite. Re-merge when a directory's replay time becomes noticeable. | when it costs |
 | P13 | `fuzz_smp_client_rx` drives a client with **one** pending request, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5) — that needs several requests completed and a late response for a retired one. The unit suite covers it; the fuzzer does not. | when the target is next touched |

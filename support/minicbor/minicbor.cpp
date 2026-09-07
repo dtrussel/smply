@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "test_cbor.hpp"
+#include "minicbor/minicbor.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +8,7 @@
 #include <string>
 #include <utility>
 
-namespace smply::test::tcbor {
+namespace smply::minicbor {
 namespace {
 
 /// A cursor over the input. Every read is bounds-checked and reports failure by
@@ -226,4 +226,4 @@ std::optional<Value> parse(ConstBytes bytes)
     return value;
 }
 
-} // namespace smply::test::tcbor
+} // namespace smply::minicbor

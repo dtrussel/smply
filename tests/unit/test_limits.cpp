@@ -20,7 +20,7 @@
 #include "image_builder.hpp"
 #include "manual_clock.hpp"
 #include "message_builder.hpp"
-#include "test_cbor.hpp"
+#include "minicbor/minicbor.hpp"
 
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
@@ -60,7 +60,7 @@ using smply::test::make_message;
 using smply::test::make_raw_message;
 using smply::test::ManualClock;
 namespace limits = smply::limits;
-namespace tcbor = smply::test::tcbor;
+namespace tcbor = smply::minicbor;
 
 namespace Catch {
 template<>

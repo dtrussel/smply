@@ -198,10 +198,10 @@ The two questions that blocked enforcement are both settled:
   except where the guard's `else` arm is the ordinary path and must stay
   counted. A marker on a comment line above the code is silently ignored.
 
-| Gate | Threshold | Measured 2026-09-06 (P13) |
+| Gate | Threshold | Measured 2026-09-07 (P14b) |
 | ---- | --------- | ------------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.4 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 87.5 % ✓ |
+| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 87.2 % ✓ |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 97.7 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 95.5 % ✓ · `src/dfu/` 92.3 % ✓ |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
@@ -211,7 +211,17 @@ separate invocations would turn one number into five that can disagree. They are
 measured and recorded here each phase instead, which is what has actually caught
 things — see below.
 
-Outside the elevated list: `src/image/` is at 98.8 % line and 93.2 % branch,
+**A new *consumer* moves the whole-core number, and it is not a regression.**
+P14b added an example and the figure moved from 98.4 / 87.5 to 98.1 / 87.2 with
+no library code changed and no test removed. The cause is entirely
+`include/smply/detail/expected.hpp`, which grew from 469 counted lines to 492:
+the example instantiates `Result<T>` for types no test ever used, and an
+uninstantiated template contributes nothing to either side of the ratio. Adding
+a caller therefore adds denominator. Read a move of this size against what was
+added before treating it as coverage lost.
+
+Outside the elevated list: `src/util/` is at 100 % line and branch, `src/image/`
+is at 98.8 % line and 93.2 % branch,
 `src/groups/image/` at 98.2 % and 89.6 %, `src/core.cpp` at 99.1 % and 98.5 %,
 `src/groups/os/` at 92.4 % and 80.7 % — the lowest in the tree, and entirely
 invariant guards that carry markers plus the `reject()` instantiations only
@@ -248,6 +258,12 @@ not comparable with the numbers above. `pip install gcovr` before quoting one.
 `gcovr … --txt <build-dir>` fails with "Is a directory" — the same mistake that
 silently disabled `coverage.sh` from P0 to P7. Put the search path first, or
 omit `--txt` entirely: text is the default.
+
+**A moved or renamed source leaves its `.gcno` behind**, and gcovr refuses to
+read the orphan rather than skipping it. Until P14b `coverage.sh` reported that
+as *below the thresholds*, which is a lie that costs an hour: it now
+distinguishes gcovr's threshold exit codes (2, 4, 6) from any other failure and
+says which happened. `rm -rf` the build directory after moving a source.
 
 **Stale `.gcda` files survive a rebuild.** Building over an existing coverage
 build prints `libgcov profiling error: … overwriting an existing profile data

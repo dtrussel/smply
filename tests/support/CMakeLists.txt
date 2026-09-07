@@ -8,7 +8,6 @@
 add_library(smply_test_support STATIC
     fake_transport.cpp
     server_simulator.cpp
-    test_cbor.cpp
 )
 add_library(smply::test_support ALIAS smply_test_support)
 
@@ -17,6 +16,9 @@ target_include_directories(smply_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(smply_test_support
     PUBLIC
         smply::smply_internal
+        # The CBOR codec moved to support/ in P14b so the cli_dfu example could
+        # use it too. PUBLIC: the suites build request bodies with it directly.
+        smply::minicbor
     PRIVATE
         smply_internal_options
 )

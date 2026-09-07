@@ -3,7 +3,7 @@
 #include "server_simulator.hpp"
 
 #include "message_builder.hpp"
-#include "test_cbor.hpp"
+#include "minicbor/minicbor.hpp"
 
 #include "image/sha256.hpp"
 #include "smply/error.hpp"
@@ -20,6 +20,12 @@
 #include <vector>
 
 namespace smply::test {
+
+// The codec moved out of tests/support/ in P14b, so the name no longer
+// resolves by being a nested namespace. Aliased rather than renamed at the
+// call sites: this file uses it a hundred times and none of them changed.
+namespace tcbor = smply::minicbor;
+
 namespace {
 
 // --- MCUboot image layout ---------------------------------------------------
