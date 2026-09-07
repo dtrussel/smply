@@ -15,7 +15,7 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P15 complete — the portable library is done: it does what it exists
+**Phases P0–P16 complete — the portable library is done: it does what it exists
 to do, its untrusted-input surface is fuzzed, adapter authors have the
 marshalling helper the threading model assumes, and there is a runnable example
 that performs a whole update.**
@@ -30,18 +30,22 @@ needs, shipped as a separate target the core does not link. And
 `examples/cli_dfu/`, which drives a whole update — upload, reset, reconnect,
 trial boot, confirmation — against a stub device on another thread, and runs on
 every push.
-And `smply::winrt_ble`, the reference Bluetooth LE adapter.
-623 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push.
+And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
+`examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
+637 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push.
 
-**One caveat, stated plainly: the WinRT adapter has never been run.** CI
-compiles it at `/W4 /WX` and links a smoke test against it, but a GitHub runner
-has no Bluetooth radio, so no byte of it has crossed GATT. Its portable pieces —
-the UUIDs, the fragment arithmetic, the close state machine — are unit-tested
-everywhere; everything that touches the radio is unverified until the hardware
-suite. See [`transports/winrt_ble/README.md`](transports/winrt_ble/README.md).
+**One caveat, stated plainly: nothing on the Windows side has ever been run.**
+CI compiles the adapter and the tool at `/W4 /WX` and links a smoke test, but a
+GitHub runner has no Bluetooth radio, so no byte has crossed GATT. Their
+portable pieces are unit-tested everywhere — the UUIDs, the fragment
+arithmetic, the close state machine, and the reconnect backoff, which
+`cli_dfu --flaky-reconnect` drives on every push. Everything that touches the
+radio is unverified until the hardware suite. See
+[`transports/winrt_ble/README.md`](transports/winrt_ble/README.md) and
+[`examples/winrt_ble_dfu/README.md`](examples/winrt_ble_dfu/README.md).
 
-What is not built yet: the Windows example application, and the hardware
-interoperability suite. See [`docs/roadmap.md`](docs/roadmap.md) for the
+What is not built yet: the hardware interoperability suite, and the 1.0
+packaging review. See [`docs/roadmap.md`](docs/roadmap.md) for the
 phase-by-phase plan and what is next.
 
 A whole update, with the application owning the pump and the connection:

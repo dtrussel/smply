@@ -13,14 +13,14 @@ Companions: [`design.md`](design.md) (detailed mechanics),
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ Windows 11 native application (WinUI/Win32, C++)                 │
-│  • owns the UI thread and the event loop                         │
+│ Windows application — examples/winrt_ble_dfu/ is a working one   │
+│  • owns the thread that drives the pump, and the event loop      │
 │  • owns BLE scanning, pairing, connection policy, reconnection   │
 │  • owns the firmware file on disk                                │
 └───────────┬─────────────────────────────────────┬────────────────┘
             │ uses                                │ uses
 ┌───────────▼──────────────┐        ┌─────────────▼────────────────┐
-│ smply (portable core)    │◄───────┤ smply::winrt_ble (example)   │
+│ smply (portable core)    │◄───────┤ smply::winrt_ble             │
 │ no OS / no threads / no  │Transport│ C++/WinRT GATT adapter       │
 │ clock / no sockets       │ contract│ Windows-only, separate target│
 └───────────┬──────────────┘        └─────────────┬────────────────┘
@@ -341,12 +341,19 @@ smply/
 │   │                           built and tested everywhere
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI, never run: see its README
-├── support/minicbor/           a CBOR codec independent of src/cbor/, shared by the
-│                               test doubles and the example. Target smply::minicbor;
-│                               part of neither the library nor either consumer.
-├── examples/cli_dfu/           the portable DFU example: main.cpp is the pump loop;
-│                               the other four files are the stub device it drives
-│                               (winrt_ble_dfu/ planned, P16)
+├── support/                    shared by the tests and the examples, part of neither
+│   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
+│   │                           test doubles and the stub device. smply::minicbor
+│   └── dfu_app/                what a DFU *application* needs and the library
+│                               deliberately does not ship: FileImageSource and
+│                               ReconnectPolicy. smply::dfu_app, used by both
+│                               examples and unit-tested (P16)
+├── examples/
+│   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
+│   │                           the other files are the stub device it drives. Runs
+│   │                           in CI, --flaky-reconnect included
+│   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
+│                               Compiled by CI, never run: see its README
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp

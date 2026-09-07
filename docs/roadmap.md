@@ -10,9 +10,9 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P16 — WinRT BLE DFU example** (**needs Windows**; cannot be built here) |
-| Last completed phase | P15b — the WinRT BLE transport (**compiled by CI, never run: no radio**) |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **`smply::winrt_ble`, the reference BLE adapter — compiled at `/W4 /WX` by CI and never once run against a radio.** 623 tests, 16 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
+| **Next phase to work on** | **P17 — hardware interoperability suite** (**needs Windows and a device**) |
+| Last completed phase | P16 — the WinRT BLE DFU example (**compiled by CI, never run: no radio**) |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and never once run against a radio.** The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. 637 tests, 16 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -38,14 +38,14 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P14b](#p14b) | The portable example (`examples/cli_dfu/`) | Complete | P14a |
 | [P15a](#p15a) | Portable BLE framing, transport contract, install/export | Complete | P14a |
 | [P15b](#p15b) | WinRT BLE transport | **Complete** (compiled, never run) | P15a |
-| [P16](#p16) | WinRT BLE DFU example application | Planned (**needs Windows**) | P15b |
+| [P16](#p16) | WinRT BLE DFU example application | **Complete** (compiled, never run) | P15b |
 | [P17](#p17) | Hardware interoperability suite | Planned | P16 |
 | [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17 |
 
 Phases P1–P15a are portable and can be developed and verified entirely on Linux.
-P15b–P17 require Windows; P17 additionally requires hardware. P15b was
-nevertheless *written* on Linux — see its outcome for exactly what that means
-about how much of it is verified.
+P15b–P17 require Windows; P17 additionally requires hardware. P15b and P16 were
+nevertheless *written* on Linux — see their outcomes for exactly what that means
+about how much of each is verified.
 
 ---
 
@@ -2219,7 +2219,7 @@ and it is recorded as a follow-up so that it cannot be mistaken for either.
 <a id="p16"></a>
 ## P16 — WinRT BLE DFU example application
 
-**Status: Planned** · **Depends on:** P15b · **Requires Windows**
+**Status: Complete** (2026-09-07) · **Depends on:** P15b · **Requires Windows**
 
 **Objective.** A usable console tool that performs a real update, and the
 reference for how an application drives smply across a reboot.
@@ -2244,6 +2244,79 @@ confirmed against the real example.
 
 **Acceptance.** The tool completes an update against a real device (recorded in
 the P17 log if hardware is not yet available at this point).
+
+### Outcome
+
+**Completed.** `examples/winrt_ble_dfu/` — `main.cpp` (the pump loop, written
+out in full), `scanner.cpp`, its own `winrt_prelude.hpp`, a README — plus
+`support/dfu_app/` as `smply::dfu_app`, holding the `ReconnectPolicy` and the
+`FileImageSource` moved out of `cli_dfu`. 14 new tests (**637** total), green on
+all eight Linux presets.
+
+**Its acceptance criterion is not met and cannot be here.** No device has run
+this: CI compiles and links the tool on a runner with no radio, and never
+executes it. The criterion's own clause applies — it is recorded against P17.
+
+**The phase's real work was making as little of it as possible unverifiable.**
+`FirmwareUpdater::reconnect_failed()` was public API reached only by the
+component suite, because `cli_dfu` reconnects instantly to a stub in its own
+process; retry, backoff and giving up were untested anywhere, and were about to
+be written a second time inside code CI cannot run. So the schedule moved into
+`support/dfu_app/reconnect_policy.hpp` — integer doubling clamped to a ceiling,
+no floating point, so every delay a test asserts is exact — and `cli_dfu` gained
+`--flaky-reconnect N`, which refuses N attempts before letting one succeed.
+Three `ctest` entries now cover it: the happy path, a recovered reconnect, and
+`--flaky-reconnect 99`, which exhausts the policy and must fail cleanly rather
+than hang. **That last one is the first application-level use of
+`reconnect_failed()` in the repository**, and it prints the schedule as it runs:
+20, 40, 80, 160, 160 ms, then gives up.
+
+**A protocol finding that inverted the plan's assumption.** The plan guessed
+that a device probably does *not* advertise the SMP service UUID, and that
+scanning should therefore match on name. Zephyr's own source says the opposite
+(protocol-notes §8, new sources S22 and S23): the `smp_svr` sample puts the
+**service UUID in the primary advertisement** and the **device name in the scan
+response**. Two consequences, both now in the code and the notes:
+
+* filtering on the service UUID is reliable and is the default;
+* **a name filter requires an *active* scan.** WinRT's watcher is passive by
+  default, and a passive scan never requests a scan response — so `--name` would
+  have matched nothing, indefinitely, and looked exactly like the device being
+  switched off. `scanner.cpp` always scans actively.
+
+The same header (S23) independently corroborates both UUIDs shipped in P15b.
+
+**One defect found, by the negative controls rather than by the suite.** Three
+deliberate breakages of `ReconnectPolicy` — dropping the ceiling clamp, an
+off-by-one in the attempt cap, and a `succeeded()` that forgets to reset — were
+each caught by a different set of cases (3, 5 and 1 failing respectively). The
+schedule guards its doubling against overflow because `max_attempts` is
+caller-supplied, and a wrapped delay would turn a patient retry into a spin;
+there is a 64-attempt case for exactly that.
+
+**Remaining in this phase.** None.
+
+**Acceptance is outstanding, which is not the same as unfinished work.** Nothing
+further can be built here: running the tool needs hardware, which is P17's
+purpose. It is filed as a follow-up so it cannot be mistaken for either.
+
+**Deviations, each recorded where it contradicts something.**
+
+1. **The pump loop is duplicated between the two examples, deliberately.**
+   Sharing it would have been the obvious move and is the wrong one: each
+   example exists to be *read*, `cli_dfu/main.cpp` says so in its first line,
+   and extracting the loop would leave neither example showing it. Only the
+   non-didactic pieces are shared.
+2. **`--image` is required here**, where `cli_dfu` invents an image when given
+   none. That example installs into a stub in its own process; writing a
+   synthetic image to real hardware would install firmware that does not run.
+3. **The example carries its own `winrt_prelude.hpp`** rather than including the
+   adapter's, which lives under `detail/`. `examples/cli_dfu/CMakeLists.txt`
+   already states the rule: an example reaching into another target's private
+   headers demonstrates something no consumer can do.
+4. **`FileImageSource` moved to `support/dfu_app/`** and changed namespace from
+   `smply::example` to `smply::dfu_app`. It was always portable; two copies
+   would have drifted.
 
 ---
 
@@ -2380,12 +2453,17 @@ them.
 | P14a | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics and tests. If an adapter is ever seen branching on it — "drain only if pending" — that is a bug in the adapter, but it may also be a sign the class should offer a blocking `wait_and_drain()` instead of tempting people. | when an adapter asks |
 | P14a | The client-context assertion covers `SmpClient` only. A caller that used `ImageManagement` from a second thread but never reached the client on it — constructing one, say, or reading `transferred()` — would not trip it. Closing that needs the group clients to be pimpl'd, which is a bigger change than the check is worth today. | when the groups are next reworked |
 | P14a | `smply::util` is not installed or exported, because nothing is until P18. An adapter consuming smply from an install tree cannot link `Dispatcher` yet, which P15 will notice first. | P18 |
-| P14b | The example demonstrates only the **happy path**. A `--fail-confirm` mode showing MCUboot's revert — the device booting the new image, the application declining to confirm, the next reset undoing it — would demonstrate the one safety property the whole design turns on, and needs the stub to model a boot failure. | when the example is next touched |
+| P14b | The example demonstrates only the **happy path**. A `--fail-confirm` mode showing MCUboot's revert — the device booting the new image, the application declining to confirm, the next reset undoing it — would demonstrate the one safety property the whole design turns on, and needs the stub to model a boot failure. **Considered in P16 and deliberately deferred**: P16 touched the examples, so this row's trigger fired, but modelling a boot failure serves a different goal than shipping the Windows tool. It is not overlooked; it is waiting for a session that wants to demonstrate revert. | when revert is demonstrated |
 | P14b | `examples/cli_dfu/stub_device.cpp` answers the five commands one clean update needs. It does **not** model `erase`, a second image pair, session resume by `sha`, or offset correction beyond the trivial case. That is deliberate — `ServerSimulator` is the reference — but a reader may mistake the stub for one. | — (by design) |
 | P14b | `support/minicbor/` is not installed or exported, and neither is `smply::util`. An adapter consuming smply from an install tree gets neither. P18 has to decide whether `smply::util` is part of the installed package (it should be — P15's adapter needs it) and whether `minicbor` stays out (it should). | P18 |
 | P15a | **The install check covers `find_package` only.** `add_subdirectory` and `FetchContent` consumption are untested, and both are how a consumer is most likely to start. P18's task list already names all three. | P18 |
 | P15a | An installed **sanitizer** build no longer carries the sanitizer's link options to consumers, because they ride on `smply_internal_options`, now held to `$<BUILD_INTERFACE:>` so the export is possible at all. Nobody ships one; if that changes, the options need a home outside that target. | when somebody ships one |
 | P15a | `smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter. P15b's adapter is in-tree so it does not care, but a third-party adapter would. Decide with the rest of the packaging. | P18 |
+| P16 | **`examples/winrt_ble_dfu/` has never been run**, and P16's acceptance criterion — completing an update against a real device — is therefore outstanding rather than met. CI compiles and links it; no radio has executed a line. Scanning, connecting and the over-the-air update are all unverified. | P17 |
+| P16 | The scanner matches an advertised **name substring** or takes an address. It does not pair or bond, so a device that requires pairing must already be paired in Windows settings. If P17 finds that inconvenient on real hardware, pairing belongs in the example rather than the adapter. | P17 |
+| P16 | `ReconnectPolicy`'s defaults (500 ms doubling to 8 s, six attempts) are a guess made without hardware. A Zephyr device's actual post-reset unavailability window should be measured and the defaults set from it. | P17 |
+| P16 | **`smply::dfu_app` is not installed or exported**, like `smply::minicbor` and `smply::transport_common` before it. An out-of-tree application writing its own adapter would want the reconnect policy. Decide with the rest of the packaging. | P18 |
+| P16 | `--flaky-reconnect` refuses attempts in the *application*, not in the stub device: the link is never actually offered and rejected. That is enough to drive the policy and `reconnect_failed()`, but it does not model a device that accepts a connection and then drops it mid-handshake. | when the stub is next extended |
 | P15b | **`smply::winrt_ble` has never been run.** CI compiles it and links a smoke test; no radio has seen a byte of it. Discovery, the CCCD write, notification delivery, the write path, disconnect handling and MTU behaviour are all unverified. This is the phase's permanent condition, not an oversight. | P17 |
 | P15b | **The adapter is outside clang-tidy and cppcheck** (`tools/lint.sh` excludes `transports/winrt_ble/`), because both run from a Linux build. Running clang-tidy on the Windows runner — LLVM is preinstalled there — would recover the analysis. Weigh it against a second toolchain in CI. | P18 |
 | P15b | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is documented as the device's `rsn` string, so the adapter drops the `HRESULT` behind every WinRT failure and reports only a call-site tag. That is exactly the detail wanted when debugging a transport nobody can attach a debugger to. Either widen `reason()`'s contract or add a detail field. | when the adapter is next touched |

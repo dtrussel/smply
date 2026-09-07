@@ -20,23 +20,38 @@ fi
 
 status=0
 
-# --- the one directory neither analyser can see -----------------------------
+# --- the directories neither analyser can see -------------------------------
 #
-# The WinRT BLE adapter (P15b) is Windows-only. clang-tidy is driven from a
-# LINUX compile database, where these translation units do not appear at all, so
-# it would fall back to default arguments and die on the first <winrt/...>
-# include; cppcheck cannot parse the projection headers or the coroutines
-# either. Excluding them is not a judgement that the code needs less checking --
-# it is that these two tools cannot run on it from here.
+# The Windows-only code: the WinRT BLE adapter (P15b) and the example that
+# drives it (P16). clang-tidy is driven from a LINUX compile database, where
+# these translation units do not appear at all, so it would fall back to default
+# arguments and die on the first <winrt/...> include; cppcheck can parse neither
+# the projection headers nor the coroutines. Excluding them is not a judgement
+# that the code needs less checking -- it is that these two tools cannot run on
+# it from here.
 #
 # What still covers it: clang-format (tools/sources.sh feeds it everything), and
 # MSVC /W4 /WX in the windows-winrt CI job. Recorded in quality-gates.md.
 #
-# The prefix is exact, and tools/verify_gates.sh asserts it excludes this
-# directory and nothing else -- an over-broad filter here would silently stop
-# analysing real code, which is the failure shape this project has hit five
-# times.
-WINRT_DIR="transports/winrt_ble/"
+# Each prefix is an exact directory, and tools/verify_gates.sh asserts they
+# exclude exactly these and nothing else -- an over-broad filter here (say,
+# matching the substring "winrt") would silently stop analysing real code, which
+# is the failure shape this project has hit six times.
+WINRT_DIRS=(
+    "transports/winrt_ble/"
+    "examples/winrt_ble_dfu/"
+)
+
+# One extended-regex alternation of anchored prefixes, for grep -E below.
+winrt_exclude_pattern() {
+    local joined=""
+    local dir
+    for dir in "${WINRT_DIRS[@]}"; do
+        joined+="${joined:+|}^${dir}"
+    done
+    printf '%s' "$joined"
+}
+WINRT_EXCLUDE="$(winrt_exclude_pattern)"
 
 # --- clang-tidy (required) --------------------------------------------------
 CLANG_TIDY="${CLANG_TIDY:-clang-tidy}"
@@ -45,7 +60,7 @@ if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
     # HeaderFilterRegex when they are included by these TUs.
     mapfile -t tus < <(tools/sources.sh | grep -E '\.(cpp|cc)$' \
         | grep -v '^tests/consumer/' \
-        | grep -v "^$WINRT_DIR")
+        | grep -Ev "$WINRT_EXCLUDE")
     if [[ ${#tus[@]} -gt 0 ]]; then
         echo "running $("$CLANG_TIDY" --version | grep -m1 -oE '[Vv]ersion [0-9.]+') over ${#tus[@]} TUs"
         "$CLANG_TIDY" -p "$BUILD_DIR" "${tus[@]}" || status=1
@@ -91,6 +106,11 @@ elif command -v cppcheck >/dev/null 2>&1; then
         fi
     done
 
+    cppcheck_excludes=()
+    for dir in "${WINRT_DIRS[@]}"; do
+        cppcheck_excludes+=(-i "$dir")
+    done
+
     cppcheck --enable=warning,performance,portability \
              --std=c++20 \
              --language=c++ \
@@ -101,7 +121,7 @@ elif command -v cppcheck >/dev/null 2>&1; then
              --suppressions-list=tools/cppcheck-suppressions.txt \
              --error-exitcode=1 \
              --quiet \
-             -i "$WINRT_DIR" \
+             "${cppcheck_excludes[@]}" \
              include src support transports tests || status=1
 else
     echo "note: cppcheck not installed -- skipping (CI runs it; see docs/quality-gates.md)"

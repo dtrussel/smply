@@ -34,6 +34,8 @@ and 7 re-verified against the image-group implementation on **2026-09-05**.
 | S19 | `boot/bootutil/src/tlv.c` | `bootutil_tlv_iter_begin()`/`_next()` -- the authoritative TLV area layout and bounds checks | same |
 | S20 | `boot/bootutil/src/image_validate.c` | `allowed_unprot_tlvs` -- which TLVs may live in the unprotected area | same |
 | S21 | `boot/bootutil/src/bootutil_public.c` | `boot_swap_tables`, `boot_swap_type_multi()` and `boot_set_next()` -- how a swap type is derived and changed | same (verified 2026-09-06) |
+| S22 | `samples/subsys/mgmt/mcumgr/smp_svr/src/bluetooth.c` | The reference server's advertising data: which of the SMP service UUID and the device name go in the advertisement and which in the scan response | `zephyrproject-rtos/zephyr@main` (verified 2026-09-07) |
+| S23 | `include/zephyr/mgmt/mcumgr/transport/smp_bt.h` | `SMP_BT_SVC_UUID_VAL` and `SMP_BT_CHR_UUID_VAL` -- the service and characteristic UUIDs at their definition | same |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -681,6 +683,10 @@ management are MCUboot's job. See
 
 * **Service UUID** `8D53DC1D-1DB7-4CD3-868B-8A527460AA84`
 * **Characteristic UUID** `DA2E7828-FBCE-4E01-AE9E-261174997C48`
+
+  Both confirmed at their definition (S23), which spells them
+  `BT_UUID_128_ENCODE(0x8d53dc1d, 0x1db7, 0x4cd3, 0x868b, 0x8a527460aa84)` and
+  `BT_UUID_128_ENCODE(0xda2e7828, 0xfbce, 0x4e01, 0xae9e, 0x261174997c48)`.
 * Requests: **GATT Write Without Response**. Responses: **GATT Notification**.
 * *"If an SMP request or response is too large to fit in a single GATT command,
   the sender fragments it across several packets. No additional framing is
@@ -689,6 +695,37 @@ management are MCUboot's job. See
 
 ⇒ BLE fragment size is `ATT_MTU - 3`. This is a **transport** concern and is
 completely independent of the MCUmgr upload chunk size.
+
+#### Discovery: what the reference server advertises, and why it matters (S22)
+
+A client has to find the device before any of the above applies, and the
+specification says nothing about advertising. Zephyr's `smp_svr` sample does,
+and the split is the part worth knowing:
+
+```c
+static const struct bt_data ad[] = {
+        BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+        BT_DATA_BYTES(BT_DATA_UUID128_ALL, SMP_BT_SVC_UUID_VAL),
+};
+static const struct bt_data sd[] = {
+        BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+                sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+```
+
+* **The SMP service UUID is in the primary advertisement.** Filtering a scan on
+  it is therefore reliable against the reference server, and works under a
+  *passive* scan.
+* **The device name is in the scan response, not the advertisement.** A passive
+  scan never requests a scan response, so **a client that matches on name must
+  scan actively** — otherwise it sees no name at all and reports "no such
+  device" forever, which looks exactly like the device being switched off.
+
+**A17.** This is the *sample's* choice, not a protocol requirement: nothing
+obliges a product to advertise the SMP UUID, and a 128-bit UUID costs 16 of an
+advertisement's 31 bytes, so some will not. A client should therefore prefer the
+UUID filter but never *require* it — connecting by address must stay possible.
+`examples/winrt_ble_dfu/scanner.cpp` scans actively for exactly this reason.
 
 ### UART / console (S2)
 

@@ -19,7 +19,7 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
-| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and runs its link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT — green means "it builds". P16 adds the example to this job; behaviour is P17 |
+| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour is P17 |
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
@@ -113,9 +113,10 @@ to minimise `sizeof` -- `Group` must be `uint16_t` because the SMP header
 carries 16 bits, so the check would fight every protocol enumeration for no
 benefit.
 
-### The one directory neither analyser sees
+### The two directories neither analyser sees
 
-`transports/winrt_ble/` is excluded from clang-tidy **and** cppcheck in
+`transports/winrt_ble/` (the adapter, P15b) and `examples/winrt_ble_dfu/` (the
+tool that drives it, P16) are excluded from clang-tidy **and** cppcheck in
 `tools/lint.sh`. Both gates run from a Linux build: those translation units are
 absent from the compile database, so clang-tidy would fall back to default
 arguments and fail on the first `<winrt/…>` include, and cppcheck can parse
@@ -126,10 +127,11 @@ than letting a green `gates` job imply otherwise.
 What still covers it: **clang-format**, which sees every file
 `tools/sources.sh` lists, and **MSVC `/W4 /WX`** in the `windows-winrt` job.
 
-The exclusion is an exact directory prefix, and `tools/verify_gates.sh` proves
-it: a portable decoy file whose *name* contains `winrt` must survive it. A
-filter written as `grep -v winrt` would swallow the decoy and go on passing —
-the silent-skip shape this project has been bitten by five times.
+Each exclusion is an exact directory prefix, and `tools/verify_gates.sh` proves
+it: a portable decoy file whose *name* contains `winrt` is planted beside each
+excluded directory and must survive. A filter written as `grep -v winrt` would
+swallow both decoys and go on passing — the silent-skip shape this project has
+been bitten by six times.
 
 Note that `.clang-tidy`'s `Checks:` value is a YAML *folded scalar*: a `#`
 inside it is not a comment, it becomes part of the check list. Rationale

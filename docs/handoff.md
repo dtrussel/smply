@@ -1924,3 +1924,51 @@ for that seam first.
   arrives as a call-site tag with the OS's own explanation discarded. That is
   the detail you will want first when this finally meets a radio; the follow-up
   is filed.
+
+### 2026-09-07 — P16: the WinRT BLE DFU example
+
+**Status after this session:** P16 = `Complete`, with the same caveat P15b
+carries and one more besides: **the tool has never been run, and P16's
+acceptance criterion — an update against a real device — is outstanding, not
+met.** Next phase: **P17 — the hardware interoperability suite**, which needs
+Windows *and* a device, and which is where both P15b's and P16's outstanding
+claims get discharged.
+
+**Completed.** `examples/winrt_ble_dfu/` (`main.cpp`, `scanner.cpp`, its own
+`winrt_prelude.hpp`, a README) and `support/dfu_app/` as `smply::dfu_app`,
+holding `ReconnectPolicy` and the `FileImageSource` moved out of `cli_dfu`.
+14 new tests (**637** total), green on all eight Linux presets.
+
+**The move worth repeating.** Faced with a second phase CI cannot run, the
+useful work was shrinking the unverifiable part rather than writing it more
+carefully. `FirmwareUpdater::reconnect_failed()` was public API reached only by
+the component suite — `cli_dfu` reconnects instantly to an in-process stub, so
+retry, backoff and give-up were untested anywhere and were about to be written
+again inside code nothing executes. The schedule now lives in
+`support/dfu_app/reconnect_policy.hpp`, and `cli_dfu --flaky-reconnect N` drives
+it on every push, including the give-up path. When P17 or a later phase hits the
+same wall, look for that seam first; it is the third time it has paid.
+
+**Caveats — read these before P17 or before touching either example.**
+
+* **`--flaky-reconnect 99` is a `WILL_FAIL` test.** It must exit non-zero *and*
+  reach `Failed` through `reconnect_failed()`. If it ever starts passing by
+  timing out instead, the test still goes green and means nothing — check the
+  output says "giving up after N reconnection attempts", not that it hung.
+* **A Zephyr device advertises its SMP service UUID but puts its name in the
+  scan response** (protocol-notes §8, S22). So **a name filter needs an active
+  scan**; WinRT's watcher is passive by default, and a passive `--name` search
+  matches nothing, forever, looking exactly like a device that is switched off.
+  This inverted the planning assumption — the plan had guessed the UUID would
+  not be advertised. Check the source before guessing at advertising again.
+* **The two examples duplicate the pump loop on purpose.** Do not "fix" it.
+  Each example exists to be read, and `cli_dfu/main.cpp` says so in its first
+  line; sharing the loop would leave neither showing it. Only the non-didactic
+  pieces live in `support/dfu_app/`.
+* **`ReconnectPolicy`'s defaults are a guess.** 500 ms doubling to 8 s over six
+  attempts was chosen without hardware. Measure a real device's post-reset
+  unavailability window in P17 and set them from it.
+* **Two directories are now outside clang-tidy and cppcheck**, not one:
+  `transports/winrt_ble/` and `examples/winrt_ble_dfu/`. `verify_gates.sh`
+  plants a decoy beside *each* and requires both to survive. Do not widen that
+  filter to the substring `winrt`.

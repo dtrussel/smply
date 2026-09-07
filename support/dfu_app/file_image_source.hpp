@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
-#ifndef SMPLY_EXAMPLE_FILE_IMAGE_SOURCE_HPP
-#define SMPLY_EXAMPLE_FILE_IMAGE_SOURCE_HPP
+#ifndef SMPLY_DFU_APP_FILE_IMAGE_SOURCE_HPP
+#define SMPLY_DFU_APP_FILE_IMAGE_SOURCE_HPP
 
 /// \file
 /// An `ImageSource` over a file on disk.
+///
+/// Shared by every example rather than living in one of them: reading firmware
+/// off disk is not platform-specific, and the alternative is two copies that
+/// drift. It is still not library code -- see the rule in
+/// `support/CMakeLists.txt`.
 ///
 /// smply ships only `MemoryImageSource`, deliberately: `ImageSource` is two
 /// virtual functions, and putting a file-backed one in the library would drag
@@ -26,7 +31,7 @@
 #include <memory>
 #include <string>
 
-namespace smply::example {
+namespace smply::dfu_app {
 
 /// A firmware file, opened once and read at arbitrary offsets.
 class FileImageSource final : public ImageSource
@@ -65,6 +70,6 @@ private:
     std::uint64_t size_ = 0;
 };
 
-} // namespace smply::example
+} // namespace smply::dfu_app
 
-#endif // SMPLY_EXAMPLE_FILE_IMAGE_SOURCE_HPP
+#endif // SMPLY_DFU_APP_FILE_IMAGE_SOURCE_HPP

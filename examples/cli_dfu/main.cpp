@@ -23,9 +23,11 @@
 /// Run it with no arguments and it invents a device and an image to install.
 
 #include "demo_image.hpp"
-#include "file_image_source.hpp"
 #include "loopback_transport.hpp"
 #include "stub_device.hpp"
+
+#include "dfu_app/file_image_source.hpp"
+#include "dfu_app/reconnect_policy.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -50,18 +52,30 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 namespace {
 
 using namespace smply;          // NOLINT(google-build-using-namespace) -- an example
 using namespace smply::example; // NOLINT(google-build-using-namespace)
+using namespace smply::dfu_app; // NOLINT(google-build-using-namespace)
 
 struct Options
 {
     std::string image_path; ///< Empty means "invent one".
     UpdateMode mode = UpdateMode::TestThenConfirm;
     bool quiet = false;
+
+    /// Refuse this many reconnection attempts before letting one succeed.
+    ///
+    /// Not a toy. A device that has just rebooted is not immediately
+    /// connectable, so every real application retries with a backoff and gives
+    /// up eventually -- and against an in-process stub that reconnects
+    /// instantly, none of that code would ever run. Setting this above the
+    /// policy's attempt budget exercises the give-up path, which ends the
+    /// update through `FirmwareUpdater::reconnect_failed()`.
+    unsigned flaky_reconnect = 0;
 };
 
 [[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
@@ -84,9 +98,13 @@ struct Options
 void usage()
 {
     std::cerr << "usage: cli_dfu [--image PATH] [--mode MODE] [--quiet]\n"
+                 "               [--flaky-reconnect N]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
-                 "  --quiet       print only the outcome\n";
+                 "  --quiet       print only the outcome\n"
+                 "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
+                 "                to exercise the backoff; above the attempt budget the\n"
+                 "                update gives up, which is also worth demonstrating\n";
 }
 
 [[nodiscard]] bool parse_arguments(int argc, char** argv, Options& out)
@@ -102,6 +120,12 @@ void usage()
             if (!parse_mode(args[++i], out.mode)) {
                 return false;
             }
+        } else if (arg == "--flaky-reconnect" && i + 1 < args.size()) {
+            const std::string& count = args[++i];
+            if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos) {
+                return false;
+            }
+            out.flaky_reconnect = static_cast<unsigned>(std::stoul(count));
         } else {
             return false;
         }
@@ -199,6 +223,16 @@ int main(int argc, char** argv)
     Pending pending;
     StubDevice device{running};
 
+    // Deliberately brisk: these delays are waited for real, and this example
+    // runs as a ctest with a timeout. A shipped tool would use the defaults
+    // (500 ms doubling to 8 s), which is what examples/winrt_ble_dfu/ does.
+    ReconnectPolicy policy{ReconnectSettings{
+        .first_delay = std::chrono::milliseconds{20},
+        .max_delay = std::chrono::milliseconds{160},
+        .max_attempts = 5,
+    }};
+    unsigned refusals_left = options.flaky_reconnect;
+
     // The application owns every link it ever opens. A dropped transport is
     // never reused -- like a real one -- but it must outlive the client, which
     // detaches from it on destruction and on rebind.
@@ -274,14 +308,53 @@ int main(int argc, char** argv)
 
         if (pending.reconnect) {
             pending.reconnect = false;
-            if (!options.quiet) {
-                std::cout << "  reconnecting\n";
+
+            // A real reconnect is a loop, not a statement. The device has just
+            // rebooted and is not connectable yet, so an application waits,
+            // tries, waits longer, and eventually decides it has lost the
+            // device. `--flaky-reconnect` makes that visible here; over BLE it
+            // is simply what happens.
+            policy.begin();
+            bool attached = false;
+            while (!policy.exhausted()) {
+                const Duration delay = policy.next_delay();
+                std::this_thread::sleep_for(delay);
+
+                if (refusals_left > 0) {
+                    --refusals_left;
+                    if (!options.quiet) {
+                        std::cout << "  reconnect attempt " << policy.attempts()
+                                  << " failed; waiting " << delay.count() << " ms\n";
+                    }
+                    continue;
+                }
+
+                // A dropped link stays dropped, so this is a new one -- exactly
+                // what an application does with a BLE connection after a reboot.
+                links.push_back(std::make_unique<LoopbackTransport>(device, inbound));
+                device.attach(*links.back());
+                client.rebind_transport(*links.back());
+                policy.succeeded();
+                attached = true;
+                break;
             }
-            // A dropped link stays dropped, so this is a new one -- exactly what
-            // an application does with a BLE connection after a reboot.
-            links.push_back(std::make_unique<LoopbackTransport>(device, inbound));
-            device.attach(*links.back());
-            client.rebind_transport(*links.back());
+
+            if (!attached) {
+                // Terminal, and the updater has to be told: it is waiting on
+                // the application and has no deadline of its own here, so
+                // without this the pump would spin until the overall timeout.
+                if (!options.quiet) {
+                    std::cout << "  giving up after " << policy.settings().max_attempts
+                              << " reconnection attempts\n";
+                }
+                updater.reconnect_failed(
+                    Error{ErrorCode::Disconnected, "cli_dfu: could not reconnect"});
+                continue;
+            }
+
+            if (!options.quiet) {
+                std::cout << "  reconnected\n";
+            }
             static_cast<void>(updater.resume_after_reconnect());
             continue;
         }

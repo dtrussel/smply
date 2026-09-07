@@ -142,32 +142,36 @@ expect_fail "clang-tidy rejects reinterpret_cast over raw bytes" \
     env SMPLY_LINT_SKIP_CPPCHECK=1 tools/lint.sh build
 restore src/version.cpp
 
-# 3b. The WinRT adapter is the one directory clang-tidy and cppcheck cannot see
-# (transports/winrt_ble/ is Windows-only; see tools/lint.sh). An exclusion is a
-# hole in a gate, so what has to be proved is that the hole is exactly the shape
-# it claims: a DIRECTORY, not the substring "winrt". A filter written
-# `grep -v winrt` would also swallow a portable file that merely mentions it,
-# and would go on passing -- the silent-skip shape that has cost this project
-# five defects.
+# 3b. Two directories are Windows-only and invisible to clang-tidy and cppcheck
+# (transports/winrt_ble/ and examples/winrt_ble_dfu/; see tools/lint.sh). An
+# exclusion is a hole in a gate, so what has to be proved is that each hole is
+# exactly the shape it claims: a DIRECTORY, not the substring "winrt". A filter
+# written `grep -v winrt` would also swallow a portable file that merely
+# mentions it, and would go on passing -- the silent-skip shape that has cost
+# this project six defects.
 #
-# The decoy is a portable file whose name contains "winrt". An exact filter
-# keeps it and the TU count rises by one; an over-broad filter drops it and the
+# The decoys are portable files whose names contain "winrt", one beside each
+# excluded directory so neither prefix can quietly widen. An exact filter keeps
+# both and the TU count rises by two; an over-broad filter drops them and the
 # count does not move. clang-tidy is stubbed out because only the count matters
 # and running it twice over the whole tree costs minutes.
 printf '// SPDX-License-Identifier: Apache-2.0\n' > "$WORK/transports/common/winrt_decoy.cpp"
+printf '// SPDX-License-Identifier: Apache-2.0\n' > "$WORK/examples/cli_dfu/winrt_decoy.cpp"
 cat > "$WORK/tidy-stub" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then echo "stub version 0.0"; fi
 exit 0
 STUB
 chmod +x "$WORK/tidy-stub"
-expect_ok "the WinRT lint exclusion is a directory, not the substring 'winrt'" \
+expect_ok "the WinRT lint exclusions are directories, not the substring 'winrt'" \
     bash -c 'expected=$(tools/sources.sh | grep -E "\.(cpp|cc)$" \
-                        | grep -v "^tests/consumer/" | grep -v "^transports/winrt_ble/" | wc -l)
+                        | grep -v "^tests/consumer/" \
+                        | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/" | wc -l)
              actual=$(env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build 2>&1 \
                         | grep -oE "over [0-9]+ TUs" | grep -oE "[0-9]+")
              [[ -n "$actual" && "$expected" == "$actual" ]]'
-rm -f "$WORK/transports/common/winrt_decoy.cpp" "$WORK/tidy-stub"
+rm -f "$WORK/transports/common/winrt_decoy.cpp" "$WORK/examples/cli_dfu/winrt_decoy.cpp" \
+      "$WORK/tidy-stub"
 
 # 4. Public header discipline: third-party include
 printf '#include <qcbor/qcbor.h>\n' >> "$WORK/include/smply/version.hpp.in"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "file_image_source.hpp"
+#include "dfu_app/file_image_source.hpp"
 
 #include "smply/error.hpp"
 
@@ -12,7 +12,7 @@
 #include <string>
 #include <utility>
 
-namespace smply::example {
+namespace smply::dfu_app {
 
 FileImageSource::FileImageSource(std::unique_ptr<std::ifstream> stream, std::uint64_t size) noexcept
     : stream_{std::move(stream)}, size_{size}
@@ -72,4 +72,4 @@ Result<std::size_t> FileImageSource::read(std::uint64_t offset, MutBytes out)
     return got;
 }
 
-} // namespace smply::example
+} // namespace smply::dfu_app

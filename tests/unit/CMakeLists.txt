@@ -14,6 +14,7 @@ add_executable(smply_unit_tests
     test_mcuboot_header.cpp
     test_mgmt_error.cpp
     test_os_group.cpp
+    test_reconnect_policy.cpp
     test_result.cpp
     test_sha256.cpp
     test_smp_client.cpp
@@ -32,6 +33,9 @@ target_link_libraries(smply_unit_tests
         # separate target a real adapter would link.
         smply::util
         smply::transport_common
+        # The application-side helpers the examples share: the reconnect policy
+        # is tested here because examples/winrt_ble_dfu/ cannot be run at all.
+        smply::dfu_app
         smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain
