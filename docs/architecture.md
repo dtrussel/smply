@@ -288,6 +288,7 @@ smply will accept from a device or a file.
 | `kUploadChunkMax` | 512 B | upper bound before `buf_size` negotiation | — |
 | `kDefaultSmpMessageBudget` | 256 B | assumed when the device does not report `buf_size` (A8) | `UploadOptions` |
 | `kFirstChunkTimeout` | 30 s | implicit slot erase (A7) | `UploadOptions` |
+| `kFinalChunkTimeout` | 30 s | whole-image hash before the last response (A19); ~25 KiB/s measured | `UploadOptions` |
 | `kEraseTimeout` | 60 s | the synchronous erase command (A12) | `EraseOptions` |
 | `kMaxChunkRetries` | 3 | retransmissions of one chunk | `UploadOptions` |
 | `kMaxUploadRestarts` | 2 | server-requested restarts from zero | `UploadOptions` |

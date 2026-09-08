@@ -34,18 +34,21 @@ And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
 `examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
 637 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push.
 
-**One caveat, stated plainly: nothing on the Windows side has ever been run.**
-CI compiles the adapter and the tool at `/W4 /WX` and links a smoke test, but a
-GitHub runner has no Bluetooth radio, so no byte has crossed GATT. Their
-portable pieces are unit-tested everywhere — the UUIDs, the fragment
-arithmetic, the close state machine, and the reconnect backoff, which
-`cli_dfu --flaky-reconnect` drives on every push. Everything that touches the
-radio is unverified until the hardware suite. See
+**The Windows side has now run against a real device** (roadmap P17a): the
+WinRT adapter and `winrt_ble_dfu` completed updates in both directions against a
+NUCLEO-WB55RG running Zephyr's `smp_svr`, with the device's state confirmed over
+a UART path smply does not touch. CI still cannot exercise a radio — a GitHub
+runner has none — so what CI proves about that code is that it builds; what the
+bench proved is in [`docs/roadmap.md`](docs/roadmap.md) and the two READMEs,
 [`transports/winrt_ble/README.md`](transports/winrt_ble/README.md) and
-[`examples/winrt_ble_dfu/README.md`](examples/winrt_ble_dfu/README.md).
+[`examples/winrt_ble_dfu/README.md`](examples/winrt_ble_dfu/README.md). The
+first hardware run found three defects, none in the adapter: a real device's
+CBOR is indefinite-length, its final upload chunk takes longer than 5 s to
+answer, and the report misread the retransmission that hid.
 
-What is not built yet: the hardware interoperability suite, and the 1.0
-packaging review. See [`docs/roadmap.md`](docs/roadmap.md) for the
+What is not built yet: the unattended hardware case suite and cross-check
+(P17b, P17c), and the 1.0 packaging review. See
+[`docs/roadmap.md`](docs/roadmap.md) for the
 phase-by-phase plan and what is next.
 
 A whole update, with the application owning the pump and the connection:

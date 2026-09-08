@@ -471,11 +471,23 @@ corrupted image ⇒ rejected · test boot then confirm · test boot then reset
 without confirm ⇒ **rollback observed** · reset · erase · slot-info and
 mcumgr-params presence/absence.
 
-Cross-check: the same firmware and device are updated with Zephyr's supported
-`mcumgr-client`, and both the resulting image-state output and a captured
-`btmon`/HCI trace are compared against smply's. Divergence is a defect in smply
-or a new entry in [`protocol-notes.md`](protocol-notes.md) — never a silent
-adjustment.
+Cross-check: restore the same baseline firmware before each client sequence.
+Use the Zephyr-listed `mcumgr-client` over UART for resulting image-state
+comparison, and the Zephyr-listed `smpmgr` over BLE for image-state and paired
+HCI comparison. The previously specified `mcumgr-client` has serial/UDP support,
+not BLE; it cannot provide the requested Bluetooth trace. These are third-party
+comparison tools, not Zephyr-maintained clients or protocol references
+([ADR-0015](decisions/ADR-0015-hardware-evidence.md)). On Windows use BTVS and
+Wireshark; application logs do not substitute for HCI captures. Compare decoded
+SMP operations and state, allowing different sequence numbers, fragmentation
+and timing. Every divergence is investigated against primary sources and
+recorded in [`protocol-notes.md`](protocol-notes.md) section 9 before any
+behaviour change.
+
+P17 starts with a manual update using `winrt_ble_dfu`; only after it succeeds
+may the cases be automated. Local unattended execution comes first; the advisory
+nightly runner is explicitly uncommissioned and does not constitute completed
+coverage. Missing hardware or capture prerequisites must never count as a pass.
 
 ## 7. Determinism rules
 

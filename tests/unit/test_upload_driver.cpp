@@ -310,6 +310,26 @@ TEST_CASE("the first chunk gets the long timeout and the rest the short one",
     REQUIRE(*second == fixture.clock.now() + smply::limits::kDefaultTimeout);
 }
 
+TEST_CASE("the final chunk gets its own long timeout", "[upload][driver][timeout]")
+{
+    // A19: a device with the image check enabled answers the last chunk only
+    // after hashing the whole image out of flash -- 5.3 s for 134 KiB on the
+    // P17 bench, past the 5 s default. Every real update timed out there,
+    // retransmitted, and completed through rules 9b and 9a instead. The image
+    // here is 100 bytes in 40-byte chunks, so the third request is the last.
+    Fixture fixture;
+
+    static_cast<void>(fixture.start());
+    fixture.respond(kChunk);
+    fixture.respond(2 * kChunk);
+
+    const auto payload = fixture.payload_of(2);
+    REQUIRE_FALSE(payload.empty());
+    const auto last = fixture.client.next_deadline();
+    REQUIRE(last.has_value());
+    REQUIRE(*last == fixture.clock.now() + smply::limits::kFinalChunkTimeout);
+}
+
 TEST_CASE("a timeout retransmits an identical payload", "[upload][driver][timeout]")
 {
     // The payload has to be identical, not merely equivalent: the server may

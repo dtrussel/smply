@@ -80,6 +80,7 @@ UploadState mid_upload(std::uint64_t confirmed)
     state.in_flight_off = confirmed;
     state.in_flight_len = kChunk;
     state.in_flight_first_packet = false;
+    state.progressed = confirmed > 0;
     return state;
 }
 
@@ -337,6 +338,55 @@ TEST_CASE("a transfer that finishes normally is not reported as already present"
 
     REQUIRE(step.action == Action::Complete);
     CHECK_FALSE(step.completed_on_first_packet);
+}
+
+TEST_CASE("a retransmitted final chunk is not reported as already present", "[upload][session]")
+{
+    // Rules 9b then 9a, as every update on the P17 bench played them out before
+    // the final chunk had its own deadline: the response to the last chunk is
+    // late, the retransmission is answered `off == 0` because the server has
+    // already completed and reset its session, the client re-sends a first
+    // packet, and the server completes *that* by its already-present check.
+    // The image it finds is the one this session just sent. Reporting that as
+    // "already held" made a 134 KiB transfer read as a skip.
+    UploadState state = mid_upload(kImageSize - 40);
+    const Step last = plan_next(state, config());
+    REQUIRE_FALSE(last.request.first_packet);
+    record_sent(state, last.request);
+
+    const Step restart = on_response(state, offset(0), config());
+    REQUIRE(restart.action == Action::SendChunk);
+    REQUIRE(restart.request.first_packet);
+    record_sent(state, restart.request);
+
+    UploadResponse done = offset(kImageSize);
+    done.match = true;
+    const Step step = on_response(state, done, config());
+
+    REQUIRE(step.action == Action::Complete);
+    REQUIRE(step.match == true);
+    CHECK_FALSE(step.completed_on_first_packet);
+}
+
+TEST_CASE("a first packet that completes with no prior progress is already present",
+          "[upload][session]")
+{
+    // The flag's positive case again, but through a restart: the very first
+    // response is `off == 0` (the server forgot a session, rule 7), the second
+    // first packet completes. Nothing was ever acknowledged, so the device did
+    // hold the image beforehand.
+    UploadState state;
+    record_sent(state, plan_next(state, config()).request);
+    const Step restart = on_response(state, offset(0), config());
+    REQUIRE(restart.request.first_packet);
+    record_sent(state, restart.request);
+
+    UploadResponse done = offset(kImageSize);
+    done.match = true;
+    const Step step = on_response(state, done, config());
+
+    REQUIRE(step.action == Action::Complete);
+    CHECK(step.completed_on_first_packet);
 }
 
 TEST_CASE("an offset beyond the image is malformed", "[upload][session][hostile]")

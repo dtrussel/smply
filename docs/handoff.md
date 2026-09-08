@@ -185,6 +185,25 @@ entry when it stops being true.
   `it_tlv_tot` exactly, and the two areas are walked as one contiguous run. A
   scan also cannot spin — every advance is at least the four-byte entry header —
   so `limits::kMaxImageTlvs` bounds work, not termination.
+* **A real device's CBOR is indefinite-length** (PN §9, A18). zcbor writes
+  `0xBF`/`0x9F` … `0xFF` unless `CONFIG_ZCBOR_CANONICAL` is set, and nothing in
+  MCUmgr sets it. Every hand-built golden before P17 was definite-length, and
+  QCBOR — pinned and `master` — mishandles two consecutive indefinite breaks when
+  a map is left with `ExitMap()`, sometimes *silently* reading the parent map's
+  entries as array elements. `cbor::Reader::for_each_map_in_array` therefore
+  decodes each element from its own byte range in a child reader; do not "tidy"
+  it back into enter/exit, and build any new response golden in **both**
+  encodings (`test_cbor.cpp` shows the shape; `[hardware-golden]` cases carry
+  the device's exact bytes).
+* **The final upload chunk is slow to answer, and a retransmission hides it**
+  (PN §9, A19; rule 9b confirmed on hardware). With the image check on, the
+  device hashes the whole image before replying — 5.57 s for 134 KiB on the
+  WB55 — so a 5 s deadline times out, the retransmitted chunk is answered
+  `off == 0`, a first packet completes via 9a, and the update **succeeds**
+  while reporting "already present". `final_chunk_timeout` exists for this, and
+  `already_present` is now false once the session has made progress. When a
+  hardware run prints `Completed`, read the client counters before believing
+  nothing went wrong.
 
 **Before you trust a green run**
 
@@ -284,6 +303,28 @@ entry when it stops being true.
   directory it is given.
 * `??>` in a C++ string literal is a **trigraph**, and `-Werror` rejects it. The
   device's `<???>` version placeholder needs a raw string literal.
+
+**The hardware bench (P17)**
+
+* **Read `tests/hil/README.md` before touching the board.** The NUCLEO-WB55RG's
+  Bluetooth controller runs on a second core whose firmware Zephyr does not
+  build: it needs the **HCI-only** STM32CubeWB stack matching the pinned
+  hal_stm32 (1.24.0), installed through an incremental FUS upgrade. The board
+  arrived with a full stack and FUS 1.0.2, and the release notes' steps are
+  what worked. Read the version table with `mode=HOTPLUG`; under reset it is
+  zeros.
+* **Only one process may hold COM4.** `uart_log.py` and `mcumgr-client` cannot
+  run at once; the second one fails to open the port. Stop the logger first.
+* **`flash_baseline.py` is the recovery primitive and exits 2 for "no bench".**
+  A supervisor must never turn that into a pass or a fail.
+* **On Windows, build with the MSVC developer environment loaded** —
+  `cmd /c "call VsDevCmd.bat -arch=x64 && cmake --build --preset windows-winrt"`
+  from PowerShell. Running `cmake --build` from a shell that did not find `cl`
+  fails without building, and the previous binary is then what `ctest` and the
+  bench run: the stale-binary trap, again. Check the build's exit status.
+* **The bench evidence lives under `build/hil-evidence/` and is not in git.**
+  Logs, captures and the CPU2 provisioning transcript are there; only
+  reproducible inputs and concise results go into the repository.
 
 ---
 
@@ -1972,3 +2013,89 @@ same wall, look for that seam first; it is the third time it has paid.
   `transports/winrt_ble/` and `examples/winrt_ble_dfu/`. `verify_gates.sh`
   plants a decoy beside *each* and requires both to survive. Do not widen that
   filter to the substring `winrt`.
+
+### 2026-09-08 — P17 (first attempt, nRF52840 DK): bench provisioning, no hardware reached
+
+**Status after this session:** P17 = `In Progress` (written retrospectively by
+the following session from what was left in the tree; the session itself ended
+without a log entry when its usage ran out).
+
+**Completed.** A pinned west workspace for Zephyr `e71ff182` / MCUboot
+`ee39e2d6` and a Python venv with west, imgtool, pyserial, bleak, smpmgr and
+smpclient; a first `build_peer.py` for the nRF52840 DK, which built; BTP/BTVS
+1.14.0 and `mcumgr-client` 0.0.9 installed; a draft ADR-0015 and edits to the
+roadmap, `testing.md` §6, `protocol-notes.md` §9 and `dependencies.md`
+re-interpreting the `mcumgr-client` cross-check (Zephyr lists it as a serial-only
+third-party tool). All of it uncommitted.
+
+**Not reached.** The device. SWD access to the DK failed at every speed after a
+probe firmware upgrade, and the board was later found to be damaged. No byte
+went over the air.
+
+**Carried forward.** The workspace, venv, tools and the ADR's substance were
+reused on the replacement bench; the nRF-specific recipe, device name, signing
+geometry and README were replaced. The lesson worth keeping: **hand-copying a
+board's signing geometry into a script is how a second board's build goes
+wrong** — build both images with the board's own signing step instead.
+
+### 2026-09-08 — P17a: bench bring-up and the first real update (NUCLEO-WB55RG)
+
+**Status after this session:** P17a = `Complete`; P17 split into P17a–P17c.
+Next phase: **P17b — the unattended hardware case suite**.
+
+**Completed.** The bench (`tests/hil/README.md`): the WB55's coprocessor
+re-provisioned from a full BLE stack on FUS 1.0.2 to the HCI-only stack v1.24.0
+on FUS 2.2.0 that the pinned hal_stm32 needs; `tests/hil/firmware/` re-targeted
+(manifest with hal_stm32, `peer.conf`, a `build_peer.py` that builds A and B
+with Zephyr's own signing step, `flash_baseline.py` as the recovery primitive);
+`tests/hil/tools/uart_log.py` and `measure_reset.py`. **Six `winrt_ble_dfu`
+updates completed in both directions**, by address and by scan-response name,
+with `mcumgr-client` over the UART shell transport as an independent oracle —
+P16's acceptance criterion is discharged. Three defects fixed with tests, 11
+new unit tests (**648** on Windows), all local gates green.
+
+**Protocol work.** S24, S25; A18 (indefinite-length CBOR), A19 (final-chunk
+latency) and a measured note on A7; rule 9b confirmed on hardware. Every entry
+is traced to Zephyr, zcbor or MCUboot source, with the device's bytes as the
+evidence.
+
+**Changed.** `cbor::Reader::for_each_map_in_array` (child reader per element —
+a QCBOR workaround, see `dependencies.md`); `UploadOptions::final_chunk_timeout`
+and `limits::kFinalChunkTimeout`; `UploadState::progressed` narrowing
+`UploadResult::already_present`; `winrt_ble_dfu` prints elapsed milliseconds
+and the client counters. `transports/winrt_ble/` is untouched.
+
+**Remaining in this phase.** None. The plain-reset window measurement's numbers
+are in the P17a outcome; the `ReconnectSettings` change waits for P17b's swap
+and revert measurements.
+
+**Discovered / follow-up.** Five new rows in the roadmap table: WinRT's
+blocking `connect()` versus the policy's shape; the QCBOR defect to report
+upstream (needs the user's go-ahead); BTVS needs elevation; only slot 0 is
+listed after a swap-using-offset update; and the P12 `upload_skipped` row
+refined. Two rows closed (P15b and P16 "never run").
+
+**Caveats.** Three additions to § Standing caveats (indefinite-length CBOR; the
+slow final chunk hiding behind a retransmission; the bench section). Two
+more, for P17b specifically:
+
+* **A device resetting silently is noticed at different speeds.** With the
+  peer's requested connection parameters in force (`BT_CONN_PARAM_CONTROL`,
+  420 ms supervision) smply's adapter saw the drop in about 0.6 s. A
+  third-party client that reset within two seconds of connecting waited
+  **9.8 s** — Windows was still on its own parameters. `disconnect_grace` is
+  10 s; a reset case that connects and resets immediately sits right on it.
+* **The HIL cases' timeouts must budget the device's flash work**: 6.6 s for
+  the first-chunk erase, 5.6 s for the final-chunk hash, about 6.3 s of reboot
+  after a swap — all on a 134 KiB image, all scaling with size.
+
+**Docs updated.** `protocol-notes.md`, `dependencies.md`, `ADR-0015` (rewritten
+for this bench), `roadmap.md` (split, P17a outcome, table rows), `api.md`,
+`architecture.md` §9, `design.md` §6, the two Windows READMEs, `README.md`,
+`tests/hil/README.md`, this file.
+
+**Recommended next.** **P17b.** Start from `tests/hil/README.md`'s bench facts
+and the P17a outcome's measurements; build `smply_hil` on the public API only,
+and write the rollback case *after* observing what the state read shows during a
+trial boot under swap-using-offset — the follow-up row says why. Keep BTVS
+elevation in mind for the runner; without it there is no HCI evidence.

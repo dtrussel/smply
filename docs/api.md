@@ -604,6 +604,7 @@ struct UploadOptions {
     std::uint32_t max_restarts      = limits::kMaxUploadRestarts; // 2
     std::uint32_t max_no_progress   = limits::kMaxNoProgress;     // 3
     Duration first_chunk_timeout = limits::kFirstChunkTimeout;    // 30 s — A7
+    Duration final_chunk_timeout = limits::kFinalChunkTimeout;    // 30 s — A19
     Duration chunk_timeout       = limits::kDefaultTimeout;       // 5 s
 };
 
@@ -613,9 +614,11 @@ struct UploadProgress { std::uint64_t transferred = 0, total = 0; };
 
 struct UploadResult {
     std::uint64_t transferred = 0;
-    bool already_present = false;  // the server completed the first packet with
-                                   // its own already-present check (rule 9a),
-                                   // so nothing beyond it was sent
+    bool already_present = false;  // the server completed a first packet with
+                                   // its own already-present check (rule 9a)
+                                   // before this session had moved a byte; a
+                                   // re-sent first packet after a lost final
+                                   // response (rule 9b) does not count
     std::optional<bool> match;     // absent on a device without the image check
                                    // (A6); a false fails with ImageMismatch
 };

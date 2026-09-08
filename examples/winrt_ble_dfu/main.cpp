@@ -250,17 +250,29 @@ int main(int argc, char** argv)
 
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
 
+    // Every line is stamped with the milliseconds since the update began. On a
+    // real link that is the only way to see *where* the time goes -- the
+    // device's own work on the final chunk, the reboot, the reconnect -- and it
+    // is what P17 measured the reconnect policy from.
+    const auto started = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [&] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - started)
+            .count();
+    };
+
     const Result<void> begun = updater.start(*source, plan, [&](const UpdateEvent& event) {
         switch (event.kind) {
         case UpdateEvent::Kind::StateChanged:
             if (!options.quiet) {
-                std::cout << "  " << to_string(event.to) << '\n';
+                std::cout << "  [" << elapsed_ms() << " ms] " << to_string(event.to) << '\n';
             }
             break;
         case UpdateEvent::Kind::Progress:
             if (!options.quiet && event.progress.total != 0) {
-                std::cout << "\r  uploading " << event.progress.transferred << '/'
-                          << event.progress.total << " bytes" << std::flush;
+                std::cout << "\r  [" << elapsed_ms() << " ms] uploading "
+                          << event.progress.transferred << '/' << event.progress.total << " bytes"
+                          << std::flush;
                 if (event.progress.transferred == event.progress.total) {
                     std::cout << '\n';
                 }
@@ -395,6 +407,16 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    // The client's counters, because a real link is where they earn their keep:
+    // a retransmitted final chunk is answered as a fresh session (protocol-notes
+    // section 6, rules 9b then 9a) and reads as "already held" above, and the
+    // only way to tell that from a device that really did hold the image is to
+    // see that a request timed out.
+    const SmpClientStats& stats = client.stats();
+    std::cout << "  smp: " << stats.sent << " sent, " << stats.received << " received, "
+              << stats.timeouts << " timed out, " << stats.late << " late, " << stats.unmatched
+              << " unmatched, " << stats.mismatched << " mismatched, " << stats.malformed
+              << " malformed\n";
 
     if (report.final_state == UpdateState::Completed) {
         return kOk;

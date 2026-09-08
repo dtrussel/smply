@@ -8,7 +8,8 @@
 
 namespace smply::cbor {
 
-Reader::Reader(ConstBytes input, unsigned max_nesting) noexcept : max_nesting_{max_nesting}
+Reader::Reader(ConstBytes input, unsigned max_nesting) noexcept
+    : input_{input}, max_nesting_{max_nesting}
 {
     QCBORDecode_Init(&context_, UsefulBufC{input.data(), input.size()}, QCBOR_DECODE_MODE_NORMAL);
 }
@@ -222,39 +223,77 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
     }
     ++depth_;
 
+    // Each element is decoded by a child reader over the element's own bytes,
+    // never by entering and exiting it in this context. That is a workaround,
+    // and a load-bearing one: QCBOR (1.6.1 and current master alike) mishandles
+    // consecutive indefinite-length breaks -- an indefinite-length map that is
+    // the last element of an indefinite-length array -- when the map is left
+    // through QCBORDecode_ExitMap(). It swallows the array's break as well, so
+    // the walk either fails with QCBOR_ERR_BAD_BREAK or, worse, silently reads
+    // the *parent map's* following entries as further array elements. Zephyr's
+    // zcbor emits exactly that encoding unless CONFIG_ZCBOR_CANONICAL is set,
+    // which the reference server does not (protocol-notes section 9, P17).
+    // Peeking, skipping with VGetNextConsume() and re-reading the sub-span is
+    // unaffected; tests/unit/test_cbor.cpp pins both shapes.
     Result<void> outcome{};
     std::size_t seen = 0;
     while (true) {
-        QCBORDecode_EnterMap(&context_, nullptr);
-        if (const QCBORError status = QCBORDecode_GetAndResetError(&context_);
-            status != QCBOR_SUCCESS) {
-            if (status != QCBOR_ERR_NO_MORE_ITEMS) {
-                outcome =
-                    record(Error{ErrorCode::CborDecode, "cbor reader: array element not a map"});
-            }
+        QCBORItem item{};
+        const QCBORError peeked = QCBORDecode_PeekNext(&context_, &item);
+        if (peeked == QCBOR_ERR_NO_MORE_ITEMS) {
             break; // end of the array
         }
-
+        if (peeked != QCBOR_SUCCESS) {
+            outcome = record(
+                Error{ErrorCode::CborDecode, "cbor reader: array element unreadable"}.with_reason(
+                    std::to_string(static_cast<int>(peeked))));
+            break;
+        }
+        if (item.uDataType != QCBOR_TYPE_MAP) {
+            outcome = record(Error{ErrorCode::CborDecode, "cbor reader: array element not a map"});
+            break;
+        }
         if (seen == max_elements) {
             // Bounded by configuration, not by what the device claims. The cap
-            // is tested *after* entering, so that an array of exactly
-            // max_elements is accepted: checking first would reject the last
-            // legal element, having never looked for the end of the array.
+            // is tested once a further element has been *seen*, so an array of
+            // exactly max_elements is accepted: checking before the peek would
+            // reject the last legal element, having never looked for the end.
             outcome = record(Error{ErrorCode::CborDecode, "cbor reader: too many array elements"});
-            QCBORDecode_ExitMap(&context_);
             break;
         }
         ++seen;
 
-        outcome = visit(*this);
-
-        QCBORDecode_ExitMap(&context_);
-        if (!outcome.has_value()) {
+        const std::size_t first = QCBORDecode_Tell(&context_);
+        QCBORDecode_VGetNextConsume(&context_, &item);
+        if (const QCBORError status = QCBORDecode_GetAndResetError(&context_);
+            status != QCBOR_SUCCESS) {
+            outcome = record(
+                Error{ErrorCode::CborDecode, "cbor reader: array element malformed"}.with_reason(
+                    std::to_string(static_cast<int>(status))));
             break;
         }
-        if (QCBORDecode_GetError(&context_) != QCBOR_SUCCESS) {
+        const std::size_t last = QCBORDecode_Tell(&context_);
+        if (first > last || last > input_.size()) {
             outcome =
-                record(Error{ErrorCode::CborDecode, "cbor reader: exit array element failed"});
+                record(Error{ErrorCode::CborDecode, "cbor reader: array element out of bounds"});
+            break;
+        }
+
+        // The span may run past the element's own break when the QCBOR defect
+        // above has swallowed the parent's; the child only ever looks inside
+        // the map it enters, so trailing bytes are never examined. The nesting
+        // budget is what remains of this reader's, so the total stays bounded.
+        Reader element{input_.subspan(first, last - first), max_nesting_ - depth_};
+        outcome = element.enter_map();
+        if (outcome.has_value()) {
+            outcome = visit(element);
+        }
+        if (outcome.has_value() && !element.status().has_value()) {
+            // A poisoned child is a poisoned parent: whoever checks status()
+            // on this reader afterwards must see the failure.
+            outcome = record(element.status().error());
+        }
+        if (!outcome.has_value()) {
             break;
         }
     }

@@ -385,6 +385,10 @@ struct UploadOptions
     /// Deadline for the first chunk, which may trigger an implicit slot erase
     /// of unbounded duration (A7).
     Duration first_chunk_timeout = limits::kFirstChunkTimeout;
+    /// Deadline for the final chunk, which a device with the image check
+    /// enabled answers only after hashing the whole image out of flash (A19).
+    /// Proportional to the image size; see `limits::kFinalChunkTimeout`.
+    Duration final_chunk_timeout = limits::kFinalChunkTimeout;
     /// Deadline for every other chunk.
     Duration chunk_timeout = limits::kDefaultTimeout;
 };
@@ -404,8 +408,8 @@ struct UploadResult
 {
     std::uint64_t transferred = 0;
 
-    /// The device already held this image: it answered the **first** packet
-    /// with the image complete, so nothing beyond that packet was sent
+    /// The device already held this image: it answered a **first** packet with
+    /// the image complete **before this session had transferred anything**
     /// (docs/protocol-notes.md section 6, rule 9a).
     ///
     /// The server runs that check itself, on any request at offset zero
@@ -413,6 +417,15 @@ struct UploadResult
     /// round trip. Without this flag a caller cannot tell that from a transfer
     /// that happened to be one chunk long -- `transferred` reads as the whole
     /// image either way, because the device acknowledged the whole image.
+    ///
+    /// The second clause matters on a real link. When the response to the
+    /// final chunk is lost or late, the retransmitted chunk is answered
+    /// `off == 0` (rule 9b) and the session restarts with a first packet, which
+    /// the server then completes by that same check -- because it now holds
+    /// the image *this session sent*. That is a transfer, not a skip; P17 saw
+    /// it on every update against a device whose final-chunk work exceeded the
+    /// old deadline. A session that made progress therefore never reports it,
+    /// whichever packet finished it.
     bool already_present = false;
     /// The device's own verdict on the flashed bytes, when it has one.
     ///

@@ -19,12 +19,13 @@ constexpr std::uint8_t kUploadCommand = 1;
 } // namespace
 
 UploadDriver::UploadDriver(SmpClient& client, ImageSource& source, const UploadConfig& config,
-                           Duration first_chunk_timeout, Duration chunk_timeout,
-                           std::function<void(UploadProgress)> on_progress,
+                           Duration first_chunk_timeout, Duration final_chunk_timeout,
+                           Duration chunk_timeout, std::function<void(UploadProgress)> on_progress,
                            Callback<UploadResult> on_done) noexcept
     : client_{&client}, source_{&source}, config_{config},
-      first_chunk_timeout_{first_chunk_timeout}, chunk_timeout_{chunk_timeout},
-      on_progress_{std::move(on_progress)}, on_done_{std::move(on_done)}
+      first_chunk_timeout_{first_chunk_timeout}, final_chunk_timeout_{final_chunk_timeout},
+      chunk_timeout_{chunk_timeout}, on_progress_{std::move(on_progress)},
+      on_done_{std::move(on_done)}
 {}
 
 void UploadDriver::start()
@@ -127,13 +128,21 @@ void UploadDriver::send(const UploadRequest& request)
     }
     // LCOV_EXCL_STOP
 
+    // The first chunk may trigger an implicit erase of unbounded duration (A7);
+    // the final one is answered only after the device has hashed the whole
+    // image out of flash, when it has the image check enabled (A19). Both are
+    // proportional to something the client does not control, so each gets its
+    // own deadline. A first packet that is also the last chunk -- a tiny image
+    // -- takes the first-chunk one, because that is the larger unknown.
+    const bool final_chunk = request.off + request.length == config_.image_size;
+    const Duration timeout = request.first_packet ? first_chunk_timeout_
+                             : final_chunk        ? final_chunk_timeout_
+                                                  : chunk_timeout_;
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Image,
                            .command = kUploadCommand,
                            .payload = *payload,
-                           // The first chunk may trigger an implicit erase of
-                           // unbounded duration (A7).
-                           .timeout = request.first_packet ? first_chunk_timeout_ : chunk_timeout_};
+                           .timeout = timeout};
 
     record_sent(state_, request);
     request_ = client_->request(

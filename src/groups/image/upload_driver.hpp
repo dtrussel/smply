@@ -38,7 +38,7 @@ class UploadDriver
 {
 public:
     UploadDriver(SmpClient& client, ImageSource& source, const UploadConfig& config,
-                 Duration first_chunk_timeout, Duration chunk_timeout,
+                 Duration first_chunk_timeout, Duration final_chunk_timeout, Duration chunk_timeout,
                  std::function<void(UploadProgress)> on_progress,
                  Callback<UploadResult> on_done) noexcept;
 
@@ -97,6 +97,7 @@ private:
     ImageSource* source_;
     UploadConfig config_;
     Duration first_chunk_timeout_;
+    Duration final_chunk_timeout_;
     Duration chunk_timeout_;
     std::function<void(UploadProgress)> on_progress_;
     Callback<UploadResult> on_done_;
