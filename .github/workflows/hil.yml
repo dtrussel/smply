@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The hardware interoperability suite (P17), advisory.
+#
+# Runs ONLY on a self-hosted Windows runner labelled `smply-bench`, which has
+# the NUCLEO-WB55RG on ST-LINK, a Bluetooth radio, STM32CubeProgrammer, the
+# bench venv and the peer artefacts described in tests/hil/README.md. No such
+# runner is registered yet: this workflow is committed so that commissioning
+# one is a configuration step and not a code change, and it stays advisory
+# (continue-on-error) because a bench is not a PR gate (ADR-0015).
+#
+# A run that finds no bench reports its cases as "unavailable", not as passed.
+name: HIL (advisory)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: "Case names to run (comma-separated), or 'all'"
+        default: "all"
+  schedule:
+    - cron: "17 2 * * *"   # nightly, after the fuzz soak
+
+jobs:
+  hil:
+    name: hardware cases on the bench
+    runs-on: [self-hosted, windows, smply-bench]
+    continue-on-error: true
+    timeout-minutes: 90
+    env:
+      # Set on the runner, not here: where build_peer.py wrote its evidence/,
+      # and how the bench is reached. See tests/hil/README.md.
+      SMPLY_HIL_EVIDENCE: ${{ vars.SMPLY_HIL_EVIDENCE }}
+      SMPLY_HIL_ADDRESS: ${{ vars.SMPLY_HIL_ADDRESS }}
+      SMPLY_HIL_UART: ${{ vars.SMPLY_HIL_UART }}
+      SMPLY_HIL_VENV: ${{ vars.SMPLY_HIL_VENV }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build (windows-hil)
+        shell: cmd
+        run: |
+          call "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          cmake --preset windows-hil
+          cmake --build --preset windows-hil
+
+      - name: Run the case suite
+        shell: pwsh
+        run: |
+          & "$env:SMPLY_HIL_VENV\Scripts\python.exe" tests/hil/run_hil.py `
+            --exe build/windows-hil/tests/hil/smply_hil.exe `
+            --evidence "$env:SMPLY_HIL_EVIDENCE" `
+            --address "$env:SMPLY_HIL_ADDRESS" `
+            --uart "$env:SMPLY_HIL_UART" `
+            --out build/hil-runs `
+            --cases "${{ github.event.inputs.cases || 'all' }}"
+
+      - name: Upload the evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hil-evidence-${{ github.run_id }}
+          path: build/hil-runs
+          if-no-files-found: warn

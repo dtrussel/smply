@@ -460,34 +460,51 @@ corpus that finds nothing today may find something tomorrow.
 
 ## 6. Hardware interoperability (`tests/hil/`)
 
-Opt-in target `smply_hil` (`SMPLY_BUILD_HIL=ON`), never part of the PR gate.
-Requires a Zephyr board running MCUboot + `smp_svr` (BLE transport), described
-in `tests/hil/README.md` together with the exact west/Kconfig snapshot used, so
-results are reproducible.
+Opt-in target `smply_hil` (`SMPLY_BUILD_HIL=ON`, preset `windows-hil`), never
+part of the PR gate. Requires the bench in `tests/hil/README.md`: a NUCLEO-WB55RG
+running MCUboot + the pinned `smp_svr` over BLE, reachable from a Windows host,
+with the exact west manifest, Kconfig snapshots and coprocessor firmware recorded
+so results are reproducible.
 
-Cases: clean update · interrupted upload (link dropped mid-transfer) then resume ·
-resume after a full application restart · image already present · deliberately
-corrupted image ⇒ rejected · test boot then confirm · test boot then reset
-without confirm ⇒ **rollback observed** · reset · erase · slot-info and
-mcumgr-params presence/absence.
+**Shape.** `test_hil_cases.cpp` is a Catch2 suite over the **public API only**,
+driven through `support/rig.*` — the example's pump loop made callable one
+operation at a time (connect, read state, upload, resume, drop the link, run a
+whole update, reconnect on a policy). Every case reads the bench from the
+environment and **SKIPs** without it; every case works out its own target (the
+image not currently running), so it can start from either of the two firmware
+images. `run_hil.py` supervises: a baseline reflash over ST-LINK and a UART
+capture per *group*, a hard deadline and a JUnit report per case, the case's
+timeline and `HIL-METRIC` lines kept as evidence, and a **pass / fail /
+unavailable** verdict — a skipped case, a missing probe or an unreadable report
+is unavailable, never a pass ([ADR-0015](decisions/ADR-0015-hardware-evidence.md)).
 
-Cross-check: restore the same baseline firmware before each client sequence.
-Use the Zephyr-listed `mcumgr-client` over UART for resulting image-state
-comparison, and the Zephyr-listed `smpmgr` over BLE for image-state and paired
-HCI comparison. The previously specified `mcumgr-client` has serial/UDP support,
-not BLE; it cannot provide the requested Bluetooth trace. These are third-party
-comparison tools, not Zephyr-maintained clients or protocol references
-([ADR-0015](decisions/ADR-0015-hardware-evidence.md)). On Windows use BTVS and
-Wireshark; application logs do not substitute for HCI captures. Compare decoded
-SMP operations and state, allowing different sequence numbers, fragmentation
-and timing. Every divergence is investigated against primary sources and
-recorded in [`protocol-notes.md`](protocol-notes.md) section 9 before any
-behaviour change.
+**Cases** (one `TEST_CASE` each, tag `[hil]`): presence of params, slot info and
+echo · clean update (test then confirm) · confirm-immediately · an image the
+device already runs is not uploaded (the updater's pre-flight) · the server's own
+already-present check on a re-upload (rule 9a) · interrupted upload (the
+application closes the link at half way) then `resume()` · resume after an
+application restart (two cases, run without a reflash between them) · corrupted
+image refused (one body byte flipped after signing) · test boot then reset
+without confirm ⇒ **rollback observed** · reset (disconnect seen, device back) ·
+erase, including of a slot marked for test · reconnection gives up when the
+device does not return (the supervisor erases the device on a marker line; run
+alone the case fails on purpose). The cases record the measurements P17a began:
+close-grace, disconnect latency, reboot windows, resume offsets.
 
-P17 starts with a manual update using `winrt_ble_dfu`; only after it succeeds
-may the cases be automated. Local unattended execution comes first; the advisory
-nightly runner is explicitly uncommissioned and does not constitute completed
-coverage. Missing hardware or capture prerequisites must never count as a pass.
+**Cross-check** (P17c). From the same baseline, run the same sequence with smply,
+with `smpmgr` over BLE, and with `mcumgr-client` over the UART shell transport
+— the last one is also the *oracle* every case's device state is checked
+against, because it reaches the device through a path smply does not touch.
+These are third-party tools for behavioural comparison, never protocol
+references. Compare normalised image state and decoded SMP operation sequences
+from HCI captures (BTVS + Wireshark; needs an elevated shell), allowing
+different sequence numbers, fragmentation and timing. Every divergence is traced
+to Zephyr or MCUboot source and recorded in
+[`protocol-notes.md`](protocol-notes.md) §9 before any behaviour changes.
+
+The advisory `hil.yml` workflow is committed and **not commissioned**: no
+self-hosted runner exists yet, so the suite has only run from the bench by hand.
+That is recorded in the roadmap as the one item P17 leaves open.
 
 ## 7. Determinism rules
 

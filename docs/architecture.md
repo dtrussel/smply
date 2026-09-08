@@ -341,7 +341,7 @@ smply/
 │   │                           portable, header-only smply::transport_common;
 │   │                           built and tested everywhere
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
-│                               Compiled by CI, never run: see its README
+│                               Compiled by CI; exercised on the bench (P17): see its README
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
@@ -354,7 +354,7 @@ smply/
 │   │                           the other files are the stub device it drives. Runs
 │   │                           in CI, --flaky-reconnect included
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
-│                               Compiled by CI, never run: see its README
+│                               Compiled by CI; runs on the bench (P17a): see its README
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
@@ -364,7 +364,11 @@ smply/
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
-│   └── hil/                    (planned, P17) hardware interoperability, opt-in
+│   └── hil/                    hardware interoperability, opt-in (SMPLY_BUILD_HIL, preset
+│                               windows-hil): test_hil_cases.cpp over support/rig.* and
+│                               support/bench.*; run_hil.py supervises; firmware/ is the
+│                               reproducible peer (manifest, peer.conf, build and flash
+│                               scripts); tools/ are the bench instruments. Never a PR gate
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
 │                               verify_gates.sh  cppcheck-suppressions.txt

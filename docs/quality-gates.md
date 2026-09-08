@@ -30,6 +30,7 @@ a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and th
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then `find_package`s it from a separate project and runs the result (§13) |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
+| `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). *Advisory*, `continue-on-error`, nightly plus on demand; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand (roadmap P17b). Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
 pins the versions above. Clang's sanitizer jobs need `libclang-rt-<v>-dev`

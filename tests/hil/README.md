@@ -140,6 +140,35 @@ device is unreachable for about 6.3 s after a swap reset, roughly 5 s of it
 MCUboot copying the image, so any deadline around a reboot must allow for that
 and for larger images taking longer.
 
+## Running the cases (P17b)
+
+```powershell
+cmake --preset windows-hil          # from an MSVC developer shell
+cmake --build --preset windows-hil
+python tests/hil/run_hil.py --exe build/windows-hil/tests/hil/smply_hil.exe `
+    --evidence <out>/evidence --address 80:E1:26:00:65:E2 --uart COM4 --out build/hil-runs
+```
+
+`smply_hil` is a Catch2 executable (`test_hil_cases.cpp`) driving the public API
+through `support/rig.*` — the example's pump loop made callable one operation at
+a time. Each case works out its own target image (whichever of A and B is not
+running), so the supervisor reflashes the baseline between **groups** rather
+than between cases and a person can run one case by hand against a device in
+either state. Cases read the bench from `SMPLY_HIL_ADDRESS`, `SMPLY_HIL_IMAGE_A`
+and `SMPLY_HIL_IMAGE_B`; without them they **SKIP**, which the supervisor reports
+as `unavailable`.
+
+`run_hil.py` wraps each group in `flash_baseline.py` and a `uart_log.py`
+capture, runs each case with a hard deadline and a JUnit report, keeps its
+stdout (timeline and `HIL-METRIC` lines), the device log and the report under
+`build/hil-runs/<run>/<group>/<case>/`, and writes `summary.json` with a
+**pass / fail / unavailable** verdict per case. Two groups need to know about
+each other: the *restart* pair runs without a reflash in between, and the
+*give-up* case prints `HIL-MARK: device-gone-now` when it starts reconnecting,
+on which the supervisor erases the device over ST-LINK so that nothing ever
+advertises again; run alone, that case fails on purpose. Exit status: 0 all
+pass, 1 any fail, 2 any unavailable.
+
 ## HCI capture
 
 Microsoft's Bluetooth Test Platform (BTP 1.14.0) is installed at
