@@ -2099,3 +2099,71 @@ and the P17a outcome's measurements; build `smply_hil` on the public API only,
 and write the rollback case *after* observing what the state read shows during a
 trial boot under swap-using-offset — the follow-up row says why. Keep BTVS
 elevation in mind for the runner; without it there is no HCI evidence.
+
+### 2026-09-08 — P17b: the unattended hardware case suite
+
+**Status after this session:** P17b = `In Progress`. Every case passes in
+isolation on the bench; the sequential run fails three on a real adapter
+behaviour under load (A22). Next: fix A22, then P17c.
+
+**Completed.** `tests/hil/` as `smply_hil` (`SMPLY_BUILD_HIL`, preset
+`windows-hil`): `test_hil_cases.cpp` over the public API, driven through
+`support/rig.*` (the example's pump loop, callable one operation at a time) and
+`support/bench.*` (config from the environment, a SKIP without it). `run_hil.py`
+supervises — baseline reflash over ST-LINK per group, UART capture, per-case
+deadline and JUnit report, pass/fail/**unavailable**. `crosscheck.py` for P17c.
+The advisory `hil.yml`, the `tests/hil/` lint exclusion with a `verify_gates.sh`
+decoy, and the `windows-hil` preset. All eleven unattended case types pass
+individually; the rollback case confirms §7's inverted trial-boot flags on
+hardware.
+
+**Findings.** A21 (upload session reset on disconnect), A22 (two behaviours
+under BLE load: `TransportBusy` surfacing as a terminal upload error, and
+Windows' GATT cache returning no SMP characteristic for a second after a rapid
+reconnect). A20 re-confirmed on the reset case.
+
+**Caveats — read these before touching P17b.**
+
+* **Run the HIL cases one at a time until A22 is fixed.** `run_hil.py --all`
+  fails three cases (interrupted, restart part 1, erase) on the adapter's
+  `TransportBusy`-under-load and Windows' GATT cache — both real, both filed as
+  follow-ups. Each case passes on its own (`--cases <group>`). The sequential
+  run is the reproduction, not a regression.
+* **`TransportBusy` is a retry request, not a failure** (the P4 caveat, now
+  seen on hardware). The upload ending on it is the A22 gap. Do not "fix" it by
+  making the case tolerate `TransportBusy` — fix the adapter or the driver.
+* **The image source and the progress sink must outlive the whole `Session`,
+  not the `upload()` call.** Two lifetime bugs in the rig cost this session real
+  time and both are the traps this file warns about: a progress callback
+  captured a returned-and-destroyed `UploadOutcome`, and `Session::upload()`
+  held its `MemoryImageSource` as a local while `ImageManagement` kept it by
+  reference across a later `resume()`. The `Session` now owns its sources; the
+  rig keeps progress in a stable member. When a resume crashes, suspect a
+  dangling source before the adapter.
+* **A reference bound to `status().error()` dangles**, and it broke nine CI
+  jobs from one line. `Reader::status()` returns `Result<void>` by value; a
+  `const Error&` to `.error()` binds into a temporary. GCC 13's
+  `-Wdangling-reference` (in `-Wall`) fails the build and Clang's ASan catches
+  the use-after-free at runtime — the exact set of jobs that broke while plain
+  Clang and MSVC passed. Hold the `Result` in a named local. Reproduce a
+  GCC-only warning locally by compiling with the flags in `cmake/warnings.cmake`
+  and `-isystem` for QCBOR (without SYSTEM, QCBOR's own old-style casts drown
+  out yours).
+* **The give-up case cannot be automated reliably.** An ST-LINK erase races the
+  reconnect (CubeProgrammer toggles reset to attach, the device re-advertises).
+  It is `[.manual]` and out of `--cases all`; the give-up path is covered by
+  `cli_dfu --flaky-reconnect 99` on every push. A person at the bench powers the
+  board off on the `HIL-MARK` line.
+* **Only one process may hold COM4**, and BTVS needs an elevated shell — so
+  P17b has UART logs but no HCI captures yet.
+
+**Docs updated.** `protocol-notes.md` (A20-A22, S24-S25), `testing.md` §6,
+`quality-gates.md` §1 HIL row, `architecture.md` §10, `roadmap.md` (P17 split,
+P17a/b outcomes, follow-ups, Current state), `tests/hil/README.md`, `handoff.md`.
+
+**Recommended next.** **Fix A22**, one behaviour at a time, verifying each on
+the bench with the failing case (`run_hil.py --cases erase` reproduces the
+`TransportBusy` one fastest; `--cases interrupted` adds the GATT-cache one).
+Then **P17c**: `crosscheck.py` against `smpmgr` (BLE) and `mcumgr-client`
+(UART), with BTVS run elevated for HCI. The self-hosted runner stays
+uncommissioned until the user asks.
