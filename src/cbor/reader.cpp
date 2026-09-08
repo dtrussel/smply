@@ -284,13 +284,16 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
         if (outcome.has_value()) {
             outcome = visit(element);
         }
-        if (outcome.has_value() && !element.status().has_value()) {
-            // A poisoned child is a poisoned parent: whoever checks status()
-            // on this reader afterwards must see the failure. Rebuilt from the
-            // code and the static call-site tag rather than copied: this
-            // function is noexcept, and copying an Error copies a std::string.
-            const Error& why = element.status().error();
-            outcome = record(Error{why.code(), why.where()});
+        // A poisoned child is a poisoned parent: whoever checks status() on this
+        // reader afterwards must see the failure. `status()` returns by value,
+        // so the Result is held in a named local -- binding a reference to the
+        // Error inside a temporary dangles (GCC's -Wdangling-reference, and a
+        // real use-after-free ASan catches). Rebuilt from the code and the
+        // static call-site tag rather than copied, because this function is
+        // noexcept and copying an Error copies a std::string.
+        if (const Result<void> child = element.status();
+            outcome.has_value() && !child.has_value()) {
+            outcome = record(Error{child.error().code(), child.error().where()});
         }
         if (!outcome.has_value()) {
             break;
