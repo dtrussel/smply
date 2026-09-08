@@ -244,9 +244,7 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
             break; // end of the array
         }
         if (peeked != QCBOR_SUCCESS) {
-            outcome = record(
-                Error{ErrorCode::CborDecode, "cbor reader: array element unreadable"}.with_reason(
-                    std::to_string(static_cast<int>(peeked))));
+            outcome = record(Error{ErrorCode::CborDecode, "cbor reader: array element unreadable"});
             break;
         }
         if (item.uDataType != QCBOR_TYPE_MAP) {
@@ -267,9 +265,7 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
         QCBORDecode_VGetNextConsume(&context_, &item);
         if (const QCBORError status = QCBORDecode_GetAndResetError(&context_);
             status != QCBOR_SUCCESS) {
-            outcome = record(
-                Error{ErrorCode::CborDecode, "cbor reader: array element malformed"}.with_reason(
-                    std::to_string(static_cast<int>(status))));
+            outcome = record(Error{ErrorCode::CborDecode, "cbor reader: array element malformed"});
             break;
         }
         const std::size_t last = QCBORDecode_Tell(&context_);
@@ -290,8 +286,11 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
         }
         if (outcome.has_value() && !element.status().has_value()) {
             // A poisoned child is a poisoned parent: whoever checks status()
-            // on this reader afterwards must see the failure.
-            outcome = record(element.status().error());
+            // on this reader afterwards must see the failure. Rebuilt from the
+            // code and the static call-site tag rather than copied: this
+            // function is noexcept, and copying an Error copies a std::string.
+            const Error& why = element.status().error();
+            outcome = record(Error{why.code(), why.where()});
         }
         if (!outcome.has_value()) {
             break;

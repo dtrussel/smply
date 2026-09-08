@@ -135,9 +135,12 @@ void UploadDriver::send(const UploadRequest& request)
     // own deadline. A first packet that is also the last chunk -- a tiny image
     // -- takes the first-chunk one, because that is the larger unknown.
     const bool final_chunk = request.off + request.length == config_.image_size;
-    const Duration timeout = request.first_packet ? first_chunk_timeout_
-                             : final_chunk        ? final_chunk_timeout_
-                                                  : chunk_timeout_;
+    Duration timeout = chunk_timeout_;
+    if (request.first_packet) {
+        timeout = first_chunk_timeout_;
+    } else if (final_chunk) {
+        timeout = final_chunk_timeout_;
+    }
     const RequestSpec spec{.op = Operation::Write,
                            .group = Group::Image,
                            .command = kUploadCommand,
