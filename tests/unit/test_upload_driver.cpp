@@ -321,7 +321,7 @@ TEST_CASE("the final chunk gets its own long timeout", "[upload][driver][timeout
 
     static_cast<void>(fixture.start());
     fixture.respond(kChunk);
-    fixture.respond(2 * kChunk);
+    fixture.respond(std::uint64_t{2} * kChunk);
 
     const auto payload = fixture.payload_of(2);
     REQUIRE_FALSE(payload.empty());
