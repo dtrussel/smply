@@ -101,18 +101,31 @@ struct Session
 
     Session()
     {
-        REQUIRE(rig.connect().has_value());
-        const auto state = rig.read_state();
-        REQUIRE(state.has_value());
-        const ImageSlot& slot = active_slot(*state);
-        REQUIRE(slot.hash.has_value());
-        running = *slot.hash;
-        REQUIRE((running == images.hash_a || running == images.hash_b));
-        rig.timeline().note(std::string{"running "} + (running == images.hash_a ? "A" : "B"));
+        // A constructor that throws never runs its destructor, so the timeline
+        // below -- which is where the *reason* a connect failed is recorded
+        // (Rig::connect notes the error) -- would be lost precisely in the case
+        // worth diagnosing. P17b spent a bench run discovering that: a forced
+        // discovery failure produced a bare 'REQUIRE(rig.connect())' and no
+        // error string anywhere in the evidence bundle. Handled here rather
+        // than in a function-try-block, whose handler may not touch members.
+        try {
+            REQUIRE(rig.connect().has_value());
+            const auto state = rig.read_state();
+            REQUIRE(state.has_value());
+            const ImageSlot& slot = active_slot(*state);
+            REQUIRE(slot.hash.has_value());
+            running = *slot.hash;
+            REQUIRE((running == images.hash_a || running == images.hash_b));
+            rig.timeline().note(std::string{"running "} + (running == images.hash_a ? "A" : "B"));
+        } catch (...) {
+            std::cout << rig.timeline().dump() << std::flush;
+            throw;
+        }
     }
 
     ~Session()
     {
+        rig.record_send_counters();
         std::cout << rig.timeline().dump() << std::flush;
     }
 
@@ -198,6 +211,10 @@ TEST_CASE("hil: the bench answers params and slot info and echo", "[hil]")
     CHECK(params->buf_size > 0);
     CHECK(params->buf_count > 0);
     s.rig.timeline().metric("buf_size", params->buf_size);
+    // Both halves, not just the width: whether the server can hold more than one
+    // request at a time is the input to O3 (raise `max_in_flight`? -- ADR-0010),
+    // and a bundle that records only `buf_size` cannot answer it.
+    s.rig.timeline().metric("buf_count", params->buf_count);
 
     const auto info = s.rig.slot_info();
     REQUIRE(info.has_value());

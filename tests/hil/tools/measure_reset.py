@@ -57,30 +57,58 @@ class Notifications:
             self._pending = self._pending[total:]
 
 
-async def wait_for_advertisement(address: str, timeout: float) -> float | None:
-    """Returns the monotonic time of the first advertisement from `address`."""
-    seen: asyncio.Future[float] = asyncio.get_running_loop().create_future()
+async def wait_for_advertisement(address: str, timeout: float):
+    """The monotonic time of the first advertisement from `address`, and the device.
+
+    It returns the `BLEDevice` as well as the instant, and the caller connects to
+    *that* rather than to the address string. The first version of this tool threw
+    it away, and a `BleakClient(address)` then had to find the peer itself -- which
+    on WinRT means another scan, started just as this one stopped. Two scanners
+    over one radio cost 13 of 20 iterations to "device not found", so most of the
+    sample was measuring the tool. `(None, None)` if nothing was seen in time.
+    """
+    seen: asyncio.Future[tuple[float, object]] = asyncio.get_running_loop().create_future()
 
     def on_detect(device, _adv) -> None:
         if device.address.upper() == address.upper() and not seen.done():
-            seen.set_result(time.monotonic())
+            seen.set_result((time.monotonic(), device))
 
     scanner = BleakScanner(detection_callback=on_detect, service_uuids=[str(SMP_SERVICE_UUID)])
     await scanner.start()
     try:
         return await asyncio.wait_for(seen, timeout)
     except asyncio.TimeoutError:
-        return None
+        return None, None
     finally:
         await scanner.stop()
 
 
-async def connect_until(address: str, deadline: float, disconnected) -> tuple[BleakClient, float]:
-    """Retries connecting until it works or the deadline passes."""
+async def find_device(address: str, timeout: float):
+    """Scans for `address` and returns the `BLEDevice`, or `None`.
+
+    Needed before the *first* connect of an iteration for the same reason
+    `wait_for_advertisement` hands its device back: on WinRT a `BleakClient`
+    built from an address string has to resolve it, which means a scan of its
+    own, and a cold OS cache then answers "device not found" however long the
+    connect timeout is. Scanning once here and connecting to the object is one
+    scan instead of one per retry.
+    """
+    return await BleakScanner.find_device_by_address(
+        address, timeout=timeout, service_uuids=[str(SMP_SERVICE_UUID)])
+
+
+async def connect_until(target, deadline: float, disconnected) -> tuple[BleakClient, float]:
+    """Retries connecting until it works or the deadline passes.
+
+    `target` is a `BLEDevice` when one is in hand -- which skips the address
+    resolution that would otherwise start a scan of its own; see
+    `wait_for_advertisement`. A plain address string still works and is what the
+    first connect of an iteration uses.
+    """
     attempt = 0
     while True:
         attempt += 1
-        client = BleakClient(address, services=[str(SMP_SERVICE_UUID)], timeout=10.0,
+        client = BleakClient(target, services=[str(SMP_SERVICE_UUID)], timeout=10.0,
                              disconnected_callback=disconnected)
         try:
             await client.connect()
@@ -107,7 +135,10 @@ async def one_iteration(address: str, timeouts: dict) -> dict:
         if not disconnected.done():
             disconnected.set_result(time.monotonic())
 
-    client, _ = await connect_until(address, time.monotonic() + timeouts["connect"], on_disconnect)
+    found = await find_device(address, timeouts["advertise"])
+    if found is None:
+        raise TimeoutError(f"no advertisement from {address} in {timeouts['advertise']}s")
+    client, _ = await connect_until(found, time.monotonic() + timeouts["connect"], on_disconnect)
     notes = Notifications()
     try:
         await client.start_notify(SMP_CHARACTERISTIC_UUID, notes)
@@ -133,17 +164,29 @@ async def one_iteration(address: str, timeouts: dict) -> dict:
         if hdr.group_id != smp_header.GroupId.OS_MANAGEMENT:
             raise RuntimeError(f"unexpected response to reset: group {hdr.group_id}")
 
-        t_disc = await asyncio.wait_for(disconnected, timeouts["disconnect"])
+        # Two independent observations, not two steps. The device advertises
+        # again long before Windows reports the link gone -- a silent reset is
+        # learnt by supervision timeout, ~9.8 s -- so awaiting them in sequence
+        # let a missing disconnect report throw away a perfectly good
+        # advertisement, and the row was lost rather than one of its cells.
+        # Gathered, so each instant is recorded or absent on its own.
+        reported = asyncio.wait_for(disconnected, timeouts["disconnect"])
+        seen_disc, seen_adv = await asyncio.gather(reported, advertising,
+                                                   return_exceptions=True)
     finally:
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 -- it is gone already, which is the point
             pass
 
-    t_adv = await advertising
+    t_disc = None if isinstance(seen_disc, BaseException) else seen_disc
+    if isinstance(seen_adv, BaseException):
+        seen_adv = (None, None)
+    t_adv, device = seen_adv
+
     disconnected2: asyncio.Future[float] = loop.create_future()
     client, t_conn = await connect_until(
-        address, time.monotonic() + timeouts["connect"],
+        device if device is not None else address, time.monotonic() + timeouts["connect"],
         lambda _c: disconnected2.done() or disconnected2.set_result(time.monotonic()))
     notes = Notifications()
     try:
@@ -153,7 +196,7 @@ async def one_iteration(address: str, timeouts: dict) -> dict:
         await client.disconnect()
 
     return {
-        "disconnect_ms": round((t_disc - t0) * 1000),
+        "disconnect_ms": None if t_disc is None else round((t_disc - t0) * 1000),
         "advertise_ms": None if t_adv is None else round((t_adv - t0) * 1000),
         "connect_ms": round((t_conn - t0) * 1000),
         "ready_ms": round((t_ready - t0) * 1000),

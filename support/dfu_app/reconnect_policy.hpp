@@ -28,6 +28,38 @@
 /// No floating point anywhere -- the same discipline as
 /// `transports/common/ble_framing.hpp` -- so every delay a test asserts is
 /// exact rather than nearly right.
+///
+/// ### What the defaults are for, after hardware (P17)
+///
+/// **This is a give-up bound, not a pacing schedule.** The defaults below were
+/// chosen without a radio and P17 measured what they actually do on Windows:
+/// nothing. `WinRtBleTransport::connect()` blocks inside the projection until
+/// the device answers, so attempt 1 succeeded in every run and the doubling
+/// never ran; and the bounded discovery retry now absorbs the platform's stale
+/// GATT cache *inside* one attempt as well (design.md section 10).
+///
+/// The measurements, on a NUCLEO-WB55RG over a shared Intel radio
+/// (`tests/hil/tools/measure_reset.py`, 20 plain resets, 16 complete rows):
+///
+///     the device advertises again      median 1.23 s   worst 1.79 s
+///     the central reports the link gone  median 9.83 s
+///     a GATT connection succeeds again   median 10.3 s
+///
+/// The middle row is the point. A reset is silent on the link, so the central
+/// learns of it by supervision timeout (protocol-notes section 9, A20) -- by
+/// which time the device has been advertising for eight seconds. A retry
+/// schedule cannot pace a reconnect whose start it does not control, and no
+/// delay this file could choose would make the device return sooner. A swap
+/// reset measures about 6.3 s to a usable link, still inside one attempt.
+///
+/// So the defaults stay, and their justification changes: `max_attempts`
+/// multiplied by `max_delay` is the **ceiling on how long an application waits
+/// for a device that is never coming back** -- roughly 40 s here -- which is a
+/// real decision an application should make. The delays matter only on a
+/// transport whose connect fails fast, which is every transport except this
+/// one; they are kept honest by `cli_dfu --flaky-reconnect` on every push.
+/// Shortening `first_delay` to "reconnect sooner" on WinRT would change
+/// nothing at all.
 
 #include "smply/clock.hpp"
 

@@ -35,7 +35,6 @@ CUBE_CLI = Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgram
 
 # Groups run from one baseline flash; a case inside a group relies on what the
 # previous one left behind (the restart pair), so order matters within a group.
-# The last group needs a fault the supervisor injects on a marker line.
 GROUPS = [
     {"name": "presence", "cases": ["hil: the bench answers params and slot info and echo"]},
     {"name": "clean-update", "cases": ["hil: a clean update installs the other image and confirms it"]},
@@ -56,11 +55,13 @@ GROUPS = [
 # Manual cases: not in the unattended default (an automated device-removal races
 # the reconnect; see the case comment). Run one with `--cases give-up`; a person
 # powers the board off on the HIL-MARK line. `--cases all` does NOT include these.
+# `manual` is what the notice below is printed from -- it replaced an
+# `erase-on-marker` fault the supervisor used to inject with the programmer,
+# which contradicted both this comment and testing.md and was dead code.
 MANUAL_GROUPS = [
-    {"name": "give-up", "fault": "erase-on-marker",
+    {"name": "give-up", "manual": True,
      "cases": ["hil: reconnection gives up when the device does not come back"]},
 ]
-MARKER = "HIL-MARK: device-gone-now"
 
 
 def slug(text: str) -> str:
@@ -79,11 +80,6 @@ class Bench:
         log.write_text(result.stdout + result.stderr, encoding="utf-8")
         return {0: "ok", 2: "unavailable"}.get(result.returncode, "failed")
 
-    def erase_device(self, log: Path) -> None:
-        result = subprocess.run([str(self.args.cli), "-c", "port=swd", "mode=UR", "-e", "all"],
-                                capture_output=True, text=True)
-        log.write_text(result.stdout + result.stderr, encoding="utf-8")
-
     def start_uart(self, out: Path):
         if not self.args.uart:
             return None
@@ -101,7 +97,7 @@ class Bench:
             proc.kill()
 
 
-def run_case(bench: Bench, case: str, case_dir: Path, fault: str | None) -> dict:
+def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
     case_dir.mkdir(parents=True, exist_ok=True)
     junit = case_dir / "report.xml"
     env = dict(os.environ,
@@ -114,15 +110,10 @@ def run_case(bench: Bench, case: str, case_dir: Path, fault: str | None) -> dict
     proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding="utf-8", errors="replace", bufsize=1)
     lines: list[str] = []
-    fault_fired = False
 
     def pump() -> None:
-        nonlocal fault_fired
         for line in proc.stdout:
             lines.append(line)
-            if fault == "erase-on-marker" and MARKER in line and not fault_fired:
-                fault_fired = True
-                bench.erase_device(case_dir / "fault-erase.log")
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
@@ -163,12 +154,8 @@ def run_case(bench: Bench, case: str, case_dir: Path, fault: str | None) -> dict
             verdict, detail = "unavailable", f"unreadable report: {error}"
     else:
         verdict, detail = "unavailable", f"no report written (exit {proc.returncode})"
-    if fault and not fault_fired and verdict == "pass":
-        verdict, detail = "fail", "the fault was never injected, so the case proved nothing"
-
     return {"case": case, "verdict": verdict, "detail": detail, "exit": proc.returncode,
-            "seconds": round(time.monotonic() - started, 1), "metrics": metrics,
-            "fault_injected": fault_fired}
+            "seconds": round(time.monotonic() - started, 1), "metrics": metrics}
 
 
 def main() -> int:
@@ -210,6 +197,9 @@ def main() -> int:
     for group in groups:
         group_dir = run_dir / group["name"]
         group_dir.mkdir(parents=True, exist_ok=True)
+        if group.get("manual"):
+            print(f"run_hil: {group['name']} needs a person at the bench -- power the "
+                  "board off when the case prints its HIL-MARK line", flush=True)
         if not args.no_flash:
             flashed = bench.flash_baseline(group_dir / "flash-baseline.log")
             if flashed != "ok":
@@ -223,7 +213,7 @@ def main() -> int:
         uart = bench.start_uart(group_dir / "uart.log")
         try:
             for case in group["cases"]:
-                result = run_case(bench, case, group_dir / slug(case), group.get("fault"))
+                result = run_case(bench, case, group_dir / slug(case))
                 results.append(result)
                 print(f"{result['verdict']:12} {result.get('seconds', 0):6}s  {case}"
                       + (f"  -- {result['detail']}" if result.get("detail") else ""), flush=True)
