@@ -2195,7 +2195,8 @@ uncommissioned until the user asks.
 ### 2026-09-09 — P17b close-out: A22 fixed, the sequential suite green
 
 **Status after this session:** P17b = `Complete`. `run_hil.py` with no `--cases`
-is green three consecutive times, 12 pass / 0 fail / 0 unavailable, exit 0.
+is green three consecutive times, 12 pass / 0 fail / 0 unavailable, exit 0, and
+CI is green on all 16 jobs at `2a40995`.
 Next: P17c (the third-party cross-check, with BTVS run elevated).
 
 **The fix that mattered.** The adapter no longer conflates "a writer is running"
