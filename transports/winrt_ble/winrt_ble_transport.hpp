@@ -37,6 +37,8 @@
 /// reconnecting means a new transport and `SmpClient::rebind_transport()`, as
 /// `examples/cli_dfu/main.cpp` demonstrates against a stub device.
 
+#include "common/send_queue.hpp"
+
 #include "smply/bytes.hpp"
 #include "smply/result.hpp"
 #include "smply/transport.hpp"
@@ -93,14 +95,27 @@ public:
     /// **Blocks** until the Bluetooth stack answers, which is why it must not
     /// be called from a single-threaded apartment. That is acceptable here in a
     /// way it never is afterwards: this runs before there is a pump to stall.
+    /// It may also spend **up to about two seconds more than the stack needs**,
+    /// re-running discovery while it comes back empty: after a rapid reconnect
+    /// Windows answers from its own service cache, and a service with no
+    /// characteristics is a reconnect that would have succeeded a moment later
+    /// (protocol-notes section 9, A22). That bound is paid only when a
+    /// collection is empty, never when discovery is refused outright.
+    ///
+    /// Every failure closes what it had already opened before returning, so a
+    /// caller may retry without leaking a session that is holding a connection
+    /// open.
     ///
     /// \param bluetooth_address The 48-bit device address, as WinRT reports it.
     /// \param inbound  Carries device-thread callbacks onto the client context.
     ///                 Must outlive this transport, and must be drained.
     /// \param config   Sizing; see `WinRtBleConfig`.
     /// \return The transport, or `InvalidArgument` for a bad configuration,
-    ///         `Disconnected` when the device cannot be reached, and
-    ///         `TransportError` when it answers but has no SMP service.
+    ///         `Disconnected` when the device cannot be reached or discovery
+    ///         is refused outright, and `TransportError` when it answers but,
+    ///         after every attempt, has no SMP service -- or has one with no
+    ///         SMP characteristic, which carries its own message because the
+    ///         two say different things about the device.
     [[nodiscard]] static Result<std::unique_ptr<WinRtBleTransport>>
     connect(std::uint64_t bluetooth_address, Dispatcher& inbound,
             const WinRtBleConfig& config = {});
@@ -123,9 +138,16 @@ public:
     /// thread, so a failure discovered after this returns arrives later as
     /// `on_transport_error()` or `on_disconnected()`.
     ///
-    /// \return `TransportBusy` if a previous message is still going out (the
-    ///         core keeps one request in flight, so this means the medium is
-    ///         behind), `Disconnected` once the link is closing or gone.
+    /// **One message may wait while another is being written.** A boolean
+    /// "a write is in progress" refused the next message during the window
+    /// between the device answering and the local write's continuation running,
+    /// which killed uploads under load (protocol-notes section 9, A22); the
+    /// admission rules now live in `SendQueue`.
+    ///
+    /// \return `TransportBusy` if **two** messages are already outbound -- with
+    ///         one request in flight that means the medium has stalled, so it is
+    ///         a retry request and not a broken link -- and `Disconnected` once
+    ///         the link is closing or gone.
     [[nodiscard]] Result<void> send(ConstBytes message) override;
 
     /// The configured cap, unchanged. See `WinRtBleConfig::max_message_size`.
@@ -137,6 +159,16 @@ public:
     /// and closes the link. Synchronous, idempotent, and no listener callback
     /// can fire once it has returned -- including one that was already queued.
     void close() noexcept override;
+
+    // --- Diagnostics ---------------------------------------------------------
+
+    /// How often a message waited for the writer, and how often one was refused.
+    ///
+    /// Not part of `Transport`, and here because a bench run needs it to be
+    /// evidence: a hardware suite that passes with `deferred == 0` has not shown
+    /// that deferring works, only that the race did not happen that time
+    /// (ADR-0015). Takes the send mutex, so it is not `noexcept`.
+    [[nodiscard]] SendCounters send_counters() const;
 
     /// Not for callers, despite being reachable: `connect()` is the only thing
     /// that can produce a `State`, because a transport not attached to a live

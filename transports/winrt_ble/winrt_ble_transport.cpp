@@ -6,6 +6,7 @@
 
 #include "common/ble_framing.hpp"
 #include "common/link_state.hpp"
+#include "common/send_queue.hpp"
 #include "common/smp_ble_uuid.hpp"
 
 #include "smply/bytes.hpp"
@@ -22,6 +23,8 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -53,7 +56,32 @@ constexpr std::uint32_t kMaxInboundNotification = 4096;
 /// a worse failure than one that gives up on a stuck write. Proceeding early is
 /// safe -- the coroutine holds its own reference to the state, and every
 /// callback path it can still take is already refused by then.
+///
+/// The send queue did not change this number. A message merely *waiting* is
+/// discarded rather than flushed (`SendQueue::discard_queued()`), so the worst
+/// case `close()` waits for is still one message's remaining fragments plus a
+/// continuation -- exactly what five seconds was chosen for. Flushing the queue
+/// instead would have doubled the bound for no benefit, since a queued
+/// message's request is failed by `close()` anyway.
 constexpr std::chrono::seconds kCloseWriteGrace{5};
+
+/// How many times `connect()` re-runs discovery, and how long it waits between.
+///
+/// Windows answers a *rapid* reconnect with a service whose characteristic
+/// collection is **empty** -- its own service cache, stale for a second or two,
+/// even though every query here asks for `Uncached` (protocol-notes section 9,
+/// A22, seen on a NUCLEO-WB55RG in P17b). Concluding "no SMP characteristic"
+/// from that fails a reconnect which would have succeeded a moment later, and on
+/// this platform that is a reconnect a real DFU tool depends on.
+///
+/// Six attempts 400 ms apart bounds the extra wait at 2 s, against a window
+/// measured in "a second or two", with headroom. `connect()` is documented as
+/// blocking and the HIL per-case deadline is 600 s, so the cost is affordable.
+/// These are file-local rather than `WinRtBleConfig` fields deliberately: how
+/// long Windows' GATT cache stays stale is not a policy an application can
+/// choose informedly, and a config field would be public API P18 must keep.
+constexpr int kDiscoveryAttempts = 6;
+constexpr std::chrono::milliseconds kDiscoveryRetryDelay{400};
 
 /// Converts a canonical UUID to the projection's GUID structure.
 ///
@@ -135,7 +163,10 @@ struct WinRtBleTransport::State
 
     std::mutex send_mutex;
     std::condition_variable send_done;
-    bool sending = false; ///< Guarded by `send_mutex`.
+    /// Who may write, and what waits. Guarded by `send_mutex` -- the queue has
+    /// no lock of its own, deliberately (common/send_queue.hpp), so every call
+    /// below is made holding this one and never across a `co_await`.
+    SendQueue outbound;
 
     // --- the projection -----------------------------------------------------
 
@@ -178,7 +209,12 @@ void shutdown(const std::shared_ptr<State>& state) noexcept
 
     {
         std::unique_lock<std::mutex> lock{state->send_mutex};
-        state->send_done.wait_for(lock, kCloseWriteGrace, [&state] { return !state->sending; });
+        // Discard here as well as in the writer: the writer may have read
+        // `cancel` before the store above, and this is the same mutex it takes.
+        // A message accepted but never started must not reach the medium.
+        state->outbound.discard_queued();
+        state->send_done.wait_for(lock, kCloseWriteGrace,
+                                  [&state] { return !state->outbound.writing(); });
     }
 
     try {
@@ -221,60 +257,91 @@ void post_failure(const std::shared_ptr<State>& state, Error error, bool fatal)
     });
 }
 
-/// Writes one whole SMP message, one GATT packet at a time.
+/// Writes whole SMP messages, one GATT packet at a time, until none are left.
 ///
 /// Detached on purpose: `send()` must not block (smply/transport.hpp), so the
 /// writes outlive the call that started them and anything they discover is
 /// reported later, through the dispatcher, never inline.
-winrt::fire_and_forget write_message(std::shared_ptr<State> state, std::vector<std::byte> message)
+///
+/// **One writer, and it drains.** `send()` starts this only on
+/// `Admission::StartWriter`, and it keeps taking messages until the queue hands
+/// back nothing -- which is the same call that releases the claim. That is what
+/// lets a message offered while this one is mid-flight be *deferred* rather than
+/// refused, and it is why the loop must be left through `next_for_writer()` and
+/// no other way: exiting with the claim still set would answer every later
+/// `send()` with `TransportBusy` on a healthy link, and would hang a `close()`
+/// waiting for a writer that has gone.
+winrt::fire_and_forget write_message(std::shared_ptr<State> state)
 {
     co_await winrt::resume_background();
 
     Error failure;
     bool fatal = false;
 
-    try {
-        // Read the PDU size once per message rather than caching it. A cached
-        // value can go stale, and subscribing to MaxPduSizeChanged to keep it
-        // fresh would add an event handler -- and a revoker -- to the shutdown
-        // sequence, for one property read per message.
-        const std::uint16_t pdu = state->session ? state->session.MaxPduSize() : std::uint16_t{0};
-
-        Fragmenter out{ConstBytes{message}, fragment_size(pdu)};
-        while (!out.done()) {
-            if (state->cancel.load(std::memory_order_acquire)) {
-                break;
+    for (;;) {
+        std::optional<std::vector<std::byte>> message;
+        {
+            const std::lock_guard<std::mutex> lock{state->send_mutex};
+            // A failed or cancelled link puts nothing further on the air, and a
+            // failure stops this writer rather than moving to the next message:
+            // one abandoned part-way leaves the device's reassembler holding a
+            // fragment, and the next message's bytes would be consumed as that
+            // one's tail -- a mis-framing nothing reports. The abandoned
+            // message's request then times out, which the upload session
+            // already covers. Discarding here, at the top, rather than at each
+            // failure site is what keeps every exit from this loop the same one.
+            if (failure.failed() || state->cancel.load(std::memory_order_acquire)) {
+                state->outbound.discard_queued();
             }
-            const gatt::GattWriteResult result =
-                co_await state->characteristic.WriteValueWithResultAsync(
-                    to_buffer(out.next()), gatt::GattWriteOption::WriteWithoutResponse);
-
-            if (result.Status() != gatt::GattCommunicationStatus::Success) {
-                fatal = result.Status() == gatt::GattCommunicationStatus::Unreachable;
-                failure = fatal
-                              ? Error{ErrorCode::Disconnected, "winrt_ble: the device is gone"}
-                              : Error{ErrorCode::TransportError, "winrt_ble: a GATT write failed"};
-                break;
-            }
+            message = state->outbound.next_for_writer();
         }
-    } catch (const winrt::hresult_error&) {
-        failure = Error{ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack failed a write"};
-        fatal = true;
-    } catch (...) {
-        // Nothing may escape a detached coroutine: fire_and_forget's
-        // unhandled_exception() terminates the process, and an exception thrown
-        // past the block below would also leave `sending` true forever, so
-        // every later send() would answer TransportBusy on a healthy link.
-        failure = Error{ErrorCode::TransportError, "winrt_ble: a write failed unexpectedly"};
-        fatal = false;
+        if (!message.has_value()) {
+            break;
+        }
+
+        try {
+            // Read the PDU size once per message rather than caching it. A
+            // cached value can go stale, and subscribing to MaxPduSizeChanged to
+            // keep it fresh would add an event handler -- and a revoker -- to
+            // the shutdown sequence, for one property read per message.
+            const std::uint16_t pdu =
+                state->session ? state->session.MaxPduSize() : std::uint16_t{0};
+
+            Fragmenter out{ConstBytes{*message}, fragment_size(pdu)};
+            while (!out.done()) {
+                if (state->cancel.load(std::memory_order_acquire)) {
+                    break;
+                }
+                const gatt::GattWriteResult result =
+                    co_await state->characteristic.WriteValueWithResultAsync(
+                        to_buffer(out.next()), gatt::GattWriteOption::WriteWithoutResponse);
+
+                if (result.Status() != gatt::GattCommunicationStatus::Success) {
+                    fatal = result.Status() == gatt::GattCommunicationStatus::Unreachable;
+                    failure =
+                        fatal ? Error{ErrorCode::Disconnected, "winrt_ble: the device is gone"}
+                              : Error{ErrorCode::TransportError, "winrt_ble: a GATT write failed"};
+                    break;
+                }
+            }
+        } catch (const winrt::hresult_error&) {
+            failure =
+                Error{ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack failed a write"};
+            fatal = true;
+        } catch (...) {
+            // Nothing may escape a detached coroutine: fire_and_forget's
+            // unhandled_exception() terminates the process, and an exception
+            // thrown past the loop would also leave the writer's claim set
+            // forever, so every later send() would answer TransportBusy on a
+            // healthy link.
+            failure = Error{ErrorCode::TransportError, "winrt_ble: a write failed unexpectedly"};
+            fatal = false;
+        }
     }
 
-    // Release close() before reporting: a waiter must not be held up by work
+    // The claim is already released by the loop's exit, so a waiting close()
+    // is free before anything is reported -- it must not be held up by work
     // that is only going to be discarded anyway.
-    {
-        const std::lock_guard<std::mutex> lock{state->send_mutex};
-        state->sending = false;
-    }
     state->send_done.notify_all();
 
     if (failure.failed() && state->accepting.load(std::memory_order_acquire)) {
@@ -332,6 +399,119 @@ void subscribe(const std::shared_ptr<State>& state)
         });
 }
 
+/// Finds the SMP service and characteristic, riding out Windows' service cache.
+///
+/// An **empty** collection is not an answer here, it is the cache (A22): the
+/// platform hands back a service with no characteristics for a second or two
+/// after a rapid reconnect. A bad *status*, by contrast, means unreachable or
+/// refused, and retrying that six times only makes a doomed reconnect slower --
+/// so the two outcomes are now distinguished, where before they shared one
+/// message and one verdict.
+///
+/// The service object is released between attempts because the stale
+/// enumeration is reachable only through the object that produced it, which
+/// makes dropping it the one lever available on the cache.
+[[nodiscard]] Result<void> discover_smp(const std::shared_ptr<State>& state)
+{
+    bool saw_service = false;
+
+    for (int attempt = 1; attempt <= kDiscoveryAttempts; ++attempt) {
+        if (attempt > 1) {
+            try {
+                if (state->service) {
+                    state->service.Close();
+                }
+            } catch (...) { // NOLINT(bugprone-empty-catch) -- already gone is the good case
+            }
+            state->service = nullptr;
+            std::this_thread::sleep_for(kDiscoveryRetryDelay);
+        }
+
+        const gatt::GattDeviceServicesResult services =
+            state->device
+                .GetGattServicesForUuidAsync(to_guid(kSmpServiceUuid),
+                                             bluetooth::BluetoothCacheMode::Uncached)
+                .get();
+        if (services.Status() != gatt::GattCommunicationStatus::Success) {
+            return fail(ErrorCode::Disconnected, "winrt_ble: service discovery failed");
+        }
+        if (services.Services().Size() == 0) {
+            continue;
+        }
+        saw_service = true;
+        state->service = services.Services().GetAt(0);
+
+        const gatt::GattCharacteristicsResult characteristics =
+            state->service
+                .GetCharacteristicsForUuidAsync(to_guid(kSmpCharacteristicUuid),
+                                                bluetooth::BluetoothCacheMode::Uncached)
+                .get();
+        if (characteristics.Status() != gatt::GattCommunicationStatus::Success) {
+            return fail(ErrorCode::Disconnected, "winrt_ble: characteristic discovery failed");
+        }
+        if (characteristics.Characteristics().Size() == 0) {
+            continue;
+        }
+        state->characteristic = characteristics.Characteristics().GetAt(0);
+        return {};
+    }
+
+    // Genuinely absent after every attempt, so the original two verdicts are
+    // still told apart rather than collapsed into whichever came last.
+    return saw_service
+               ? fail(ErrorCode::TransportError,
+                      "winrt_ble: the SMP service has no SMP characteristic")
+               : fail(ErrorCode::TransportError, "winrt_ble: the device has no SMP service");
+}
+
+/// Resolves the device and brings one link up to "ready to carry a message".
+///
+/// Split out of `connect()` so that every failure has one place to be cleaned
+/// up after; see the `shutdown()` call there.
+[[nodiscard]] Result<void> open_link(const std::shared_ptr<State>& state,
+                                     std::uint64_t bluetooth_address)
+{
+    try {
+        state->device =
+            bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetooth_address).get();
+        if (!state->device) {
+            return fail(ErrorCode::Disconnected, "winrt_ble: no device at that address");
+        }
+
+        if (const Result<void> found = discover_smp(state); !found.has_value()) {
+            return fail(found.error());
+        }
+
+        // The session carries MaxPduSize, and asking it to maintain the
+        // connection is what stops Windows dropping an idle link mid-update.
+        state->session = state->service.Session();
+        if (state->session) {
+            state->session.MaintainConnection(true);
+        }
+
+        // Handlers first, CCCD second. The other order has a window between the
+        // descriptor write and the subscription in which the device may already
+        // be notifying and nothing is listening -- and the first thing it would
+        // drop is the response to whatever the application sends next. This is
+        // also why the discovery retry above must finish before this point: the
+        // handler binds `state->characteristic`.
+        subscribe(state);
+
+        const gatt::GattCommunicationStatus subscribed =
+            state->characteristic
+                .WriteClientCharacteristicConfigurationDescriptorAsync(
+                    gatt::GattClientCharacteristicConfigurationDescriptorValue::Notify)
+                .get();
+        if (subscribed != gatt::GattCommunicationStatus::Success) {
+            return fail(ErrorCode::TransportError, "winrt_ble: the device refused notifications");
+        }
+    } catch (const winrt::hresult_error&) {
+        return fail(ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack raised an error");
+    }
+
+    return {};
+}
+
 } // namespace
 
 // --- WinRtBleTransport ------------------------------------------------------
@@ -357,61 +537,16 @@ WinRtBleTransport::connect(std::uint64_t bluetooth_address, Dispatcher& inbound,
     state->inbound = &inbound;
     state->max_message = config.max_message_size;
 
-    try {
-        state->device =
-            bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(bluetooth_address).get();
-        if (!state->device) {
-            return fail(ErrorCode::Disconnected, "winrt_ble: no device at that address");
-        }
-
-        const gatt::GattDeviceServicesResult services =
-            state->device
-                .GetGattServicesForUuidAsync(to_guid(kSmpServiceUuid),
-                                             bluetooth::BluetoothCacheMode::Uncached)
-                .get();
-        if (services.Status() != gatt::GattCommunicationStatus::Success) {
-            return fail(ErrorCode::Disconnected, "winrt_ble: service discovery failed");
-        }
-        if (services.Services().Size() == 0) {
-            return fail(ErrorCode::TransportError, "winrt_ble: the device has no SMP service");
-        }
-        state->service = services.Services().GetAt(0);
-
-        const gatt::GattCharacteristicsResult characteristics =
-            state->service
-                .GetCharacteristicsForUuidAsync(to_guid(kSmpCharacteristicUuid),
-                                                bluetooth::BluetoothCacheMode::Uncached)
-                .get();
-        if (characteristics.Status() != gatt::GattCommunicationStatus::Success ||
-            characteristics.Characteristics().Size() == 0) {
-            return fail(ErrorCode::TransportError,
-                        "winrt_ble: the SMP service has no SMP characteristic");
-        }
-        state->characteristic = characteristics.Characteristics().GetAt(0);
-
-        // The session carries MaxPduSize, and asking it to maintain the
-        // connection is what stops Windows dropping an idle link mid-update.
-        state->session = state->service.Session();
-        if (state->session) {
-            state->session.MaintainConnection(true);
-        }
-
-        // Handlers first, CCCD second. The other order has a window between the
-        // descriptor write and the subscription in which the device may already
-        // be notifying and nothing is listening -- and the first thing it would
-        // drop is the response to whatever the application sends next.
-        subscribe(state);
-
-        const gatt::GattCommunicationStatus subscribed =
-            state->characteristic
-                .WriteClientCharacteristicConfigurationDescriptorAsync(
-                    gatt::GattClientCharacteristicConfigurationDescriptorValue::Notify)
-                .get();
-        if (subscribed != gatt::GattCommunicationStatus::Success) {
-            return fail(ErrorCode::TransportError, "winrt_ble: the device refused notifications");
-        }
-    } catch (const winrt::hresult_error&) {
-        return fail(ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack raised an error");
+    if (const Result<void> opened = open_link(state, bluetooth_address); !opened.has_value()) {
+        // Release what was acquired before handing the failure back. This used
+        // to drop the `State` and leave the device, the service and a
+        // MaintainConnection session to their destructors -- with the
+        // notification handler still attached on the CCCD path -- which during a
+        // reconnect storm is the kind of debris that makes the next attempt
+        // worse. `shutdown()` is the sequence that already knows the order, and
+        // with no writer started its wait returns at once.
+        shutdown(state);
+        return fail(opened.error());
     }
 
     return std::make_unique<WinRtBleTransport>(std::move(state));
@@ -429,31 +564,48 @@ Result<void> WinRtBleTransport::send(ConstBytes message)
         return fail(ErrorCode::MessageTooLarge, "winrt_ble: beyond the configured cap");
     }
 
-    // Copied *before* the busy flag is claimed. The message is borrowed for the
-    // duration of this call only and the writes outlive it, so the copy is the
-    // one smply/transport.hpp asks a deferring transport to make -- and doing
-    // it first means an allocation failure here leaves nothing to unwind.
+    // Copied *before* the queue is offered anything. The message is borrowed
+    // for the duration of this call only and the writes outlive it, so the copy
+    // is the one smply/transport.hpp asks a deferring transport to make -- and
+    // doing it first means an allocation failure here leaves nothing to unwind.
     std::vector<std::byte> owned{message.begin(), message.end()};
 
+    Admission admission = Admission::Busy;
     {
+        // The lock covers an optional move and two flags, and is never held
+        // across a suspension point -- holding it over a `co_await` is the one
+        // way to make send() block, which the contract forbids.
         const std::lock_guard<std::mutex> lock{state_->send_mutex};
-        if (state_->sending) {
-            // The core keeps one request in flight (ADR-0010), so this means the
-            // medium has not drained -- a retry, not a broken link.
-            return fail(ErrorCode::TransportBusy, "winrt_ble: a message is still going out");
-        }
-        state_->sending = true;
+        admission = state_->outbound.offer(std::move(owned));
     }
 
-    // Detached deliberately; the coroutine owns everything it needs. The cast
-    // says so, and keeps /W4 from reading a discarded return as an oversight.
-    static_cast<void>(write_message(state_, std::move(owned)));
+    if (admission == Admission::Busy) {
+        // One message is being written and another already waits. With one
+        // request in flight (ADR-0010) that needs a write that has stalled and
+        // two deadlines expiring on top of it -- a medium that is not draining,
+        // which is what TransportBusy is for, rather than the handover window
+        // the queue exists to absorb (protocol-notes section 9, A22).
+        return fail(ErrorCode::TransportBusy, "winrt_ble: two messages are already outbound");
+    }
+    if (admission == Admission::StartWriter) {
+        // Detached deliberately; the coroutine owns everything it needs. The
+        // cast says so, and keeps /W4 from reading a discarded return as an
+        // oversight. Started only on StartWriter: a second writer on one medium
+        // would interleave two messages' fragments (ADR-0006).
+        static_cast<void>(write_message(state_));
+    }
     return {};
 }
 
 std::size_t WinRtBleTransport::max_message_size() const noexcept
 {
     return state_->max_message;
+}
+
+SendCounters WinRtBleTransport::send_counters() const
+{
+    const std::lock_guard<std::mutex> lock{state_->send_mutex};
+    return state_->outbound.counters();
 }
 
 void WinRtBleTransport::set_listener(TransportListener* listener) noexcept

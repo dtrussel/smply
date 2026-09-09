@@ -132,6 +132,15 @@ public:
     /// How long the last `drop_link()` took inside `close()`.
     [[nodiscard]] Duration last_close_duration() const noexcept;
 
+    /// Records the adapter's send-admission counters as `HIL-METRIC` lines,
+    /// summed over every link this rig opened.
+    ///
+    /// Called before the timeline is dumped. `deferred_sends > 0` is what makes
+    /// a green run evidence that a message really did wait for the writer
+    /// rather than the race simply not happening (protocol-notes section 9,
+    /// A22); `refused_sends > 0` would mean the medium stalled.
+    void record_send_counters();
+
     [[nodiscard]] Timeline& timeline() noexcept;
     [[nodiscard]] const SmpClientStats& stats() const noexcept;
     [[nodiscard]] ImageManagement& images() noexcept;

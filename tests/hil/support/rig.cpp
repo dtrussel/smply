@@ -65,6 +65,19 @@ void Rig::wake_up()
 
 Result<void> Rig::connect()
 {
+    // Close the link we are replacing before opening another. The contract
+    // requires a transport *object* to outlive every client bound to it
+    // (smply/transport.hpp) -- it does not require the link to stay open, and
+    // leaving one open means a GattSession with MaintainConnection(true)
+    // outliving the reconnect. Whether that contributes to Windows handing back
+    // a service with no characteristic (protocol-notes section 9, A22) could not
+    // be answered on this bench, because that behaviour did not reproduce; the
+    // hygiene is right either way, and close() is idempotent so a link a case
+    // already dropped is untouched.
+    if (!links_.empty()) {
+        links_.back()->close();
+    }
+
     const auto t0 = std::chrono::steady_clock::now();
     Result<std::unique_ptr<transport::WinRtBleTransport>> link =
         transport::WinRtBleTransport::connect(bench_.address, inbound_);
@@ -120,6 +133,18 @@ void Rig::drop_link()
 Duration Rig::last_close_duration() const noexcept
 {
     return last_close_;
+}
+
+void Rig::record_send_counters()
+{
+    transport::SendCounters total;
+    for (const auto& link : links_) {
+        const transport::SendCounters one = link->send_counters();
+        total.deferred += one.deferred;
+        total.refused += one.refused;
+    }
+    timeline_.metric("deferred_sends", static_cast<std::int64_t>(total.deferred));
+    timeline_.metric("refused_sends", static_cast<std::int64_t>(total.refused));
 }
 
 Timeline& Rig::timeline() noexcept
