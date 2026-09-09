@@ -2307,6 +2307,10 @@ leave the board not advertising -- `flash_baseline.py` recovers it, and
 
 **Status after this session:** P17c = `Complete`, and **P17 = `Complete`**. The
 one item left open is commissioning the self-hosted runner, filed against P18.
+CI is green on all 16 jobs at `b9a969e`, `gate-self-check` included — which is
+what proves R5's and R6's new decoys actually reject, since `verify_gates.sh`
+cannot run on this machine (the working tree is CRLF and WSL will not execute a
+`bash` shebang).
 Next: **P18 — packaging, install/export and the 1.0 review.**
 
 **What the cross-check compares, and why the previous version could not fail.**
