@@ -10,8 +10,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P17c — cross-check against third-party clients, then close P17** (P17b's cases all pass on the bench; the self-hosted runner is not yet commissioned) |
-| Last completed phase | P17a — bench bring-up and the first real update. **P17b is In Progress with all eleven unattended case types passing against the NUCLEO-WB55RG**: `smply_hil` over the public API, a supervisor that reflashes and captures per case, the rollback flags confirmed on hardware, two protocol findings (A20, A21) recorded |
+| **Next phase to work on** | **P17c — cross-check against third-party clients, then close P17** (the self-hosted runner is not yet commissioned, and is the one P17 item allowed to stay open) |
+| Last completed phase | **P17b — the unattended hardware case suite, green.** All twelve unattended cases pass in a back-to-back `run_hil.py --all`, three consecutive times: `smply_hil` over the public API, a supervisor that reflashes and captures per case, the rollback flags confirmed on hardware, and four protocol findings (A19-A22) recorded. Closing it needed two real transport fixes — send admission under load, and a bounded service-discovery retry — of which the first is bench-proven and the second only proven reachable |
 | Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. 620 tests, 15 CI jobs plus a nightly soak. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and never once run against a radio.** The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. 637 tests, 16 CI jobs plus a nightly soak. **The portable product is complete, and installable.** Everything remaining is Windows or hardware. |
 | Blocked phases | none |
 | Open decisions | **Four open** — O2, O3, O5, O6. O1 (licence) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
@@ -40,7 +40,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P15b](#p15b) | WinRT BLE transport | **Complete** (compiled, never run) | P15a |
 | [P16](#p16) | WinRT BLE DFU example application | **Complete** (compiled, never run) | P15b |
 | [P17a](#p17a) | Bench bring-up and the first real update (NUCLEO-WB55RG) | **Complete** | P16 |
-| [P17b](#p17b) | The unattended hardware case suite (`smply_hil`) | **In Progress** (all cases pass on the bench; runner not commissioned) | P17a |
+| [P17b](#p17b) | The unattended hardware case suite (`smply_hil`) | **Complete** (sequential suite green on the bench; runner not commissioned) | P17a |
 | [P17c](#p17c) | Cross-check against third-party clients, docs, close-out | Planned | P17b |
 | [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17c |
 
@@ -2476,7 +2476,7 @@ primitive; BTVS needs an elevated shell, so no HCI capture exists yet.
 <a id="p17b"></a>
 ## P17b — The unattended hardware case suite
 
-**Status: Planned** · **Depends on:** P17a · **Requires the bench**
+**Status: Complete** · **Depends on:** P17a · **Requires the bench**
 
 **Objective.** Automate the roadmap's case list against the bench so it runs
 without a person present, with recovery, evidence and a pass/fail/unavailable
@@ -2546,25 +2546,44 @@ in the test harness, not smply; the adapter needed no change, and the P15b
 `close()`-mid-write path was exonerated (the interrupted case's `close()`
 returned in 3 ms, the crash was the dangling source).
 
-**Sequential run.** Every case passes **in isolation**. A back-to-back
-`run_hil.py --all` fails three of them, and both causes are real behaviours
-under BLE load rather than test flakiness (recorded as A22): the adapter's
-`send()` returns `TransportBusy` when a write coroutine has not cleared
-`sending` before the device's fast notification arrives, and the upload ends on
-it instead of retrying; and Windows returns a GATT service with no SMP
-characteristic for a second or two after a rapid reconnect. Both are robustness
-gaps a real Windows DFU tool meets, and both want a bench-verified fix, so they
-are filed (follow-up rows) rather than patched under time pressure. Until then
-the cases are run one at a time; the sequential run is the reproduction.
+**Sequential run, and the two gaps it found (A22).** Every case passed in
+isolation while a back-to-back `run_hil.py --all` failed four of them — and
+re-measuring before any fix showed the failing *set* changed from run to run
+while the cause did not: every failure was the adapter's send admission. So it
+was one load-dependent race with varying victims, not three fragile cases.
 
-**Remaining.** Fix A22's two robustness gaps and make `run_hil.py --all` green.
-The give-up-with-device-removal case is manual (tag `[.manual]`, excluded from
+The adapter now admits **one waiting message** beside the one it is writing
+(`transports/common/send_queue.hpp`, unit-tested on every platform), because a
+single "a write is in progress" flag can only be cleared by the write's own
+completion and the device's answer can arrive first. `TransportBusy` is
+therefore still reachable, and now means the medium is genuinely behind. The
+sequential suite is **green three times over**, no busy string appears in any
+log, and `deferred_sends` is non-zero on three, six and three cases across the
+three runs — which is what makes a green run evidence rather than a
+coincidence, and which cases they are moves between runs exactly as a race
+should.
+
+The second gap, Windows handing back a service with no SMP characteristic after
+a rapid reconnect, is answered by a bounded discovery retry (six attempts,
+400 ms apart, only while a collection comes back empty). **That fix is honestly
+unverified in the positive direction:** the behaviour did not reproduce in five
+full runs, and an instrumented build saw discovery succeed on the first attempt
+20 times out of 20. Forcing the condition proves the path works and that a
+failed `connect()` now tears its half-built link down, but the retry's
+justification remains the P17b observation rather than a failure that
+disappeared. Closing the previous link before reconnecting was tried as a cause
+and is uninformative for the same reason; it is kept as hygiene.
+
+**Remaining.** None.
+
+**Left deliberately open, and where it went.** The
+give-up-with-device-removal case is manual (tag `[.manual]`, excluded from
 `--cases all`): an automated ST-LINK erase races the reconnect because
 STM32CubeProgrammer toggles reset to attach and the device re-advertises before
 the erase halts it; its give-up path is covered deterministically on every push
-by `cli_dfu --flaky-reconnect 99`. Also outstanding: commissioning the
-self-hosted runner (`hil.yml` is committed, advisory, not registered), and
-P17c's cross-check.
+by `cli_dfu --flaky-reconnect 99`. Commissioning the self-hosted runner
+(`hil.yml` is committed, advisory, not registered) is the one P17 item allowed
+to stay open and is named in P17c's acceptance. The cross-check itself is P17c.
 
 ---
 
@@ -2633,7 +2652,7 @@ comment in code.
 | -- | -------- | ----------- | ----- |
 | ~~O1~~ | ~~Which licence for smply itself?~~ | ~~P0~~ | **Resolved in P0: Apache-2.0.** Permissive, proprietary-linking friendly, explicit patent grant. `LICENSE` + `NOTICE` added; every source file carries an SPDX identifier. |
 | O2 | Should smply probe SMP v2 and fall back to v1? | after P17 | Deferred in [ADR-0010](decisions/ADR-0010-request-correlation.md); decide on HIL evidence. **P8 adds a concrete cost to staying on v1**: a server built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates image-group codes onto `mcumgr_err_t` and drops the group, so `HASH_NOT_FOUND` is indistinguishable from a generic failure (protocol-notes §9, A16). |
-| O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. |
+| O3 | Raise `max_in_flight` above 1 using `buf_count`? | after P17 | Needs HIL throughput measurements; would change retransmission reasoning. **P17b measured the input**: the peer answers `buf_count` **4** beside `buf_size` 2475, so its buffering is not what forbids more than one outstanding request. What it does not measure is whether the throughput gained is worth the retransmission reasoning ADR-0010 bought, which is the actual question. |
 | ~~O4~~ | ~~Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library?~~ | ~~P9~~ | **Resolved in P9: `MemoryImageSource` only.** `ImageSource` is two virtual functions, so a file-backed source is a dozen lines in the application, and adding one to the core would drag in file I/O, paths and error mapping across three platforms for no protocol benefit (architecture.md §2). The **P14b** example provides one. |
 | O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | P12 | Representable already; the question is test/HIL coverage. |
 | O6 | Expose a `std::error_code` interop layer? | after P12 | Only if a consumer asks. |
@@ -2692,22 +2711,25 @@ them.
 | P15a | An installed **sanitizer** build no longer carries the sanitizer's link options to consumers, because they ride on `smply_internal_options`, now held to `$<BUILD_INTERFACE:>` so the export is possible at all. Nobody ships one; if that changes, the options need a home outside that target. | when somebody ships one |
 | P15a | `smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter. P15b's adapter is in-tree so it does not care, but a third-party adapter would. Decide with the rest of the packaging. | P18 |
 | ~~P16~~ | ~~**`examples/winrt_ble_dfu/` has never been run**, and P16's acceptance criterion — completing an update against a real device — is therefore outstanding rather than met.~~ **Done in P17a**: five complete updates in both directions against the NUCLEO-WB55RG, device state confirmed over UART. The tool itself needed no fix; it gained elapsed-time stamps and the client counters, without which the first defect found was invisible. | — |
-| P17a | **`ReconnectPolicy`'s shape assumes a connect that fails fast, and WinRT's does not.** `WinRtBleTransport::connect()` blocks inside `FromBluetoothAddressAsync`/`GetGattServicesForUuidAsync` until the device is back — about 6 s after a swap reset — so attempt 1 succeeded in every P17a run and the doubling schedule never ran. The policy still bounds a device that never returns, but its delays are not what paces the reconnect on this platform. Decide from the P17b measurements whether the defaults change or whether the policy should be documented as a give-up bound rather than a pacing schedule. | P17b |
+| ~~P17a~~ | ~~**`ReconnectPolicy`'s shape assumes a connect that fails fast, and WinRT's does not.** `WinRtBleTransport::connect()` blocks inside `FromBluetoothAddressAsync`/`GetGattServicesForUuidAsync` until the device is back — about 6 s after a swap reset — so attempt 1 succeeded in every P17a run and the doubling schedule never ran. The policy still bounds a device that never returns, but its delays are not what paces the reconnect on this platform. Decide from the P17b measurements whether the defaults change or whether the policy should be documented as a give-up bound rather than a pacing schedule.~~ **Decided in P17b: the defaults stand and the policy is documented as a give-up bound, not a pacing schedule** (`support/dfu_app/reconnect_policy.hpp`). The measurements say the delays cannot pace anything on this platform -- the blocking connect returns when the device is back -- and the discovery retry now absorbs the GATT-cache window inside a single attempt as well. What the defaults still buy is a bounded refusal to hang, which is the part worth keeping. | — |
 | P17a | **QCBOR mishandles consecutive indefinite-length breaks** (`dependencies.md`, PN §9 A18): pinned 1.6.1 and `master` alike. Worked around in `cbor::Reader`; not yet reported upstream, which needs the user's go-ahead because it is an outward-facing action. The minimal reproduction is `{"images": [_ {"slot": 0}], "x": 5}` walked with `EnterArrayFromMapSZ` / `EnterMap` / `ExitMap` / `PeekNext`. | when the user agrees to file it |
-| P17a | **`measure_reset.py` loses iterations to its own second scanner.** Running a `BleakScanner` for the advertisement while `find_device_by_address` runs another made 13 of 20 connects report "device not found" although the device was advertising (checked independently). Reuse the advertisement watcher's `BLEDevice` for the connect instead of scanning twice, and record the disconnect and the advertisement as separate columns rather than sequential steps. | P17b |
-| P17a | **BTVS (HCI capture) requires an elevated shell**, which the bench session did not have, so P17a's runs have UART logs and client counters but no HCI captures. The unattended runner must be configured to run BTVS elevated, or the cross-check must accept smpmgr's own captures. | P17b |
-| P17a | **After a swap-using-offset update the image-state read lists only slot 0.** `mcumgr-client` and smply both saw one entry after each completed update — the moved-out old image is not reported as a valid slot-1 image. The rollback case's detection relies on the fallback slot reporting `confirmed` (PN §7); whether that holds *during* the trial boot on this bootloader mode must be observed in P17b before the case is written. | P17b |
+| ~~P17a~~ | ~~**`measure_reset.py` loses iterations to its own second scanner.** Running a `BleakScanner` for the advertisement while `find_device_by_address` runs another made 13 of 20 connects report "device not found" although the device was advertising (checked independently). Reuse the advertisement watcher's `BLEDevice` for the connect instead of scanning twice, and record the disconnect and the advertisement as separate columns rather than sequential steps.~~ **Fixed in P17b**, and it needed one more step than the row expected: the *first* connect of an iteration had the same defect, so the tool now scans once up front (`find_device`) and connects to the object both times. The disconnect report and the advertisement are gathered rather than awaited in sequence, so a missing disconnect costs one cell instead of the whole row. | — |
+| P17a | **BTVS (HCI capture) requires an elevated shell**, which the bench session did not have, so P17a's runs have UART logs and client counters but no HCI captures. The unattended runner must be configured to run BTVS elevated, or the cross-check must accept smpmgr's own captures. **P17b confirmed the bench session can run elevated**, so P17c implements the BTVS capture rather than narrowing to smpmgr's. | P17c |
+| ~~P17a~~ | ~~**After a swap-using-offset update the image-state read lists only slot 0.** `mcumgr-client` and smply both saw one entry after each completed update — the moved-out old image is not reported as a valid slot-1 image. The rollback case's detection relies on the fallback slot reporting `confirmed` (PN §7); whether that holds *during* the trial boot on this bootloader mode must be observed in P17b before the case is written.~~ **Observed in P17b and it holds**: during a trial boot both slots are listed and the fallback slot reports `confirmed`, so the rollback case detects the trial from the state read as PN §7 describes. Only *after* a completed swap is the single-entry state seen. | — |
 | P16 | The scanner matches an advertised **name substring** or takes an address. It does not pair or bond, so a device that requires pairing must already be paired in Windows settings. If P17 finds that inconvenient on real hardware, pairing belongs in the example rather than the adapter. | P17 |
-| P17b | **The adapter treats `TransportBusy` as a terminal upload error under load** (protocol-notes §9, A22). `send()` returns it when a write coroutine has not cleared `sending` before the device's SMP notification arrives, and the upload ends rather than retrying -- although `TransportBusy` is a retry request (design.md §9). Either the adapter clears `sending`/serialises differently, or the upload driver retries on `TransportBusy` as it does on a timeout. Needs a bench to verify. | a focused adapter session |
-| P17b | **Windows returns a GATT service with no SMP characteristic for ~1-2 s after a rapid reconnect** (A22), even with `BluetoothCacheMode::Uncached` -- the platform's own service cache. `connect()` (or the application) should retry characteristic discovery a few times to ride it out. A real Windows DFU tool needs this. | a focused adapter session |
-| P16 | `ReconnectPolicy`'s defaults (500 ms doubling to 8 s, six attempts) are a guess made without hardware. **P17a measured the swap-reset window at ≈ 6.3 s** and found that WinRT's blocking connect makes the first attempt succeed regardless (see the P17a row above); the plain-reset window is in `tests/hil/tools/measure_reset.py`'s output. The defaults are set from the P17b cases, which also measure the revert window. | P17b |
+| ~~P17b~~ | ~~**The adapter treats `TransportBusy` as a terminal upload error under load** (protocol-notes §9, A22). `send()` returns it when a write coroutine has not cleared `sending` before the device's SMP notification arrives, and the upload ends rather than retrying -- although `TransportBusy` is a retry request (design.md §9). Either the adapter clears `sending`/serialises differently, or the upload driver retries on `TransportBusy` as it does on a timeout. Needs a bench to verify.~~ **Fixed in P17b** by the first of the two, and the driver was deliberately left alone: a retry there would burn `max_chunk_retries` with zero elapsed time, because nothing below `FirmwareUpdater` owns a clock (design.md §6). The adapter admits one waiting message (`transports/common/send_queue.hpp`); the sequential suite is green three times over with `deferred_sends` non-zero, and a negative control without the slot reproduces the failure. | — |
+| ~~P17b~~ | ~~**Windows returns a GATT service with no SMP characteristic for ~1-2 s after a rapid reconnect** (A22), even with `BluetoothCacheMode::Uncached` -- the platform's own service cache. `connect()` (or the application) should retry characteristic discovery a few times to ride it out. A real Windows DFU tool needs this.~~ **Addressed in P17b**, with the weakest evidence of anything in the phase and said so plainly: `connect()` re-runs *service* discovery six times, 400 ms apart, only while a collection is empty. The behaviour did not reproduce in five full runs and discovery succeeded first time in 20 of 20 measured attempts, so only the error path is proven (by forcing the condition), not the benefit. Reopen this row rather than assume it is closed if the string ever appears again. | — |
+| ~~P16~~ | ~~`ReconnectPolicy`'s defaults (500 ms doubling to 8 s, six attempts) are a guess made without hardware. **P17a measured the swap-reset window at ≈ 6.3 s** and found that WinRT's blocking connect makes the first attempt succeed regardless (see the P17a row above); the plain-reset window is in `tests/hil/tools/measure_reset.py`'s output. The defaults are set from the P17b cases, which also measure the revert window.~~ **Settled in P17b: unchanged, and re-documented.** See the P17a row above; the numbers behind it are in `build/hil-evidence/` and summarised in the header comment. | — |
 | P16 | **`smply::dfu_app` is not installed or exported**, like `smply::minicbor` and `smply::transport_common` before it. An out-of-tree application writing its own adapter would want the reconnect policy. Decide with the rest of the packaging. | P18 |
 | P16 | `--flaky-reconnect` refuses attempts in the *application*, not in the stub device: the link is never actually offered and rejected. That is enough to drive the policy and `reconnect_failed()`, but it does not model a device that accepts a connection and then drops it mid-handshake. | when the stub is next extended |
 | ~~P15b~~ | ~~**`smply::winrt_ble` has never been run.** CI compiles it and links a smoke test; no radio has seen a byte of it.~~ **Done in P17a**: discovery, the CCCD write, notification delivery, the write path and disconnect handling all worked unchanged against the NUCLEO-WB55RG; MTU is negotiated after connect, which the per-`send()` `MaxPduSize` read handles. `close()`'s write grace and a link dropped mid-write remain for P17b's interrupted-upload case. | — |
 | P15b | **The adapter is outside clang-tidy and cppcheck** (`tools/lint.sh` excludes `transports/winrt_ble/`), because both run from a Linux build. Running clang-tidy on the Windows runner — LLVM is preinstalled there — would recover the analysis. Weigh it against a second toolchain in CI. | P18 |
 | P15b | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is documented as the device's `rsn` string, so the adapter drops the `HRESULT` behind every WinRT failure and reports only a call-site tag. That is exactly the detail wanted when debugging a transport nobody can attach a debugger to. Either widen `reason()`'s contract or add a detail field. | when the adapter is next touched |
-| P15b | `close()` waits at most five seconds for a write already on the air, then proceeds. Bounded rather than unconditional because an application that cannot be shut down is worse than one that abandons a stuck write — but the number is a guess made without a radio. P17a's clean updates never exercised it; P17b's interrupted-upload case closes the link mid-write and measures it. | P17b |
+| ~~P15b~~ | ~~`close()` waits at most five seconds for a write already on the air, then proceeds. Bounded rather than unconditional because an application that cannot be shut down is worse than one that abandons a stuck write — but the number is a guess made without a radio. P17a's clean updates never exercised it; P17b's interrupted-upload case closes the link mid-write and measures it.~~ **Measured in P17b: 2 ms**, closing the link mid-upload. So the five seconds is a bound with three orders of magnitude of headroom rather than a wait anything pays, and it stays as it is — the send queue's waiting message is *discarded* rather than flushed on close, so the worst case is still one message's remaining fragments. | — |
 | P15b | `smply::winrt_ble` is **not installed or exported**, like `smply::transport_common` before it. P16's example is in-tree so it does not care; a third-party consumer would. | P18 |
+| P17b | **A `TransportBusy` seen again would need a clock-driven backoff, and that needs an ADR.** The transport now absorbs the handover window itself, so anything still reaching the upload driver means the medium genuinely is not draining. The driver cannot help: `is_transient()` excludes `TransportBusy` deliberately because nothing below `FirmwareUpdater` owns a clock, and a retry there would spend the whole budget with zero elapsed time (design.md §6). Giving a lower layer a clock, or giving the updater the retry, touches ADR-0003 and ADR-0004. Do not patch it quietly. | if it is seen again |
+| P17b | **`WinRtBleTransport::send_counters()` is public API that P18 will have to keep or drop.** It exists because a green bench run is otherwise indistinguishable from a run in which the race did not happen (ADR-0015), and it is the only counter of its kind on any transport. Decide with the packaging whether adapter diagnostics belong in the `Transport` contract, in a per-adapter header, or nowhere. | P18 |
+| P17b | **A write that fails mid-message leaves the device's reassembler holding a partial message**, and nothing on the link says so. The adapter therefore discards its waiting message on failure rather than writing it into the abandoned tail, and the request times out instead — but a *device-side* reassembler with no framing to resynchronise on (ADR-0006, PN §8) recovers only because the next message's header happens to follow a completed length. Whether Zephyr's `smp_bt` reassembler discards a partial message on any timeout of its own is unverified, and the answer decides whether the discard is sufficient or merely usually sufficient. | when the reassembler is next read |
 | P15b | The adapter connects by **Bluetooth address only**. Scanning, name resolution and pairing are P16's, but if the example finds it needs a `connect_by_name`, it belongs here rather than there. | P16 |
 | P15a | `-Wnull-dereference` is gone from the GCC set. If a future GCC stops false-positiving inside libstdc++ under `-O2`, it is worth restoring — it is a genuinely useful check, and it was dropped for the compiler's behaviour rather than for its value. | when GCC improves |
 | P1 | **`verify_gates.sh` fixtures can rot silently.** Its R2 case injected its violation by rewriting `P1 ... Status: Planned`; completing P1 turned that into a no-op, so the gate went untested while the check still reported PASS. Fixed by appending a synthetic `P99` phase instead. When adding a case, make the violation independent of any real content that later work will change. | — (fixed) |

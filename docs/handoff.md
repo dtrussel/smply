@@ -317,6 +317,23 @@ entry when it stops being true.
   run at once; the second one fails to open the port. Stop the logger first.
 * **`flash_baseline.py` is the recovery primitive and exits 2 for "no bench".**
   A supervisor must never turn that into a pass or a fail.
+* **On the Windows bench machine, the Linux gates run in WSL — but the shell
+  scripts do not.** `wsl.exe` has an Ubuntu 24.04 with g++ 13, clang-tidy,
+  cppcheck, cmake and ninja, and the repository is reachable at
+  `/mnt/c/.../smply`, so `cmake --preset linux-gcc` and `ctest` work and are
+  worth running before pushing: GCC rejects things MSVC accepts. Two snags.
+  First, `core.autocrlf=true` means the working tree is CRLF, and
+  `/usr/bin/env` cannot execute a script whose shebang ends in `bash\r` — so
+  `tools/lint.sh`, `tools/format.sh` and `tools/verify_gates.sh` all fail with
+  a confusing `'bash\r': No such file or directory`. Reproduce clang-tidy's
+  half by hand from `compile_commands.json` (exclude `build/`,
+  `tests/consumer/` and the three WinRT directories) rather than trying to fix
+  the scripts. Second, pass
+  `-DFETCHCONTENT_SOURCE_DIR_CATCH2=<repo>/build/windows-hil/_deps/catch2-src`
+  and the same for `QCBOR` so the configure reuses what the Windows build
+  already downloaded instead of fetching again. There is no clang compiler in
+  that image, so the ASan and UBSan jobs stay with CI — which is where the
+  dangling-capture class of bug is caught.
 * **On Windows, build with the MSVC developer environment loaded** —
   `cmd /c "call VsDevCmd.bat -arch=x64 && cmake --build --preset windows-winrt"`
   from PowerShell. Running `cmake --build` from a shell that did not find `cl`
@@ -2124,14 +2141,21 @@ reconnect). A20 re-confirmed on the reset case.
 
 **Caveats — read these before touching P17b.**
 
-* **Run the HIL cases one at a time until A22 is fixed.** `run_hil.py --all`
-  fails three cases (interrupted, restart part 1, erase) on the adapter's
-  `TransportBusy`-under-load and Windows' GATT cache — both real, both filed as
-  follow-ups. Each case passes on its own (`--cases <group>`). The sequential
-  run is the reproduction, not a regression.
 * **`TransportBusy` is a retry request, not a failure** (the P4 caveat, now
-  seen on hardware). The upload ending on it is the A22 gap. Do not "fix" it by
-  making the case tolerate `TransportBusy` — fix the adapter or the driver.
+  seen on hardware). It no longer ends an upload, because the adapter admits
+  **one waiting message** beside the one it is writing
+  (`transports/common/send_queue.hpp`) and so absorbs the window in which the
+  device's answer beats the local write's own completion. A `TransportBusy`
+  observed *after* that means two messages really are outbound and the medium
+  has stalled — a new finding, not the old one. Do not make a case tolerate it,
+  and do not add a retry in the core: nothing below `FirmwareUpdater` owns a
+  clock, so the retry would spin with zero elapsed time (design.md §6). A
+  clock-driven backoff needs an ADR.
+* **A green sequential run needs `deferred_sends > 0` to mean anything.** Zero
+  everywhere says the handover race did not occur, not that the fix works. The
+  counters come out as `HIL-METRIC deferred_sends` / `refused_sends` from
+  `Rig::record_send_counters()`; three to six cases show a deferral in a
+  full run, and which ones varies -- it is a race, so it moves.
 * **The image source and the progress sink must outlive the whole `Session`,
   not the `upload()` call.** Two lifetime bugs in the rig cost this session real
   time and both are the traps this file warns about: a progress callback
@@ -2167,3 +2191,83 @@ the bench with the failing case (`run_hil.py --cases erase` reproduces the
 Then **P17c**: `crosscheck.py` against `smpmgr` (BLE) and `mcumgr-client`
 (UART), with BTVS run elevated for HCI. The self-hosted runner stays
 uncommissioned until the user asks.
+
+### 2026-09-09 — P17b close-out: A22 fixed, the sequential suite green
+
+**Status after this session:** P17b = `Complete`. `run_hil.py` with no `--cases`
+is green three consecutive times, 12 pass / 0 fail / 0 unavailable, exit 0.
+Next: P17c (the third-party cross-check, with BTVS run elevated).
+
+**The fix that mattered.** The adapter no longer conflates "a writer is running"
+with "no further message may be accepted". `transports/common/send_queue.hpp`
+admits **one waiting message** beside the one being written; a third is refused
+as `TransportBusy`, so the contract is unchanged rather than quietly widened.
+The bookkeeping went into `transports/common/` because that directory is
+unit-tested, linted and coverage-measured on every platform while the adapter is
+not -- the same move `ble_framing.hpp` and `link_state.hpp` made. 15 unit cases.
+
+**Evidence, which is the point of the phase.** Baseline first, on the unmodified
+tree: two full runs, 8 pass / 4 fail each, with a *different* four each time and
+**every** failure on the same busy string. So it was one load-dependent race
+with varying victims, not three fragile cases -- and "these three cases fail" was
+never the right description. After the fix: green, no busy string anywhere, and
+`HIL-METRIC deferred_sends` non-zero on three, six and three cases across the
+three runs, `refused_sends` zero throughout. That middle number is what
+makes a green run mean anything; zero everywhere would have said only that the
+race did not happen. `timeouts` stayed at zero, so nothing was accepted and
+dropped. **Negative control:** mailbox depth 0 reproduces the failure with
+`refused_sends=1`.
+
+**The second gap, and an honest non-result.** Windows returning a service with
+no SMP characteristic did **not reproduce once** in five full runs, and an
+instrumented build recorded discovery succeeding on the first attempt in 20 of
+20 discoveries. The bounded retry (six attempts, 400 ms apart, only while a
+collection is empty) is therefore justified by P17b's observation and **not** by
+a failure that disappeared. Forcing the condition proves the path works -- six
+attempts over 3705 ms, the right one of the two final messages -- and proves the
+new `connect()` teardown runs the whole `close()` sequence on a half-built link
+without hanging. Closing the previous link before reconnecting (`Rig::connect()`)
+was tried as a cause and is uninformative for the same reason; kept as hygiene,
+not reported as a fix.
+
+**Two defects found by the negative control itself.** The forced failure first
+produced a bare `REQUIRE(rig.connect())` and no error string anywhere in the
+evidence bundle: `Session()` does its connect in a constructor, and a
+constructor that throws never runs the destructor that dumps the timeline. Every
+connect failure in the suite had been discarding its own diagnosis. And
+`measure_reset.py`'s "device not found" losses turned out to include the *first*
+connect of each iteration, not only the reconnect the follow-up row named; it
+now scans once and connects to the `BLEDevice` object both times, and **16 of
+20** iterations complete where the follow-up row had recorded 13 of 20 lost.
+
+**Measurements banked.** `close()` mid-write: **2 ms** (the five-second grace is
+a bound with three orders of magnitude of headroom, and stays). Plain reset, 16
+rows: device advertising again median **1.23 s**, central reports the link gone
+median **9.83 s**, usable link median **10.5 s** -- which is why `ReconnectPolicy`
+is now documented as a give-up bound rather than a pacing schedule. `buf_size`
+2475 and `buf_count` now both in the bundle, for O3.
+
+**Caveats added or reworded** in § Standing caveats: the `TransportBusy` one
+(the old "run the cases one at a time" caveat is gone), and the new one about
+`deferred_sends` being what makes a green run evidence.
+
+**Docs updated.** `design.md` §6 (why `is_transient()` excludes `TransportBusy`),
+§9 (the backpressure row) and §10 (send admission, the discovery retry, the
+`connect()` teardown); `protocol-notes.md` A22 (observation preserved, new
+measurement appended, verdict written); `transports/winrt_ble/README.md` (the
+claim table -- "nothing in this directory changed" is no longer true);
+`roadmap.md` (P17b Complete, the sequential-run paragraph, eight follow-up rows
+struck, three new ones filed, Current state); `testing.md` §6's give-up
+sentence; `reconnect_policy.hpp` and `winrt_ble_transport.hpp` headers.
+
+**Recommended next.** **P17c.** The cross-check itself: `crosscheck.py` against
+`smpmgr` (BLE) and `mcumgr-client` (UART), the BTVS capture from an elevated
+shell, the tshark decode, the Tier A/B comparison and the oracle self-test; then
+`testing.md` §6's cross-check rewrite, `architecture.md` §10 and `design.md`
+§10's remaining reconciliations, and O2/O3 answered from the trace. Three things
+to know going in: the three new follow-up rows (a clock-driven backoff needs an
+ADR, `send_counters()` is public API P18 must decide on, and the mid-message
+write-failure framing hazard is unverified on the device side); the QCBOR
+upstream report is still waiting on the user; and a run that fails part way can
+leave the board not advertising -- `flash_baseline.py` recovers it, and
+`run_hil.py` does that per group anyway.

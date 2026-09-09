@@ -114,7 +114,13 @@ unavailable*, never as a pass or a fail. CPU2 is not touched.
   resets, and for each the time from acceptance to disconnect, first
   advertisement, GATT connect and a usable SMP characteristic. A bench
   instrument only; it uses the third-party `smp`/`bleak` packages to put a reset
-  on the air, and infers nothing about the protocol from them (ADR-0015).
+  on the air, and infers nothing about the protocol from them (ADR-0015). It
+  **scans once per iteration and connects to the `BLEDevice` object**, never to
+  the address string: a `BleakClient(address)` resolves the address with a scan
+  of its own, and two scanners over one radio cost 13 of 20 iterations to
+  "device not found" the first time this was run. Four iterations in twenty
+  still fail with `WinError -2147023673` on a connect that races the peer coming
+  back; that is the instrument, not smply.
 
 ## Manual acceptance came first (P17a, 2026-09-08)
 
@@ -165,9 +171,16 @@ stdout (timeline and `HIL-METRIC` lines), the device log and the report under
 **pass / fail / unavailable** verdict per case. Two groups need to know about
 each other: the *restart* pair runs without a reflash in between, and the
 *give-up* case prints `HIL-MARK: device-gone-now` when it starts reconnecting,
-on which the supervisor erases the device over ST-LINK so that nothing ever
-advertises again; run alone, that case fails on purpose. Exit status: 0 all
-pass, 1 any fail, 2 any unavailable.
+on which **a person** powers the board off so that nothing ever advertises
+again. It is out of `--cases all` for that reason, and the supervisor prints a
+notice when it is selected. An earlier design had the supervisor erase the
+device over ST-LINK on that line; it never worked, because CubeProgrammer
+toggles reset to attach and the device re-advertises before the erase halts it.
+Exit status: 0 all pass, 1 any fail, 2 any unavailable.
+
+A run that fails part way can leave the board **not advertising**. The next
+run's per-group baseline flash recovers it; to recover by hand, run
+`firmware/flash_baseline.py --evidence <out>/evidence`.
 
 ## HCI capture
 

@@ -337,9 +337,9 @@ smply/
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
 │   └── detail/client_thread.hpp    debug-only client-context assertion
 ├── transports/
-│   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp —
-│   │                           portable, header-only smply::transport_common;
-│   │                           built and tested everywhere
+│   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp
+│   │                           send_queue.hpp — portable, header-only
+│   │                           smply::transport_common; built and tested everywhere
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench (P17): see its README
 ├── support/                    shared by the tests and the examples, part of neither

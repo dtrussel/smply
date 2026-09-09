@@ -487,8 +487,13 @@ application restart (two cases, run without a reflash between them) · corrupted
 image refused (one body byte flipped after signing) · test boot then reset
 without confirm ⇒ **rollback observed** · reset (disconnect seen, device back) ·
 erase, including of a slot marked for test · reconnection gives up when the
-device does not return (the supervisor erases the device on a marker line; run
-alone the case fails on purpose). The cases record the measurements P17a began:
+device does not return — **manual**: a person powers the board off when the case
+prints its `HIL-MARK` line, which is why it is excluded from `--cases all`. An
+earlier design had the supervisor erase the device with the programmer on that
+line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
+attach and the device re-advertises before the erase halts it. The give-up path
+itself is covered deterministically on every push by `cli_dfu
+--flaky-reconnect 99`. The cases record the measurements P17a began:
 close-grace, disconnect latency, reboot windows, resume offsets.
 
 **Cross-check** (P17c). From the same baseline, run the same sequence with smply,
