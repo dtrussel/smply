@@ -83,6 +83,20 @@ std::optional<Bench> bench_from_environment(std::string& why)
     }
     bench.image_a = *a;
     bench.image_b = *b;
+
+    // Unset means v1, which is smply's default. An unrecognised value is a
+    // refusal rather than a silent fallback: a run that thinks it measured v2
+    // and did not would be worse than a run that never started.
+    if (const auto version = environment("SMPLY_HIL_SMP_VERSION")) {
+        if (*version == "1") {
+            bench.smp_version = Version::V1;
+        } else if (*version == "2") {
+            bench.smp_version = Version::V2;
+        } else {
+            why = "SMPLY_HIL_SMP_VERSION must be 1 or 2, not " + *version;
+            return std::nullopt;
+        }
+    }
     if (!read_file(bench.image_a).has_value() || !read_file(bench.image_b).has_value()) {
         why = "an image file cannot be read: " + bench.image_a + " / " + bench.image_b;
         return std::nullopt;

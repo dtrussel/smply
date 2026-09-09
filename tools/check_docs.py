@@ -9,11 +9,20 @@ Enforces that documentation stays a first-class product artefact:
       'Docs-Impact: none' with a justification;
   R2  a roadmap phase marked Complete must have an empty "Remaining work";
   R3  every ADR referenced from a doc exists, and every ADR has a valid Status;
-  R4  every public symbol declared in include/smply/ has a /// doc comment.
+  R4  every public symbol declared in include/smply/ has a /// doc comment;
+  R5  every path in architecture.md's repository-layout tree exists;
+  R6  no "(planned, P<n>)" marker names a phase the roadmap marks Complete.
 
 R1 needs a diff base and, for the escape hatch, a pull-request body. Outside a
 PR (a plain branch push, or a local run) neither exists; R1 is then skipped
-with a message rather than failing. R2-R4 always run.
+with a message rather than failing. R2-R6 always run.
+
+R5 and R6 exist because P17c found three wrong entries in a layout section whose
+own opening line says "Keep this accurate", and two `(planned)` markers naming
+phases that had been Complete for four phases. Nothing checked either, so the
+drift was invisible until someone read the file against the tree. Adding a check
+for a defect just fixed by hand is this repository's habit, not a new idea: it is
+what committing a fuzz reproducer alongside its fix does.
 
 Usage:
     tools/check_docs.py [--base REF] [--verbose]
@@ -267,6 +276,159 @@ def rule_4_public_symbols_documented() -> list[str]:
     return errors
 
 
+def _phase_status() -> dict[str, str]:
+    """Phase id to Status, from the roadmap. Shared by R2's reader and R6."""
+    roadmap = DOCS / "roadmap.md"
+    if not roadmap.is_file():
+        return {}
+    text = roadmap.read_text(encoding="utf-8")
+    sections = re.split(r"^##\s+(P\d+[a-z]?)\s*[—-]\s*", text, flags=re.M)
+    out: dict[str, str] = {}
+    for i in range(1, len(sections) - 1, 2):
+        status = re.search(r"\*\*Status:\s*([A-Za-z ]+?)\*\*", sections[i + 1])
+        if status:
+            out[sections[i]] = status.group(1).strip()
+    return out
+
+
+# A layout-tree line: box-drawing glyphs, then a path, then optional prose after
+# two or more spaces.
+LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(\S+)")
+
+# ...and the token has to look like a path. Without this, R5 reads the borders
+# of the *other* fenced diagrams in architecture.md as entries: a line such as
+# "└─────┬────┘" matches the glyph pattern above and yields a "path" made
+# entirely of box-drawing characters. Those lines are not layout entries at all,
+# so they are neither checked nor counted as skipped -- inflating the skip count
+# with them would hide a real narrowing of the rule, which the count exists to
+# expose.
+PATHISH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+@/{}*-]*$")
+
+_TRACKED: list[str] | None = None
+
+
+def _tracked_paths() -> list[str]:
+    """Every tracked path, as forward-slashed repository-relative strings.
+
+    Read once. Also covers directories, which `git ls-files` does not list, by
+    adding every prefix of every file -- so a layout entry naming a directory
+    resolves without a second command.
+    """
+    global _TRACKED
+    if _TRACKED is None:
+        listing = git("ls-files").splitlines()
+        paths = set(listing)
+        for path in listing:
+            parts = path.split("/")
+            for i in range(1, len(parts)):
+                paths.add("/".join(parts[:i]))
+        _TRACKED = sorted(paths)
+    return _TRACKED
+
+
+def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
+    """Every path named in architecture.md's layout tree must exist.
+
+    The tree is prose, not data, so this rule is deliberately conservative: it
+    checks the first token after the glyphs and **skips anything it cannot read
+    as a single path** -- a brace expansion (`upload_session.{hpp,cpp}`), a glob
+    (`update_state_machine.*`), a line naming several files, or an entry marked
+    `(planned`.
+
+    It prints how many entries it skipped. That number is the point: a rule that
+    silently narrows to nothing still reports a pass, which is exactly how
+    `verify_gates.sh`'s R2 fixture rotted (roadmap.md, P1 follow-up). A reader
+    who sees "checked 3, skipped 60" knows the rule has stopped working; a
+    reader who sees "OK" does not.
+    """
+    architecture = DOCS / "architecture.md"
+    if not architecture.is_file():
+        return ["docs/architecture.md is missing"]
+
+    text = architecture.read_text(encoding="utf-8")
+    # The tree lives in one fenced block; take every fenced block and only look
+    # at lines that parse as tree entries, so the rule does not depend on the
+    # section's heading text.
+    errors: list[str] = []
+    checked = skipped = 0
+    in_fence = False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            continue
+        match = LAYOUT_LINE.match(line)
+        if not match:
+            continue
+        token = match.group(1)
+        if not PATHISH.match(token):
+            continue
+        if "(planned" in line or any(c in token for c in "{}*?"):
+            skipped += 1
+            continue
+        bare = token.rstrip("/")
+        # A directory entry ends in "/"; a file entry does not. Both resolve
+        # against the repository root first.
+        if (REPO / bare).exists():
+            checked += 1
+            continue
+        # A leaf named without its directories -- `header.hpp` inside a nested
+        # branch of the tree -- cannot be resolved without tracking indentation,
+        # which is the parsing this rule refuses to do. So it is accepted when
+        # something tracked ends with that path.
+        #
+        # Matched against `git ls-files` rather than a filesystem walk: `build/`
+        # here holds dependency checkouts, peer firmware and every past bench
+        # run, and a recursive glob through it takes minutes per unresolved
+        # token. Tracked files are also the right set -- the layout describes
+        # the repository, not whatever a build left behind.
+        if any(p == bare or p.endswith("/" + bare) for p in _tracked_paths()):
+            checked += 1
+        else:
+            errors.append(f"architecture.md's layout names {token!r}, which does not exist")
+    print(f"R5: checked {checked} layout path(s), skipped {skipped} "
+          f"entry(ies) it could not read as a single path")
+    if verbose:
+        print(f"    (a rising skip count means R5 is checking less than it looks)")
+    return errors
+
+
+def rule_6_no_stale_planned_markers() -> list[str]:
+    """A "(planned, P<n>)" marker may not name a phase that is Complete.
+
+    The marker means "this does not exist yet, and P<n> creates it". Once P<n>
+    is Complete the marker is either a lie about the tree or a phase that did
+    not do what it said, and both are worth a failing gate. It would have fired
+    the moment P10 and P12 closed, which is when the two it now catches became
+    wrong.
+    """
+    status = _phase_status()
+    if not status:
+        return ["docs/roadmap.md could not be read, so R6 cannot run"]
+
+    errors: list[str] = []
+    # Both spellings the documents actually use: "(planned, P12)" and
+    # "**planned (P10)**". Bounded to a short window after the word, so a
+    # sentence that merely mentions a phase some way after "planned" is not
+    # swept in -- the marker is a terse annotation, not prose.
+    pattern = re.compile(r"\bplanned\b[^\n]{0,24}?\b(P\d+[a-z]?)\b", re.I)
+    for path in sorted(DOCS.rglob("*.md")):
+        # The roadmap's own phase log records what was planned at the time and
+        # is a historical record, not a claim about the tree today.
+        if path.name == "roadmap.md":
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in pattern.finditer(line):
+                phase = match.group(1)
+                if status.get(phase) == "Complete":
+                    errors.append(
+                        f"{path.relative_to(REPO).as_posix()}:{number} still marks "
+                        f"something '(planned, {phase})' although {phase} is Complete: "
+                        f"{line.strip()[:70]}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="git ref to diff against for R1")
@@ -278,6 +440,8 @@ def main() -> int:
         ("R2 roadmap consistency", rule_2_roadmap_consistency()),
         ("R3 ADR integrity", rule_3_adrs()),
         ("R4 public symbols documented", rule_4_public_symbols_documented()),
+        ("R5 layout tree exists", rule_5_layout_tree_exists(args.verbose)),
+        ("R6 no stale (planned) markers", rule_6_no_stale_planned_markers()),
     ]
 
     failed = False
@@ -292,7 +456,7 @@ def main() -> int:
         print("\nSee docs/quality-gates.md section 11 and ADR-0013.", file=sys.stderr)
         return 1
 
-    print("documentation gate OK (R1-R4)")
+    print("documentation gate OK (R1-R6)")
     return 0
 
 

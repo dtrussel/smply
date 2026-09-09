@@ -90,7 +90,11 @@ Result<void> Rig::connect()
     }
     links_.push_back(std::move(*link));
     if (!client_.has_value()) {
-        client_.emplace(*links_.back());
+        // The SMP version comes from the bench, not from the default, so a
+        // whole group of cases can be re-run in v2 by setting one environment
+        // variable (bench.hpp; O2).
+        client_.emplace(*links_.back(), system_clock(),
+                        SmpClientConfig{.smp_version = bench_.smp_version});
         images_.emplace(*client_);
         os_.emplace(*client_);
     } else {

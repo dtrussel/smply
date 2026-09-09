@@ -27,11 +27,12 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-FLASH = HERE / "firmware" / "flash_baseline.py"
-UART_LOG = HERE / "tools" / "uart_log.py"
-CUBE_CLI = Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer"
-                r"\bin\STM32_Programmer_CLI.exe")
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+
+# The board, the console port and the baseline exit-code mapping are shared with
+# crosscheck.py. They were duplicated once, and the copy got the mapping wrong
+# in the direction ADR-0015 cares about -- see tools/bench_support.py.
+from bench_support import CUBE_CLI, Bench, slug  # noqa: E402
 
 # Groups run from one baseline flash; a case inside a group relies on what the
 # previous one left behind (the restart pair), so order matters within a group.
@@ -50,6 +51,11 @@ GROUPS = [
     {"name": "rollback", "cases": ["hil: a trial boot that nobody confirms is reverted on the next reset"]},
     {"name": "reset", "cases": ["hil: a reset drops the link and the device comes back"]},
     {"name": "erase", "cases": ["hil: erase clears the secondary slot even when it is marked for test"]},
+    # Cheap, and the evidence behind open question O2: it writes no flash and
+    # does not reboot. Run it twice, with SMPLY_HIL_SMP_VERSION=1 and =2, and
+    # compare the two bundles (tests/hil/support/bench.hpp).
+    {"name": "o2",
+     "cases": ["hil: an image-group refusal carries what this server's SMP version allows"]},
 ]
 
 # Manual cases: not in the unattended default (an automated device-removal races
@@ -62,39 +68,6 @@ MANUAL_GROUPS = [
     {"name": "give-up", "manual": True,
      "cases": ["hil: reconnection gives up when the device does not come back"]},
 ]
-
-
-def slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60]
-
-
-class Bench:
-    def __init__(self, args):
-        self.args = args
-        self.python = args.python or sys.executable
-
-    def flash_baseline(self, log: Path) -> str:
-        """'ok', 'unavailable' or 'failed'."""
-        result = subprocess.run([self.python, str(FLASH), "--evidence", str(self.args.evidence),
-                                 "--cli", str(self.args.cli)], capture_output=True, text=True)
-        log.write_text(result.stdout + result.stderr, encoding="utf-8")
-        return {0: "ok", 2: "unavailable"}.get(result.returncode, "failed")
-
-    def start_uart(self, out: Path):
-        if not self.args.uart:
-            return None
-        return subprocess.Popen([self.python, str(UART_LOG), "--port", self.args.uart, "--out", str(out)],
-                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-
-    @staticmethod
-    def stop_uart(proc) -> None:
-        if proc is None:
-            return
-        try:
-            proc.stdin.close()
-            proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001 -- best effort; the logger is not the test
-            proc.kill()
 
 
 def run_case(bench: Bench, case: str, case_dir: Path) -> dict:

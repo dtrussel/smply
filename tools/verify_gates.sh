@@ -246,6 +246,35 @@ PY
 expect_fail "check_docs R4 rejects an undocumented public symbol" python3 tools/check_docs.py
 restore include/smply/version.hpp.in
 
+# 11a. Docs R5: a layout entry naming a file that does not exist.
+#
+# Inserted into the layout tree with the tree's own glyphs, because that is what
+# R5 parses. Note what this case really guards: R5 *skips* anything it cannot
+# read as a single path, so a regression that broke its parsing would skip
+# everything and still report a pass. This decoy fails only while R5 is
+# genuinely reading entries.
+python3 - "$WORK/docs/architecture.md" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+needle = "\u251c\u2500\u2500 tools/"
+assert t.count(needle) == 1, "the layout tree's tools/ entry moved"
+t = t.replace(needle, "\u251c\u2500\u2500 no_such_directory_for_r5/\n"
+                      + needle, 1)
+p.write_text(t, encoding="utf-8")
+PY
+expect_fail "check_docs R5 rejects a layout entry that does not exist" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
+
+# 11b. Docs R6: a "(planned, PN)" marker naming a phase that is Complete.
+#
+# P1 is Complete and will stay Complete, so unlike the R2 fixture this one
+# cannot rot by a phase advancing past it.
+printf '\nA thing that does not exist (planned, P1).\n' >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R6 rejects a (planned) marker for a Complete phase" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
+
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error
 # message, the compile of tests/consumer is the ground truth behind it.

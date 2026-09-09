@@ -396,6 +396,94 @@ TEST_CASE("hil: part 2 -- a new process resumes the abandoned upload by sha",
 // Refusals and rollback
 // ---------------------------------------------------------------------------
 
+TEST_CASE("hil: an image-group refusal carries what this server's SMP version allows",
+          "[hil][refusal][o2]")
+{
+    // The measurement behind open question O2, "should smply probe SMP v2 and
+    // fall back to v1?".
+    //
+    // This peer is built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`
+    // (`build/hil-peer-out/*/smp_svr/zephyr/.config`), which is what makes the
+    // question real rather than hypothetical: with that option on, the server
+    // translates an image-group error code onto a flat `mcumgr_err_t` for a v1
+    // request and throws the group away, so `HashNotFound` becomes an
+    // indistinguishable `Unknown` (protocol-notes.md section 9, A16). A v2
+    // request is supposed to receive the `err` map untouched.
+    //
+    // So the case provokes two *different* refusals and records what came back.
+    // It asserts only what must hold whatever version is in force -- the
+    // request failed, and it failed with a device-reported error rather than a
+    // transport one -- because the point is the evidence, not the assertion:
+    // run it with `SMPLY_HIL_SMP_VERSION=1` and again with `=2`, and compare
+    // the two evidence bundles. Both runs must be green, or the comparison is
+    // between a working client and a broken one.
+    Session s;
+    const bool v2 = s.bench.smp_version == Version::V2;
+    s.rig.timeline().metric("smp_version", v2 ? 2 : 1);
+
+    struct Provocation
+    {
+        const char* what;
+        SetStateRequest request;
+        ImageError expected; ///< What the group code should be, when there is one.
+    };
+
+    // Neither provocation writes flash or reboots, so this case is cheap and
+    // leaves the device exactly as the baseline flash left it.
+    const std::vector<Provocation> provocations{
+        // Image B is not on the device at all, so its hash names no slot.
+        {"absent-hash", SetStateRequest{.hash = s.images.hash_b, .confirm = false},
+         ImageError::HashNotFound},
+        // Marking the image that is already running for *test* is refused: it
+        // is active, so there is nothing to swap in (protocol-notes.md
+        // section 7).
+        {"running-hash", SetStateRequest{.hash = s.running, .confirm = false},
+         ImageError::ImageSettingTestToActiveDenied},
+    };
+
+    for (const Provocation& provocation : provocations) {
+        const Result<ImageState> answer = s.rig.set_state(provocation.request);
+        s.rig.timeline().note(
+            std::string{provocation.what} + ": " +
+            (answer.has_value() ? std::string{"accepted"} : to_string(answer.error())));
+        // A server that *accepts* one of these is a finding of its own, and a
+        // more interesting one than the version question -- so say which
+        // provocation it was rather than failing anonymously.
+        INFO("provocation: " << provocation.what);
+        REQUIRE_FALSE(answer.has_value());
+        const Error& error = answer.error();
+        CHECK(error.code() == ErrorCode::ProtocolError);
+        REQUIRE(error.mgmt().has_value());
+
+        const MgmtError& mgmt = *error.mgmt();
+        s.rig.timeline().metric(std::string{provocation.what} + "_rc", mgmt.rc);
+        s.rig.timeline().metric(std::string{provocation.what} + "_group_scoped",
+                                mgmt.group_scoped ? 1 : 0);
+        s.rig.timeline().note(std::string{provocation.what} +
+                              ": group_scoped=" + (mgmt.group_scoped ? "yes" : "no") +
+                              " group=" + std::to_string(static_cast<unsigned>(mgmt.group)) +
+                              " rc=" + std::to_string(mgmt.rc) + " image_error=" +
+                              (image_error(error).has_value()
+                                   ? std::to_string(static_cast<unsigned>(*image_error(error)))
+                                   : std::string{"none"}));
+
+        // The version-dependent half. Checked, not required: if it fails, the
+        // evidence above is what the protocol-notes entry is written from, and
+        // a failing CHECK still leaves the case's timeline in the bundle.
+        if (v2) {
+            CHECK(mgmt.group_scoped);
+            CHECK(image_error(error) == provocation.expected);
+        } else {
+            // A16's prediction: the group is gone and the code is flattened.
+            CHECK_FALSE(mgmt.group_scoped);
+            CHECK_FALSE(image_error(error).has_value());
+        }
+    }
+
+    // The device still runs what it ran: a refusal must not have changed state.
+    CHECK(s.running_now() == s.running);
+}
+
 TEST_CASE("hil: a corrupted image is refused and the device keeps running what it had",
           "[hil][update][corrupt]")
 {

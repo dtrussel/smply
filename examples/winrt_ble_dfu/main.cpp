@@ -79,20 +79,50 @@ struct Options
     UpdateMode mode = UpdateMode::TestThenConfirm;
     std::chrono::milliseconds scan_timeout{std::chrono::seconds{10}};
     bool quiet = false;
+
+    /// `--mode test-only`: install and reboot, then stop without confirming.
+    ///
+    /// The device is left in its trial boot, which MCUboot reverts on the next
+    /// reset unless something confirms first. A real deployment tool does
+    /// exactly this when the decision to keep an image belongs to a self-test
+    /// that runs later, or to an operator; P17c needs it because a cross-check
+    /// can only compare clients at the trial boot if every client stops there.
+    bool stop_before_confirm = false;
+
+    /// `--mode confirm-only`: confirm whatever the device is running, and stop.
+    ///
+    /// The other half of the same split. It installs nothing, so it needs no
+    /// `--image`, and it is the only mode that does not build an updater.
+    bool confirm_only = false;
 };
 
-[[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
+/// Parses `--mode`. Two of the five are not `UpdateMode` values at all.
+///
+/// `test-only` and `confirm-only` are the two halves of `test-then-confirm`
+/// split across two runs of this tool, which is why they set a flag here rather
+/// than naming a library mode: the library's `UpdateMode` describes one update,
+/// and these describe how much of one a single invocation performs.
+[[nodiscard]] bool parse_mode(std::string_view text, Options& out)
 {
     if (text == "test-then-confirm") {
-        out = UpdateMode::TestThenConfirm;
+        out.mode = UpdateMode::TestThenConfirm;
         return true;
     }
     if (text == "confirm-immediately") {
-        out = UpdateMode::ConfirmImmediately;
+        out.mode = UpdateMode::ConfirmImmediately;
         return true;
     }
     if (text == "upload-only") {
-        out = UpdateMode::UploadOnly;
+        out.mode = UpdateMode::UploadOnly;
+        return true;
+    }
+    if (text == "test-only") {
+        out.mode = UpdateMode::TestThenConfirm;
+        out.stop_before_confirm = true;
+        return true;
+    }
+    if (text == "confirm-only") {
+        out.confirm_only = true;
         return true;
     }
     return false;
@@ -108,7 +138,11 @@ void usage()
                  "                 advertises the SMP service is used\n"
                  "  --address ADDR AA:BB:CC:DD:EE:FF, or bare hex -- skips scanning\n"
                  "  --mode MODE    test-then-confirm (default) | confirm-immediately |\n"
-                 "                 upload-only\n"
+                 "                 upload-only | test-only | confirm-only\n"
+                 "                 test-only installs and reboots but does not confirm,\n"
+                 "                 so the device is left in its trial boot;\n"
+                 "                 confirm-only confirms the running image and needs\n"
+                 "                 no --image\n"
                  "  --scan-timeout MS  how long to look for a device (default 10000)\n"
                  "  --quiet        print only the outcome\n"
                  "\n"
@@ -135,7 +169,7 @@ void usage()
             }
             out.scan_timeout = std::chrono::milliseconds{std::stoul(ms)};
         } else if (arg == "--mode" && i + 1 < args.size()) {
-            if (!parse_mode(args[++i], out.mode)) {
+            if (!parse_mode(args[++i], out)) {
                 return false;
             }
         } else {
@@ -145,7 +179,12 @@ void usage()
     // Unlike cli_dfu, there is no "invent an image" path. That example writes a
     // synthetic image to a stub in its own process; writing one to real
     // hardware would install firmware that does not run.
-    return !out.image_path.empty() && !(!out.name.empty() && !out.address.empty());
+    //
+    // `--mode confirm-only` uploads nothing, so requiring an image there would
+    // make the caller name a file that is never opened -- and a file named but
+    // unused is the sort of argument that goes stale without anyone noticing.
+    return (out.confirm_only || !out.image_path.empty()) &&
+           !(!out.name.empty() && !out.address.empty());
 }
 
 /// What the update has asked the application to do next.
@@ -171,10 +210,21 @@ int main(int argc, char** argv)
     // single-threaded apartment -- silently, with no diagnostic at all.
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-    Result<FileImageSource> source = FileImageSource::open(options.image_path);
-    if (!source.has_value()) {
-        std::cerr << "winrt_ble_dfu: " << to_string(source.error()) << '\n';
-        return kUpdateFailed;
+    // Opened here, and held for the whole of main(): an upload keeps its source
+    // by reference and a resume reads from it again long after start() returned
+    // (handoff.md, "Lifetime"). `confirm-only` installs nothing and so opens
+    // nothing.
+    std::optional<FileImageSource> source;
+    if (!options.confirm_only) {
+        Result<FileImageSource> opened = FileImageSource::open(options.image_path);
+        if (!opened.has_value()) {
+            std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
+            return kUpdateFailed;
+        }
+        // Moved into an optional of the *value*, not held as a `Result`:
+        // `Result` is deliberately not assignable, so it cannot be the thing
+        // that gets filled in conditionally.
+        source.emplace(std::move(*opened));
     }
 
     // --- find the device ----------------------------------------------------
@@ -241,6 +291,46 @@ int main(int argc, char** argv)
     SmpClient client{*links.back()};
     ImageManagement images{client};
     OsManagement os{client};
+
+    // --- confirm-only -------------------------------------------------------
+    //
+    // No updater, no plan, no reconnect: one request, and the device stops
+    // being able to revert. A `SetStateRequest` with `confirm` and no `hash`
+    // confirms the image that is *running* (smply/groups/image.hpp), which is
+    // the only safe form -- confirming a slot the device has not booted is how
+    // a device is bricked.
+    if (options.confirm_only) {
+        bool answered = false;
+        Result<ImageState> confirmed = fail(ErrorCode::InvalidState, "no result");
+        if (!images.set_state(SetStateRequest{.confirm = true}, [&](Result<ImageState> result) {
+                confirmed = std::move(result);
+                answered = true;
+            })) {
+            std::cerr << "winrt_ble_dfu: the confirm request could not be sent\n";
+            return kUpdateFailed;
+        }
+        while (!answered) {
+            inbound.drain();
+            client.poll(std::chrono::steady_clock::now());
+            if (answered) {
+                break;
+            }
+            std::unique_lock<std::mutex> lock{wake_mutex};
+            if (const std::optional<TimePoint> deadline = client.next_deadline()) {
+                wake.wait_until(lock, *deadline, [&] { return woken; });
+            } else {
+                wake.wait_for(lock, std::chrono::milliseconds{50}, [&] { return woken; });
+            }
+            woken = false;
+        }
+        if (!confirmed.has_value()) {
+            std::cerr << "winrt_ble_dfu: confirm failed: " << to_string(confirmed.error()) << '\n';
+            return kUpdateFailed;
+        }
+        std::cout << "confirmed the running image\n";
+        return kOk;
+    }
+
     FirmwareUpdater updater{client, images, os};
 
     // --- the update ---------------------------------------------------------
@@ -365,6 +455,15 @@ int main(int argc, char** argv)
             // runs its self-test here; declining to confirm lets MCUboot revert
             // on the next reset, which is the point of the default mode
             // (ADR-0014).
+            if (options.stop_before_confirm) {
+                // `--mode test-only` stops exactly here, with the update still
+                // waiting on this application. Leaving it waiting is the
+                // behaviour, not a leak: the process exits, the link closes,
+                // and the device stays in a trial boot that the next reset
+                // reverts unless something confirms it first.
+                std::cout << "installed, running unconfirmed, not confirmed by request\n";
+                return kOk;
+            }
             if (!options.quiet) {
                 std::cout << "  the new image is running unconfirmed; confirming\n";
             }

@@ -15,6 +15,17 @@
 /// | `SMPLY_HIL_ADDRESS`  | the peer's Bluetooth address, `AA:BB:CC:DD:EE:FF`    |
 /// | `SMPLY_HIL_IMAGE_A`  | path to `a.signed.bin` from `build_peer.py`           |
 /// | `SMPLY_HIL_IMAGE_B`  | path to `b.signed.bin`                                |
+/// | `SMPLY_HIL_SMP_VERSION` | `1` (default) or `2`: the version requests carry   |
+///
+/// The last one exists for one measurement. smply sends SMP v1 by default and
+/// offers v2 as an application opt-in, with no probing and no fallback
+/// (ADR-0010); this peer is built with
+/// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, which makes a v1 request lose
+/// the image-group error code (protocol-notes.md section 9, A16). Flipping the
+/// version and re-running a case is therefore how open question O2 gets an
+/// answer from hardware instead of from reading.
+
+#include "smply/smp/header.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +40,8 @@ struct Bench
     std::uint64_t address = 0;
     std::string image_a;
     std::string image_b;
+    /// What every request in this run carries. See the table above.
+    Version smp_version = Version::V1;
 };
 
 /// Reads the three variables. On failure `why` says which one is missing.
