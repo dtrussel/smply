@@ -4,7 +4,11 @@
 
 **Status: bring-up in progress.** Nothing here is part of the PR gate, and
 `SMPLY_BUILD_HIL` stays `OFF` in every normal build. The sections below are kept
-true as the phase advances; the roadmap's P17 entry says which cases have passed.
+true as the phase advances; the roadmap's P17 entries say what each phase
+established. Thirteen unattended cases pass back-to-back (P17b) and the
+cross-check below compares smply against a third-party client on the same
+device (P17c) -- but no self-hosted runner is registered, so all of it runs from
+this bench, by hand.
 
 ## The bench
 
@@ -182,6 +186,46 @@ A run that fails part way can leave the board **not advertising**. The next
 run's per-group baseline flash recovers it; to recover by hand, run
 `firmware/flash_baseline.py --evidence <out>/evidence`.
 
+## Cross-checking against another client (P17c)
+
+```powershell
+python tests/hil/crosscheck.py --evidence <out>/evidence --address 80:E1:26:00:65:E2 `
+    --uart COM4 --dfu build/windows-hil/examples/winrt_ble_dfu/winrt_ble_dfu.exe `
+    --smpmgr build/hil-tools/Scripts/smpmgr.exe `
+    --mcumgr-client build/mcumgr-client/mcumgr-client-windows-x86/mcumgr-client.exe
+```
+
+Each *arm* is reflashed to the same baseline and installs image B by
+test-then-confirm, and device state is read through **`mcumgr-client` over
+UART** — a path neither BLE client touches — at three checkpoints: after the
+flash, **during the trial boot**, and after the confirm. The middle checkpoint
+is the one that can fail: reading only before and after compares fields every
+arm was already required to reach.
+
+Before any arm runs, the script proves the oracle can tell two states apart —
+flash A, flash B, flash A again, and require that the diff names exactly what
+changed and nothing more. If that fails, the whole run is `unavailable` and no
+arm runs, because a comparison whose instrument cannot detect disagreement
+means nothing.
+
+Three things to know before reading a result:
+
+* **`mcumgr-client` is the oracle, not a third client**, and is not in the
+  default `--clients`. It reads state reliably and could not complete an upload
+  over the shell transport on this peer in any configuration tried
+  (`docs/protocol-notes.md` §9). Ask for it explicitly to retry that on a
+  future bench revision.
+* **Without a capture the correct exit status is 2**, with Tier B reported
+  `unavailable` for both BLE arms. That is not a pass, and it is not a failure
+  either.
+* **The negative control is `--skip-confirm <arm>`**, which leaves one arm in
+  its trial boot and must produce divergences in the slot count, the active
+  slot's `confirmed` and the fallback slot's flags. Run it after any change to
+  the comparison; if it exits 0, the comparison has stopped comparing. There is
+  deliberately no "wrong image" control — with two images on the bench the only
+  other image is the running one, and marking that for test is refused, so such
+  an arm would fail rather than diverge.
+
 ## HCI capture
 
 Microsoft's Bluetooth Test Platform (BTP 1.14.0) is installed at
@@ -189,3 +233,23 @@ Microsoft's Bluetooth Test Platform (BTP 1.14.0) is installed at
 host controller's HCI traffic for `tshark -i TCP@127.0.0.1:24352`. **`btvs.exe`
 requires an elevated shell.** A capture with zero packets is not evidence of
 anything; check the packet count before trusting one.
+
+`tools/hci_capture.py` does that checking, and the reason is on disk:
+`build/capture-probe.pcapng` is a **valid pcapng with the right interface name,
+the right encapsulation and zero packets**. BTVS accepts the TCP connection and
+negotiates the link type without elevation — it just delivers nothing. So "the
+socket connected" and "tshark started" are both true in the failing case, and
+only the packet count discriminates.
+
+The workable division of labour from an unelevated session: start BTVS by hand,
+elevated, and leave it running —
+
+```bash
+"C:\BTP\v1.14.0\x86\btvs.exe" -Mode Wireshark -Remote on
+```
+
+— then run `crosscheck.py --capture attach`, or
+`python tests/hil/tools/hci_capture.py --seconds 10` first to check in ten
+seconds that packets are arriving at all, rather than finding out after a
+five-minute arm. The script also spawns BTVS itself when it *is* elevated, for a
+commissioned runner; that branch has never executed and says so.

@@ -40,7 +40,7 @@ smply is a **library**, not a service. It owns protocol state only.
 | # | Goal | How it is enforced |
 | - | ---- | ------------------ |
 | G1 | The core is genuinely platform independent | A CI job builds `smply::smply` + all unit tests on Linux/GCC, Linux/Clang and Windows/MSVC. A header-hygiene gate greps public headers for forbidden includes. |
-| G2 | Everything is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` cover every protocol path. |
+| G2 | Every protocol **path** is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` reach every protocol path. **Not every *defect*, and P17 proved it:** indefinite-length CBOR (A18), the whole-image hash latency on the final chunk (A19) and the send-admission race under load (A22) were each invisible to the entire simulated suite and appeared on the first or the twentieth run against a radio. What this goal buys is regression coverage and fast iteration, not discovery. |
 | G3 | Protocol layers are separable | SMP framing has no knowledge of groups; groups have no knowledge of DFU; nothing below `dfu/` knows what a firmware file is. |
 | G4 | Hostile device input cannot hurt the host | Every length is validated against a configured bound before allocation; fuzzers run over the parser and reassembler. |
 | G5 | New MCUmgr groups and transports are additive | A group is a leaf module depending only on `SmpClient` + the CBOR façade. A transport implements one interface. |
@@ -125,8 +125,11 @@ dependencies between peers, and no cycles.
 2. **New MCUmgr group** — a new leaf under `src/groups/`, depending only on
    `SmpClient` + the CBOR façade. `Group` is an open enum carrying a `uint16_t`.
 3. **New DFU policy** — `UpdatePlan` is data; the state machine is driven by it.
-4. **Alternate CBOR backend** — replace `src/cbor/backend_qcbor.*`; the
-   `cbor::Reader`/`Writer` façade is the seam.
+4. **Alternate CBOR backend** — the seam is `cbor::Reader`/`Writer` itself.
+   There is no separate backend file: the façade *is* the QCBOR binding
+   (`src/cbor/reader.cpp`, `writer.cpp`), which section 10 records as a P5
+   deviation. Replacing the backend means reimplementing those two against
+   another library behind the same interface.
 5. **Alternate async style** — the callback core is the substrate; a
    futures/coroutine wrapper is a thin, optional header.
 
@@ -225,7 +228,7 @@ Decision: [ADR-0002](decisions/ADR-0002-result-and-error-type.md). Full types in
 vendored minimal equivalent with the same subset API).
 
 `Error` is a small value type: a machine-readable `ErrorCode`, an optional
-`MgmtError { group, rc, smp_version }` preserving the device's own numbers, an
+`MgmtError { group, rc, group_scoped }` preserving the device's own numbers, an
 optional device-supplied `rsn` string, and a static `const char*` call site for
 logs. **Strings are never the machine-readable representation.**
 
@@ -314,12 +317,13 @@ smply/
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
 │   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
-│   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError;
-│   │                           UploadOptions and UploadHandle are planned (P10)
+│   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError,
+│   │                           UploadOptions, UploadHandle, SetStateRequest
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
 │   ├── mcuboot_image.hpp       McubootImageInfo, parse_mcuboot_header, sha256,
 │   │                           find_image_tlv_hash
-│   ├── dfu/firmware_updater.hpp    (planned, P12)
+│   ├── dfu/firmware_updater.hpp    FirmwareUpdater, UpdatePlan, UpdateMode,
+│   │                           UpdateReport, UpdateEvent
 │   └── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
 ├── src/
 │   ├── core.cpp                system_clock, group_name, to_string
@@ -354,7 +358,7 @@ smply/
 │   │                           the other files are the stub device it drives. Runs
 │   │                           in CI, --flaky-reconnect included
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
-│                               Compiled by CI; runs on the bench (P17a): see its README
+│                               Compiled by CI; runs on the bench (P17a-P17c): see its README
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
@@ -366,9 +370,14 @@ smply/
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
 │   └── hil/                    hardware interoperability, opt-in (SMPLY_BUILD_HIL, preset
 │                               windows-hil): test_hil_cases.cpp over support/rig.* and
-│                               support/bench.*; run_hil.py supervises; firmware/ is the
+│                               support/bench.*; run_hil.py supervises the case suite and
+│                               crosscheck.py the third-party comparison; firmware/ is the
 │                               reproducible peer (manifest, peer.conf, build and flash
-│                               scripts); tools/ are the bench instruments. Never a PR gate
+│                               scripts); tools/ are the bench instruments and the
+│                               capture/decode helpers; README.md is the bench itself.
+│                               Never a PR gate
+├── .github/workflows/          ci.yml (the 16-job gate)  nightly-fuzz.yml
+│                               hil.yml — advisory, self-hosted, not commissioned
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
 │                               verify_gates.sh  cppcheck-suppressions.txt
@@ -388,7 +397,7 @@ targets, so consumers never inherit them. Install/export produces
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
 * Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
-  but nothing yet exercises it; O5 tracks whether P12 tests it or documents it
+  but nothing yet exercises it; O5 tracks whether a later phase exercises it or documents it
   as untested.
 * No serial/UART transport in the initial scope.
 * The core does not manage connections; reconnection is the application's job.

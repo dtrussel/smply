@@ -32,7 +32,7 @@ trial boot, confirmation — against a stub device on another thread, and runs o
 every push.
 And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
 `examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
-637 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push.
+663 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push. Thirteen more cases run on hardware, on a bench, by hand.
 
 **The Windows side has now run against a real device** (roadmap P17a): the
 WinRT adapter and `winrt_ble_dfu` completed updates in both directions against a
@@ -46,8 +46,15 @@ first hardware run found three defects, none in the adapter: a real device's
 CBOR is indefinite-length, its final upload chunk takes longer than 5 s to
 answer, and the report misread the retransmission that hid.
 
-What is not built yet: the unattended hardware case suite and cross-check
-(P17b, P17c), and the 1.0 packaging review. See
+**The hardware suite runs unattended** (P17b): thirteen cases over the public
+API, a supervisor that reflashes the board between groups and reports
+pass / fail / **unavailable** per case, and a cross-check that installs the same
+image with smply and with a third-party client and compares what the device
+reports afterwards through a UART path neither of them touches (P17c). None of
+it is in the pull-request gate, and no self-hosted runner is registered yet, so
+it runs from the bench by hand.
+
+What is not built yet: the 1.0 packaging review. See
 [`docs/roadmap.md`](docs/roadmap.md) for the
 phase-by-phase plan and what is next.
 

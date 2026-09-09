@@ -122,7 +122,18 @@ entry when it stops being true.
   request fails with `InvalidState` rather than queueing.
 * A response whose `seq` matches but whose group, command or op does not is
   discarded and the request left pending (ADR-0010). Do not "fix" this into a
-  failure.
+  failure. The **version** field is deliberately not part of that key: a peer
+  that answered in the other version would otherwise turn a decodable response
+  into a guaranteed timeout (PN §9, A23).
+* **`TransportBusy` is a retry request, not a failure** — and after P17b it is
+  also rare. The adapter admits **one waiting message** beside the one it is
+  writing (`transports/common/send_queue.hpp`), which absorbs the window in
+  which the device's answer beats the local write's own completion. So a
+  `TransportBusy` seen *now* means two messages really are outbound and the
+  medium has stalled: a new finding, not the old one. Do not make a case
+  tolerate it, and do not add a retry in the core — nothing below
+  `FirmwareUpdater` owns a clock, so the retry would spin with zero elapsed
+  time ([`design.md`](design.md) §6). A clock-driven backoff needs an ADR.
 
 **Lifetime**
 
@@ -142,6 +153,21 @@ entry when it stops being true.
   and you must read both.** Reset's `force` is the case in point (PN §9, A15):
   the docs say integer, the server decodes a boolean and silently ignores
   anything else. Reading only the `.rst` yields a flag that never works.
+* **An upload session does not survive a BLE disconnect** (PN §9, A21). Resume
+  after a reconnect is answered near offset 0 and re-sends the whole image; the
+  same upload abandoned on a *live* link and resumed by another process
+  continues from the offset already reached. `UploadDriver::restart()` already
+  adopts whatever offset comes back, so nothing is broken — but size the
+  reconnect and deadline budgets for a full re-upload rather than for a resume.
+* **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1
+  destroys image-group error codes** (PN §9, A16 and A24 — measured on the P17
+  peer, which sets it). Two different refusals both arrive as a flat `rc=1`.
+  That is not only a diagnostic loss: `src/dfu/update_state_machine.cpp`
+  recovers a lost mark-for-test by branching on
+  `ImageError::ImageAlreadyPending`, and against such a server under v1
+  `image_error()` is always `nullopt`, so that branch cannot fire. If you need
+  the group code, the answer is `SmpClientConfig::smp_version = Version::V2`,
+  which this peer accepts for the ordinary path as well.
 * MCUmgr uses **two different hashes** — the upload `sha`, SHA-256 over the whole
   file, and image-state `hash`, MCUboot's `IMAGE_TLV_SHA` over header and body.
   Conflating them is the classic client bug, so they are different types:
@@ -213,6 +239,19 @@ entry when it stops being true.
   in four consecutive phases.
 * **Build every preset.** `cmake --list-presets` shows **seven** Linux ones and
   **all seven link here**, `linux-clang-asan-ubsan` included.
+* **A green hardware suite means nothing unless `deferred_sends > 0`.** Zero
+  everywhere says the send-admission race did not happen that run, not that the
+  fix absorbed it. The counters come out as `HIL-METRIC deferred_sends` /
+  `refused_sends`; three to six cases show a deferral in a full run and which
+  ones varies, because it is a race. The same shape of question applies to any
+  future fix for something load-dependent: ask what the green run would have
+  looked like if the fix did nothing.
+* **A capture that is listening is not a capture that is recording.**
+  `build/capture-probe.pcapng` is a valid pcapng with the right interface name,
+  the right encapsulation and **zero packets**: BTVS accepts the TCP connection
+  and negotiates the link type without elevation, and delivers nothing. Only
+  the packet count discriminates, which is why `tools/hci_capture.py` gates on
+  `capinfos` and reports `empty` as its own outcome.
 
   This corrects a caveat that stood from P1 to P12 and shaped three phases of
   work. It said Clang's compiler-rt "is not installable in this container", so
@@ -2141,21 +2180,10 @@ reconnect). A20 re-confirmed on the reset case.
 
 **Caveats — read these before touching P17b.**
 
-* **`TransportBusy` is a retry request, not a failure** (the P4 caveat, now
-  seen on hardware). It no longer ends an upload, because the adapter admits
-  **one waiting message** beside the one it is writing
-  (`transports/common/send_queue.hpp`) and so absorbs the window in which the
-  device's answer beats the local write's own completion. A `TransportBusy`
-  observed *after* that means two messages really are outbound and the medium
-  has stalled — a new finding, not the old one. Do not make a case tolerate it,
-  and do not add a retry in the core: nothing below `FirmwareUpdater` owns a
-  clock, so the retry would spin with zero elapsed time (design.md §6). A
-  clock-driven backoff needs an ADR.
-* **A green sequential run needs `deferred_sends > 0` to mean anything.** Zero
-  everywhere says the handover race did not occur, not that the fix works. The
-  counters come out as `HIL-METRIC deferred_sends` / `refused_sends` from
-  `Rig::record_send_counters()`; three to six cases show a deferral in a
-  full run, and which ones varies -- it is a race, so it moves.
+* The `TransportBusy` caveat and the `deferred_sends` one **now live in
+  § Standing caveats**, under *Layering* and *Before you trust a green run*.
+  P17c moved them: they outlive this phase, which is the criterion that section
+  states for itself.
 * **The image source and the progress sink must outlive the whole `Session`,
   not the `upload()` call.** Two lifetime bugs in the rig cost this session real
   time and both are the traps this file warns about: a progress callback
@@ -2248,9 +2276,11 @@ median **9.83 s**, usable link median **10.5 s** -- which is why `ReconnectPolic
 is now documented as a give-up bound rather than a pacing schedule. `buf_size`
 2475 and `buf_count` now both in the bundle, for O3.
 
-**Caveats added or reworded** in § Standing caveats: the `TransportBusy` one
-(the old "run the cases one at a time" caveat is gone), and the new one about
-`deferred_sends` being what makes a green run evidence.
+**Caveats added or reworded:** the `TransportBusy` one (the old "run the cases
+one at a time" caveat is gone), and the new one about `deferred_sends` being
+what makes a green run evidence. *Both were written into this entry rather than
+into § Standing caveats, although this line said otherwise; P17c moved them
+there, where they belong, and they are no longer repeated below.*
 
 **Docs updated.** `design.md` §6 (why `is_transient()` excludes `TransportBusy`),
 §9 (the backpressure row) and §10 (send admission, the discovery retry, the
@@ -2272,3 +2302,94 @@ write-failure framing hazard is unverified on the device side); the QCBOR
 upstream report is still waiting on the user; and a run that fails part way can
 leave the board not advertising -- `flash_baseline.py` recovers it, and
 `run_hil.py` does that per group anyway.
+
+### 2026-09-09 — P17c: the cross-check, and P17 closed
+
+**Status after this session:** P17c = `Complete`, and **P17 = `Complete`**. The
+one item left open is commissioning the self-hosted runner, filed against P18.
+Next: **P18 — packaging, install/export and the 1.0 review.**
+
+**What the cross-check compares, and why the previous version could not fail.**
+`tests/hil/crosscheck.py` shipped in P17b as scaffolding and had never run. Its
+`states_agree` compared only the clients that had already passed an identical
+`hash == expected and confirmed and not pending` check, and its normalised form
+held only the active slot — so the sole field that could ever differ was the slot
+listing, which is the same for every client on this bootloader. It was `True` by
+construction. Three changes fixed that, and the first is the one to remember:
+
+* **A third checkpoint, during the trial boot.** Between the reset and the
+  confirm the active slot holds the new image *unconfirmed* while the fallback
+  holds the old one *confirmed* — four fields at once. Reading only before and
+  after compares what every client was already required to reach. Getting that
+  checkpoint needed `winrt_ble_dfu --mode test-only` and `--mode confirm-only`,
+  because a client that installs and confirms in one invocation cannot be read
+  in between; the other two clients already worked that way.
+* **An oracle self-test that runs first and gates the rest.** Flash A, flash B,
+  flash A again, and require the diff to name *exactly* `active.hash_id` and
+  `active.version` and to be empty between two reads of the same state. If the
+  instrument cannot tell states apart, nothing downstream means anything, so a
+  failure there makes the whole run `unavailable` and no arm runs.
+* **A negative control that must produce divergences.** `--skip-confirm <arm>`
+  leaves one arm in its trial boot: ten cross-client divergences, exit 1.
+
+**Result:** smply and `smpmgr` agree at all three checkpoints, twice, with zero
+divergences and byte-identical normalised states. Exit 2 both times, because
+Tier B was unavailable — which is the correct outcome and not a pass.
+
+**O2 is resolved, from measurement.** The peer sets
+`CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, so a v1 request loses the
+image-group error code. Two provocations from an untouched baseline, each issued
+as v1 and as v2: codes **8** and **33** both arrive as a flat `rc=1` under v1
+and both arrive intact under v2, which also completes an ordinary update. v1
+stays the default and v2 stays an opt-in — but the cost of v1 is **behavioural,
+not just diagnostic**, because `update_state_machine.cpp` recovers a lost
+mark-for-test by branching on `ImageAlreadyPending`, which v1 destroys here. No
+code was changed for it: that is a follow-up for review (§9 A24).
+
+**Two honest non-results, and they are in the documents as such.** The HCI
+capture produced nothing, because BTVS needs elevation and this session runs on
+a filtered token — Tier B's decoding is self-tested against the device's own
+recorded bytes, which is not the same as having decoded a live capture. And the
+UART *client* arm could not complete an upload in three configurations, so
+`mcumgr-client` is the oracle and not a third client. Both are reported
+`unavailable` rather than omitted, which is the whole point of ADR-0015's third
+verdict.
+
+**Three defects found in things that had never run.** The verdict machinery
+reported a Tier A failure as `unavailable`, because the entry's initial verdict
+was itself a real verdict and short-circuited the combination. `smpmgr` died
+mid-upload with a `UnicodeEncodeError`, because its `rich` spinner cannot encode
+into a piped cp1252 stdout — an artefact of being watched, fixed with
+`PYTHONIOENCODING`. And the plan's `--wrong-image` control cannot exist on a
+two-image bench: the only other image is the running one, and marking that for
+test is refused, so the arm would fail rather than diverge.
+
+**Two new documentation gates**, because the drift they catch had gone unnoticed
+for four phases: `check_docs.py` **R5** (every path in `architecture.md` §10's
+layout tree exists — it prints how many entries it skipped, so it cannot go
+quietly inert) and **R6** (no `(planned, PN)` marker names a Complete phase —
+it fired immediately on two). Both have decoys in `verify_gates.sh`, and both
+decoys were verified to fail the gate.
+
+**A document that claimed an edit it had not made.** This file said two P17b
+caveats had been promoted to § Standing caveats; they were still inside the P17b
+session entry. They are promoted now, and the old line says what happened.
+
+**Docs updated.** `protocol-notes.md` (A23, A24, an A17 row, the A15/A16 order,
+§8's measured `buf_size`/`buf_count`, and the UART test-method finding);
+`testing.md` §1, §3 and §6 — including the correction that the *case suite* is
+not oracled, which §6 had claimed; `design.md` §10 (the Mapping table's missing
+`send()` and `close()` rows, "one coroutine per **writer run**", a per-item
+verdict on the three residual risks, and the discovery retry's honest grade);
+`architecture.md` (G2, the layout tree, a CBOR seam naming a file that never
+existed, `MgmtError`'s real fields); `quality-gates.md` §1 and §11;
+`roadmap.md`; both READMEs.
+
+**Recommended next: P18.** Read `quality-gates.md` §12 first — P18 is a
+documentation audit as much as a packaging phase, and R5 and R6 now do a small
+part of that audit mechanically. Four things to know going in: the four
+follow-ups this phase filed (the runner, the `ImageAlreadyPending` branch, the
+UART arm, and `smp_decode.py` being a second decoder); `send_counters()` is
+still undecided public API; the QCBOR upstream report is still waiting on the
+user; and O3, O5 and O6 remain open with their owner phases now pointing at
+prerequisites rather than at phases that have closed.

@@ -14,7 +14,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
 | The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as the `cli_dfu_demo` test |
-| HIL / interoperability | `tests/hil/` | minutes | manual + nightly on a self-hosted runner |
+| HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
 
 ## 2. Test doubles (`tests/support/`)
 
@@ -317,10 +317,13 @@ clean update needs and no more. If the two ever disagree, the simulator is right
 growing the stub to match it would be building a second test double outside
 `tests/`.
 
-### BLE framing and link state (`transports/common/`)
+### BLE framing, link state and send admission (`transports/common/`)
 
 The part of the BLE transport that needs no radio, and therefore the part that
-can be tested at all before P15b exists: fragment sizing at the 23-byte minimum
+is tested everywhere rather than only on the bench — which is the reason to keep
+putting things here: this directory is unit-tested, linted and
+coverage-measured on every platform, while the adapter beside it gets MSVC and a
+bench. Fragment sizing at the 23-byte minimum
 ATT MTU (⇒ 20) and at the sizes real stacks negotiate; the clamp at both ends,
 including a PDU of zero, which without it would give a fragment size of zero and
 an adapter that never progresses; short, exact-multiple and remainder messages,
@@ -328,9 +331,29 @@ because an exact multiple is where an off-by-one puts a zero-length GATT write o
 the air; and a many-fragment message reassembling byte for byte, which is what
 "no additional framing" (protocol-notes §8) actually means.
 
+**Two `[hardware-golden]` cases** (`tests/unit/test_image_group.cpp`) pin the
+device's own bytes: an image-state and a slot-info response captured from the
+NUCLEO-WB55RG, indefinite-length exactly as the reference server emits them
+(§9 A18). They encode a rule worth stating, because the hand-built goldens of
+P5–P8 were all definite-length and hid A18 completely: **build every new
+response golden in both CBOR encodings**, and where a real device response
+exists, pin that too.
+
 Plus `LinkState`: `close()` idempotent, and callbacks refused from the moment it
 *begins* rather than when it ends — the rule adapters get wrong, because there
 are usually callbacks already in flight at that point.
+
+And `SendQueue` (15 cases, P17b), which is send admission as a value: one writer,
+one message allowed to wait, a third refused. The cases that earn their keep are
+the ones about the *claim* rather than the queue — that the writer keeps it while
+a message waits, that it is released only by finding nothing left, and therefore
+that "a message waits but nobody is writing" is unrepresentable. A second writer
+would interleave two messages' fragments, and with no framing to resynchronise on
+(§8) the damage would be a mis-framed message rather than an error anyone
+reports. What these cases cannot check is the adapter's *use* of the type: that
+every call is made under its mutex, never across a suspension point, and that a
+writer starts on exactly one admission. That is bench territory
+([`design.md`](design.md) §10 says which parts the bench discharged).
 
 ## 4. Component tests (`tests/component/`)
 
@@ -466,7 +489,13 @@ running MCUboot + the pinned `smp_svr` over BLE, reachable from a Windows host,
 with the exact west manifest, Kconfig snapshots and coprocessor firmware recorded
 so results are reproducible.
 
-**Shape.** `test_hil_cases.cpp` is a Catch2 suite over the **public API only**,
+**Shape.** `test_hil_cases.cpp` is a Catch2 suite over the public API **plus
+two headers no application consumer gets**: `support/dfu_app/reconnect_policy.hpp`
+and `transports/winrt_ble/winrt_ble_transport.hpp` (`tests/hil/support/rig.hpp`).
+That is not a leak in the seam — the rig has to *be* an application, and an
+application owns its reconnect policy and constructs its own adapter. It is
+worth stating exactly because one of those, the adapter's `send_counters()`, is
+undecided public API that P18 must keep or drop. The suite is
 driven through `support/rig.*` — the example's pump loop made callable one
 operation at a time (connect, read state, upload, resume, drop the link, run a
 whole update, reconnect on a policy). Every case reads the bench from the
@@ -493,19 +522,63 @@ earlier design had the supervisor erase the device with the programmer on that
 line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
 attach and the device re-advertises before the erase halts it. The give-up path
 itself is covered deterministically on every push by `cli_dfu
---flaky-reconnect 99`. The cases record the measurements P17a began:
-close-grace, disconnect latency, reboot windows, resume offsets.
+--flaky-reconnect 99`. The cases record measurements as `HIL-METRIC` lines, which `run_hil.py` scrapes
+into each case's `summary.json` entry: admission (`deferred_sends`,
+`refused_sends`), the peer's buffering (`buf_size`, `buf_count`), timing
+(`close_ms`, `disconnect_seen_ms`, `upload_ms`, `update_ms`, `reconnect_ms`,
+`give_up_ms`, `reboot_total_ms`), resume (`resumed_from`, `abandoned_at`), the
+trial-boot slot listing (`slots_listed_during_trial`) and the requested
+`smp_version`.
 
-**Cross-check** (P17c). From the same baseline, run the same sequence with smply,
-with `smpmgr` over BLE, and with `mcumgr-client` over the UART shell transport
-— the last one is also the *oracle* every case's device state is checked
-against, because it reaches the device through a path smply does not touch.
-These are third-party tools for behavioural comparison, never protocol
-references. Compare normalised image state and decoded SMP operation sequences
-from HCI captures (BTVS + Wireshark; needs an elevated shell), allowing
-different sequence numbers, fragmentation and timing. Every divergence is traced
-to Zephyr or MCUboot source and recorded in
-[`protocol-notes.md`](protocol-notes.md) §9 before any behaviour changes.
+Two of those are not diagnostics but the evidence a green run rests on. **A
+green sequential suite means nothing unless `deferred_sends > 0`**: zero
+everywhere says the send-admission race did not occur that run, not that the
+mailbox absorbed it (§9 A22). And `buf_count` is the input open question O3 was
+waiting for.
+
+**Cross-check** — `tests/hil/crosscheck.py`. From the same baseline, the same
+update is installed by smply, by `smpmgr` over BLE and by `mcumgr-client` over
+the UART shell transport. All three are third-party tools for behavioural
+comparison, never protocol references (ADR-0015 decision 3); every divergence is
+traced to Zephyr or MCUboot source and recorded in
+[`protocol-notes.md`](protocol-notes.md) §9 **before** any smply behaviour
+changes.
+
+`mcumgr-client` over UART is the **oracle**: device state is read back through a
+path none of the BLE clients touch. Note what that does and does not cover — the
+oracle is used by `crosscheck.py`, and **the case suite above is not oracled**.
+Its thirteen cases read device state through smply itself, which is a weaker
+arrangement and is why the cross-check begins by proving the oracle can tell two
+states apart at all (flash A, flash B, flash A, and require that the diff names
+exactly what changed and invents nothing). A comparison whose instrument cannot
+detect disagreement is not a comparison.
+
+Two tiers, computed independently:
+
+* **Tier A** — normalised image state at three checkpoints per client: after the
+  baseline flash, **during the trial boot**, and after the confirm. The middle
+  one carries the information. Reading only before and after cannot fail, because
+  every client is already required to end in the same place; between the reset
+  and the confirm the active slot holds the new image *unconfirmed* while the
+  fallback holds the old one *confirmed*, so four fields distinguish a client
+  that took a shortcut. Every client therefore installs and confirms as two
+  separate invocations — which is what `winrt_ble_dfu`'s `--mode test-only` and
+  `--mode confirm-only` are for.
+* **Tier B** — decoded SMP operation sequences from an HCI capture (BTVS +
+  Wireshark; **BTVS needs an elevated shell**), compared between the two BLE
+  clients. Sequence numbers, fragmentation, timing and chunk size are recorded
+  and deliberately **not** compared; what is compared is that the required
+  operations appear in the same order, as a subsequence rather than an equality
+  — smply's updater reads image state before uploading and another client need
+  not. The SMP reassembly and CBOR decoding are ours
+  (`tests/hil/tools/smp_decode.py`), from §2 and §8, never inferred from the
+  tools being compared.
+
+Tier B being unavailable never turns a Tier A pass into a failure. Without a
+capture the run's correct outcome is **exit 2 with Tier B unavailable**, and
+that is reported rather than omitted (ADR-0015) — a capture is never silently
+skipped, and a capture holding zero packets is a distinct outcome from one that
+was never attempted.
 
 The advisory `hil.yml` workflow is committed and **not commissioned**: no
 self-hosted runner exists yet, so the suite has only run from the bench by hand.

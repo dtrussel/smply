@@ -885,7 +885,8 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 | ------------- | --------------- |
 | open | `WinRtBleTransport::connect()`: `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)`, the last two **retried while either collection comes back empty** (see below). The UUIDs come from `transports/common/smp_ble_uuid.hpp`, whose bytes and endian split are unit-tested on every platform |
 | enable notifications | `WriteClientCharacteristicConfigurationDescriptorAsync(Notify)` + subscribe `ValueChanged` |
-| `send(message)` | split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
+| `send(message)` | admitted by `transports/common/send_queue.hpp` (one writer, one message waiting, a third refused as `TransportBusy`), then split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
+| `close()` | mark closing → stop accepting events → revoke tokens → **discard the waiting message** → wait up to five seconds for the fragment on the air → close session and device |
 | fragment size | `GattSession::MaxPduSize − 3`, clamped to `[20, 512]` by `transports/common`'s `fragment_size()`; read once per `send()` (see below) |
 | `max_message_size()` | a configured cap (default 1024) — *not* the MTU; a whole SMP message may span many fragments |
 | inbound | `ValueChanged` → copy the `IBuffer` → post to `Dispatcher` → `on_bytes()` on the client context |
@@ -932,8 +933,14 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   only; no coroutine crosses the core boundary.
 * Write-without-response has no flow control at the GATT level. The adapter
   paces fragments by awaiting each `GattCharacteristic::WriteValueWithResultAsync`
-  before starting the next, in one detached coroutine per message — `send()` may
-  not block (§9), so the writes outlive the call that started them.
+  before starting the next, in one detached coroutine per **writer run** —
+  `send()` may not block (§9), so the writes outlive the call that started them.
+  A writer run is not a message: the coroutine loops on
+  `SendQueue::next_for_writer()` and exits only when the queue is empty
+  (`transports/winrt_ble/winrt_ble_transport.cpp`), so one run may carry several
+  messages. This paragraph said "per message" until P17c; it was written before
+  the queue existed and was left behind by it, which is worth noticing because
+  the difference is exactly the invariant below.
 
   Two consequences follow, and they are easy to state the wrong way round.
   `TransportBusy` means **two messages are already outbound** — one being
@@ -975,8 +982,25 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   `ble_framing.hpp` and `link_state.hpp` made. What a unit test *cannot* check
   is the adapter's use of it — that every call is made under `send_mutex`, that
   the mutex is never held across a suspension point, and that a writer is
-  started exactly on `Admission::StartWriter`. Those three are the residual risk
-  a bench run carries.
+  started exactly on `Admission::StartWriter`.
+
+  **What the bench then discharged, and what it did not.** Three sequential
+  suites passed with `deferred_sends` non-zero on three to six cases per run and
+  `refused_sends` zero throughout, so the handover path was exercised rather
+  than avoided. The first and third properties are also *reviewable statically*
+  and were reviewed: every `SendQueue` call in the adapter is made under
+  `send_mutex`, none is made across a `co_await`, and the writer is started at
+  the single `Admission::StartWriter` site in `send()`. The second — that the
+  mutex is never held across a suspension point — is the one a bench run cannot
+  prove, because holding it would manifest as `send()` blocking under a load
+  pattern that may simply not have occurred; it rests on the code having one
+  lock scope that closes before the coroutine starts. Treat it as reviewed, not
+  as measured.
+
+  The genuinely open residual is elsewhere: whether the *device's* reassembler
+  discards a partial message on a timeout of its own, which is what makes the
+  discard rule above sufficient rather than merely usually sufficient. That is
+  unverified from this side of the link and is filed as such.
 
   **A failure discards the waiting message, deliberately.** A message abandoned
   mid-fragment leaves the device's length-driven reassembler holding a partial
@@ -991,7 +1015,14 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   the core would contradict ADR-0003 and ADR-0004 (§6). Neither is a change a
   reader should make without an ADR.
 
-* **Service discovery is retried while it comes back empty.** After a *rapid*
+* **Service discovery is retried while it comes back empty** — a fix whose
+  error path is proven and whose *benefit* is not, and it should be read that
+  way. The behaviour it exists for did not reproduce in any of five full runs,
+  and an instrumented build recorded discovery succeeding on the first attempt
+  in 20 of 20 measured discoveries; forcing the condition proves the loop runs
+  its six attempts and reports the right one of two messages, which is
+  reachability, not benefit (PN §9, A22). It rests on the P17b observation.
+  After a *rapid*
   reconnect Windows answers with a service whose characteristic collection is
   **empty** for a second or two — its own service cache, even though every
   query here asks for `BluetoothCacheMode::Uncached` (PN §9, A22). Concluding
