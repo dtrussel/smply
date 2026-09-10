@@ -242,11 +242,22 @@ socket connected" and "tshark started" are both true in the failing case, and
 only the packet count discriminates.
 
 The workable division of labour from an unelevated session: start BTVS by hand,
-elevated, and leave it running —
+elevated, and leave it running. **Note the `&`** — in PowerShell a quoted
+executable path without the call operator is parsed as a string, so the flags
+never reach the program; it starts with its defaults instead, and `-Remote`
+defaults to **off**. The symptom is a BTVS window that looks fine and no
+listener on the port, which is indistinguishable from "the capture is broken"
+unless you know to check:
 
-```bash
-"C:\BTP\v1.14.0\x86\btvs.exe" -Mode Wireshark -Remote on
+```powershell
+& "C:\BTP\v1.14.0\x86\btvs.exe" -Mode Wireshark -Remote on
 ```
+
+Its full option set, from the binary's own usage string, is
+`[-Mode Frontline|Ellisys|Wireshark] [-Address 127.0.0.1] [-Port 24352]
+[-Service 1|2|3] [-Remote off|on]`. **Only one instance should be running.**
+Check with `Get-Process btvs` before starting another: a stale one holds the
+radio, and the new one's `listen` then fails while its window still opens.
 
 — then run `crosscheck.py --capture attach`, or
 `python tests/hil/tools/hci_capture.py --seconds 10` first to check in ten

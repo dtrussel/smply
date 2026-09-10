@@ -114,9 +114,12 @@ class HciCapture:
         if self.mode in ("auto", "attach") and _listening():
             return "attach", f"btvs is already listening on {INTERFACE}"
         if self.mode == "attach":
-            return "unavailable", (f"nothing is listening on {INTERFACE}; start "
-                                   f'"{self.btvs}" -Mode Wireshark -Remote on '
-                                   "in an elevated shell")
+            return "unavailable", (
+                f"nothing is listening on {INTERFACE}; in an elevated "
+                f'PowerShell run: & "{self.btvs}" -Mode Wireshark -Remote on '
+                "(the leading & matters -- without it PowerShell reads the "
+                "quoted path as a string, the flags never arrive, and BTVS "
+                "starts with -Remote off: a window opens and nothing listens)")
         if self.mode in ("auto", "spawn"):
             if not self.btvs.exists():
                 return "unavailable", f"btvs not found at {self.btvs}"
