@@ -459,7 +459,7 @@ def extract_att(capture: Path, tshark: Path = TSHARK):
 
 
 def decode_capture(capture: Path, *, tshark: Path = TSHARK,
-                   smp_handle: int | None = None) -> dict:
+                   smp_handle: int | None = None, all_streams: bool = False):
     """Finds the SMP characteristic in a capture and decodes both directions.
 
     **The handle is found by plausibility, not by discovery and not by volume.**
@@ -496,31 +496,47 @@ def decode_capture(capture: Path, *, tshark: Path = TSHARK,
             return -1
         return len(msgs)
 
-    best = max(candidates.items(), key=score, default=(None, None))
     considered = [{"chandle": c, "handle": h, "messages": len(v["messages"])}
                   for (c, h), v in candidates.items()]
 
-    if best[0] is None or score(best) < 0:
-        return {"capture": str(capture), "smp_handle": None,
-                "handle_source": "override" if smp_handle is not None else "none",
-                "handles_considered": considered, "ops": [], "messages": 0,
-                "detail": "no handle carried a plausible SMP request"}
+    def described(key, value) -> dict:
+        chandle, handle = key
+        messages = sorted(value["messages"], key=lambda m: m["t_ms"])
+        ops = [render(m) for m in messages]
+        return {
+            "capture": str(capture),
+            "smp_chandle": chandle, "smp_handle": handle,
+            "handle_source": "override" if smp_handle is not None else "smp-plausibility",
+            "handles_considered": considered,
+            "streams": value["streams"], "accounts": value["accounts"],
+            "messages": len(messages),
+            "first_ms": messages[0]["t_ms"] if messages else None,
+            "last_ms": messages[-1]["t_ms"] if messages else None,
+            "ops": collapse_uploads(ops),
+            "raw_ops": ops,
+            "seq_echo_ok": _seq_echo_ok(messages),
+            "clean_headers": all(m["flags"] == 0 for m in messages),
+        }
 
-    (chandle, handle), chosen = best
-    messages = sorted(chosen["messages"], key=lambda m: m["t_ms"])
-    ops = [render(m) for m in messages]
-    return {
-        "capture": str(capture),
-        "smp_chandle": chandle, "smp_handle": handle,
-        "handle_source": "override" if smp_handle is not None else "smp-plausibility",
-        "handles_considered": considered,
-        "streams": chosen["streams"], "accounts": chosen["accounts"],
-        "messages": len(messages),
-        "ops": collapse_uploads(ops),
-        "raw_ops": ops,
-        "seq_echo_ok": _seq_echo_ok(messages),
-        "clean_headers": all(m["flags"] == 0 for m in messages),
-    }
+    plausible = sorted((k for k, v in candidates.items() if score((k, v)) >= 0),
+                       key=lambda k: min(m["t_ms"] for m in candidates[k]["messages"]))
+
+    if not plausible:
+        empty = {"capture": str(capture), "smp_handle": None,
+                 "handle_source": "override" if smp_handle is not None else "none",
+                 "handles_considered": considered, "ops": [], "messages": 0,
+                 "detail": "no handle carried a plausible SMP request"}
+        return [empty] if all_streams else empty
+
+    # **Every** SMP-carrying stream, in the order they first appear, not just the
+    # busiest. One trace can hold several: each GATT connection gets its own
+    # connection handle, so two clients updating the same device one after the
+    # other are two streams -- which is exactly the shape of a cross-check run
+    # captured in a single trace. Picking one would silently discard an arm.
+    described_all = [described(k, candidates[k]) for k in plausible]
+    if all_streams:
+        return described_all
+    return max(described_all, key=lambda d: d["messages"])
 
 
 def _seq_echo_ok(messages: list[dict]) -> bool | None:
@@ -770,6 +786,9 @@ def main() -> int:
     parser.add_argument("--require-op", action="append", default=None,
                         metavar="GROUP:CMD",
                         help="debug: also require this op, to prove the check bites")
+    parser.add_argument("--all-streams", action="store_true",
+                        help="report every SMP-carrying connection, not just the "
+                             "busiest -- one trace can hold several clients")
     args = parser.parse_args()
 
     if args.self_test:
@@ -777,24 +796,35 @@ def main() -> int:
     if not args.capture:
         parser.error("either --self-test or --capture is required")
 
-    decoded = decode_capture(args.capture, tshark=args.tshark, smp_handle=args.smp_handle)
+    result = decode_capture(args.capture, tshark=args.tshark,
+                            smp_handle=args.smp_handle, all_streams=args.all_streams)
     required = None
     if args.require_op:
         required = list(REQUIRED)
         for spec in args.require_op:
             group, command = (int(p, 0) for p in spec.split(":", 1))
             required.append((COMMAND_NAMES.get((group, command), f"cmd{command}"), {}))
-    decoded["required"] = required_subsequence(decoded["ops"], required)
+
+    streams = result if isinstance(result, list) else [result]
+    for decoded in streams:
+        decoded["required"] = required_subsequence(decoded["ops"], required)
     if args.out:
-        args.out.write_text(json.dumps(decoded, indent=2, default=str) + "\n",
+        args.out.write_text(json.dumps(result, indent=2, default=str) + "\n",
                             encoding="utf-8")
-        lines = [f"{op['dir']} {op['name']:12} {json.dumps(op.get('projection', {}), default=str)}"
-                 for op in decoded["ops"]]
+        lines = []
+        for decoded in streams:
+            lines.append(f"# chandle={decoded.get('smp_chandle')} "
+                         f"handle={decoded.get('smp_handle')} "
+                         f"messages={decoded.get('messages')} "
+                         f"first_ms={decoded.get('first_ms')}")
+            lines += [f"{op['dir']} {op['name']:12} "
+                      f"{json.dumps(op.get('projection', {}), default=str)}"
+                      for op in decoded["ops"]]
         args.out.with_suffix(".txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(json.dumps({k: decoded[k] for k in
-                      ("smp_handle", "messages", "accounts", "required") if k in decoded},
-                     indent=2, default=str))
-    return 0 if decoded.get("messages") else 2
+    print(json.dumps([{k: d[k] for k in ("smp_chandle", "smp_handle", "messages",
+                                         "accounts", "first_ms", "last_ms", "required")
+                       if k in d} for d in streams], indent=2, default=str))
+    return 0 if any(d.get("messages") for d in streams) else 2
 
 
 if __name__ == "__main__":

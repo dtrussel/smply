@@ -252,6 +252,16 @@ entry when it stops being true.
   and negotiates the link type without elevation, and delivers nothing. Only
   the packet count discriminates, which is why `tools/hci_capture.py` gates on
   `capinfos` and reports `empty` as its own outcome.
+* **HCI capture on this bench is unsolved, and `tests/hil/README.md` says how
+  far it got.** Read that before spending time on it: BTVS never opens its
+  listener here, and enabling the *manifest* provider
+  `Microsoft-Windows-BTH-BTHPORT` by hand — every keyword, level 255, verified
+  attached — captured **zero Bluetooth events across three minutes of traffic**.
+  The remaining lead is the **WPP** provider that Microsoft's own recording
+  profile enables, plus `BTETLParse.exe` to convert the trace. Two traps cost an
+  hour between them: in PowerShell a quoted executable path needs the `&` call
+  operator or its flags are silently dropped, and `wpr`'s `!` selector takes a
+  profile's *Name*, not its *Id*.
 
   This corrects a caveat that stood from P1 to P12 and shaped three phases of
   work. It said Clang's compiler-rt "is not installable in this container", so
@@ -2310,7 +2320,8 @@ one item left open is commissioning the self-hosted runner, filed against P18.
 CI is green on all 16 jobs at `b9a969e`, `gate-self-check` included — which is
 what proves R5's and R6's new decoys actually reject, since `verify_gates.sh`
 cannot run on this machine (the working tree is CRLF and WSL will not execute a
-`bash` shebang).
+`bash
+` shebang).
 Next: **P18 — packaging, install/export and the 1.0 review.**
 
 **What the cross-check compares, and why the previous version could not fail.**

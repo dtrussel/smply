@@ -218,6 +218,11 @@ Three things to know before reading a result:
 * **Without a capture the correct exit status is 2**, with Tier B reported
   `unavailable` for both BLE arms. That is not a pass, and it is not a failure
   either.
+* **One capture can hold both arms.** Each arm is a fresh GATT connection and so
+  a distinct connection handle, and `tools/smp_decode.py --all-streams` reports
+  every stream carrying plausible SMP in the order they first appear. That
+  matters if the capture is taken outside the script -- an externally started
+  trace covers the whole run, not one arm.
 * **The negative control is `--skip-confirm <arm>`**, which leaves one arm in
   its trial boot and must produce divergences in the slot count, the active
   slot's `confirmed` and the fallback slot's flags. Run it after any change to
@@ -240,6 +245,62 @@ the right encapsulation and zero packets**. BTVS accepts the TCP connection and
 negotiates the link type without elevation — it just delivers nothing. So "the
 socket connected" and "tshark started" are both true in the failing case, and
 only the packet count discriminates.
+
+### What P17c established about getting a capture at all
+
+**No capture was obtained.** What follows is the route that remains untried at
+its last step, and the three things that were ruled out, so the next attempt
+starts where this one stopped rather than at the beginning.
+
+**Ruled out — BTVS never opened its listener.** Its window reported
+`Wireshark Viewer: Disabled` and `Error Connection failed`, and neither of two
+running instances held any TCP socket. Its usage string is
+`[-Mode Frontline|Ellisys|Wireshark] [-Address 127.0.0.1] [-Port 24352]
+[-Service 1|2|3] [-Remote off|on]`, and it locates Frontline through registry
+keys but Wireshark only by the bare name `wireshark` — which is not on `PATH`
+here. It also tries to set `MaxEtwBytes`, `EtwDropLargeEvents` and
+`EtwLogSensitiveData`, and **none of those keys exists on this machine**, so it
+never got that far either.
+
+**Ruled out — enabling the manifest provider by hand captures nothing.** A
+`logman` session on `Microsoft-Windows-BTH-BTHPORT`
+`{8A1F9517-3A8C-4A9E-A018-4F17A200F277}` at level 255 with every keyword,
+verified attached by `logman query`, produced **two events across three minutes
+of BLE traffic — both ETW housekeeping and zero Bluetooth**. Adding
+`Microsoft-Windows-BTH-BTHUSB` and toggling the radio off and on changed
+nothing. The keyword names looked right (`Microsoft-Windows-BTH-BTHPORT/HCI`,
+`Microsoft-Windows-BTH-HCI/HCIRAW`), which is what made this worth ruling out
+properly rather than assuming.
+
+**The route that is left.** Microsoft's own profile, from
+<https://aka.ms/BluetoothTracing>, enables ~156 providers including
+`Microsoft.Windows.Bluetooth.WPP.BthPort` under
+`{d88ace07-cac0-11d8-a4c6-000d560bcba5}` — a **WPP** provider, a channel none of
+the attempts above touched. `BTETLParse.exe`, in the same BTP directory, turns an
+ETL into a capture file and **runs unelevated**; its own message about not
+supporting "PCAPNG from legacy tracing format" is the hint that it expects WPP
+and that `-pcap` is the output to ask for. A copy of the profile is kept at
+`build/hil-evidence/BluetoothStack.wprp`.
+
+```powershell
+# elevated, and note the selector is the profile's Name, not its Id --
+# "!BluetoothStack.Verbose.File" fails with 0xc5600611
+wpr -start "<repo>\build\hil-evidence\BluetoothStack.wprp!BluetoothStack" -filemode
+# ... run crosscheck.py --capture off ...
+wpr -stop C:\temp\BthTracing.etl
+```
+
+```powershell
+# unelevated
+& "C:\BTP\v1.14.0\x86\BTETLParse.exe" -pcap out.pcap C:\temp\BthTracing.etl
+python tests/hil/tools/smp_decode.py --capture out.pcap --all-streams --out ops.json
+```
+
+**One side effect to plan for:** with that profile running, `winrt_ble_dfu`
+failed in 0.1 s with "no device at that address" three seconds after a baseline
+reflash — Windows had not yet cached the peer. The verbose tracing slows the
+stack enough to expose a settle that was too short; `POST_FLASH_SETTLE` in
+`crosscheck.py` is now 10 s for that reason.
 
 The workable division of labour from an unelevated session: start BTVS by hand,
 elevated, and leave it running. **Note the `&`** — in PowerShell a quoted

@@ -162,6 +162,22 @@ class ClientFailed(RuntimeError):
 
 # --- normalisation ------------------------------------------------------------
 
+# How long to wait after a baseline reflash before touching the device.
+#
+# Raised from 3 s in P17c after a real failure: with Microsoft's verbose
+# Bluetooth tracing running, `winrt_ble_dfu` failed in 0.1 s with "no device at
+# that address" -- `FromBluetoothAddressAsync` returning null because the peer
+# was not yet in Windows' device cache. The board re-advertises about 1.2 s
+# after a reset (protocol-notes section 9, A20), but the *host* caching it is a
+# separate step and a slower stack delays it. 3 s worked twenty times and then
+# did not, which is the signature of a margin that was never real.
+#
+# It is still a fixed wait, and a fixed wait is a weaker thing than a probe.
+# What keeps it honest is that a client failing here fails loudly rather than
+# being retried into silence: a connect that cannot find the device is reported,
+# not absorbed.
+POST_FLASH_SETTLE = 10
+
 SLOT_FLAGS = ("bootable", "pending", "confirmed", "active", "permanent")
 
 
@@ -409,7 +425,7 @@ def oracle_self_test(args, bench: Bench, port: UartPort, run_dir: Path,
     for label, image in (("a1", "a"), ("b", "b"), ("a2", "a")):
         if bench.flash_baseline(log_dir / f"flash-{label}.log", image) != "ok":
             raise Unavailable(f"the self-test could not flash image {image}")
-        time.sleep(3)
+        time.sleep(POST_FLASH_SETTLE)
         reads[label] = normalise(oracle_state(args, port, log), hashes)
 
     problems = []
@@ -479,7 +495,7 @@ def run_arm(args, bench: Bench, name: str, run_dir: Path, hashes: dict[str, str]
             raise Unavailable("baseline flash found no probe")
         if flashed != "ok":
             raise ClientFailed("the baseline flash failed")
-        time.sleep(3)
+        time.sleep(POST_FLASH_SETTLE)
 
         ctx = ArmContext(args, port, log_dir, image, image_hash(image))
         if spec["transport"] == "uart":
