@@ -2,12 +2,16 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P13):** the gate marked *(P15)* below is specified but not yet
-wired, because the target it would exercise does not exist. Everything else is
-live and enforced — including the fuzz smoke job and the coverage thresholds,
-both of which P13 switched on. Each live gate has been observed rejecting
-a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
-`gate-self-check` CI job runs it on every push.
+**Status (as of P16):** every gate in this document is wired and enforced,
+including the fuzz smoke job and the coverage thresholds. Each one has been
+observed rejecting a deliberate violation — `tools/verify_gates.sh` reproduces
+that proof for all 17, and the `gate-self-check` CI job runs it on every push.
+
+**One job proves less than its name suggests.** `windows-winrt` *compiles* the
+WinRT adapter and the example that drives it, and runs the adapter's
+link-and-call smoke test; a GitHub runner has no Bluetooth radio, so it never
+executes either against a device. Read it as "it builds". The behavioural
+coverage arrives with the hardware suite (P17).
 
 ## 1. Build matrix (required)
 
