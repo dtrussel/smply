@@ -13,8 +13,17 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as the `cli_dfu_demo` test |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **three** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, and `cli_dfu_reconnect_gives_up` |
+| The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
+
+The three `cli_dfu` entries are what keep the **application's** half of the
+protocol honest. The demo is the happy path; `--flaky-reconnect 3` refuses three
+reconnection attempts so the backoff in `smply::dfu_app::ReconnectPolicy` runs
+for real; and `cli_dfu_reconnect_gives_up` exhausts the policy, which is the
+only exercise anywhere of `FirmwareUpdater::reconnect_failed()` outside the
+component suite. That last one is a `WILL_FAIL` test — it has to fail *through*
+`reconnect_failed()` rather than by timing out, or it is green and meaningless.
 
 ## 2. Test doubles (`tests/support/`)
 

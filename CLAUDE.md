@@ -41,9 +41,14 @@ short version.
 
 ## Layout
 
-`include/smply/` public headers · `src/` implementation · `transports/` platform
-adapters · `tests/` unit, component, fuzz, HIL · `docs/` living documentation
-and ADRs. Full description: [`docs/architecture.md`](docs/architecture.md) §10.
+`include/smply/` public headers · `src/` implementation · `transports/` the
+portable BLE helpers in `common/` and the platform adapters beside them ·
+`support/` code shared by the tests and the examples and part of neither
+(`smply::minicbor`, and `smply::dfu_app` for `FileImageSource` and
+`ReconnectPolicy`) · `examples/` `cli_dfu` (portable, runs in CI) and
+`winrt_ble_dfu` (Windows) · `tests/` unit, component, fuzz, HIL · `docs/` living
+documentation and ADRs. Full description:
+[`docs/architecture.md`](docs/architecture.md) §10.
 
 ## Conventions
 

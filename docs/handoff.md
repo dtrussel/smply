@@ -230,6 +230,38 @@ entry when it stops being true.
   `already_present` is now false once the session has made progress. When a
   hardware run prints `Completed`, read the client counters before believing
   nothing went wrong.
+* **A device advertises the SMP service UUID but puts its name in the scan
+  response** (PN §8, S22): Zephyr's `smp_svr` sample carries
+  `BT_DATA_UUID128_ALL` in `ad[]` and `BT_DATA_NAME_COMPLETE` in `sd[]`. So
+  filtering a scan on the UUID is reliable, while **matching on name requires an
+  *active* scan** — a passive one never requests the scan response, matches
+  nothing, and looks exactly like a device that is switched off. Nothing obliges
+  a product to advertise the UUID, though, so connecting by address must stay
+  possible.
+
+**The Windows half: run from a bench, never by CI**
+
+* **No CI job has ever put a byte of the WinRT code on the air.** `windows-winrt`
+  compiles `smply::winrt_ble` and `examples/winrt_ble_dfu/` at `/W4 /WX` and
+  links the adapter's smoke test on a runner with no Bluetooth radio. P17 ran
+  them against a real device from a bench, by hand — and that is *not*
+  automated: the nightly self-hosted job is committed and advisory with **no
+  runner registered**. So a green CI badge still means "it builds", and any
+  behaviour changed after P17 is unproven until somebody runs the bench again.
+  P17 found seven things (PN §9, A18–A24) that this job was never going to.
+* **The `Dispatcher` belongs to the application, not to an adapter.** Several
+  links may share one (`examples/cli_dfu/main.cpp` does), so an adapter must
+  never `clear()` or `drain()` it — that would discard another transport's work,
+  or run arbitrary application closures from inside `close()`. Posted closures
+  instead capture a strong reference to the adapter's state and ask
+  `LinkState::may_deliver()` before touching the listener. `design.md` §10 said
+  otherwise until P16 corrected it.
+* **Two directories are outside clang-tidy *and* cppcheck** —
+  `transports/winrt_ble/` and `examples/winrt_ble_dfu/` — because both analysers
+  run from a Linux build where those translation units do not exist.
+  `clang-format` still covers them and MSVC `/W4 /WX` stands in. **Never widen
+  that filter to the substring `winrt`**: `verify_gates.sh` plants a portable
+  decoy beside each directory and requires both to survive.
 
 **Before you trust a green run**
 
@@ -237,6 +269,17 @@ entry when it stops being true.
   reports the *old* suite passing. Check the build's exit status separately;
   never read "N tests passed" as evidence anything was rebuilt. This has bitten
   in four consecutive phases.
+* **Build Release too, and know why it exists.** Until P15a every preset
+  inherited `CMAKE_BUILD_TYPE: Debug`, so nothing had ever compiled above `-O0`
+  and the first Release build failed. `linux-gcc-release` now stands where that
+  gap was — check it after anything touching templates or lifetime, because
+  Debug will not tell you. Relatedly, **`-Wnull-dereference` is deliberately
+  absent** from the GCC set (the reasoning is written out in
+  `cmake/warnings.cmake`); do not add it back without a Release build first.
+* **`cli_dfu_reconnect_gives_up` is a `WILL_FAIL` test.** It must fail *through*
+  `FirmwareUpdater::reconnect_failed()` — the output says "giving up after N
+  reconnection attempts". If it ever starts failing by timing out instead, ctest
+  still reports it green and it is testing nothing.
 * **Build every preset.** `cmake --list-presets` shows **seven** Linux ones and
   **all seven link here**, `linux-clang-asan-ubsan` included.
 * **A green hardware suite means nothing unless `deferred_sends > 0`.** Zero

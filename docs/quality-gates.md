@@ -11,6 +11,14 @@ mechanically.) Each live gate has been observed rejecting
 a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
 `gate-self-check` CI job runs it on every push.
 
+**One job still proves less than its name suggests.** `windows-winrt` *compiles*
+the WinRT adapter and the example that drives it, and runs the adapter's
+link-and-call smoke test; a GitHub runner has no Bluetooth radio, so no CI job
+has ever put a byte of that code on the air. Read it as "it builds". The
+behavioural coverage is the hardware suite, which P17 ran from a bench — and
+which found seven things this job was never going to (protocol-notes §9,
+A18–A24).
+
 ## 1. Build matrix (required)
 
 | Job | OS | Compiler | Standard | Notes |
