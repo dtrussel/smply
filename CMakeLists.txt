@@ -178,6 +178,17 @@ if(SMPLY_BUILD_FUZZERS AND NOT SMPLY_BUILD_TESTS)
     message(FATAL_ERROR "SMPLY_BUILD_FUZZERS requires SMPLY_BUILD_TESTS")
 endif()
 
+if(SMPLY_BUILD_HIL)
+    # The hardware cases drive the WinRT adapter against a real device
+    # (tests/hil/README.md), so they need the adapter, the Catch2 the tests
+    # bring, and the shared application pieces the examples build.
+    if(NOT SMPLY_BUILD_WINRT OR NOT SMPLY_BUILD_TESTS OR NOT SMPLY_BUILD_EXAMPLES)
+        message(FATAL_ERROR
+            "SMPLY_BUILD_HIL requires SMPLY_BUILD_WINRT, SMPLY_BUILD_TESTS and SMPLY_BUILD_EXAMPLES")
+    endif()
+    message(STATUS "smply: building the hardware interoperability cases (smply_hil)")
+endif()
+
 # Before any add_subdirectory() that might call add_test(). CMake silently
 # ignores add_test() issued before enable_testing() -- no warning, no error, the
 # test simply never appears in the suite. examples/cli_dfu registers one, and it
@@ -209,6 +220,9 @@ if(SMPLY_BUILD_TESTS)
     add_subdirectory(tests/consumer)
     if(SMPLY_BUILD_FUZZERS)
         add_subdirectory(tests/fuzz)
+    endif()
+    if(SMPLY_BUILD_HIL)
+        add_subdirectory(tests/hil)
     endif()
 endif()
 

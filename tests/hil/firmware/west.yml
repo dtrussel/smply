@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The P17 peer's west manifest: Zephyr pinned by commit, importing only the
+# modules the NUCLEO-WB55RG build of smp_svr needs. Copy this into a separate
+# west workspace (tests/hil/README.md); never put .west inside this repository.
+manifest:
+  projects:
+    - name: zephyr
+      url: https://github.com/zephyrproject-rtos/zephyr
+      revision: e71ff182603865f59e2e25f05655d6affda4f288
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_stm32
+          - mcuboot
+          - mbedtls
+          - tf-psa-crypto
+          - zcbor
+  self:
+    path: manifest

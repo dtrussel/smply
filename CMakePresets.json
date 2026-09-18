@@ -126,6 +126,14 @@
       "cacheVariables": {
         "SMPLY_BUILD_WINRT": "ON"
       }
+    },
+    {
+      "name": "windows-hil",
+      "inherits": "windows-winrt",
+      "displayName": "Windows / MSVC, the WinRT transport plus the hardware cases (bench only)",
+      "cacheVariables": {
+        "SMPLY_BUILD_HIL": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -180,6 +188,10 @@
     {
       "name": "windows-winrt",
       "configurePreset": "windows-winrt"
+    },
+    {
+      "name": "windows-hil",
+      "configurePreset": "windows-hil"
     }
   ],
   "testPresets": [
@@ -272,6 +284,18 @@
       "configurePreset": "windows-winrt",
       "output": {
         "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-hil",
+      "configurePreset": "windows-hil",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "hil"
+        }
       }
     }
   ]

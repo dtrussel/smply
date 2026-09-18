@@ -605,6 +605,60 @@ TEST_CASE("a two-slot state response decodes field by field", "[image][state]")
     REQUIRE_FALSE(state.slots[1].confirmed);
 }
 
+TEST_CASE("a real device's state response decodes", "[image][state][hardware-golden]")
+{
+    // Captured byte for byte from a NUCLEO-WB55RG running Zephyr 4.4.99's
+    // smp_svr (P17, 2026-09-08; tests/hil/README.md has the build). Two things
+    // the hand-built goldens above do not show: every container is
+    // indefinite-length (0xBF/0x9F ... 0xFF), because zcbor only emits definite
+    // lengths under CONFIG_ZCBOR_CANONICAL, which the sample does not set; and
+    // every flag is present explicitly, false ones included, because
+    // CONFIG_MCUMGR_GRP_IMG_FRUGAL_LIST is off (protocol-notes section 6).
+    // This was the first response smply ever failed to decode from hardware.
+    Fixture fixture;
+
+    const auto golden =
+        bytes_of({
+            0xBF, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, // {"images":
+            0x9F, 0xBF,                                     //   [{
+            0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00,             //     "slot": 0,
+            0x67, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6F, 0x6E, //     "version":
+            0x65, 0x31, 0x2E, 0x30, 0x2E, 0x30,             //       "1.0.0",
+            0x64, 0x68, 0x61, 0x73, 0x68, 0x58, 0x20,       //     "hash": bytes(32)
+            0xFC, 0x45, 0x1C, 0x56, 0x9E, 0x22, 0x1E, 0xA2, 0x7B, 0xBD, 0x85,
+            0xD0, 0xE1, 0xC1, 0xC0, 0xED, 0xBA, 0xA9, 0x69, 0xAA, 0xFA, 0x53,
+            0x1E, 0x03, 0xF7, 0x74, 0xED, 0x40, 0xA9, 0x21, 0x56, 0x6C, 0x68,
+            0x62, 0x6F, 0x6F, 0x74, 0x61, 0x62, 0x6C, 0x65, 0xF5,             // "bootable": true
+            0x67, 0x70, 0x65, 0x6E, 0x64, 0x69, 0x6E, 0x67, 0xF4,             // "pending": false
+            0x69, 0x63, 0x6F, 0x6E, 0x66, 0x69, 0x72, 0x6D, 0x65, 0x64, 0xF5, // "confirmed": true
+            0x66, 0x61, 0x63, 0x74, 0x69, 0x76, 0x65, 0xF5,                   // "active": true
+            0x69, 0x70, 0x65, 0x72, 0x6D, 0x61, 0x6E, 0x65, 0x6E, 0x74, 0xF4, // "permanent": false
+            0xFF, 0xFF,                                                       //   }]
+            0x6B, 0x73, 0x70, 0x6C, 0x69, 0x74, 0x53, 0x74, 0x61, 0x74, 0x75,
+            0x73, 0x00, // "splitStatus": 0
+            0xFF,       // }
+        });
+
+    const auto outcome = fixture.state_from(ConstBytes{golden});
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value.has_value());
+    const ImageState& state = *outcome.value;
+    REQUIRE(state.slots.size() == 1);
+    REQUIRE(state.split_status == 0);
+    REQUIRE(state.slots[0].image == 0);
+    REQUIRE(state.slots[0].slot == 0);
+    REQUIRE(state.slots[0].version == "1.0.0");
+    REQUIRE(state.slots[0].hash.has_value());
+    REQUIRE(state.slots[0].hash->size() == 32);
+    REQUIRE(static_cast<std::uint8_t>(state.slots[0].hash->bytes()[0]) == 0xFC);
+    REQUIRE(state.slots[0].bootable);
+    REQUIRE(state.slots[0].confirmed);
+    REQUIRE(state.slots[0].active);
+    REQUIRE_FALSE(state.slots[0].pending);
+    REQUIRE_FALSE(state.slots[0].permanent);
+}
+
 TEST_CASE("an absent image number means image zero", "[image][state]")
 {
     // A9: a single-image device omits "image" entirely.
@@ -1282,6 +1336,48 @@ TEST_CASE("a slot-info response decodes its nested arrays", "[image][slotinfo]")
     REQUIRE_FALSE(entry.slots[0].upload_image_id.has_value());
     REQUIRE_FALSE(entry.slots[0].open_error.has_value());
     REQUIRE(entry.slots[1].upload_image_id == 2);
+}
+
+TEST_CASE("a real device's slot-info response decodes", "[image][slotinfo][hardware-golden]")
+{
+    // Captured from the NUCLEO-WB55RG peer (P17). Three indefinite-length
+    // containers close back to back at the end -- five 0xFF in a row -- which
+    // is the encoding that trips QCBOR's ExitMap(); the sizes are the board's
+    // 408 KiB and 412 KiB slots, and slot 1 carries upload_image_id 0 because
+    // the build has one updateable image and no direct upload.
+    Outcome<SlotInfo> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.image.get_slot_info(outcome.callback()));
+
+    const auto golden = bytes_of({
+        0xBF, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, 0x9F, 0xBF,       // {"images": [{
+        0x65, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x00,                         //   "image": 0,
+        0x65, 0x73, 0x6C, 0x6F, 0x74, 0x73, 0x9F,                         //   "slots": [
+        0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00,                         //     {"slot": 0,
+        0x64, 0x73, 0x69, 0x7A, 0x65, 0x1A, 0x00, 0x06, 0x60, 0x00, 0xFF, //      "size": 417792}
+        0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x01,                         //     {"slot": 1,
+        0x64, 0x73, 0x69, 0x7A, 0x65, 0x1A, 0x00, 0x06, 0x70, 0x00,       //      "size": 421888,
+        0x6F, 0x75, 0x70, 0x6C, 0x6F, 0x61, 0x64, 0x5F, 0x69, 0x6D, 0x61,
+        0x67, 0x65, 0x5F, 0x69, 0x64, 0x00, //      "upload_image_id": 0
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF,       //     }]}]}
+    });
+    fixture.respond(ConstBytes{golden});
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value.has_value());
+    REQUIRE(outcome.value->images.size() == 1);
+    const auto& entry = outcome.value->images.at(0);
+    REQUIRE(entry.image == 0);
+    REQUIRE_FALSE(entry.max_image_size.has_value());
+    REQUIRE(entry.slots.size() == 2);
+    REQUIRE(entry.slots[0].slot == 0);
+    REQUIRE(entry.slots[0].size == 417792);
+    REQUIRE_FALSE(entry.slots[0].upload_image_id.has_value());
+    REQUIRE(entry.slots[1].slot == 1);
+    REQUIRE(entry.slots[1].size == 421888);
+    REQUIRE(entry.slots[1].upload_image_id == 0);
 }
 
 TEST_CASE("a slot that would not open reports its rc instead of a size", "[image][slotinfo]")

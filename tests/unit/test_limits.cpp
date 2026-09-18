@@ -631,6 +631,16 @@ TEST_CASE("kFirstChunkTimeout and kEraseTimeout are longer than the default", "[
     STATIC_REQUIRE(limits::kEraseTimeout > limits::kDefaultTimeout);
 }
 
+TEST_CASE("kFinalChunkTimeout is longer than the default", "[limits]")
+{
+    // A device with the image check enabled hashes the whole image out of flash
+    // before answering the last chunk (protocol-notes section 9, A19): 5.3 s
+    // for 134 KiB on the P17 bench, against a 5 s default. A final-chunk
+    // deadline no longer than the default would time out every real update and
+    // hide it behind a retransmission that happens to succeed.
+    STATIC_REQUIRE(limits::kFinalChunkTimeout > limits::kDefaultTimeout);
+}
+
 TEST_CASE("the upload budgets are finite", "[limits]")
 {
     // Retries, restarts and no-progress responses are all things a device can

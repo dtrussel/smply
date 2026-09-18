@@ -9,8 +9,11 @@
 
 # --- smply::transport_common ------------------------------------------------
 #
-# Header-only: it is arithmetic and a two-bit enum. INTERFACE rather than STATIC
-# so there is nothing to build, nothing to install and no ABI to keep.
+# Header-only: arithmetic, small state machines and the send-admission queue.
+# INTERFACE rather than STATIC so there is nothing to build, nothing to install
+# and no ABI to keep. No file list either, so a new header here needs no CMake
+# change -- it is picked up by the include root below, by tools/sources.sh for
+# clang-format, and by tools/coverage.sh --filter transports/common/.
 add_library(smply_transport_common INTERFACE)
 add_library(smply::transport_common ALIAS smply_transport_common)
 

@@ -74,6 +74,12 @@ struct UploadState
     std::uint32_t restarts = 0;
     std::uint32_t retries = 0;
 
+    /// The server has acknowledged at least one byte of this session. Once set
+    /// it stays set across restarts and resumes, and it is what stops a
+    /// completion on a *re-sent* first packet (rule 9b, then 9a) from being
+    /// reported as "the device already held this image".
+    bool progressed = false;
+
     /// The next request must carry `len`, `sha`, `image` and `upgrade` -- set
     /// after a restart and before a resume (docs/protocol-notes.md section 6,
     /// rule 7).

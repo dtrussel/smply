@@ -2,16 +2,22 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P16):** every gate in this document is wired and enforced,
-including the fuzz smoke job and the coverage thresholds. Each one has been
-observed rejecting a deliberate violation — `tools/verify_gates.sh` reproduces
-that proof for all 17, and the `gate-self-check` CI job runs it on every push.
+**Status (as of P17c):** every gate below is wired and enforced. The one
+exception is by design: the `hil` row is *advisory*, and no self-hosted runner
+is registered, so the hardware suite has only ever run from the bench by hand.
+(This paragraph said "as of P13" and pointed at a *(P15)* marker that no longer
+exists anywhere in the file — the sort of drift R5 and R6 in §11 now catch
+mechanically.) Each live gate has been observed rejecting
+a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
+`gate-self-check` CI job runs it on every push.
 
-**One job proves less than its name suggests.** `windows-winrt` *compiles* the
-WinRT adapter and the example that drives it, and runs the adapter's
-link-and-call smoke test; a GitHub runner has no Bluetooth radio, so it never
-executes either against a device. Read it as "it builds". The behavioural
-coverage arrives with the hardware suite (P17).
+**One job still proves less than its name suggests.** `windows-winrt` *compiles*
+the WinRT adapter and the example that drives it, and runs the adapter's
+link-and-call smoke test; a GitHub runner has no Bluetooth radio, so no CI job
+has ever put a byte of that code on the air. Read it as "it builds". The
+behavioural coverage is the hardware suite, which P17 ran from a bench — and
+which found seven things this job was never going to (protocol-notes §9,
+A18–A24).
 
 ## 1. Build matrix (required)
 
@@ -23,7 +29,7 @@ coverage arrives with the hardware suite (P17).
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
-| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour is P17 |
+| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour was established on the bench across P17a-P17c and lives in `tests/hil/` and the evidence bundles it writes |
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
@@ -34,6 +40,7 @@ coverage arrives with the hardware suite (P17).
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then `find_package`s it from a separate project and runs the result (§13) |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
+| `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, nightly plus on demand; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand (roadmap P17b). Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
 pins the versions above. Clang's sanitizer jobs need `libclang-rt-<v>-dev`
@@ -403,12 +410,30 @@ empty.
 * an ADR is referenced from a doc but does not exist, or an ADR's `Status:` is
   neither `Proposed`, `Accepted`, `Superseded by ADR-NNNN` nor `Deprecated`;
 * a public symbol in `include/smply/` has no `///` documentation comment
-  (namespace scope only; `detail` namespaces are exempt).
+  (namespace scope only; `detail` namespaces are exempt);
+* a path named in [`architecture.md`](architecture.md) §10's repository-layout
+  tree does not exist;
+* a `(planned, PN)` marker names a phase the roadmap already marks `Complete`.
 
 The first rule needs a diff base and a pull-request body. On a plain branch push
 or a local run neither exists, so that rule is skipped with a message and the
-other three still run — a branch push must never fail for a reason that cannot
+other five still run — a branch push must never fail for a reason that cannot
 apply to it.
+
+**The last two are P17c's**, and they exist because the drift they catch had
+gone unnoticed for four phases: three entries in §10 named files that were never
+written or had moved, in a section whose own opening line says "Keep this
+accurate", and two `(planned)` markers named phases that were long complete.
+Nothing checked either. Adding a check for a defect just fixed by hand is the
+same habit as committing a fuzz reproducer with its fix.
+
+The layout rule is deliberately conservative, and **says how much it skipped**:
+the tree is prose, so an entry it cannot read as a single path — a brace
+expansion, a glob, a line naming several files — is skipped rather than guessed
+at, and the printed count is what would reveal a rule that had quietly narrowed
+to checking nothing. A silently inert gate is the failure mode this repository
+has hit most (§1's gate self-check exists for it), so the number is part of the
+output rather than a debug aid.
 
 ## 12. Definition of Done
 

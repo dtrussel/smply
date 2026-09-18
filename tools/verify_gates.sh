@@ -142,21 +142,23 @@ expect_fail "clang-tidy rejects reinterpret_cast over raw bytes" \
     env SMPLY_LINT_SKIP_CPPCHECK=1 tools/lint.sh build
 restore src/version.cpp
 
-# 3b. Two directories are Windows-only and invisible to clang-tidy and cppcheck
-# (transports/winrt_ble/ and examples/winrt_ble_dfu/; see tools/lint.sh). An
+# 3b. Three directories are Windows-only and invisible to clang-tidy and
+# cppcheck (transports/winrt_ble/, examples/winrt_ble_dfu/ and tests/hil/; see
+# tools/lint.sh). An
 # exclusion is a hole in a gate, so what has to be proved is that each hole is
 # exactly the shape it claims: a DIRECTORY, not the substring "winrt". A filter
 # written `grep -v winrt` would also swallow a portable file that merely
 # mentions it, and would go on passing -- the silent-skip shape that has cost
 # this project six defects.
 #
-# The decoys are portable files whose names contain "winrt", one beside each
-# excluded directory so neither prefix can quietly widen. An exact filter keeps
-# both and the TU count rises by two; an over-broad filter drops them and the
-# count does not move. clang-tidy is stubbed out because only the count matters
+# The decoys are portable files whose names contain "winrt" or "hil", one
+# beside each excluded directory so no prefix can quietly widen. An exact filter
+# keeps all three and the TU count rises by three; an over-broad filter drops
+# them and the count does not move. clang-tidy is stubbed out because only the count matters
 # and running it twice over the whole tree costs minutes.
 printf '// SPDX-License-Identifier: Apache-2.0\n' > "$WORK/transports/common/winrt_decoy.cpp"
 printf '// SPDX-License-Identifier: Apache-2.0\n' > "$WORK/examples/cli_dfu/winrt_decoy.cpp"
+printf '// SPDX-License-Identifier: Apache-2.0\n' > "$WORK/tests/support/hil_decoy.cpp"
 cat > "$WORK/tidy-stub" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then echo "stub version 0.0"; fi
@@ -166,12 +168,12 @@ chmod +x "$WORK/tidy-stub"
 expect_ok "the WinRT lint exclusions are directories, not the substring 'winrt'" \
     bash -c 'expected=$(tools/sources.sh | grep -E "\.(cpp|cc)$" \
                         | grep -v "^tests/consumer/" \
-                        | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/" | wc -l)
+                        | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/|^tests/hil/" | wc -l)
              actual=$(env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build 2>&1 \
                         | grep -oE "over [0-9]+ TUs" | grep -oE "[0-9]+")
              [[ -n "$actual" && "$expected" == "$actual" ]]'
 rm -f "$WORK/transports/common/winrt_decoy.cpp" "$WORK/examples/cli_dfu/winrt_decoy.cpp" \
-      "$WORK/tidy-stub"
+      "$WORK/tests/support/hil_decoy.cpp" "$WORK/tidy-stub"
 
 # 4. Public header discipline: third-party include
 printf '#include <qcbor/qcbor.h>\n' >> "$WORK/include/smply/version.hpp.in"
@@ -243,6 +245,35 @@ p.write_text(t)
 PY
 expect_fail "check_docs R4 rejects an undocumented public symbol" python3 tools/check_docs.py
 restore include/smply/version.hpp.in
+
+# 11a. Docs R5: a layout entry naming a file that does not exist.
+#
+# Inserted into the layout tree with the tree's own glyphs, because that is what
+# R5 parses. Note what this case really guards: R5 *skips* anything it cannot
+# read as a single path, so a regression that broke its parsing would skip
+# everything and still report a pass. This decoy fails only while R5 is
+# genuinely reading entries.
+python3 - "$WORK/docs/architecture.md" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+needle = "\u251c\u2500\u2500 tools/"
+assert t.count(needle) == 1, "the layout tree's tools/ entry moved"
+t = t.replace(needle, "\u251c\u2500\u2500 no_such_directory_for_r5/\n"
+                      + needle, 1)
+p.write_text(t, encoding="utf-8")
+PY
+expect_fail "check_docs R5 rejects a layout entry that does not exist" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
+
+# 11b. Docs R6: a "(planned, PN)" marker naming a phase that is Complete.
+#
+# P1 is Complete and will stay Complete, so unlike the R2 fixture this one
+# cannot rot by a phase advancing past it.
+printf '\nA thing that does not exist (planned, P1).\n' >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R6 rejects a (planned) marker for a Complete phase" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
 
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error

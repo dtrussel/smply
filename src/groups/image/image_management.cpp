@@ -502,6 +502,7 @@ public:
                  source,
                  config,
                  options.first_chunk_timeout,
+                 options.final_chunk_timeout,
                  options.chunk_timeout,
                  std::move(on_progress),
                  std::move(on_done)},

@@ -450,6 +450,122 @@ TEST_CASE("an array of maps is visited element by element", "[cbor]")
     REQUIRE(reader.status().has_value());
 }
 
+TEST_CASE("indefinite-length maps and arrays decode like definite ones", "[cbor]")
+{
+    // The same document as above, but every container is indefinite-length:
+    // 0xBF/0x9F open a map/array of unstated size and 0xFF closes it (RFC 8949
+    // section 3.2.2). This is what Zephyr's zcbor emits unless
+    // CONFIG_ZCBOR_CANONICAL is set, and the default smp_svr build does not set
+    // it -- so a real device answers every request this way. Found in P17 on
+    // the first image-state read against hardware (protocol-notes section 9).
+    const auto encoded = bytes_of({
+        0xBF,                                                                   // map(indefinite)
+        0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73,                               // "images"
+        0x9F,                                                                   // array(indefinite)
+        0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00, 0xFF,                         // {"slot": 0}
+        0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x01, 0xFF,                         // {"slot": 1}
+        0xFF,                                                                   // end of array
+        0x6B, 0x73, 0x70, 0x6C, 0x69, 0x74, 0x53, 0x74, 0x61, 0x74, 0x75, 0x73, // "splitStatus"
+        0x00,                                                                   // 0
+        0xFF,                                                                   // end of map
+    });
+
+    Reader reader{ConstBytes{encoded}};
+    REQUIRE(reader.enter_map().has_value());
+
+    std::vector<std::uint64_t> slots;
+    const auto outcome =
+        reader.for_each_map_in_array("images", 16, [&](Reader& element) -> Result<void> {
+            slots.push_back(element.uint("slot").value_or(999));
+            return {};
+        });
+
+    REQUIRE(outcome.has_value());
+    REQUIRE(slots == std::vector<std::uint64_t>{0, 1});
+    REQUIRE(reader.uint("splitStatus") == 0);
+    REQUIRE(reader.status().has_value());
+}
+
+TEST_CASE("a key after an indefinite-length array is still found", "[cbor]")
+{
+    // {"images": [_ {"slot": 0}], "x": 5}, every container indefinite. This is
+    // the shape in which QCBOR's ExitMap() defect is *silent*: it swallows the
+    // array's break along with the element's, so a naive walk reads "x" and 5
+    // as further array elements and reports nothing wrong. The child-reader
+    // walk must neither visit them nor lose them.
+    const auto encoded = bytes_of({
+        0xBF,                                                       // map(indefinite)
+        0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73,                   // "images"
+        0x9F, 0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00, 0xFF, 0xFF, // [{"slot": 0}]
+        0x61, 0x78, 0x05,                                           // "x": 5
+        0xFF,
+    });
+
+    Reader reader{ConstBytes{encoded}};
+    REQUIRE(reader.enter_map().has_value());
+
+    int visits = 0;
+    const auto outcome =
+        reader.for_each_map_in_array("images", 16, [&](Reader& element) -> Result<void> {
+            ++visits;
+            REQUIRE(element.uint("slot") == 0);
+            return {};
+        });
+
+    REQUIRE(outcome.has_value());
+    REQUIRE(visits == 1);
+    REQUIRE(reader.uint("x") == 5);
+    REQUIRE(reader.status().has_value());
+}
+
+TEST_CASE("an array element that is not a map is rejected", "[cbor]")
+{
+    // {"images": [_ {"slot": 0}, 7]} -- a scalar where a map is required.
+    const auto encoded = bytes_of({
+        0xBF, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, 0x9F,
+        0xBF, 0x64, 0x73, 0x6C, 0x6F, 0x74, 0x00, 0xFF, // {"slot": 0}
+        0x07,                                           // 7
+        0xFF, 0xFF,
+    });
+
+    Reader reader{ConstBytes{encoded}};
+    REQUIRE(reader.enter_map().has_value());
+
+    int visits = 0;
+    const auto outcome = reader.for_each_map_in_array("images", 16, [&](Reader&) -> Result<void> {
+        ++visits;
+        return {};
+    });
+
+    REQUIRE_FALSE(outcome.has_value());
+    REQUIRE(outcome.error().code() == ErrorCode::CborDecode);
+    REQUIRE(visits == 1);
+    REQUIRE_FALSE(reader.status().has_value()); // sticky, like every other malformation
+}
+
+TEST_CASE("a child reader's failure poisons the parent", "[cbor]")
+{
+    // {"images": [{"slot": "zero"}]} -- a wrong-typed field inside an element
+    // must be visible on the outer reader's status(), because that is the one
+    // every decoder checks (design.md section 5 rule 2).
+    const auto encoded = bytes_of({
+        0xA1, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, 0x81, 0xA1,
+        0x64, 0x73, 0x6C, 0x6F, 0x74, 0x64, 0x7A, 0x65, 0x72, 0x6F, // {"slot": "zero"}
+    });
+
+    Reader reader{ConstBytes{encoded}};
+    REQUIRE(reader.enter_map().has_value());
+
+    const auto outcome =
+        reader.for_each_map_in_array("images", 16, [&](Reader& element) -> Result<void> {
+            REQUIRE_FALSE(element.uint("slot").has_value());
+            return {};
+        });
+
+    REQUIRE_FALSE(outcome.has_value());
+    REQUIRE_FALSE(reader.status().has_value());
+}
+
 TEST_CASE("an absent array is an empty one, not an error", "[cbor]")
 {
     // MCUmgr omits "images" entirely when no valid image can be reported --

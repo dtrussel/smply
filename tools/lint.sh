@@ -22,13 +22,13 @@ status=0
 
 # --- the directories neither analyser can see -------------------------------
 #
-# The Windows-only code: the WinRT BLE adapter (P15b) and the example that
-# drives it (P16). clang-tidy is driven from a LINUX compile database, where
-# these translation units do not appear at all, so it would fall back to default
-# arguments and die on the first <winrt/...> include; cppcheck can parse neither
-# the projection headers nor the coroutines. Excluding them is not a judgement
-# that the code needs less checking -- it is that these two tools cannot run on
-# it from here.
+# The Windows-only code: the WinRT BLE adapter (P15b), the example that drives
+# it (P16) and the hardware cases that drive both against a device (P17b).
+# clang-tidy is driven from a LINUX compile database, where these translation
+# units do not appear at all, so it would fall back to default arguments and die
+# on the first <winrt/...> include; cppcheck can parse neither the projection
+# headers nor the coroutines. Excluding them is not a judgement that the code
+# needs less checking -- it is that these two tools cannot run on it from here.
 #
 # What still covers it: clang-format (tools/sources.sh feeds it everything), and
 # MSVC /W4 /WX in the windows-winrt CI job. Recorded in quality-gates.md.
@@ -40,6 +40,7 @@ status=0
 WINRT_DIRS=(
     "transports/winrt_ble/"
     "examples/winrt_ble_dfu/"
+    "tests/hil/"
 )
 
 # One extended-regex alternation of anchored prefixes, for grep -E below.

@@ -209,7 +209,10 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
         // already-present check, not a transfer that finished. The two are
         // indistinguishable from `off` alone -- both report the whole image --
         // so the distinction has to be drawn here, where it is still known.
-        const bool on_first_packet = state.in_flight_first_packet;
+        // Unless this session already moved bytes: then the first packet was a
+        // re-send after the server reset the session (rule 9b) and the image
+        // it "already holds" is the one we just sent (P17, A19).
+        const bool on_first_packet = state.in_flight_first_packet && !state.progressed;
         return Step{.action = Action::Complete,
                     .request = {},
                     .error = {},
@@ -240,6 +243,7 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
         // budget -- a resume that correctly lands back on its old offset would
         // otherwise look like a stalled server.
         state.confirmed_off = reported;
+        state.progressed = state.progressed || reported > 0;
         state.first_packet_pending = false;
         state.consecutive_no_progress = 0;
         state.retries = 0;
@@ -249,6 +253,7 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
     if (reported > state.confirmed_off) {
         // Ordinary progress -- possibly further than was sent, which is legal.
         state.confirmed_off = reported;
+        state.progressed = true;
         state.first_packet_pending = false;
         state.consecutive_no_progress = 0;
         state.retries = 0;
@@ -263,6 +268,7 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
         return fail_with(state, Error{ErrorCode::UpdateFailed, "upload: server stopped advancing"});
     }
     state.confirmed_off = reported;
+    state.progressed = state.progressed || reported > 0;
     // Never a first packet here: `reported == 0` was handled above.
     state.first_packet_pending = false;
     state.retries = 0;

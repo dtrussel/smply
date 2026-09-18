@@ -193,6 +193,9 @@ private:
     [[nodiscard]] unexpected<Error> record(Error error) noexcept;
 
     QCBORDecodeContext context_{};
+    /// The document being read. Kept so that `for_each_map_in_array` can hand
+    /// each element's bytes to a child reader (see the implementation for why).
+    ConstBytes input_;
     std::optional<Error> error_;
     unsigned max_nesting_;
     unsigned depth_ = 0;

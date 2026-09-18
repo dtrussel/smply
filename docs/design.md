@@ -538,7 +538,7 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 | protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
-| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present`. |
+| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every P17 update before the final chunk had its own deadline). |
 | `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if over `max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. Also what a device that forgot the session answers, and what a **retransmitted final chunk** gets once the server has reset — where the first packet then completes the upload immediately via the already-present check (PN §6 rule 9a). |
 | the request was a first packet | adopt `rsp_off` whatever it is, and do **not** charge the no-progress budget: adopting the device's answer is the entire point of sending a first packet. |
 | `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
@@ -576,6 +576,19 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 * **Cancellation** — the session terminates; no cleanup command is sent (the
   device's stale session is harmless and is superseded by the next upload's
   `sha`).
+* **`TransportBusy`** — treated as a hard failure of the upload, and
+  `is_transient()` (`src/groups/image/upload_session.cpp`) deliberately **does
+  not** list it. That looks wrong for something the contract calls a retry
+  request, so the reason is recorded rather than left to be re-derived: nothing
+  below `FirmwareUpdater` owns a clock. `SmpClient::request()` defers a send
+  error and `deliver_deferred()` drains in a loop, so a retry decided here would
+  spend all of `max_chunk_retries` inside a single `poll()` with **zero elapsed
+  time** — a busy-wait dressed as a retry, which cannot help a medium that needs
+  a moment. The right fix for a transport that is genuinely behind is a
+  clock-driven backoff, which touches ADR-0003 and ADR-0004 and so needs an ADR
+  of its own. Until then the transport absorbs the handover window itself
+  (§10), and a `TransportBusy` that still reaches here means the link stalled
+  and failing is the honest answer.
 * **A failure before the first request goes out** — an unreadable source, a
   budget too small for a chunk — is **deferred**, not reported inline. Rule 4 of
   §5 has no exception for the first chunk, and `upload()` returns an invalid
@@ -803,7 +816,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | -------- | ------ |
 | What is one outbound unit? | **Exactly one complete SMP message** (8-byte header + `length` payload bytes). Fragmenting it is the transport's job. |
 | Does `send()` block? | No. It returns once the message is accepted for transmission. |
-| Backpressure? | `send()` may return `ErrorCode::TransportBusy`. The core does not queue; with `max_in_flight = 1` there is at most one message outstanding, so a busy transport simply fails that request. |
+| Backpressure? | `send()` may return `ErrorCode::TransportBusy`, which is a **request to retry**, not a link failure. The core still does not queue: with `max_in_flight = 1` there is at most one message outstanding, and the request it belongs to fails. What P17b's bench falsified is the *inference* that a transport with a write in progress must therefore refuse — the device's answer can arrive before the local write's own completion runs, so the medium is free while a naive "a write is in progress" flag still says busy. Admitting a second message is the **transport's** decision and is transport-internal (§10); `TransportBusy` now means the medium is genuinely behind rather than merely mid-handover. |
 | How is inbound data delivered? | `TransportListener::on_bytes(span)` with **arbitrary** chunk boundaries. The core reassembles (ADR-0006). |
 | Ordering? | The transport **must** preserve byte order. GATT and UART both do. |
 | Buffer lifetime? | Borrowed for the duration of the call, in both directions. A transport that defers a send must copy. |
@@ -870,9 +883,10 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 
 | smply concept | WinRT operation |
 | ------------- | --------------- |
-| open | `WinRtBleTransport::connect()`: `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)`. The UUIDs come from `transports/common/smp_ble_uuid.hpp`, whose bytes and endian split are unit-tested on every platform |
+| open | `WinRtBleTransport::connect()`: `BluetoothLEDevice::FromBluetoothAddressAsync` → `GetGattServicesForUuidAsync(SMP_SERVICE)` (PN §8) → `GetCharacteristicsForUuidAsync(SMP_CHAR)`, the last two **retried while either collection comes back empty** (see below). The UUIDs come from `transports/common/smp_ble_uuid.hpp`, whose bytes and endian split are unit-tested on every platform |
 | enable notifications | `WriteClientCharacteristicConfigurationDescriptorAsync(Notify)` + subscribe `ValueChanged` |
-| `send(message)` | split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
+| `send(message)` | admitted by `transports/common/send_queue.hpp` (one writer, one message waiting, a third refused as `TransportBusy`), then split into `mtu − 3` fragments; each fragment `WriteValueWithResultAsync(buf, GattWriteOption::WriteWithoutResponse)` (PN §8) |
+| `close()` | mark closing → stop accepting events → revoke tokens → **discard the waiting message** → wait up to five seconds for the fragment on the air → close session and device |
 | fragment size | `GattSession::MaxPduSize − 3`, clamped to `[20, 512]` by `transports/common`'s `fragment_size()`; read once per `send()` (see below) |
 | `max_message_size()` | a configured cap (default 1024) — *not* the MTU; a whole SMP message may span many fragments |
 | inbound | `ValueChanged` → copy the `IBuffer` → post to `Dispatcher` → `on_bytes()` on the client context |
@@ -919,17 +933,117 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   only; no coroutine crosses the core boundary.
 * Write-without-response has no flow control at the GATT level. The adapter
   paces fragments by awaiting each `GattCharacteristic::WriteValueWithResultAsync`
-  before starting the next, in one detached coroutine per message — `send()` may
-  not block (§9), so the writes outlive the call that started them.
+  before starting the next, in one detached coroutine per **writer run** —
+  `send()` may not block (§9), so the writes outlive the call that started them.
+  A writer run is not a message: the coroutine loops on
+  `SendQueue::next_for_writer()` and exits only when the queue is empty
+  (`transports/winrt_ble/winrt_ble_transport.cpp`), so one run may carry several
+  messages. This paragraph said "per message" until P17c; it was written before
+  the queue existed and was left behind by it, which is worth noticing because
+  the difference is exactly the invariant below.
 
   Two consequences follow, and they are easy to state the wrong way round.
-  `TransportBusy` means **a previous message is still going out**: the core
-  keeps one request in flight (ADR-0010), so it is a request to retry, not a
-  broken link. A *write* the stack rejects is discovered after `send()` has
-  already returned, so it cannot be its return value — it arrives later as
-  `on_transport_error()`, or `on_disconnected()` when the status says the device
-  is unreachable, posted through the same dispatcher as inbound bytes and never
-  delivered inline.
+  `TransportBusy` means **two messages are already outbound** — one being
+  written and one waiting (below). The core keeps one request in flight
+  (ADR-0010), so it is a request to retry, not a broken link. A *write* the
+  stack rejects is discovered after `send()` has already returned, so it cannot
+  be its return value — it arrives later as `on_transport_error()`, or
+  `on_disconnected()` when the status says the device is unreachable, posted
+  through the same dispatcher as inbound bytes and never delivered inline.
+
+* **Send admission: one writer, one waiting message**
+  (`transports/common/send_queue.hpp`). A single "a write is in progress" flag
+  is the obvious design and P17b's bench showed it is wrong. The flag can only
+  be cleared by the write's own completion, and the **device's answer can
+  arrive first**: the response travels device → radio → OS → a pool thread →
+  the client, while the local write's continuation waits for a thread of its
+  own. The core, having been answered, offers the next chunk and is refused
+  although the previous message is complete in every sense that matters. A
+  sequential run of the hardware suite died on it (PN §9, A22).
+
+  So `SendQueue` separates "a writer is running" from "no further message may be
+  accepted": one message may **wait** while another is written, and only a
+  third is refused. Its invariant is that the writer's claim is taken by
+  `offer()` and released *only* by `next_for_writer()` finding nothing, so a
+  writer never exits with a message waiting and a second writer is never
+  started. That last part is load-bearing rather than tidy: two writers would
+  let two messages' fragments interleave, and reassembly rests entirely on them
+  not doing so (ADR-0006, PN §8) — with no framing to resynchronise on, the
+  damage would be a mis-framed message rather than an error anyone reports.
+  Exactly one writer exists at any instant, it submits fragments strictly
+  sequentially, it takes the next message only after the previous message's last
+  `co_await` resumed, and GATT preserves submission order. ADR-0006's premise is
+  therefore upheld, not bent, and `TransportBusy` stays reachable, so the
+  contract in §9 needs no change.
+
+  The bookkeeping lives in `transports/common/` rather than in the adapter
+  because that directory is unit-tested, linted and coverage-measured on every
+  platform while this one is checked by MSVC and a bench; the same move
+  `ble_framing.hpp` and `link_state.hpp` made. What a unit test *cannot* check
+  is the adapter's use of it — that every call is made under `send_mutex`, that
+  the mutex is never held across a suspension point, and that a writer is
+  started exactly on `Admission::StartWriter`.
+
+  **What the bench then discharged, and what it did not.** Three sequential
+  suites passed with `deferred_sends` non-zero on three to six cases per run and
+  `refused_sends` zero throughout, so the handover path was exercised rather
+  than avoided. The first and third properties are also *reviewable statically*
+  and were reviewed: every `SendQueue` call in the adapter is made under
+  `send_mutex`, none is made across a `co_await`, and the writer is started at
+  the single `Admission::StartWriter` site in `send()`. The second — that the
+  mutex is never held across a suspension point — is the one a bench run cannot
+  prove, because holding it would manifest as `send()` blocking under a load
+  pattern that may simply not have occurred; it rests on the code having one
+  lock scope that closes before the coroutine starts. Treat it as reviewed, not
+  as measured.
+
+  The genuinely open residual is elsewhere: whether the *device's* reassembler
+  discards a partial message on a timeout of its own, which is what makes the
+  discard rule above sufficient rather than merely usually sufficient. That is
+  unverified from this side of the link and is filed as such.
+
+  **A failure discards the waiting message, deliberately.** A message abandoned
+  mid-fragment leaves the device's length-driven reassembler holding a partial
+  message; writing the next one would let its bytes be consumed as the abandoned
+  tail — the same mis-framing as interleaving, from the other direction. The
+  discarded message's request then simply times out, which is the well-covered
+  retry path. For the same reason `close()` **discards rather than flushes**, so
+  its five-second write grace still covers one message's remaining fragments and
+  did not need widening.
+
+  Removing this admission gate would contradict ADR-0006; moving the retry into
+  the core would contradict ADR-0003 and ADR-0004 (§6). Neither is a change a
+  reader should make without an ADR.
+
+* **Service discovery is retried while it comes back empty** — a fix whose
+  error path is proven and whose *benefit* is not, and it should be read that
+  way. The behaviour it exists for did not reproduce in any of five full runs,
+  and an instrumented build recorded discovery succeeding on the first attempt
+  in 20 of 20 measured discoveries; forcing the condition proves the loop runs
+  its six attempts and reports the right one of two messages, which is
+  reachability, not benefit (PN §9, A22). It rests on the P17b observation.
+  After a *rapid*
+  reconnect Windows answers with a service whose characteristic collection is
+  **empty** for a second or two — its own service cache, even though every
+  query here asks for `BluetoothCacheMode::Uncached` (PN §9, A22). Concluding
+  "no SMP characteristic" from that fails a reconnect that would have succeeded
+  a moment later, which on this platform is a reconnect a real DFU tool depends
+  on. `connect()` therefore re-runs **service** discovery, not just the
+  characteristic query: the stale object is the service, so re-asking it for
+  characteristics would likely return the same empty list. Six attempts 400 ms
+  apart, closing the stale service between them, bounds the extra wait at about
+  two seconds. Only the *empty* outcomes are retried — a non-`Success` status
+  means unreachable or denied, and retrying that just makes a doomed reconnect
+  slower — and the two final verdicts stay distinct: no service at all, or a
+  service with no SMP characteristic.
+
+* **Every `connect()` failure tears the half-built link down** by calling the
+  same `close()` sequence before returning. It used to drop the state instead,
+  leaving the device, the service and a `GattSession` with
+  `MaintainConnection(true)` open, and on the notification path handlers
+  subscribed and never revoked. During a reconnect storm that is a plausible
+  contributor to the staleness above. With no writer started the shutdown's
+  condvar wait returns immediately.
 
 * **`MaxPduSize` is read once per message, not cached.** Keeping a cached copy
   fresh would need a `MaxPduSizeChanged` subscription, and so another handler
