@@ -2618,6 +2618,19 @@ new **ADR-0016**, `docs/decisions/README.md`, `README.md`, new `SECURITY.md`
 and `CHANGELOG.md`, `roadmap.md` (P18a/P18b, the current-state table, eleven
 follow-up rows struck and six new ones), this file.
 
+**One CI failure, and it is the caveat about changing the form of a thing.**
+`check_deps.py` scans every `CMakeLists.txt` under `tests/` for a
+`FetchContent_Declare` and demands a 40-character commit pin. The FetchContent
+consumption fixture declares **smply itself**, deliberately with `SOURCE_DIR`
+and no `GIT_TAG` — and the gate had no notion that a project cannot be a
+third-party dependency of itself. It also passed rule 1 by accident, because
+"smply" appears throughout `dependencies.md` and that check is a substring
+match. Fixed by skipping the exact project name, with a `verify_gates.sh` decoy
+proving a `FetchContent_Declare(smply_x …)` is still rejected. **Run
+`check_deps.py` and not only `check_docs.py` after adding any CMake file** —
+the local run that missed this had exercised the documentation gate a dozen
+times and the dependency gate not once.
+
 **Recommended next.** There is no next phase. Two things need a person with the
 bench: **re-run an update against the device from a fresh clone consumed out of
 tree**, which closes P18a's one open acceptance item, and **commission the

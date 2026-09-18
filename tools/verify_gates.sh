@@ -207,6 +207,25 @@ expect_fail "check_deps rejects a tag pin instead of a full commit hash" \
     python3 tools/check_deps.py
 restore cmake/dependencies.cmake
 
+# 7a. Dependency inventory: the self-declaration exemption is the exact project
+# name, not a prefix and not the directory it sits in.
+#
+# tests/consumption/fetchcontent/ declares smply itself, which check_deps.py
+# skips -- nothing is a third-party dependency of itself. This plants a
+# declaration in the same file whose name merely *starts with* smply, and
+# requires it to be rejected. An exemption widened to a prefix or to that
+# directory would let a real dependency in unpinned and uninventoried, which is
+# the failure the gate exists to prevent. Same shape as the WinRT lint case
+# above: the exclusion is an identity, not a substring.
+cat >> "$WORK/tests/consumption/fetchcontent/CMakeLists.txt" <<'EOF'
+
+FetchContent_Declare(smply_extra_dependency
+    GIT_REPOSITORY https://example.invalid/x.git)
+EOF
+expect_fail "the check_deps self-exemption is the exact project name, not a prefix" \
+    python3 tools/check_deps.py
+restore tests/consumption/fetchcontent/CMakeLists.txt
+
 # 8. Docs R2: a phase marked Complete that still lists remaining work.
 # Appends a synthetic phase rather than patching a real one: an earlier version
 # rewrote "P1 ... Status: Planned", which silently became a no-op the moment P1
