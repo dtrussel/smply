@@ -43,6 +43,19 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Before anything that names CMAKE_INSTALL_INCLUDEDIR or its siblings, which
+# means before the targets: an $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+# expands the variable when the line *runs*, not when the export is written.
+#
+# It genuinely has to be here and not further down. GNUInstallDirs sets cache
+# variables, so once anything includes it the values are visible everywhere
+# afterwards -- and QCBOR's own CMakeLists does, from FetchContent below. That
+# makes a late include *appear* to work while quietly depending on a dependency
+# having been built from source: under SMPLY_USE_SYSTEM_QCBOR=ON that
+# subdirectory is never added, the variable is empty, and the installed include
+# path silently becomes the prefix root.
+include(GNUInstallDirs)
+
 include(cmake/warnings.cmake)
 include(cmake/sanitizers.cmake)
 include(cmake/dependencies.cmake)
@@ -197,11 +210,6 @@ if(SMPLY_BUILD_TESTS)
     enable_testing()
 endif()
 
-# Up here, not beside the install rules at the bottom: transports/ names
-# ${CMAKE_INSTALL_INCLUDEDIR} in an $<INSTALL_INTERFACE:> include root, and that
-# variable is expanded when the line runs, not when the export is written.
-include(GNUInstallDirs)
-
 # Portable helpers for transport adapters. Built everywhere, tested on Linux --
 # the arithmetic a BLE adapter needs is not Windows-specific, and putting it
 # here is what lets it be verified without a radio (P15a).
@@ -252,7 +260,8 @@ endif()
 # be worse than the error. One consequence: an installed *sanitizer* build would
 # not carry the runtime's link options either. Nobody ships one, and the
 # sanitizer presets do not install.
-include(GNUInstallDirs)
+# GNUInstallDirs is included at the top of this file, deliberately early; see
+# the comment there for why a late include only looks like it works.
 include(CMakePackageConfigHelpers)
 
 install(TARGETS smply smply_util
