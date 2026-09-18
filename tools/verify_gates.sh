@@ -167,7 +167,7 @@ STUB
 chmod +x "$WORK/tidy-stub"
 expect_ok "the WinRT lint exclusions are directories, not the substring 'winrt'" \
     bash -c 'expected=$(tools/sources.sh | grep -E "\.(cpp|cc)$" \
-                        | grep -v "^tests/consumer/" \
+                        | grep -Ev "^tests/consumer/|^tests/consumption/" \
                         | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/|^tests/hil/" | wc -l)
              actual=$(env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build 2>&1 \
                         | grep -oE "over [0-9]+ TUs" | grep -oE "[0-9]+")
@@ -266,6 +266,25 @@ expect_fail "check_docs R5 rejects a layout entry that does not exist" \
     python3 tools/check_docs.py
 restore docs/architecture.md
 
+# 11a-bis. Docs R5: a file named in SECOND position on a layout line.
+#
+# The distinct case, and the reason it exists. R5 read only the first token on
+# an entry line until P18, so every file listed beside another -- most of the
+# tree -- went unchecked *and* uncounted, and two entries naming files that do
+# not exist sat under a passing gate for four phases. 11a above would still
+# pass with that defect restored; this one would not.
+python3 - "$WORK/docs/architecture.md" <<'PY2'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+needle = "\u251c\u2500\u2500 tools/                      format.sh"
+assert t.count(needle) == 1, "the layout tree's tools/ entry moved"
+t = t.replace(needle, needle + "  no_such_file_for_r5.py", 1)
+p.write_text(t, encoding="utf-8")
+PY2
+expect_fail "check_docs R5 reads past the first token on a layout line" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
+
 # 11b. Docs R6: a "(planned, PN)" marker naming a phase that is Complete.
 #
 # P1 is Complete and will stay Complete, so unlike the R2 fixture this one
@@ -297,6 +316,64 @@ restore CMakeLists.txt
 restore tests/consumer/CMakeLists.txt
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 
+
+# 17. The SBOM inventory.
+#
+# quality-gates.md section 9 promised an SBOM from P0 and nothing produced one
+# until P18, so the interesting failure is not a malformed document -- it is an
+# SBOM that silently omits a component, which reads as a clean bill of health.
+# tools/sbom.py --check exists for exactly that, and this proves it fires.
+cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'
+
+FetchContent_Declare(library_with_no_licence_entry
+    GIT_REPOSITORY https://example.invalid/x.git
+    GIT_TAG        0123456789abcdef0123456789abcdef01234567)
+EOF
+expect_fail "sbom.py --check rejects a dependency with no licence entry" \
+    python3 tools/sbom.py --check
+restore cmake/dependencies.cmake
+
+# 18. The export.
+#
+# The P15a defect this guards against: install(EXPORT) names an exported target
+# <namespace><target-name>, so a target without EXPORT_NAME ships under a name
+# no consumer says, while everything in this repository still builds -- the
+# in-tree ALIAS resolves. It configured, built and installed perfectly and
+# failed only under find_package from a separate project.
+#
+# Here the violation is the blunter form of the same thing: a target the
+# package documents but does not export. The consumer's configure must fail.
+#
+# Only the negative arm is staged. The positive one -- all three consumption
+# modes building and RUNNING against a real install -- is the install-check job
+# in ci.yml, which runs on every push and is not optional, so staging it twice
+# would double the slowest thing in this script for no extra evidence.
+if command -v ninja > /dev/null 2>&1; then
+    EXPORTPROBE="$WORK/build-export"
+    substitute "$WORK/transports/CMakeLists.txt" \
+        's|^install(TARGETS smply_transport_common EXPORT smplyTargets)$|# removed by verify_gates.sh|'
+
+    export_probe() {
+        cmake -G Ninja -S "$WORK" -B "$EXPORTPROBE" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSMPLY_BUILD_TESTS=OFF -DSMPLY_BUILD_EXAMPLES=OFF \
+            ${DEPS_CACHE:+-DFETCHCONTENT_BASE_DIR="$DEPS_CACHE"} &&
+            cmake --build "$EXPORTPROBE" &&
+            cmake --install "$EXPORTPROBE" --prefix "$WORK/export-prefix" &&
+            cmake -G Ninja -S "$WORK/tests/consumption/find_package" \
+                -B "$WORK/build-export-consumer" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$WORK/export-prefix"
+    }
+
+    expect_fail "an unexported target is rejected by the find_package consumer" \
+        bash -c "$(declare -f export_probe); export_probe > '$SCRATCH/export-probe.log' 2>&1"
+
+    restore transports/CMakeLists.txt
+    rm -rf "$EXPORTPROBE" "$WORK/export-prefix" "$WORK/build-export-consumer"
+else
+    printf '  SKIP  the export (needs ninja)\n'
+fi
 
 # 14, 15 and 16. The coverage reporter.
 #

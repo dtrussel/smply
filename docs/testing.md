@@ -241,7 +241,9 @@ budget of exactly 32 bytes of payload accepted.
 What reaches the wire and when the callbacks fire, not what the rules are:
 the first packet byte-for-byte against a hand-derived vector · later packets
 carrying only `off` and `data` · `upgrade` present only when asked for · the
-first chunk taking `kFirstChunkTimeout` and the rest `chunk_timeout` · a
+each of the three deadlines going to the right request — `kFirstChunkTimeout`
+for a first packet, `kFinalChunkTimeout` for the chunk whose `off + length`
+reaches the image size (A19), `chunk_timeout` for the rest · a
 timeout retransmitting an **identical payload under a new sequence number** ·
 progress only on confirmed advance, and not on a repeated offset · completion
 **exactly once** under success, cancel, double-cancel, disconnect and
@@ -465,9 +467,12 @@ a device actually drives.
 ### 5.2 Corpora
 
 `tests/fuzz/corpus/<target>/`, seeded from the vectors the unit suites already
-build by hand (`tests/support/message_builder.hpp`, `image_builder.hpp`,
-`test_cbor.hpp`) — so seeding was extraction, not invention — plus inputs the
-soak found worth keeping.
+build by hand (`tests/support/message_builder.hpp`,
+`tests/support/image_builder.hpp`, `support/minicbor/minicbor.hpp`) — so
+seeding was extraction, not invention — plus inputs the soak found worth
+keeping. *(That third path read `tests/support/test_cbor.hpp` until P18b's
+audit; it moved to `support/` and became `smply::minicbor` in P14b, and the
+sentence did not follow it.)*
 
 A crash reproducer is committed to the corpus **with its fix**. That is what
 makes the corpus a regression suite rather than a cache: the smoke job replays
@@ -516,17 +521,28 @@ timeline and `HIL-METRIC` lines kept as evidence, and a **pass / fail /
 unavailable** verdict — a skipped case, a missing probe or an unreadable report
 is unavailable, never a pass ([ADR-0015](decisions/ADR-0015-hardware-evidence.md)).
 
-**Cases** (one `TEST_CASE` each, tag `[hil]`): presence of params, slot info and
-echo · clean update (test then confirm) · confirm-immediately · an image the
-device already runs is not uploaded (the updater's pre-flight) · the server's own
-already-present check on a re-upload (rule 9a) · interrupted upload (the
-application closes the link at half way) then `resume()` · resume after an
-application restart (two cases, run without a reflash between them) · corrupted
-image refused (one body byte flipped after signing) · test boot then reset
-without confirm ⇒ **rollback observed** · reset (disconnect seen, device back) ·
-erase, including of a slot marked for test · reconnection gives up when the
-device does not return — **manual**: a person powers the board off when the case
-prints its `HIL-MARK` line, which is why it is excluded from `--cases all`. An
+**Cases.** Fourteen `TEST_CASE`s, tag `[hil]`, which `run_hil.py` organises into
+thirteen groups — the resume-after-restart scenario is two cases that must run
+in order without a reflash between them. **Twelve groups run unattended**
+(`--cases all`); the thirteenth is manual and is excluded from it. Three
+numbers, and they are all different, so each is worth stating rather than
+picking one: *fourteen* is what `ctest` would list, *thirteen* is what the
+supervisor schedules, *twelve* is what a green unattended run reports.
+
+Presence of params, slot info and echo · clean update (test then confirm) ·
+confirm-immediately · an image the device already runs is not uploaded (the
+updater's pre-flight) · the server's own already-present check on a re-upload
+(rule 9a) · interrupted upload (the application closes the link at half way)
+then `resume()` · resume after an application restart (two cases, run without a
+reflash between them) · corrupted image refused (one body byte flipped after
+signing) · test boot then reset without confirm ⇒ **rollback observed** · reset
+(disconnect seen, device back) · erase, including of a slot marked for test ·
+**an image-group refusal carrying only what the peer's SMP version allows** —
+cheap, writes no flash, and is the measurement that resolved open question O2
+(§9 A24); run it as `--cases o2` with `SMPLY_HIL_SMP_VERSION` set to 1 and to 2
+and compare the bundles · reconnection gives up when the device does not
+return — **manual**: a person powers the board off when the case prints its
+`HIL-MARK` line, which is why it is excluded from `--cases all`. An
 earlier design had the supervisor erase the device with the programmer on that
 line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
 attach and the device re-advertises before the erase halts it. The give-up path
@@ -556,7 +572,7 @@ changes.
 `mcumgr-client` over UART is the **oracle**: device state is read back through a
 path none of the BLE clients touch. Note what that does and does not cover — the
 oracle is used by `crosscheck.py`, and **the case suite above is not oracled**.
-Its thirteen cases read device state through smply itself, which is a weaker
+Its cases read device state through smply itself, which is a weaker
 arrangement and is why the cross-check begins by proving the oracle can tell two
 states apart at all (flash A, flash B, flash A, and require that the diff names
 exactly what changed and invents nothing). A comparison whose instrument cannot

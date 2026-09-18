@@ -1,6 +1,19 @@
 # ADR-0005 — Abstract `Transport`: whole message out, byte stream in
 
-**Status:** Accepted (2026-09-04)
+**Status:** Accepted (2026-09-04); qualified by P17b, re-read in P18's audit
+(2026-09-18)
+
+*P18 note. The decision stands and the interface is unchanged. One sentence
+below needs reading carefully after A22: "with one request in flight the core
+never needs an outbound queue" is true of **the core**, and was taken to mean
+that nothing in the stack needs one. An adapter does. A device's answer can
+reach the client before the local write's own completion has been scheduled,
+so a naive "a write is in progress" flag refuses the next message on a healthy
+link — which killed an upload six cases into a bench run.
+`transports/common/send_queue.hpp` admits exactly one waiting message beside the
+one being written, and `TransportBusy` now means two really are outbound
+(PN §9 A22, `design.md` §9 and §10). `max_in_flight` is untouched, and the core
+still queues nothing.*
 
 ## Context
 

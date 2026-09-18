@@ -1,6 +1,21 @@
 # ADR-0010 — Correlation, SMP version default, and one request in flight
 
-**Status:** Accepted (2026-09-04)
+**Status:** Accepted (2026-09-04); the deferred SMP-version question resolved
+in P17c, re-read in P18's audit (2026-09-18)
+
+*P18 note. The decision stands. It deferred "should smply probe for SMP v2 and
+fall back to v1?" (open question O2), and P17c answered it from measurement
+rather than argument: **no**. The peer sets
+`CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, so under v1 two different
+image-group refusals — codes 8 and 33 — both arrive as a flat `rc=1` with no
+group, while v2 returns both intact and completes an ordinary update as well
+(PN §9 A24). So v2's benefit is real and **behavioural**, not merely
+diagnostic: `update_state_machine.cpp` recovers a lost mark-for-test by
+branching on `ImageAlreadyPending`, which v1 destroys against this server.
+What that does not justify is probing — an integrator who needs the group code
+sets one field, whereas probing spends a round trip and a fallback path on
+every session and defaulting to v2 fails outright against an older server. v1
+stays the default; `SmpClientConfig::smp_version` stays the opt-in.*
 
 ## Context
 

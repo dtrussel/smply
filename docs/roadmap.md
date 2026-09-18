@@ -10,9 +10,10 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **P18 — packaging, install/export and the 1.0 review.** It does not depend on the one open P17 item (commissioning the self-hosted runner), which is configuration and is filed against P18 in the follow-up table |
-| Last completed phase | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **663 tests** (662 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak, and **thirteen more cases on hardware** that no CI preset builds. **The portable product is complete, installable, and has met a device.** What remains is packaging and the 1.0 review. |
+| **Next phase to work on** | **None — the roadmap is complete.** P0 through P18b are all `Complete`. What remains is not a phase: two acceptance items that need hardware or repository settings this container does not have (re-running an update against a device from a fresh clone, and commissioning the `smply-bench` runner), plus the standing follow-up table below and open questions O3, O5 and O6. A session with the bench should start at those two; a session without one should start by asking whether a follow-up row has become worth doing |
+| Last completed phase | **P18b — the 1.0 documentation and ADR audit.** Every living document read against the code: thirteen contradictions and six omissions fixed, among them `design.md` describing the CBOR nesting defect P13 *fixed* as though it were the design, a threat-model row mitigating a logging subsystem that does not exist, and two documents naming a file (`src/cbor/backend_qcbor.*`) that has never existed. Sixteen ADRs reviewed and **none superseded**; four carry a `Status`-line note. `check_docs.py` R5 was widened from reading the first token of a layout line to reading all of them — 44 checked before, 116 after — because that narrowness is why two of the findings survived four phases. Before it, **P18a** decided the installed package's shape in ADR-0016 (`smply::transport_common` in, `dfu_app`/`minicbor`/`winrt_ble` out, each with a reason), proved all three consumption modes, and made the SBOM and OSV-scanning claims true instead of aspirational |
+| Previously | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **663 tests** (662 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak and a weekly dependency scan, and **fourteen more cases on hardware** — in thirteen groups, twelve of them unattended — that no CI preset builds. And, from P18, **an installed package proved out of tree three ways on every push** (`find_package`, `add_subdirectory`, `FetchContent`), carrying `smply::smply`, `smply::util` and `smply::transport_common`, with an SPDX SBOM generated from the same pins the build uses. **The product is complete, packaged, documented against itself, and has met a device.** What is deliberately not done is the 1.0 *declaration*: the version stays `0.1.0` so that promising compatibility is a decision somebody makes (ADR-0016). |
 | Blocked phases | none |
 | Open decisions | **Three open** — O3, O5, O6. O1 (licence), O2 (SMP v2 probing, resolved in P17c from hardware) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -42,7 +43,8 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P17a](#p17a) | Bench bring-up and the first real update (NUCLEO-WB55RG) | **Complete** | P16 |
 | [P17b](#p17b) | The unattended hardware case suite (`smply_hil`) | **Complete** (sequential suite green on the bench; runner not commissioned) | P17a |
 | [P17c](#p17c) | Cross-check against third-party clients, docs, close-out | **Complete** (two clients agree; the HCI half needs an elevated shell) | P17b |
-| [P18](#p18) | Packaging, install/export and 1.0 review | Planned | P17c |
+| [P18a](#p18a) | Packaging, install/export and out-of-tree consumption | **Complete** | P17c |
+| [P18b](#p18b) | The 1.0 documentation and ADR audit | **Complete** | P18a |
 
 Phases P1–P15a are portable and can be developed and verified entirely on Linux.
 P15b–P17c require Windows; P17a–P17c additionally require the hardware bench
@@ -50,11 +52,17 @@ described in `tests/hil/README.md`. P15b and P16 were nevertheless *written* on
 Linux — see their outcomes for exactly what that meant, and P17a's for what a
 radio then found.
 
-**P17 is closed.** All three sub-phases are Complete; the umbrella has no row of
-its own in the table above because P14 and P15 have none either. Its one open
-item — commissioning the self-hosted `smply-bench` runner — is configuration
-rather than code, and is filed against P18 in the follow-up table, so P18's
-dependency on P17 is satisfied.
+**P17 is closed**, and so is **P18**. P17's three sub-phases and P18's two are
+all Complete. P17's one open item — commissioning the self-hosted `smply-bench`
+runner — is configuration rather than code; P18a reviewed it, could not do it
+from a container with no bench, and left it filed in the follow-up table with
+the nightly schedule removed from `hil.yml` so that it stops queueing against a
+runner that does not exist.
+
+**Every phase in this roadmap is Complete.** Two acceptance items are not, and
+neither can be closed without hardware: re-running an update against a device
+from a fresh clone (P18a), and commissioning the runner. Both are in the
+follow-up table, owned by the bench rather than by a phase.
 
 ---
 
@@ -2706,34 +2714,202 @@ four follow-ups this phase filed are in the table below.
 <a id="p18"></a>
 ## P18 — Packaging, install/export and 1.0 review
 
-**Status: Planned** · **Depends on:** P17
+**Status: Complete** (2026-09-18) · **Depends on:** P17
 
-**Objective.** Make smply consumable, and confirm the documentation still
-describes the software that exists.
+**Split into [P18a](#p18a) and [P18b](#p18b).** The phase as scoped was two jobs
+sharing an entry — making smply consumable, and confirming the documentation
+still describes the software that exists — and its diff was never going to fit
+the ~1000-line reviewability rule in [`handoff.md`](handoff.md). Both halves
+were worked in one session, as separate commits, so the split buys
+reviewability rather than deferring anything. P14, P15 and P17 were split the
+same way and have no umbrella row of their own either.
 
-**Scope.** Install/export targets, `smplyConfig.cmake`, versioning and SemVer
-policy, `SECURITY.md`, `CHANGELOG.md`, SBOM generation, and a full read-through
-of every document against the code.
+The original entry's acceptance was **"a fresh clone, consumed out-of-tree,
+builds and updates a device; no document contains a claim contradicted by the
+code."** The first clause is split across the two sub-phases, and **the
+"updates a device" half is not met and is not claimed to be** — see P18a's
+outcome.
 
-**Tasks.** `install(TARGETS … EXPORT)` + config package; verify consumption from
-an out-of-tree project in three ways (`find_package`, `add_subdirectory`,
-`FetchContent`); generate the SBOM; write `SECURITY.md`; audit every diagram,
-API example and protocol claim in `docs/` against the implementation and fix
-drift; review all ADRs and mark any that reality superseded.
+<a id="p18a"></a>
+## P18a — Packaging, install/export and out-of-tree consumption
 
-**Files.** `cmake/smplyConfig.cmake.in`, `CHANGELOG.md`, `SECURITY.md`,
-`tests/consumer/*` extended, all of `docs/`.
+**Status: Complete** (2026-09-18) · **Depends on:** P17c
 
-**Tests.** The three consumption modes build and run a smoke program.
+**Objective.** Make smply consumable: decide what the package contains, prove
+all three ways a consumer starts, and ship the compliance artefacts the quality
+gates had been promising since P0.
 
-**Docs.** All of them — this phase is a documentation audit as much as a
-packaging one.
+**Scope.** The installed target set, `smplyConfig.cmake`, the three consumption
+modes, SBOM generation, OSV scanning, `SECURITY.md`, `CHANGELOG.md`, the SemVer
+policy, and the ADR that records the shape.
 
-**Gates.** Everything, plus a manual Definition-of-Done review
-([`quality-gates.md`](quality-gates.md) §12) against the whole repository.
+**Acceptance.** A fresh clone, consumed out of tree in all three modes, builds
+and runs; every gate green; every packaging follow-up row closed with a written
+reason.
 
-**Acceptance.** A fresh clone, consumed out-of-tree, builds and updates a device;
-no document contains a claim contradicted by the code.
+### Outcome
+
+**Completed.** The package's shape decided deliberately and recorded in
+**[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)**, which
+gives a reason per target rather than a list:
+
+* **In:** `smply::smply`, `smply::util` (already, from P15a) and
+  **`smply::transport_common`** (new). The last is the one that matters: until
+  now an out-of-tree adapter could not get `fragment_size()` or `SendQueue`
+  from the package, so it would have re-derived both — including A22, the
+  defect that killed an upload on the bench and that the entire simulated suite
+  was blind to. `Transport` has been public and normative since P4; this is the
+  first release in which implementing it out of tree is actually possible.
+* **Out, each with its reason in the ADR:** `smply::dfu_app` (application
+  policy, not protocol — and `ReconnectPolicy`'s defaults are a give-up ceiling
+  measured on one platform, which a version promise should not freeze),
+  `smply::minicbor` (scaffolding, and deliberately a codec that *disagrees*
+  with `src/cbor/`), `smply::winrt_ble` (a reference adapter to read and copy;
+  it is the one target neither clang-tidy nor cppcheck sees, so a compatibility
+  promise about it would rest on MSVC `/W4` alone).
+
+**Three consumption modes, one smoke program.** `tests/consumption/` replaces
+`tests/install/`: `smoke.cpp` plus `find_package/`, `add_subdirectory/` and
+`fetchcontent/`. One program on purpose — three would drift, and the drifted
+one would be the mode that had quietly stopped checking. Each mode catches
+something the others cannot, and the table in
+[`quality-gates.md`](quality-gates.md) §13 says which.
+
+**Two packaging defects found and fixed**, neither of which any gate could have
+seen before: the package installed `version.hpp.in`, the *un-configured*
+template, beside the generated `version.hpp`; and the installed include root
+was a hard-coded `include` rather than `CMAKE_INSTALL_INCLUDEDIR`.
+
+**The compliance claims are now true.** `quality-gates.md` §9 and `security.md`
+T14 had promised an SPDX SBOM and weekly OSV scanning since P0 and neither
+existed. `tools/sbom.py` emits SPDX 2.3 from the same pins the build uses;
+`tools/sbom.py --check` fails when a `FetchContent_Declare` has no licence
+entry, because an SBOM silently missing a component reads as a clean bill of
+health. `.github/workflows/osv.yml` scans it weekly — **advisory, and it has
+not yet fired.**
+
+**Two gate self-checks added**, because a gate that cannot fail is worse than
+none: `sbom.py --check` must reject a dependency with no licence entry, and a
+target dropped from the export set must make the `find_package` consumer fail
+to configure. The positive arm of the second is the `install-check` CI job
+itself, which runs on every push.
+
+**Decisions taken, both of which the roadmap had left open.**
+`WinRtBleTransport::send_counters()` **stays** — since the adapter is not in the
+package it carries no compatibility promise, and dropping it would cost the
+bench the only evidence that the A22 fix does anything (recorded against
+ADR-0015). The `smply-bench` runner is **not commissioned**: it needs the
+physical bench and repository settings. `hil.yml` lost its nightly `schedule:`
+while that stays true, because it was queueing a 90-minute timeout every night
+against a runner that does not exist; `workflow_dispatch` and the commissioning
+steps remain in the file.
+
+**Version left at `0.1.0`, deliberately.** The policy is written —
+`CHANGELOG.md`, `SECURITY.md`, ADR-0016 decision 5 — and says what the 1.0
+surface would be. Declaring 1.0 is a compatibility promise and belongs to a
+person, not to the packaging being finished.
+
+**Remaining in this phase.** None.
+
+**Not met, and not claimed.** The original P18 acceptance said "a fresh clone,
+consumed out-of-tree, builds **and updates a device**". The consumption half is
+proved on every push, in three modes. **The device half was not re-run**: this
+session had no radio and no bench, and the runner was deliberately not
+commissioned, so nothing here re-demonstrates an update against hardware. What
+stands is P17's evidence, against the P17 tree. The re-run is filed as
+follow-up work against the bench rather than allowed to read as met — it is the
+one criterion of this phase that a person with the board has to close.
+
+<a id="p18b"></a>
+## P18b — The 1.0 documentation and ADR audit
+
+**Status: Complete** (2026-09-18) · **Depends on:** P18a
+
+**Objective.** Read every document against the code and fix the drift. P17
+changed behaviour after most of these documents were written, so a document
+written before hardware may now be **wrong** rather than merely stale.
+
+**Acceptance.** No document contains a claim contradicted by the code; every ADR
+reviewed against reality and its verdict recorded.
+
+### Outcome
+
+**Completed.** Every living document read against the implementation. Thirteen
+contradictions and six material omissions found and fixed. The ones worth
+naming:
+
+1. **`design.md` section 3 stated the CBOR nesting bound backwards** — "QCBOR's
+   `QCBOR_MAX_ARRAY_NESTING` of 15 … is below `limits::kMaxCborNesting`, so
+   QCBOR's bound is the one that fires first". `kMaxCborNesting` is **14**, and
+   P13 made it 14 precisely so that smply's bound fires first. So the document
+   described the *defect* P13 fixed as if it were the design — and contradicted
+   `architecture.md`, which had it right. The worst kind of drift: not out of
+   date, but authoritative and wrong, in the file a maintainer reads before
+   touching `src/cbor/`.
+2. **`security.md` T12 and `architecture.md` section 8 described a logging
+   policy for a subsystem that does not exist.** "Log levels carry no payload
+   bytes by default", "hashes are truncated to 8 hex characters", "no log
+   statement in the library formats a raw buffer at default verbosity" — smply
+   has **no logging at all**. A threat-model row reading as though a mitigation
+   were implemented, when there is nothing to mitigate in, is worse than an
+   empty row. Restated as what is actually true, which is stronger.
+3. **ADR-0007 and `dependencies.md` both named `src/cbor/backend_qcbor.*` as
+   "the only file that names QCBOR".** That file has never existed — P5 decided
+   against it and recorded the deviation in two *other* documents. Anyone
+   evaluating how replaceable QCBOR is would have gone looking for it.
+4. **`design.md` never described the P17a rewrite of `for_each_map_in_array`.**
+   The child-reader walk and, more importantly, *why it must not be tidied back
+   into enter/exit*, lived only in `dependencies.md` and PN section 9 A18 — not
+   in the design document that owns `src/cbor/`.
+5. **`design.md` section 6 and `testing.md` section 3 described one upload
+   deadline where there are three**, and `api.md`'s limits table omitted
+   `kFinalChunkTimeout` entirely. Both are P17a's change, four phases late.
+6. **Three documents said "thirteen" hardware cases; there are fourteen**, in
+   thirteen groups, twelve of which run unattended — and `testing.md`'s
+   enumerated list was missing the O2/A24 case outright. Three numbers were in
+   circulation; all three are now stated, because they measure different things.
+7. **`README.md` claimed "Phases P0–P16 complete"** while its own body described
+   P17a–P17c, and claimed smply is "fully testable on Linux, macOS and Windows"
+   when no macOS job has ever existed.
+8. Two follow-up rows in this file asserted things fixed phases earlier: that
+   `smply::util` is not installed (P15a installed it), and that
+   `install(EXPORT)` would reject `$<LINK_ONLY:qcbor::qcbor>` (P15a proved the
+   prediction wrong — the rejection came from `smply_internal_options`).
+
+**The documentation gate was widened, because it is why two of those survived.**
+`check_docs.py` R5 read only the **first** token on a layout line, and most of
+`architecture.md` section 10's tree names several files per line — so
+`fake_transport.*  manual_clock.hpp  message_builder.hpp` was one checked entry
+and two unread ones, and the entries naming files that do not exist were never
+looked at *and* never counted as skipped. The printed skip count, which exists
+specifically to expose a rule that has narrowed, could not see this narrowing.
+R5 now reads every path-shaped token on an entry line and its continuations:
+**44 checked before, 116 after**, and `verify_gates.sh` has a decoy for the new
+half that would pass under the old regex.
+
+**ADR review: sixteen read, none superseded.** Every decision still holds. Four
+carry a `Status`-line note — the only edit ADR-0013 permits to an accepted
+decision — where something learned since changes how to read it:
+
+* **ADR-0005**: "with one request in flight the core never needs an outbound
+  queue" is true of the *core*, and was read as true of the stack. A22 showed
+  an adapter needs a one-slot queue.
+* **ADR-0007**: QCBOR stands, but it has a defect smply works around, plus the
+  `backend_qcbor.*` correction above.
+* **ADR-0010**: its deferred SMP-version question (O2) was answered from
+  measurement in P17c.
+* **ADR-0015**: its evidence standard is what `send_counters()` serves, and
+  P18a's decision to keep it is recorded there.
+
+**Remaining in this phase.** None.
+
+**Discovered / follow-up.** Two, both filed below. R5 still cannot read a glob,
+so `server_simulator.*` and its kind remain unchecked by anything but a reader —
+the audit fixed those by hand and the gate would not catch them coming back.
+And `protocol-notes.md` now carries two kinds of verification date, read from a
+source and observed on a radio; nothing distinguishes them mechanically, so a
+fact verified only by reading still looks like a fact verified on hardware
+unless its §9 entry says otherwise.
 
 ---
 
@@ -2758,10 +2934,10 @@ them.
 
 | Found in | Item | Absorb into |
 | -------- | ---- | ----------- |
-| P0 | `install(EXPORT)` for a target that links a `FetchContent`-provided static library needs care: `target_link_libraries(smply PRIVATE qcbor)` still records `$<LINK_ONLY:qcbor::qcbor>` in smply's interface, which `install(EXPORT)` rejects unless QCBOR is exported too. Options: require `find_package(qcbor)` for installed builds, or re-export. Install/export was already scoped to P18; this is the specific problem it must solve. | P18 |
+| ~~P0~~ | ~~`install(EXPORT)` … records `$<LINK_ONLY:qcbor::qcbor>` in smply's interface, which `install(EXPORT)` rejects unless QCBOR is exported too.~~ **The prediction was wrong, and P15a said so at the time — this row simply outlived the correction, which P18b's audit caught.** QCBOR v1.6.1 sets both `BUILD_INTERFACE` and `INSTALL_INTERFACE` and carries its own install/export rules, so brought in by `FetchContent_MakeAvailable` it installs alongside us and `find_dependency(qcbor)` resolves it; CMake never objected. The real rejection came from **our own `smply_internal_options`**, fixed by linking it `$<BUILD_INTERFACE:…>`. Worth keeping as a shape: a predicted obstacle that is never re-checked stays on a list long after the real one was solved. | — |
 | ~~P0~~ | ~~`check_docs.py` R4 is a line-based heuristic untested against templates and nested namespaces.~~ **Done in P1**: three bugs found and fixed (nested `detail` namespaces, brace-depth tracking, attribute-prefixed declarations). Still a heuristic; expect further hardening as headers grow. | — |
 | ~~P0~~ | ~~`cppcheck` runs only in the `gates` CI job (it is absent from the development container), so a local `tools/lint.sh` is weaker than CI.~~ **Corrected in P7**: cppcheck *is* installable in the container (`apt-get install -y cppcheck`), and the premise cost a red CI cycle before that was tried. Install it and run `tools/lint.sh` in full before pushing. | — |
-| P0 | The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl`, which requires a configured MSVC developer environment. Documented in the CI workflow; a developer configuring by hand outside a Developer Command Prompt will get a confusing failure. Consider a clearer diagnostic. | P18 |
+| ~~P0~~ | ~~The `windows-msvc` and `core-without-winrt` presets set `CMAKE_C_COMPILER=cl` … consider a clearer diagnostic.~~ **Closed in P18a as a documentation fix, because a code one is not possible.** CMake runs its own compiler test before any line of ours executes, so there is nowhere to put a better message: by the time our `CMakeLists.txt` is read, the configure has already failed. `README.md`'s build section and `handoff.md` say to load the developer environment first (`cmd /c "call VsDevCmd.bat -arch=x64 && …"`), which is the only remedy there is. | — |
 | P1 | `Result` has no monadic operations (`and_then`, `transform`). std::expected has them, smply's subset does not, so using one would break the C++20 build. **P6 did not need them** — the client's chains are short and each step wants a different error message — so the ban stays explicit. Reconsider if P7–P12 start hand-rolling the same three-line unwrap. | P12 |
 | P5 | The `Writer` has no way to write a nested map or an array under a key. Nothing in MCUmgr's *request* shapes needs one — every request smply sends is a flat map — so it was not built. If a future group needs it, add it rather than hand-rolling the bytes. | when needed |
 | P5 | `for_each_map_in_array` visits map elements only. An array of scalars would need a separate visitor. No MCUmgr response in scope uses one. | when needed |
@@ -2797,13 +2973,13 @@ them.
 | ~~P1~~ | ~~Clang's `compiler-rt` is absent in the dev container, so `linux-clang-asan-ubsan` can only be verified in CI.~~ **Wrong, corrected in P13**: `apt-get update && apt-get install -y libclang-rt-18-dev` installs it — the package `ci.yml` had been installing for its own sanitizers job since P0. Nobody had tried it. All seven Linux presets, libFuzzer included, build and run locally now. **The P6 half of this row still stands**: GCC's ASan does not report stack-use-after-scope for a dangling callback capture, so the two sanitizer jobs are not interchangeable. | — |
 | P14a | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics and tests. If an adapter is ever seen branching on it — "drain only if pending" — that is a bug in the adapter, but it may also be a sign the class should offer a blocking `wait_and_drain()` instead of tempting people. | when an adapter asks |
 | P14a | The client-context assertion covers `SmpClient` only. A caller that used `ImageManagement` from a second thread but never reached the client on it — constructing one, say, or reading `transferred()` — would not trip it. Closing that needs the group clients to be pimpl'd, which is a bigger change than the check is worth today. | when the groups are next reworked |
-| P14a | `smply::util` is not installed or exported, because nothing is until P18. An adapter consuming smply from an install tree cannot link `Dispatcher` yet, which P15 will notice first. | P18 |
+| ~~P14a~~ | ~~`smply::util` is not installed or exported, because nothing is until P18.~~ **Done in P15a, which is exactly what this row predicted would notice it** — and the row was never struck, so it still claimed the opposite four phases later until P18b's audit. `smply::util` is installed, exported, and carries an `EXPORT_NAME` because without one it shipped as `smply::smply_util`. | — |
 | P14b | The example demonstrates only the **happy path**. A `--fail-confirm` mode showing MCUboot's revert — the device booting the new image, the application declining to confirm, the next reset undoing it — would demonstrate the one safety property the whole design turns on, and needs the stub to model a boot failure. **Considered in P16 and deliberately deferred**: P16 touched the examples, so this row's trigger fired, but modelling a boot failure serves a different goal than shipping the Windows tool. It is not overlooked; it is waiting for a session that wants to demonstrate revert. | when revert is demonstrated |
 | P14b | `examples/cli_dfu/stub_device.cpp` answers the five commands one clean update needs. It does **not** model `erase`, a second image pair, session resume by `sha`, or offset correction beyond the trivial case. That is deliberate — `ServerSimulator` is the reference — but a reader may mistake the stub for one. | — (by design) |
-| P14b | `support/minicbor/` is not installed or exported, and neither is `smply::util`. An adapter consuming smply from an install tree gets neither. P18 has to decide whether `smply::util` is part of the installed package (it should be — P15's adapter needs it) and whether `minicbor` stays out (it should). | P18 |
-| P15a | **The install check covers `find_package` only.** `add_subdirectory` and `FetchContent` consumption are untested, and both are how a consumer is most likely to start. P18's task list already names all three. | P18 |
+| ~~P14b~~ | ~~P18 has to decide whether `smply::util` is part of the installed package and whether `minicbor` stays out.~~ **Decided in P18a exactly as this row guessed**, and written down in [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) with the reasoning rather than the conclusion: `smply::util` is in, because ADR-0004 makes marshalling the adapter's obligation and an adapter cannot meet it without `Dispatcher`; `smply::minicbor` is out, because it is scaffolding *and* because it is deliberately a second CBOR implementation that disagrees with `src/cbor/` — shipping it would offer a consumer a codec smply itself does not use. | — |
+| ~~P15a~~ | ~~**The install check covers `find_package` only.** `add_subdirectory` and `FetchContent` consumption are untested, and both are how a consumer is most likely to start.~~ **Done in P18a.** `tests/consumption/` holds one smoke program and three projects that build it — `find_package/`, `add_subdirectory/`, `fetchcontent/` — and `tools/check_install.sh` runs all three against a Release install on every push. One program, deliberately: three would drift, and the drifted one would be the mode nobody noticed had stopped checking. FetchContent uses `SOURCE_DIR` rather than `GIT_REPOSITORY`, so the gate tests the working tree instead of the last commit. | — |
 | P15a | An installed **sanitizer** build no longer carries the sanitizer's link options to consumers, because they ride on `smply_internal_options`, now held to `$<BUILD_INTERFACE:>` so the export is possible at all. Nobody ships one; if that changes, the options need a home outside that target. | when somebody ships one |
-| P15a | `smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter. P15b's adapter is in-tree so it does not care, but a third-party adapter would. Decide with the rest of the packaging. | P18 |
+| ~~P15a~~ | ~~`smply::transport_common` is header-only and **not installed**, so an out-of-tree adapter cannot use the fragmenter.~~ **Installed in P18a, and it is the decision the packaging half turned on.** The row understated the cost: by P17b the target also held `SendQueue`, which *is* the fix for A22 — a defect that killed an upload six cases into a bench run and that the whole simulated suite was blind to. Leaving the target out would not have kept a third-party adapter simple; it would have made that adapter re-derive the fragmentation arithmetic *and* the send-admission race, bug included. Installed headers keep their in-tree spelling from `<prefix>/include/smply/transports`. | — |
 | ~~P16~~ | ~~**`examples/winrt_ble_dfu/` has never been run**, and P16's acceptance criterion — completing an update against a real device — is therefore outstanding rather than met.~~ **Done in P17a**: five complete updates in both directions against the NUCLEO-WB55RG, device state confirmed over UART. The tool itself needed no fix; it gained elapsed-time stamps and the client counters, without which the first defect found was invisible. | — |
 | ~~P17a~~ | ~~**`ReconnectPolicy`'s shape assumes a connect that fails fast, and WinRT's does not.** `WinRtBleTransport::connect()` blocks inside `FromBluetoothAddressAsync`/`GetGattServicesForUuidAsync` until the device is back — about 6 s after a swap reset — so attempt 1 succeeded in every P17a run and the doubling schedule never ran. The policy still bounds a device that never returns, but its delays are not what paces the reconnect on this platform. Decide from the P17b measurements whether the defaults change or whether the policy should be documented as a give-up bound rather than a pacing schedule.~~ **Decided in P17b: the defaults stand and the policy is documented as a give-up bound, not a pacing schedule** (`support/dfu_app/reconnect_policy.hpp`). The measurements say the delays cannot pace anything on this platform -- the blocking connect returns when the device is back -- and the discovery retry now absorbs the GATT-cache window inside a single attempt as well. What the defaults still buy is a bounded refusal to hang, which is the part worth keeping. | — |
 | P17a | **QCBOR mishandles consecutive indefinite-length breaks** (`dependencies.md`, PN §9 A18): pinned 1.6.1 and `master` alike. Worked around in `cbor::Reader`; not yet reported upstream, which needs the user's go-ahead because it is an outward-facing action. The minimal reproduction is `{"images": [_ {"slot": 0}], "x": 5}` walked with `EnterArrayFromMapSZ` / `EnterMap` / `ExitMap` / `PeekNext`. | when the user agrees to file it |
@@ -2814,20 +2990,20 @@ them.
 | ~~P17b~~ | ~~**The adapter treats `TransportBusy` as a terminal upload error under load** (protocol-notes §9, A22). `send()` returns it when a write coroutine has not cleared `sending` before the device's SMP notification arrives, and the upload ends rather than retrying -- although `TransportBusy` is a retry request (design.md §9). Either the adapter clears `sending`/serialises differently, or the upload driver retries on `TransportBusy` as it does on a timeout. Needs a bench to verify.~~ **Fixed in P17b** by the first of the two, and the driver was deliberately left alone: a retry there would burn `max_chunk_retries` with zero elapsed time, because nothing below `FirmwareUpdater` owns a clock (design.md §6). The adapter admits one waiting message (`transports/common/send_queue.hpp`); the sequential suite is green three times over with `deferred_sends` non-zero, and a negative control without the slot reproduces the failure. | — |
 | ~~P17b~~ | ~~**Windows returns a GATT service with no SMP characteristic for ~1-2 s after a rapid reconnect** (A22), even with `BluetoothCacheMode::Uncached` -- the platform's own service cache. `connect()` (or the application) should retry characteristic discovery a few times to ride it out. A real Windows DFU tool needs this.~~ **Addressed in P17b**, with the weakest evidence of anything in the phase and said so plainly: `connect()` re-runs *service* discovery six times, 400 ms apart, only while a collection is empty. The behaviour did not reproduce in five full runs and discovery succeeded first time in 20 of 20 measured attempts, so only the error path is proven (by forcing the condition), not the benefit. Reopen this row rather than assume it is closed if the string ever appears again. | — |
 | ~~P16~~ | ~~`ReconnectPolicy`'s defaults (500 ms doubling to 8 s, six attempts) are a guess made without hardware. **P17a measured the swap-reset window at ≈ 6.3 s** and found that WinRT's blocking connect makes the first attempt succeed regardless (see the P17a row above); the plain-reset window is in `tests/hil/tools/measure_reset.py`'s output. The defaults are set from the P17b cases, which also measure the revert window.~~ **Settled in P17b: unchanged, and re-documented.** See the P17a row above; the numbers behind it are in `build/hil-evidence/` and summarised in the header comment. | — |
-| P16 | **`smply::dfu_app` is not installed or exported**, like `smply::minicbor` and `smply::transport_common` before it. An out-of-tree application writing its own adapter would want the reconnect policy. Decide with the rest of the packaging. | P18 |
+| ~~P16~~ | ~~**`smply::dfu_app` is not installed or exported.** An out-of-tree application writing its own adapter would want the reconnect policy.~~ **Decided in P18a: it stays out** ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)). It is application policy rather than protocol — a file reader and a backoff — and O4 already decided the library does not ship file I/O. The sharper reason is P17b's own finding: `ReconnectPolicy`'s defaults are documented as a *give-up ceiling* justified by measurements on one platform, where a blocking `connect()` makes the schedule unable to pace anything. Freezing those numbers into a compatibility promise would promise something that means nothing off that bench. Both examples show how to write the twenty lines instead. | — |
 | P16 | `--flaky-reconnect` refuses attempts in the *application*, not in the stub device: the link is never actually offered and rejected. That is enough to drive the policy and `reconnect_failed()`, but it does not model a device that accepts a connection and then drops it mid-handshake. | when the stub is next extended |
 | ~~P15b~~ | ~~**`smply::winrt_ble` has never been run.** CI compiles it and links a smoke test; no radio has seen a byte of it.~~ **Done in P17a**: discovery, the CCCD write, notification delivery, the write path and disconnect handling all worked unchanged against the NUCLEO-WB55RG; MTU is negotiated after connect, which the per-`send()` `MaxPduSize` read handles. `close()`'s write grace and a link dropped mid-write remain for P17b's interrupted-upload case. | — |
-| P15b | **The adapter is outside clang-tidy and cppcheck** (`tools/lint.sh` excludes `transports/winrt_ble/`), because both run from a Linux build. Running clang-tidy on the Windows runner — LLVM is preinstalled there — would recover the analysis. Weigh it against a second toolchain in CI. | P18 |
+| P15b | **The adapter is outside clang-tidy and cppcheck** (`tools/lint.sh` excludes `transports/winrt_ble/`, `examples/winrt_ble_dfu/` and `tests/hil/`), because both run from a Linux build. Running clang-tidy on the Windows runner — LLVM is preinstalled there — would recover the analysis. **Weighed in P18a and not done, which is why it is still open rather than struck.** It is now load-bearing in a way it was not when filed: this exclusion is the stated reason `smply::winrt_ble` is not in the installed package (ADR-0016), so recovering the analysis is the thing that would make installing it reasonable. Whoever wants the adapter in the package should do this first. **Never widen the filter to the substring `winrt`** — `verify_gates.sh` plants a portable decoy beside each excluded directory. | when the adapter is wanted in the package |
 | P15b | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is documented as the device's `rsn` string, so the adapter drops the `HRESULT` behind every WinRT failure and reports only a call-site tag. That is exactly the detail wanted when debugging a transport nobody can attach a debugger to. Either widen `reason()`'s contract or add a detail field. | when the adapter is next touched |
 | ~~P15b~~ | ~~`close()` waits at most five seconds for a write already on the air, then proceeds. Bounded rather than unconditional because an application that cannot be shut down is worse than one that abandons a stuck write — but the number is a guess made without a radio. P17a's clean updates never exercised it; P17b's interrupted-upload case closes the link mid-write and measures it.~~ **Measured in P17b: 2 ms**, closing the link mid-upload. So the five seconds is a bound with three orders of magnitude of headroom rather than a wait anything pays, and it stays as it is — the send queue's waiting message is *discarded* rather than flushed on close, so the worst case is still one message's remaining fragments. | — |
-| P15b | `smply::winrt_ble` is **not installed or exported**, like `smply::transport_common` before it. P16's example is in-tree so it does not care; a third-party consumer would. | P18 |
-| P17c | **Commissioning the self-hosted `smply-bench` runner.** `hil.yml` is committed and advisory, but no runner is registered, so the hardware suite has only ever run from this bench by hand. This is the one P17 item deliberately left open, and it is configuration rather than code — which is why `hil.yml` was committed in P17b: so that commissioning changes no source. Note that the cross-check's HCI half needs BTVS running **elevated**, which a runner service can provide and an interactive session cannot; that is part of commissioning, not a separate problem. | P18 |
+| ~~P15b~~ | ~~`smply::winrt_ble` is **not installed or exported**, like `smply::transport_common` before it.~~ **Decided in P18a: it stays out**, and unlike `transport_common` that is the answer rather than a deferral ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)). It is a *reference* adapter — source to read and copy — and it is the one target neither clang-tidy nor cppcheck sees, so a compatibility promise about its surface would rest on MSVC `/W4` alone, and an installed-package check for it could only run on the Windows CI job. What a Windows consumer needs *from the package* — the core, `Dispatcher`, the framing and the queue — is all installed. The CMake is already shaped for a reversal (`EXPORT_NAME winrt_ble` is set) if a consumer ever asks. | — |
+| P17c | **Commissioning the self-hosted `smply-bench` runner.** `hil.yml` is committed and advisory, but no runner is registered, so the hardware suite has only ever run from the bench by hand. Configuration rather than code — which is why `hil.yml` was committed in P17b, so that commissioning changes no source. The cross-check's HCI half needs BTVS running **elevated**, which a runner registered as a *service* can provide and an interactive session cannot; that is part of commissioning, not a separate problem. **P18a reviewed it and could not do it** — it needs the physical bench and repository settings, and a container has neither — so it stays open, now owned by the bench rather than by a phase. P18a did remove the nightly `schedule:` while that remains true: it was queueing a 90-minute timeout every night against a runner that does not exist, and a standing reminder that only ever says the same thing is noise. `hil.yml`'s header carries the steps and the schedule block to restore. | a session with the bench |
 | P17c | **HCI capture does not work on this bench, and the remaining lead is a WPP provider.** BTVS never opens its remote listener here (`Wireshark Viewer: Disabled`, `Connection failed`, no socket held), and enabling the *manifest* provider `Microsoft-Windows-BTH-BTHPORT` by hand -- every keyword, level 255, `logman query` confirming it attached -- captured **zero Bluetooth events across three minutes of BLE traffic**. What is left untried at its last step is Microsoft's own recording profile, which enables `Microsoft.Windows.Bluetooth.WPP.BthPort` `{d88ace07-...}`, converted with `BTETLParse.exe -pcap`; `tests/hil/README.md` has the commands and the two syntax traps. Until that lands, Tier B of the cross-check is decode-verified against the device's recorded bytes and **unproven against a live capture**. | when a capture is wanted, or with the runner |
 | P17c | **A shipped recovery path is dead against a server that translates v1 errors.** `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` a v1 request never carries that code (protocol-notes §9 A16, measured as A24). Widening the branch to accept a group-less `BadState` would be safe for all three codes A16 lists — each wants the same re-read-and-replan — but it changes the updater's retry logic on the strength of one server's configuration, so it is a decision for review rather than for a cross-check phase. The specific code was not provoked directly: reaching it needs a pending swap plus a mark for a third image, and this bench holds two. | when the updater's retries are next reviewed |
 | P17c | **The UART client arm could not complete an upload, so the cross-check is two clients and an oracle.** `mcumgr-client` 0.0.9 over the shell transport reads state reliably but failed three different ways mid-transfer (protocol-notes §9, "the UART arm is an oracle, not a third client"), and the peer's console UART carries an echoing shell and a deferred raw-UART log backend on the same stream. To make it a third *client*, a bench revision would have to move logs off USART1 — RTT, say — or use the raw UART MCUmgr transport instead of the shell one. Worth doing only if a UART comparison is wanted; smply implements no UART transport. | when a UART comparison is wanted |
 | P17c | **`smp_decode.py`'s CBOR reader and SMP reassembler are a second implementation of things smply already has.** They exist because the decode must not be inferred from the tools being compared (ADR-0015), and they are self-tested against the device's own recorded bytes — but two decoders can drift, and a divergence traced with a buggy one would be worse than no comparison. If the cross-check grows, consider driving it through smply itself (a small `--decode` mode over the public reader) rather than growing the Python copy. | if the cross-check grows |
 | P17b | **A `TransportBusy` seen again would need a clock-driven backoff, and that needs an ADR.** The transport now absorbs the handover window itself, so anything still reaching the upload driver means the medium genuinely is not draining. The driver cannot help: `is_transient()` excludes `TransportBusy` deliberately because nothing below `FirmwareUpdater` owns a clock, and a retry there would spend the whole budget with zero elapsed time (design.md §6). Giving a lower layer a clock, or giving the updater the retry, touches ADR-0003 and ADR-0004. Do not patch it quietly. | if it is seen again |
-| P17b | **`WinRtBleTransport::send_counters()` is public API that P18 will have to keep or drop.** It exists because a green bench run is otherwise indistinguishable from a run in which the race did not happen (ADR-0015), and it is the only counter of its kind on any transport. Decide with the packaging whether adapter diagnostics belong in the `Transport` contract, in a per-adapter header, or nowhere. | P18 |
+| ~~P17b~~ | ~~**`WinRtBleTransport::send_counters()` is public API that P18 will have to keep or drop.**~~ **Kept in P18a, as a per-adapter diagnostic** — the middle of the three options this row listed, and the packaging decision is what makes it cheap. Since `smply::winrt_ble` is not in the installed package, the method carries no compatibility promise at all, while dropping it would cost the bench the only evidence that the A22 fix does anything: a green suite with `deferred_sends == 0` says the race did not fire, not that the queue absorbed it. Putting it in the `Transport` contract was rejected — that means superseding ADR-0005 to generalise from one adapter. Recorded against ADR-0015 and in `api.md`. | — |
 | P17b | **A write that fails mid-message leaves the device's reassembler holding a partial message**, and nothing on the link says so. The adapter therefore discards its waiting message on failure rather than writing it into the abandoned tail, and the request times out instead — but a *device-side* reassembler with no framing to resynchronise on (ADR-0006, PN §8) recovers only because the next message's header happens to follow a completed length. Whether Zephyr's `smp_bt` reassembler discards a partial message on any timeout of its own is unverified, and the answer decides whether the discard is sufficient or merely usually sufficient. | when the reassembler is next read |
 | P15b | The adapter connects by **Bluetooth address only**. Scanning, name resolution and pairing are P16's, but if the example finds it needs a `connect_by_name`, it belongs here rather than there. | P16 |
 | P15a | `-Wnull-dereference` is gone from the GCC set. If a future GCC stops false-positiving inside libstdc++ under `-O2`, it is worth restoring — it is a genuinely useful check, and it was dropped for the compiler's behaviour rather than for its value. | when GCC improves |
@@ -2836,3 +3012,8 @@ them.
 | P13 | `fuzz_smp_client_rx` drives a client with **one** pending request, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5) — that needs several requests completed and a late response for a retired one. The unit suite covers it; the fuzzer does not. | when the target is next touched |
 | P13 | **The elevated per-directory coverage gates are measured, not enforced.** `coverage.sh --enforce` applies only the two whole-core thresholds, because gcovr has no per-directory threshold and four extra invocations would turn one number into five that can disagree. A directory could fall below 90 % branch with CI green; only a person reading §6 would notice. Consider a per-directory pass if one ever regresses unnoticed. | when one regresses |
 | P13 | `nightly-fuzz-soak` opens an issue on a find and dedupes on one open issue per target, which means a *second, different* crash in a target with an issue already open is silent until the first is closed. Acceptable while finds are rare; revisit if they stop being. | when finds are common |
+| P18a | **The "updates a device" half of P18's acceptance was not re-run.** The criterion is "a fresh clone, consumed out-of-tree, builds **and updates a device**". The consumption half is proved on every push in three modes; the device half needs a radio and a bench, and P18a had neither. What stands is P17's evidence against the P17 tree — and P18a changed the install rules, not the protocol path, so there is no reason to expect a difference. That is a reason to expect it to pass, not evidence that it does. Closing it is one run of `winrt_ble_dfu` built out of a `find_package` consumer rather than in-tree. | a session with the bench |
+| P18a | **`.github/workflows/osv.yml` has never fired.** It was written from a container with no way to trigger a schedule, so its first evidence is its first Monday. Two things to check then: that `google/osv-scanner-action` accepts the SBOM `tools/sbom.py` emits (the SPDX shape is right but has not been through that scanner), and that the `security-events: write` permission is what the SARIF upload actually needs. Until then `quality-gates.md` §9 describes a job that exists rather than one that has run. | at its first scheduled run |
+| P18a | **An installed package cannot be consumed by the examples.** `cli_dfu` links `smply::minicbor` and `smply::dfu_app`, neither of which is installed (deliberately, ADR-0016), so the examples build in-tree only. That is correct for what they are — worked code to read — but it means "build the example against an install" is not a thing a consumer can do, and somebody will try. Either say so in `examples/README` terms, or give `cli_dfu` a mode that does not need the stub device. | when a consumer tries it |
+| P18b | **R5 still cannot read a glob.** `server_simulator.*` and `update_state_machine.*` are skipped, so a layout entry written with a glob is checked by nobody. P18b fixed two such entries by hand and the gate would not catch them coming back. Resolving a glob against `git ls-files` is not hard; what stopped it was that the skip count is currently honest and a half-working resolver would make it less so. | when a glob entry drifts again |
+| P18b | **`protocol-notes.md` now carries two kinds of verification date and nothing distinguishes them mechanically.** "Verified 2026-09-04" means *read from Zephyr and MCUboot source*; "2026-09-08" means *observed on a radio*. P17 found seven facts of the first kind that the second contradicted, so the difference matters — but a §9 entry that does not say which it is reads as though both apply. A per-fact marker (`[source]` / `[bench]`) would make it checkable; today it is prose discipline. | when a third verification source appears |

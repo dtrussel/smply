@@ -280,8 +280,14 @@ entry when it stops being true.
   `FirmwareUpdater::reconnect_failed()` — the output says "giving up after N
   reconnection attempts". If it ever starts failing by timing out instead, ctest
   still reports it green and it is testing nothing.
-* **Build every preset.** `cmake --list-presets` shows **seven** Linux ones and
-  **all seven link here**, `linux-clang-asan-ubsan` included.
+* **Build every preset.** `cmake --list-presets` shows **ten** Linux ones and
+  **all ten build here**, `linux-clang-asan-ubsan` included: `linux-gcc`,
+  `linux-clang`, `linux-gcc-release`, `linux-gcc-coverage`,
+  `linux-gcc-fallback-expected`, `linux-gcc-cxx23-std-expected`,
+  `linux-gcc-asan-ubsan`, `linux-clang-asan-ubsan`, `linux-clang-tsan` and
+  `linux-clang-fuzz`. This caveat said *seven* until P18b's audit counted them;
+  it had been wrong since at least P15a, which added `linux-gcc-release`. A
+  number in a caveat is as capable of drifting as one in a document.
 * **A green hardware suite means nothing unless `deferred_sends > 0`.** Zero
   everywhere says the send-admission race did not happen that run, not that the
   fix absorbed it. The counters come out as `HIL-METRIC deferred_sends` /
@@ -342,6 +348,18 @@ entry when it stops being true.
   disguise — a green build that is not a build of the tree you have. If a
   preset fails in a way that makes no sense, `rm -rf build` before believing
   it.
+* **A documentation gate that passes has checked less than you think.**
+  `check_docs.py` R5 prints "checked N, skipped M" for exactly this reason, and
+  the number moved from 44 to 116 in P18b when the rule was widened from
+  reading the *first* token on a layout line to reading all of them — two
+  entries naming files that do not exist had sat under a passing gate for four
+  phases, uncounted as skips because the rule never looked at them at all. It
+  still skips globs (`server_simulator.*`), so an entry written with one is
+  checked by nobody. More generally: R1 to R6 catch *shapes* of drift, not
+  claims. Nothing mechanical noticed that `design.md` described the CBOR
+  nesting defect P13 fixed as though it were the design, or that `security.md`
+  mitigated a logging subsystem that does not exist. Those need a person
+  reading the document against the code, which is what P18b was.
 * **Read the uncovered-line list, not the percentage.** In P8 the gap between
   92 % and 95 % was a dozen genuinely reachable bounds checks, not the
   unreachable guards the number suggested. In P9 it exposed something worse:
@@ -349,6 +367,37 @@ entry when it stops being true.
   because a fixture-builder convenience kept two fields agreeing. *A
   malformation knob must change exactly one field, or it cannot express an
   inconsistency.*
+
+**Packaging**
+
+* **The installed package is three targets and the list is a decision, not a
+  default**: `smply::smply`, `smply::util` and `smply::transport_common`.
+  `smply::dfu_app`, `smply::minicbor` and `smply::winrt_ble` are deliberately
+  out, with a reason each in
+  [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md). Adding a
+  target to the package is a compatibility promise; read that ADR before making
+  one.
+* **`EXPORT_NAME` is not optional on any target added to the export set.**
+  `install(EXPORT)` names an exported target `<namespace><target-name>`, and the
+  in-tree `ALIAS` does not travel — so `smply_util` shipped as
+  `smply::smply_util` while every consumer in the repository said
+  `smply::util`. It configured, built and installed perfectly and failed only
+  under `find_package` from a separate project. `tests/consumption/find_package`
+  is the only thing that catches it; the other two modes cannot, because they
+  consume build-tree targets where the alias resolves.
+* **An installed transport header keeps its in-tree spelling.**
+  `#include "common/ble_framing.hpp"` works in this tree and out of a prefix,
+  because the installed root is `<prefix>/include/smply/transports`. If you move
+  a header under `transports/common/`, the install rule is a `DIRECTORY` glob
+  and will follow — but the *spelling* is the contract, so renaming the
+  directory is a breaking change.
+* **`tools/check_install.sh` runs three modes and each catches something the
+  others cannot.** `find_package` is the only one that tests the export;
+  `add_subdirectory` is the only one that tests smply behaving as a subproject;
+  `FetchContent` tests the declaration. All three build the *same*
+  `tests/consumption/smoke.cpp`, and that is deliberate — three programs would
+  drift and the drifted one would be the mode that had silently stopped
+  checking. It also fails if `version.hpp.in` reappears in the prefix.
 
 **Tooling**
 
@@ -2451,3 +2500,128 @@ UART arm, and `smp_decode.py` being a second decoder); `send_counters()` is
 still undecided public API; the QCBOR upstream report is still waiting on the
 user; and O3, O5 and O6 remain open with their owner phases now pointing at
 prerequisites rather than at phases that have closed.
+
+### 2026-09-18 — P18: packaging, install/export and the 1.0 review
+
+**Status after this session:** P18a = `Complete`, P18b = `Complete`.
+**Every phase in the roadmap is now Complete**, and what remains is not a phase.
+
+**The phase was split, and the roadmap says so.** P18 was two jobs sharing an
+entry and its diff was never going to fit the ~1000-line rule above. P18a is
+packaging, P18b is the audit; both were worked in this session, as separate
+commits. P14, P15 and P17 were split the same way.
+
+**P18a — what the package contains, decided rather than defaulted.**
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) gives a
+reason per target instead of a list. `smply::transport_common` is **in**, and
+that is the decision the half turns on: `Transport` has been public and
+normative since P4, and until now an out-of-tree adapter could not get
+`fragment_size()` or `SendQueue` from the package, so it would have re-derived
+both — including A22, the send-admission defect that killed an upload on the
+bench and that the entire simulated suite was blind to. `smply::dfu_app`,
+`smply::minicbor` and `smply::winrt_ble` are **out**, each for a written
+reason.
+
+`tests/consumption/` replaces `tests/install/`: one smoke program, three
+projects (`find_package/`, `add_subdirectory/`, `fetchcontent/`), all run by
+`tools/check_install.sh` on every push. Two real packaging defects fell out of
+building it — the package installed `version.hpp.in`, the *un-configured*
+template, and the installed include root was a hard-coded `include` rather than
+`CMAKE_INSTALL_INCLUDEDIR`. `tools/sbom.py` and `.github/workflows/osv.yml`
+make `quality-gates.md` §9's SBOM and OSV claims true; they had been aspirational
+since P0.
+
+**P18b — the audit, and it was not a proofreading pass.** Thirteen
+contradictions and six material omissions. Three worth carrying forward:
+
+* **`design.md` §3 described the defect P13 fixed as though it were the
+  design.** It said QCBOR's nesting cap of 15 "is below `limits::kMaxCborNesting`,
+  so QCBOR's bound is the one that fires first". `kMaxCborNesting` is **14**,
+  and the whole point of P13's change was that smply's bound must fire first —
+  because QCBOR's refusal arrives through a deliberately non-sticky path and
+  turns a hostile document into *silently missing fields with a clean
+  `status()`*. The document was not stale; it was authoritative and wrong,
+  contradicting `architecture.md`, in the file a maintainer reads before
+  touching `src/cbor/`.
+* **`security.md` T12 and `architecture.md` §8 mitigated a logging subsystem
+  that does not exist.** Log levels, hash truncation, "no log statement formats
+  a raw buffer at default verbosity" — smply has no logging at all. A
+  threat-model row that reads as a live mitigation when there is nothing to
+  mitigate *in* is worse than an empty row.
+* **ADR-0007 and `dependencies.md` both named `src/cbor/backend_qcbor.*` as the
+  only file that names QCBOR.** It has never existed; P5 decided against it and
+  recorded the deviation in two *other* documents. Anyone assessing how
+  replaceable QCBOR is would have gone looking for it.
+
+**Sixteen ADRs read; none superseded.** Four carry a `Status`-line note — the
+one edit ADR-0013 permits — where something learned since changes how to read
+them (ADR-0005 on the queue A22 showed an adapter needs, ADR-0007 on QCBOR's
+defect, ADR-0010 on O2 being answered from measurement, ADR-0015 on
+`send_counters()`).
+
+**Two decisions the roadmap had left open, both settled.**
+`WinRtBleTransport::send_counters()` **stays**, as a per-adapter diagnostic:
+since the adapter is not in the package it carries no compatibility promise,
+and dropping it would cost the bench the only evidence that the A22 fix does
+anything. The `smply-bench` runner is **not commissioned** — it needs the
+physical bench and repository settings — and `hil.yml` lost its nightly
+`schedule:` while that stays true, because it was queueing a 90-minute timeout
+every night against a runner that does not exist.
+
+**The version stays `0.1.0`.** The policy is written and says what the 1.0
+surface would be; declaring 1.0 is a compatibility promise and belongs to a
+person.
+
+**Caveats — read these before anything else.**
+
+* **The acceptance criterion is not fully met, and the roadmap says so rather
+  than rounding up.** P18's acceptance was "a fresh clone, consumed
+  out-of-tree, builds **and updates a device**". The consumption half is proved
+  on every push in three modes. **The device half was not re-run** — no radio,
+  no bench, and the runner deliberately not commissioned. What stands is P17's
+  evidence against the P17 tree. P18a changed install rules and not the
+  protocol path, so there is every reason to *expect* it to pass, which is not
+  the same as knowing. It is filed as follow-up work owned by the bench.
+* **`.github/workflows/osv.yml` has never fired.** Written from a container with
+  no way to trigger a schedule. Its first evidence is its first Monday; check
+  then that the action accepts the SBOM `sbom.py` emits.
+* **`check_docs.py` R5 was much narrower than it looked, and the count is why we
+  know.** It read only the *first* token on a layout line, and most of
+  `architecture.md` §10's tree names several files per line — so two entries
+  naming files that do not exist sat under a passing gate for four phases,
+  uncounted as skips because the rule never looked at them. It reads every
+  path-shaped token now: **44 checked before, 116 after.** It still skips
+  globs, so `server_simulator.*` and its kind are checked by nobody.
+* **The gates catch shapes of drift, not claims.** Nothing mechanical noticed
+  the three findings above. Those needed a person reading each document against
+  the code, which is what P18b was — and the cheapest lesson here is that
+  *numbers recorded by hand decay*: three of the four elevated coverage figures
+  in `quality-gates.md` §6 had drifted (`src/cbor/` 97.7 → 94.6, etc.), all
+  still above their gate, so nothing was broken and nobody would have been told
+  if it had been.
+* **The preset caveat above said seven Linux presets. There are ten**, and it
+  had been wrong since P15a added `linux-gcc-release`.
+* **`EXPORT_NAME` is mandatory for anything added to the export set**, and only
+  the `find_package` consumption mode can catch its absence — the other two
+  consume build-tree targets, where the in-tree `ALIAS` resolves.
+
+**Docs updated.** `architecture.md` (§8 logging, §9, §10's layout tree in five
+places, the install/export sentence), `design.md` (§3 nesting and the
+child-reader walk, §6 the three upload deadlines), `api.md` (the scope
+statement, the limits table, and a new section documenting
+`transports/common/` now that it is installed surface), `testing.md` (§3
+deadlines, §6 case counts and the missing O2 case, §5.2's moved path),
+`security.md` (T12, T14, §4), `quality-gates.md` (§9, §11's R5 widening, §6's
+re-measured numbers, §13 rewritten for three modes), `protocol-notes.md`
+(currency marker), `dependencies.md` (the backend file), four ADR status notes,
+new **ADR-0016**, `docs/decisions/README.md`, `README.md`, new `SECURITY.md`
+and `CHANGELOG.md`, `roadmap.md` (P18a/P18b, the current-state table, eleven
+follow-up rows struck and six new ones), this file.
+
+**Recommended next.** There is no next phase. Two things need a person with the
+bench: **re-run an update against the device from a fresh clone consumed out of
+tree**, which closes P18a's one open acceptance item, and **commission the
+`smply-bench` runner** (register it as a *service*, so BTVS can run elevated,
+and restore `hil.yml`'s `schedule:` block). Everything else is the follow-up
+table and open questions O3, O5 and O6 — none of which is blocking, and each of
+which now names the prerequisite that would make it worth doing.

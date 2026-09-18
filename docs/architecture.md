@@ -263,7 +263,12 @@ Detail: [`security.md`](security.md).
   presents "connected over an encrypted link" as an authenticity guarantee.
 * smply performs **no** cryptographic verification of the image. It computes a
   SHA-256 for the MCUmgr `sha` field (transfer integrity + resume) only.
-* Logging never includes payload bytes at default levels.
+* **smply emits no log output at all** — there is no logger in `include/` or
+  `src/`, so there is no level to misconfigure and nothing to leak. Diagnostics
+  reach the application as `Error` values, and the one field carrying device
+  text (`reason()`) is length-capped and documented as attacker-controlled.
+  This line claimed a logging policy until P18's audit; there was never a
+  logging subsystem for it to describe.
 
 ## 9. Configuration limits (defensive bounds)
 
@@ -309,9 +314,10 @@ smply/
 │                               SMPLY_USE_SYSTEM_QCBOR, SMPLY_FORCE_FALLBACK_EXPECTED
 ├── CMakePresets.json           named configs used verbatim by CI
 ├── cmake/                      warnings.cmake  sanitizers.cmake  dependencies.cmake
+│                               smplyConfig.cmake.in — the installed package's config
 ├── include/smply/              PUBLIC headers only — no third-party types
 │   ├── bytes.hpp  clock.hpp  error.hpp  group.hpp  limits.hpp  result.hpp
-│   ├── version.hpp.in          configured into the build dir as version.hpp
+│   ├── version.hpp.in          the template configured into <build>/generated/smply/
 │   ├── detail/expected.hpp     C++20 fallback for std::expected (ADR-0002)
 │   ├── transport.hpp           Transport + TransportListener; the contract is in the header
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
@@ -343,7 +349,8 @@ smply/
 ├── transports/
 │   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp
 │   │                           send_queue.hpp — portable, header-only
-│   │                           smply::transport_common; built and tested everywhere
+│   │                           smply::transport_common; built and tested everywhere,
+│   │                           and installed as part of the package (ADR-0016)
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench (P17): see its README
 ├── support/                    shared by the tests and the examples, part of neither
@@ -362,12 +369,18 @@ smply/
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
-│   │                           server_simulator.*  test_cbor.*
+│   │                           server_simulator.*
 │   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
+│   │                           test_firmware_update.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
+│   ├── consumer/               consumer_check.cpp — the flag-leak gate: links
+│   │                           smply::smply with -Wall only and must build clean
+│   ├── consumption/            smoke.cpp plus one project per mode —
+│   │                           find_package/ add_subdirectory/ fetchcontent/ —
+│   │                           driven out of tree by tools/check_install.sh
 │   └── hil/                    hardware interoperability, opt-in (SMPLY_BUILD_HIL, preset
 │                               windows-hil): test_hil_cases.cpp over support/rig.* and
 │                               support/bench.*; run_hil.py supervises the case suite and
@@ -377,9 +390,12 @@ smply/
 │                               capture/decode helpers; README.md is the bench itself.
 │                               Never a PR gate
 ├── .github/workflows/          ci.yml (the 16-job gate)  nightly-fuzz.yml
-│                               hil.yml — advisory, self-hosted, not commissioned
+│                               osv.yml — weekly dependency scan, advisory
+│                               hil.yml — self-hosted, advisory, no runner
+│                               registered and no schedule (P18)
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
+│                               check_install.sh  sbom.py
 │                               verify_gates.sh  cppcheck-suppressions.txt
 └── docs/                       this documentation set + decisions/
 ```
@@ -388,7 +404,9 @@ CMake is fully target-based: no `include_directories()`, no global
 `add_compile_options()`. Warnings and sanitizers are applied via
 `smply_internal_options` — an `INTERFACE` target linked `PRIVATE` by smply's own
 targets, so consumers never inherit them. Install/export produces
-`smply::smply` via `smplyConfig.cmake`.
+`smply::smply`, `smply::util` and `smply::transport_common` via
+`smplyConfig.cmake`; which targets ship and why each other one does not is
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md).
 
 ## 11. Known limitations
 

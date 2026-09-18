@@ -15,13 +15,22 @@ was three methods and a constructor, and what shipped needed a destructor, a
 could not show. Read a proposed signature as an intent, not a contract, and
 record the deviations in the roadmap.
 
-**Scope: `include/smply/` only.** The headers under `transports/` -- the
-portable helpers in `transports/common/` and the platform adapters beside them --
-are not part of this surface. They are consumed by *adapter authors* rather than
-by applications, they ship as separate targets that `libsmply` never links, and
-they are documented at their declarations plus [`design.md`](design.md) §10.
-Said here because the absence of `Fragmenter` and `WinRtBleTransport` below is a
-decision, not an omission.
+**Scope: `include/smply/`, plus the installed transport headers.** P18 changed
+where that line falls, so it is worth stating precisely
+([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)):
+
+* `include/smply/` — what an **application** uses. Documented below, header by
+  header.
+* `transports/common/` — what an **adapter author** uses. Now part of the
+  installed package, therefore part of the promised surface, and documented
+  below in its own section.
+* `transports/winrt_ble/` — the reference adapter. **Not** installed, not
+  promised, and documented at its declarations plus [`design.md`](design.md)
+  §10. `WinRtBleTransport`'s absence below is a decision, not an omission: it
+  is an example of implementing `Transport`, not a second `Transport` to
+  program against.
+* `support/` — `minicbor` and `dfu_app`, shared by the tests and the examples
+  and part of neither. Not installed, not promised.
 
 | Header | Status |
 | ------ | ------ |
@@ -34,6 +43,7 @@ decision, not an omission.
 | `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
 | `dfu/firmware_updater.hpp` | Shipped — P12 |
 | `util/dispatcher.hpp` | **Shipped** (P14a) — separate target `smply::util` |
+| `transports/common/*.hpp` | **Shipped** (P15a, `send_queue.hpp` P17b) — separate target `smply::transport_common`, installed from P18 |
 
 ---
 
@@ -205,7 +215,7 @@ are grouped here so the whole defensive surface can be reviewed at once.
 | Request lifecycle | `kMaxInFlight` · `kMaxRetiredSeqs` · `kDefaultTimeout` |
 | What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` |
 | Image files | `kMaxImageSize` · `kMaxImageTlvs` |
-| Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kEraseTimeout` |
+| Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kFinalChunkTimeout` · `kEraseTimeout` |
 
 These are defaults: `SmpClientConfig` and `UploadOptions` override the ones that
 belong to an instance. The rest are hard bounds on what smply will accept.
@@ -881,6 +891,150 @@ Four behaviours a caller has to know, none of which the signatures show:
   there, and do not block on the client context.
 * **`clear()` and `~Dispatcher()` discard without running.** For teardown: the
   closures name a link that is going away.
+
+---
+
+## `transports/common/` — the adapter surface (target `smply::transport_common`)
+
+**Header-only, and installed from P18.** An adapter links
+`smply::transport_common` and writes `#include "common/ble_framing.hpp"` — the
+same spelling in this tree and out of an install prefix, where the headers land
+under `<prefix>/include/smply/transports/`.
+
+Why these are in the package at all, given that the point of `Transport`
+(ADR-0005) is that anyone can implement it: because two of them are **not
+conveniences**. `fragment_size()` is arithmetic that took a unit suite to get
+right, and `SendQueue` is the fix for a defect that killed an upload on real
+hardware and that the entire simulated suite was blind to (PN §9 A22). An
+adapter author who cannot get them from the package re-derives both, including
+the bug. [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md).
+
+Everything here is in `namespace smply::transport`.
+
+### `common/ble_framing.hpp` — one SMP message into GATT writes
+
+```cpp
+inline constexpr std::uint16_t kAttHeaderSize = 3;   // ATT opcode + handle
+inline constexpr std::uint16_t kMinAttMtu     = 23;  // from the core spec
+inline constexpr std::size_t   kMinFragment   = 20;  // what kMinAttMtu leaves
+inline constexpr std::size_t   kMaxFragment   = 512;
+
+// max_pdu - 3, clamped to [kMinFragment, kMaxFragment].
+[[nodiscard]] constexpr std::size_t fragment_size(std::uint16_t max_pdu) noexcept;
+
+class Fragmenter {
+public:
+    constexpr Fragmenter(ConstBytes message, std::size_t fragment) noexcept;
+
+    [[nodiscard]] constexpr bool        done() const noexcept;
+    [[nodiscard]] constexpr ConstBytes  next() noexcept;   // advances
+    [[nodiscard]] constexpr std::size_t remaining() const noexcept;
+    [[nodiscard]] constexpr std::size_t count() const noexcept;
+};
+```
+
+* **The clamp is not decoration.** A stack reporting a PDU below the
+  specification minimum — or zero, before the link is up — would otherwise
+  yield a fragment size of zero and an adapter that never makes progress.
+* **`Fragmenter` borrows the message**, which must outlive it. A zero
+  `fragment` is clamped to 1, so a caller bug is slow rather than infinite.
+* Read the MTU **per `send()`**: on Windows it is negotiated after connect, so
+  a value cached at connect time is the wrong one (`design.md` §10).
+
+### `common/send_queue.hpp` — admission for one background writer
+
+```cpp
+enum class Admission { StartWriter, Queued, Busy };
+
+struct SendCounters {
+    std::uint64_t deferred = 0;   // Queued admissions
+    std::uint64_t refused  = 0;   // Busy admissions
+};
+
+class SendQueue {
+public:
+    [[nodiscard]] Admission offer(std::vector<std::byte> message);
+    [[nodiscard]] std::optional<std::vector<std::byte>> next_for_writer();
+    void discard_queued() noexcept;
+
+    [[nodiscard]] bool writing() const noexcept;
+    [[nodiscard]] bool queued()  const noexcept;
+    [[nodiscard]] SendCounters counters() const noexcept;
+};
+```
+
+**Exactly one message may wait while another is being written.** That is the
+whole design, and it is what a naive "a write is in progress" flag gets wrong:
+the device's answer can reach the client *before* the local write's own
+completion has been scheduled, and the flag then refuses the next message on a
+perfectly healthy link. P17b watched that kill an upload six cases into a bench
+run (PN §9 A22).
+
+* `offer()` answers `StartWriter` (no writer live — **the caller must start
+  one**), `Queued` (parked beside a running writer) or `Busy` (one writing and
+  one waiting: the medium genuinely is not draining). It takes ownership on the
+  first two; on `Busy` the message is dropped, which is correct because the
+  caller reports the failure and the layer above owns the retry.
+* **`next_for_writer()` returning `nullopt` releases the writer.** A writer must
+  call it until it answers `nullopt` and then exit, and must not exit on any
+  other condition — a claim left set makes every later `send()` answer `Busy`
+  on a healthy link and hangs a `close()` that waits for the writer.
+* **Not thread-safe, deliberately.** The adapter owns one mutex and this is one
+  of the things it guards.
+* `counters()` exists so that a green bench run is distinguishable from a run in
+  which the race did not fire (ADR-0015). `deferred == 0` everywhere means the
+  latter, not that the queue works.
+
+### `common/link_state.hpp` — the three-phase shutdown
+
+```cpp
+enum class LinkPhase { Open, Closing, Closed };
+
+class LinkState {
+public:
+    [[nodiscard]] constexpr LinkPhase phase() const noexcept;
+    [[nodiscard]] constexpr bool is_open() const noexcept;
+    [[nodiscard]] constexpr bool is_closing_or_closed() const noexcept;
+    [[nodiscard]] constexpr bool may_send() const noexcept;
+    [[nodiscard]] constexpr bool may_deliver() const noexcept;
+    [[nodiscard]] constexpr bool begin_close() noexcept;  // true iff this call started it
+    constexpr void finish_close() noexcept;
+};
+```
+
+* **`may_deliver()` goes false at `begin_close()`, not at `finish_close()`.** An
+  adapter usually has callbacks queued or in flight when `close()` is called;
+  the transport contract says none of them may arrive, so the answer has to
+  change at the start of the close.
+* **`begin_close()`'s return is what makes `close()` idempotent**: do the
+  revoke-and-teardown work only when it says true.
+
+### `common/smp_ble_uuid.hpp` — the SMP service and characteristic
+
+```cpp
+using Uuid128 = std::array<std::uint8_t, 16>;
+
+// Canonical RFC 4122 order -- most significant byte first, the order the
+// digits are written in, so a reader can check them against the spec by eye.
+inline constexpr Uuid128          kSmpServiceUuid;
+inline constexpr Uuid128          kSmpCharacteristicUuid;
+inline constexpr std::string_view kSmpServiceUuidString;
+inline constexpr std::string_view kSmpCharacteristicUuidString;
+
+// A platform GUID structure is not in canonical order. This is the one place
+// that difference is dealt with; the shifts are explicit, so the result does
+// not depend on the host's byte order.
+struct Uuid128Fields { std::uint32_t data1; std::uint16_t data2, data3;
+                       std::array<std::uint8_t, 8> data4; };
+
+[[nodiscard]] constexpr Uuid128Fields uuid_fields(const Uuid128&) noexcept;
+```
+
+The bytes and the endian split are unit-tested on every platform, because
+getting a 128-bit UUID's byte order wrong produces a scan that finds nothing
+and looks exactly like a device that is switched off. Filtering a scan on the
+**service UUID** is reliable; matching on **name** requires an *active* scan,
+because Zephyr's `smp_svr` puts the name in the scan response (PN §8 S22).
 
 ---
 

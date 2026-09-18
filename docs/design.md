@@ -202,16 +202,43 @@ Design points:
   element cap, so a device cannot make smply iterate — or make the caller
   accumulate — without bound. An absent array is an empty one, because MCUmgr
   omits `images` entirely when it has no valid image to report.
+* **…and each element is decoded by a child reader over its own bytes.** Not by
+  entering the element and leaving it with `ExitMap()`, which is the obvious
+  shape and is wrong here. QCBOR — pinned 1.6.1 and `master` alike — mishandles
+  two consecutive indefinite-length breaks, which is what an indefinite-length
+  map at the end of an indefinite-length array produces: it swallows the array's
+  break as well, and then either fails with `QCBOR_ERR_BAD_BREAK` or, worse,
+  silently reads the *parent map's* following entries as further array elements.
+  That is not a hypothetical encoding — Zephyr's zcbor emits it unless
+  `CONFIG_ZCBOR_CANONICAL` is set, and nothing in MCUmgr sets it, so it is what
+  a real device sends (PN §9 A18, found on the first hardware run in P17a;
+  `dependencies.md` has the minimal reproduction). `for_each_map_in_array`
+  therefore peeks, bounds each element's byte range with `QCBORDecode_Tell`
+  around `QCBORDecode_VGetNextConsume`, and hands that range to a child
+  `Reader` — which is why `Reader` keeps its own `input_` span. **Do not tidy it
+  back into enter/exit**, and build any new response golden in *both* encodings:
+  `test_cbor.cpp` pins both shapes, and its `[hardware-golden]` cases carry a
+  device's exact bytes.
 * **Keys are null-terminated behind the façade.** QCBOR's map API takes a C
   string; copying into a fixed buffer avoids assuming a `string_view` is
   terminated, which is the sort of assumption that works until one call site
   passes a substring. Keys longer than `kMaxKeyLength` (31) fail rather than
   truncate.
-* **Nesting is bounded twice.** The façade counts the levels it enters, and
-  QCBOR independently enforces its own compile-time `QCBOR_MAX_ARRAY_NESTING`
-  of 15. Since that is below `limits::kMaxCborNesting`, QCBOR's bound is the one
-  that fires first on hostile input — deep input fails either way, which is what
-  matters.
+* **Nesting is bounded twice, and smply's bound must be the one that binds.**
+  The façade counts the levels it enters against `limits::kMaxCborNesting`, and
+  QCBOR independently enforces its compile-time `QCBOR_MAX_ARRAY_NESTING` of
+  15. `kMaxCborNesting` is **14**, strictly below QCBOR's, and the gap is
+  load-bearing rather than cautious. It was 16 until P13's limits audit, and
+  "deep input fails either way" was the reasoning that made that look fine — it
+  is not true. When QCBOR refuses first the refusal arrives through
+  `Reader::enter_map(key)`, whose QCBOR-error path is deliberately *not* sticky
+  so that it can double as a probe for the optional `err` map (below). So an
+  over-deep document made the reader stop descending with `status()` **clean**:
+  silently missing fields rather than a decode failure, and a caller following
+  the house rule of checking `status()` at the end saw nothing wrong. Fourteen
+  and not fifteen, because reaching smply's cap needs a document one level
+  deeper than the cap — equal is not enough. `limits.hpp` carries the same
+  reasoning at the constant.
 
 `mgmt_error.*` implements the **dual** error extraction (PN §3), applied to every
 response before any group-specific parsing. It handles all four shapes: an empty
@@ -553,6 +580,29 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
   The `off` is unchanged, so a retransmission is always safe: either the server
   never saw it, or it saw it and will answer with the offset it actually has,
   which the table above handles.
+
+  **The deadline is not one number.** `upload_driver.cpp` picks one of three
+  per request, because two chunks in an upload are answered by a device doing
+  far more than storing bytes:
+
+  | The request | Deadline | Why |
+  | ----------- | -------- | --- |
+  | a first packet | `first_chunk_timeout` (30 s) | the server erases the slot synchronously before answering (PN §9 A7; 6.6 s measured) |
+  | `off + length == image_size` | `final_chunk_timeout` (30 s) | with `CONFIG_IMG_ENABLE_IMAGE_CHECK` the server hashes the **whole image** out of flash before encoding the response (A19; ~25 KiB/s, 5.0 to 5.6 s for 134 160 bytes) |
+  | anything else | `chunk_timeout` (5 s) | an ordinary store-and-acknowledge |
+
+  A first packet that is *also* the last chunk takes the first-chunk deadline;
+  the erase dominates.
+
+  `final_chunk_timeout` exists because P17a found what happens without it, and
+  the failure is worth remembering because it did not look like one: the last
+  chunk timed out, the retransmission was answered `off == 0` (rule 9b — the
+  server had already reset the session), the re-sent first packet completed
+  immediately via the already-present check (rule 9a), and the **update
+  succeeded while reporting the transfer as skipped**. A green run hiding a
+  timeout. The companion fix is `UploadState::progressed`, which is why
+  `already_present` now means "this session moved nothing" rather than "the
+  server answered on a first packet".
 
   The **payload** is byte-identical; the SMP header is not, and must not be. The
   timeout retired the old sequence number, so a reply carrying it would be
