@@ -6,9 +6,14 @@
 # job stays meaningful. Nothing here is part of libsmply: an adapter consumes
 # smply::smply like any other consumer (architecture.md section 2).
 #
-# NOT INSTALLED. Neither is smply::transport_common; P18 decides what an
-# installed package contains, and the roadmap carries the follow-up. An in-tree
-# consumer -- P16's example -- links the target directly.
+# NOT INSTALLED, decided in P18 and recorded in ADR-0016: this is a *reference*
+# adapter, shipped as source to read and copy rather than as a package member.
+# It is the one target neither clang-tidy nor cppcheck sees (tools/lint.sh), so
+# a SemVer promise about its surface would rest on MSVC /W4 alone. What a
+# third-party adapter actually needs from the package is smply::smply,
+# smply::util and smply::transport_common -- all three of which are installed,
+# and all three of which this file links. An in-tree consumer -- P16's example
+# -- links this target directly.
 
 add_library(smply_winrt_ble STATIC winrt_ble_transport.cpp)
 add_library(smply::winrt_ble ALIAS smply_winrt_ble)

@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# OSV-Scanner over the pinned dependency set.
+#
+# quality-gates.md section 9 has claimed a weekly scan since P0 and there was
+# nothing behind it until P18. This is that claim made true.
+#
+# It is advisory, not a pull-request gate. A vulnerability disclosed in QCBOR
+# on a Tuesday is real whether or not somebody happens to open a PR, and a job
+# that blocks unrelated work on a finding it cannot fix is a job people learn
+# to ignore. The finding is surfaced in the run summary and in the SARIF
+# upload; acting on it is a decision, and ADR-0011 says a dependency change
+# needs one.
+#
+# NOT YET OBSERVED TO RUN. It was written in P18 from a container with no way
+# to fire a schedule, so its first real evidence will be its first Monday.
+name: osv-scan
+
+on:
+  schedule:
+    # Mondays, 04:17 UTC -- after the nightly fuzz soak (03:17) has released
+    # the runners, and offset off the hour like the other scheduled jobs.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+  # Also on any change to what is pinned, because that is the one moment a scan
+  # can tell you something before you have shipped it.
+  push:
+    paths:
+      - "cmake/dependencies.cmake"
+      - "docs/dependencies.md"
+      - ".github/workflows/osv.yml"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: OSV-Scanner over the pinned set
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SBOM is the input: it carries the exact commit each dependency is
+      # pinned to, which is what determines whether an advisory applies. Scanning
+      # the working tree instead would scan whatever happened to be checked out.
+      - name: Generate the SBOM
+        run: python3 tools/sbom.py -o "${{ runner.temp }}/smply.spdx.json"
+
+      - name: Scan
+        uses: google/osv-scanner-action/osv-scanner-action@v2.2.2
+        with:
+          scan-args: |-
+            --format=sarif
+            --output=${{ runner.temp }}/osv.sarif
+            --sbom=${{ runner.temp }}/smply.spdx.json
+        continue-on-error: true
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-sarif
+          path: ${{ runner.temp }}/osv.sarif
+          if-no-files-found: ignore

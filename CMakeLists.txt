@@ -84,7 +84,7 @@ target_include_directories(smply
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
-        $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         # Internal headers (src/smp/assembler.hpp and the like) are included as
         # "smp/assembler.hpp" by smply's own sources. PRIVATE: consumers must
@@ -197,6 +197,11 @@ if(SMPLY_BUILD_TESTS)
     enable_testing()
 endif()
 
+# Up here, not beside the install rules at the bottom: transports/ names
+# ${CMAKE_INSTALL_INCLUDEDIR} in an $<INSTALL_INTERFACE:> include root, and that
+# variable is expanded when the line runs, not when the export is written.
+include(GNUInstallDirs)
+
 # Portable helpers for transport adapters. Built everywhere, tested on Linux --
 # the arithmetic a BLE adapter needs is not Windows-specific, and putting it
 # here is what lets it be verified without a radio (P15a).
@@ -228,12 +233,17 @@ endif()
 
 # --- Install and export -----------------------------------------------------
 #
-# Enough for an out-of-tree adapter to consume smply: the library and the
-# marshalling helper it needs (P15a). The full three-way consumption matrix, the
-# SBOM and the version policy remain P18's.
+# What an out-of-tree adapter needs and nothing more: the library, the
+# marshalling helper ADR-0004 makes its obligation, and the portable BLE
+# helpers it would otherwise re-derive. The shape is decided in ADR-0016;
+# transport_common's own install rules live in transports/CMakeLists.txt,
+# beside the target, and land in this same export set.
 #
-# What is NOT installed, and deliberately: smply::minicbor and every test
-# target. They are development scaffolding.
+# What is NOT installed, and deliberately (ADR-0016 has the reasoning per
+# target): smply::minicbor and every test target, which are development
+# scaffolding; smply::dfu_app, which is application policy rather than
+# protocol; and smply::winrt_ble, which ships as a reference adapter to read
+# and copy.
 #
 # Note on the interface. smply links smply_internal_options as
 # $<BUILD_INTERFACE:...> so the strict warning set stays in the build tree and
@@ -252,7 +262,11 @@ install(TARGETS smply smply_util
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(DIRECTORY include/smply DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# PATTERN "*.in" EXCLUDE: version.hpp.in lives beside the public headers and is
+# a template, not a header. Without the filter the package shipped both it and
+# the configured version.hpp, and the un-configured one does not compile.
+install(DIRECTORY include/smply DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "*.in" EXCLUDE)
 # version.hpp is configured into the build tree, so it ships from there.
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/smply/version.hpp"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply)

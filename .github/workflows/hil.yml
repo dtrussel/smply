@@ -4,12 +4,30 @@
 #
 # Runs ONLY on a self-hosted Windows runner labelled `smply-bench`, which has
 # the NUCLEO-WB55RG on ST-LINK, a Bluetooth radio, STM32CubeProgrammer, the
-# bench venv and the peer artefacts described in tests/hil/README.md. No such
-# runner is registered yet: this workflow is committed so that commissioning
-# one is a configuration step and not a code change, and it stays advisory
-# (continue-on-error) because a bench is not a PR gate (ADR-0015).
+# bench venv and the peer artefacts described in tests/hil/README.md. It stays
+# advisory (continue-on-error) because a bench is not a PR gate (ADR-0015).
 #
 # A run that finds no bench reports its cases as "unavailable", not as passed.
+#
+# **NO RUNNER IS REGISTERED.** This workflow is committed so that commissioning
+# one is a configuration step and not a code change. P18 reviewed it and left
+# it uncommissioned -- that needs the physical bench -- and removed the nightly
+# `schedule:` while doing so. The schedule was queueing a job every night
+# against a runner that does not exist, which times out after 90 minutes and
+# tells nobody anything; a standing reminder that only ever says the same thing
+# is noise, and this comment is a cheaper one. `workflow_dispatch` remains, so
+# the suite runs the moment somebody asks it to.
+#
+# To commission: register a self-hosted runner on the bench machine with the
+# labels `self-hosted,windows,smply-bench`, set the four repository variables
+# below, and restore the `schedule:` block:
+#
+#     schedule:
+#       - cron: "17 2 * * *"   # nightly, after the fuzz soak
+#
+# Register it as a **service**, not an interactive session: the cross-check's
+# HCI half needs BTVS running elevated, which a service can provide and a
+# filtered-token interactive shell cannot (roadmap, P17c follow-up).
 name: HIL (advisory)
 
 on:
@@ -18,8 +36,6 @@ on:
       cases:
         description: "Case names to run (comma-separated), or 'all'"
         default: "all"
-  schedule:
-    - cron: "17 2 * * *"   # nightly, after the fuzz soak
 
 jobs:
   hil:

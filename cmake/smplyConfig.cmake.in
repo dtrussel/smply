@@ -2,10 +2,13 @@
 
 # SPDX-License-Identifier: Apache-2.0
 #
-# The installed package. Provides smply::smply and smply::util.
+# The installed package. Provides smply::smply, smply::util and
+# smply::transport_common.
 #
-# smply::minicbor and the test doubles are deliberately not installed: they are
-# development scaffolding, not part of what a consumer gets (P14b's follow-up).
+# Deliberately not installed, with the reasoning per target in ADR-0016:
+# smply::minicbor and the test doubles (development scaffolding),
+# smply::dfu_app (application policy, not protocol) and smply::winrt_ble
+# (a reference adapter, shipped as source to read and copy).
 
 include(CMakeFindDependencyMacro)
 
