@@ -406,13 +406,20 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
         match = LAYOUT_LINE.match(line)
         if match:
             rest, first_is_entry = match.group(1), True
+            # `entry_open` gates the continuation rule below, and it is set only
+            # for a line whose first token is path-shaped. architecture.md's
+            # *other* fenced diagrams draw boxes with the same glyphs -- a line
+            # like "└─────────────┘" matches LAYOUT_LINE and yields a "path" of
+            # box-drawing characters -- and opening an entry on one of those
+            # would make the prose inside that diagram look like a file listing.
+            entry_open = bool(PATHISH.match(rest.split()[0])) if rest.split() else False
+            if not entry_open:
+                continue
         else:
             continuation = LAYOUT_CONTINUATION.match(line) if entry_open else None
             if not continuation:
                 continue
             rest, first_is_entry = continuation.group(1), False
-
-        entry_open = True
         for index, token in enumerate(rest.split()):
             is_entry_name = first_is_entry and index == 0
             if not PATHISH.match(token):

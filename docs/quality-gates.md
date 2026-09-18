@@ -472,7 +472,7 @@ under a gate that reported a pass. Worse, they were not counted as skipped
 either, so the number that exists to expose a narrowed rule could not see this
 narrowing. R5 now reads every path-shaped token on an entry line and on the
 continuation lines under it, which is why the count jumped from **44 checked to
-116**. Its one asymmetry is deliberate: an unresolvable token in first position
+109**. Its one asymmetry is deliberate: an unresolvable token in first position
 is an error, because that is what the line is *about*, while a later token is
 an error only if it carries a file extension the tree uses — otherwise the rule
 would trip over "run_hil.py supervises the case suite", which is a sentence and

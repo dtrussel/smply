@@ -350,7 +350,7 @@ entry when it stops being true.
   it.
 * **A documentation gate that passes has checked less than you think.**
   `check_docs.py` R5 prints "checked N, skipped M" for exactly this reason, and
-  the number moved from 44 to 116 in P18b when the rule was widened from
+  the number moved from 44 to 109 in P18b when the rule was widened from
   reading the *first* token on a layout line to reading all of them — two
   entries naming files that do not exist had sat under a passing gate for four
   phases, uncounted as skips because the rule never looked at them at all. It
@@ -2590,7 +2590,7 @@ person.
   `architecture.md` §10's tree names several files per line — so two entries
   naming files that do not exist sat under a passing gate for four phases,
   uncounted as skips because the rule never looked at them. It reads every
-  path-shaped token now: **44 checked before, 116 after.** It still skips
+  path-shaped token now: **44 checked before, 109 after.** It still skips
   globs, so `server_simulator.*` and its kind are checked by nobody.
 * **The gates catch shapes of drift, not claims.** Nothing mechanical noticed
   the three findings above. Those needed a person reading each document against
