@@ -402,9 +402,13 @@ what the repository carries is a decision for a person.
   uploaded as an artefact by the `out-of-tree consumption` job, which is the
   job that already produces a Release install. `tools/sbom.py --check` runs in
   the `gates` job and **fails when a `FetchContent_Declare` has no licence
-  entry**, because an SBOM silently missing a component reads as a clean bill
-  of health and is worse than none. Licences are declared in `sbom.py`, never
-  inferred.
+  entry or no PURL**. Licences are declared in `sbom.py`, never inferred.
+  The PURL half was added after OSV-Scanner read the first version of the
+  document, listed all three packages and reported **"found 0 packages"**: a
+  scanner matches advisories on a package *identifier*, not on a name, so an
+  SBOM without PURLs parses perfectly and is unusable by any consumer of it.
+  Each dependency carries `pkg:github/<owner>/<repo>@<commit>` — the commit,
+  because that is what the build actually pins.
 * **OSV-Scanner** (`.github/workflows/osv.yml`) runs weekly, on
   `workflow_dispatch`, and on any change to what is pinned, scanning the SBOM.
   It is **advisory**: the result is a SARIF artefact, and acting on a finding

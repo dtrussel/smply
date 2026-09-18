@@ -43,6 +43,7 @@ LICENCES = {
         "licence": "BSD-3-Clause",
         "supplier": "Organization: Laurence Lundblade",
         "url": "https://github.com/laurencelundblade/QCBOR",
+        "purl": "pkg:github/laurencelundblade/qcbor",
         # Linked into libsmply.a, so it reaches a consumer's binary.
         "shipped": True,
     },
@@ -50,6 +51,7 @@ LICENCES = {
         "licence": "BSL-1.0",
         "supplier": "Organization: Catch2 contributors",
         "url": "https://github.com/catchorg/Catch2",
+        "purl": "pkg:github/catchorg/catch2",
         # Test-only: never linked into anything installed.
         "shipped": False,
     },
@@ -122,6 +124,24 @@ def build(deps_text: str, root_text: str, *, now: str) -> dict:
             # The pin that actually determines the bytes. The tag is a label and
             # can move; the commit cannot.
             package["checksums"] = [{"algorithm": "SHA1", "checksumValue": commit}]
+
+        # A package identifier, without which the document is a list of names.
+        #
+        # This is not decoration. An SBOM with no PURL and no CPE parses
+        # perfectly and is *unusable*: OSV-Scanner read the first version of
+        # this file, listed all three packages, reported "found 0 packages" and
+        # had nothing to look up -- because a scanner matches advisories on the
+        # identifier, not on the name. The commit is the version, since that is
+        # what the build actually pins.
+        purl = info.get("purl")
+        if purl:
+            package["externalRefs"] = [
+                {
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": f"{purl}@{commit or tag or 'NOASSERTION'}",
+                }
+            ]
         packages.append(package)
 
         # DEPENDENCY_OF for what is linked in, BUILD_DEPENDENCY_OF for what is
@@ -163,6 +183,24 @@ def check(deps_text: str) -> int:
     if missing:
         print(
             "sbom: no licence entry in tools/sbom.py for: " + ", ".join(sorted(missing)),
+            file=sys.stderr,
+        )
+        return 1
+
+    unidentified = [
+        n
+        for n in declared_dependencies(deps_text)
+        if not LICENCES[n.lower()].get("purl")
+    ]
+    if unidentified:
+        print(
+            "sbom: no PURL in tools/sbom.py for: " + ", ".join(sorted(unidentified)),
+            file=sys.stderr,
+        )
+        print(
+            "      A component with no package identifier cannot be matched "
+            "against any advisory database -- the SBOM would list it and a "
+            "scanner would report zero packages.",
             file=sys.stderr,
         )
         return 1

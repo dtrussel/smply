@@ -62,12 +62,18 @@ jobs:
       # -L, not --sbom: the latter is deprecated in osv-scanner v2, and the
       # format is inferred from the .spdx.json suffix. Paths are relative to the
       # container's working directory, which is the workspace.
+      #
+      # --allow-no-lockfiles because an SBOM is not a lockfile and the scanner
+      # otherwise exits non-zero for having found none. The flag suppresses that
+      # and nothing else -- a package it *can* look up is still looked up, and
+      # the report check below still requires a report to exist.
       - name: Scan
         uses: google/osv-scanner-action/osv-scanner-action@v2.2.2
         with:
           scan-args: |-
             --format=sarif
             --output=osv.sarif
+            --allow-no-lockfiles
             -L
             smply.spdx.json
         # A *finding* must not fail this job -- it is advisory, and acting on a
