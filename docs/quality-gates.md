@@ -414,16 +414,30 @@ what the repository carries is a decision for a person.
   It is **advisory**: the result is a SARIF artefact, and acting on a finding
   is a decision — ADR-0011 says a dependency change needs one. It does not
   block a pull request, and it does not open an issue.
-  *Both of these were claimed in this section from P0 and neither existed
-  until P18 built them.* The scan **has** run — the push that added the
-  workflow triggered it, because `osv.yml` is in its own `paths` filter so it
-  tests itself — and the first attempt **scanned nothing while reporting
-  success**: the action runs in a container that mounts only the workspace, the
-  SBOM had been written to the runner's temp directory, and `continue-on-error`
-  swallowed the resulting exit 127. The job now fails if no SARIF was produced,
-  which is the same discipline `hci_capture.py` applies to a packet capture: a
-  listener that attaches and records nothing is not a capture. Its *scheduled*
-  firing remains unproven — the first Monday is the evidence for that.
+  *Both of these were claimed in this section from P0 and neither existed until
+  P18 built them, and getting the scanner to actually scan took three runs.*
+  `osv.yml` is in its own `paths` filter so that a change to it tests itself,
+  and the first two attempts are worth recording because each failed in a way
+  that looked like success:
+
+  1. **Scanned nothing, reported success.** The action runs in a container that
+     mounts only the workspace; the SBOM had been written to the runner's temp
+     directory, and `continue-on-error` swallowed the resulting exit 127.
+  2. **Read the SBOM, found 0 packages.** Fixed the path, and the scanner
+     listed all three packages by name and had nothing to look up — an SBOM
+     without a PURL or a CPE is a list of names. That is what added the PURL
+     requirement above.
+
+  The job now **fails when no SARIF was produced**, which is what caught the
+  second of those, and is the discipline `hci_capture.py` applies to a packet
+  capture: a listener that attaches and records nothing is not a capture.
+
+  Two things are still unproven and should not be read as passing. The
+  **scheduled** firing — the first Monday is the evidence for that. And whether
+  OSV has advisory **coverage** for two C libraries consumed from git as
+  `pkg:github` PURLs: a clean report from a database with nothing to say about
+  an ecosystem looks exactly like a clean report from one that checked. The
+  report is evidence that the scan ran, not yet that it would find something.
 * New dependencies require an ADR (see [ADR-0011](decisions/ADR-0011-build-and-dependencies.md)).
 
 ## 10. API discipline (required)

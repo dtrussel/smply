@@ -2592,8 +2592,13 @@ person.
   it also made "could not run" indistinguishable from "found nothing". There is
   now a step that fails when no SARIF was produced. Same shape as
   `hci_capture.py` gating on the packet count, and the same lesson: **ask what
-  a green run would look like if the thing did nothing.** The cron itself is
-  still unproven.
+  a green run would look like if the thing did nothing.** It took a third run
+  to make the scan real: with the path fixed, the scanner read the SBOM, listed
+  all three packages and reported **"found 0 packages"** — no PURL and no CPE,
+  so nothing to look up. `tools/sbom.py --check` now requires a PURL. Two
+  things remain unproven and a clean report is evidence for neither: the cron
+  has never fired, and nothing shows OSV has coverage for two C libraries
+  consumed from git.
 * **`check_docs.py` R5 was much narrower than it looked, and the count is why we
   know.** It read only the *first* token on a layout line, and most of
   `architecture.md` §10's tree names several files per line — so two entries
