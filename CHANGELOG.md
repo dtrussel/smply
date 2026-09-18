@@ -32,7 +32,8 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
   (`tools/sbom.py`), generated from the same pins the build uses and published
   as a CI artefact. `quality-gates.md` §9 had promised an SBOM since P0.
 - An advisory weekly **OSV-Scanner** workflow over the pinned dependency set,
-  which §9 had also promised. It has not yet fired.
+  which §9 had also promised. It fails if the scan could not run, which is a
+  different thing from finding nothing; its scheduled firing is unproven.
 - `tests/consumption/` proves all three out-of-tree consumption modes —
   `find_package`, `add_subdirectory` and `FetchContent` — against one shared
   smoke program. Only `find_package` was covered before.

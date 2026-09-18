@@ -12,8 +12,12 @@
 # upload; acting on it is a decision, and ADR-0011 says a dependency change
 # needs one.
 #
-# NOT YET OBSERVED TO RUN. It was written in P18 from a container with no way
-# to fire a schedule, so its first real evidence will be its first Monday.
+# Its *scheduled* firing is still unproven -- this was written from a container
+# with no way to fire a schedule, so the first Monday is its first evidence of
+# that. The scan itself is proven: the push that added this file triggered it
+# (osv.yml is in the paths filter below, deliberately, so the workflow tests
+# itself), and the first attempt scanned nothing while reporting success. See
+# the report check at the end of the job.
 name: osv-scan
 
 on:
@@ -44,22 +48,55 @@ jobs:
       # The SBOM is the input: it carries the exact commit each dependency is
       # pinned to, which is what determines whether an advisory applies. Scanning
       # the working tree instead would scan whatever happened to be checked out.
+      #
+      # Written into the WORKSPACE, not runner.temp. The scanner action runs in
+      # a Docker container that mounts the workspace at /github/workspace and
+      # makes it the working directory; runner.temp is mounted somewhere else
+      # under a different name, so a path built from it does not exist inside
+      # the container. The first run of this workflow passed a runner.temp path
+      # and the scanner answered "no such file or directory" -- see the failure
+      # check below for why that was not noticed.
       - name: Generate the SBOM
-        run: python3 tools/sbom.py -o "${{ runner.temp }}/smply.spdx.json"
+        run: python3 tools/sbom.py -o smply.spdx.json
 
+      # -L, not --sbom: the latter is deprecated in osv-scanner v2, and the
+      # format is inferred from the .spdx.json suffix. Paths are relative to the
+      # container's working directory, which is the workspace.
       - name: Scan
         uses: google/osv-scanner-action/osv-scanner-action@v2.2.2
         with:
           scan-args: |-
             --format=sarif
-            --output=${{ runner.temp }}/osv.sarif
-            --sbom=${{ runner.temp }}/smply.spdx.json
+            --output=osv.sarif
+            -L
+            smply.spdx.json
+        # A *finding* must not fail this job -- it is advisory, and acting on a
+        # disclosure is a decision (ADR-0011). A scanner that could not run is a
+        # different thing entirely, and the step below is what tells them apart.
         continue-on-error: true
+
+      # The scan must have produced a report. Without this the job is green
+      # whether it scanned the dependency set or nothing at all: on its first
+      # run it read no SBOM, wrote no SARIF, exited 127, and reported success,
+      # because continue-on-error above swallows every exit code equally.
+      #
+      # This is the same discipline tests/hil/tools/hci_capture.py applies to a
+      # packet capture: a listener that attaches and records nothing is not a
+      # capture, and only counting what it produced can tell the difference.
+      - name: The scan must have produced a report
+        run: |
+          if [[ ! -s osv.sarif ]]; then
+            echo "osv-scanner produced no SARIF: it did not scan anything." >&2
+            echo "Check the scan step's log -- a usage or parse error exits" >&2
+            echo "non-zero there and is swallowed by continue-on-error." >&2
+            exit 1
+          fi
+          echo "osv.sarif: $(wc -c < osv.sarif) bytes"
 
       - name: Upload the result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: osv-sarif
-          path: ${{ runner.temp }}/osv.sarif
+          path: osv.sarif
           if-no-files-found: ignore

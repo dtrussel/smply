@@ -16,3 +16,9 @@ coverage/
 crash-*
 leak-*
 timeout-*
+
+# Generated into the workspace by CI: the SBOM (tools/sbom.py) and the
+# scanner's report. The scanner action runs in a container that only mounts the
+# workspace, so they cannot live in the runner's temp directory.
+smply.spdx.json
+osv.sarif

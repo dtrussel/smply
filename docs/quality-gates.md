@@ -40,7 +40,7 @@ A18–A24).
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI, and it grew the other two modes in P18a |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
-| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory*; SARIF artefact, no issue, no PR gate). **Written in P18a and has never fired** |
+| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory* about findings; a scan that could not run **does** fail). Written in P18a; its scheduled firing is still unproven |
 | `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, nightly plus on demand; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand (roadmap P17b). Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
@@ -410,10 +410,16 @@ what the repository carries is a decision for a person.
   It is **advisory**: the result is a SARIF artefact, and acting on a finding
   is a decision — ADR-0011 says a dependency change needs one. It does not
   block a pull request, and it does not open an issue.
-  *Both of these were claimed in this section from P0 and neither existed until
-  P18 built them. The scanner has not yet fired: it was written from a
-  container with no way to trigger a schedule, so its first evidence is its
-  first Monday.*
+  *Both of these were claimed in this section from P0 and neither existed
+  until P18 built them.* The scan **has** run — the push that added the
+  workflow triggered it, because `osv.yml` is in its own `paths` filter so it
+  tests itself — and the first attempt **scanned nothing while reporting
+  success**: the action runs in a container that mounts only the workspace, the
+  SBOM had been written to the runner's temp directory, and `continue-on-error`
+  swallowed the resulting exit 127. The job now fails if no SARIF was produced,
+  which is the same discipline `hci_capture.py` applies to a packet capture: a
+  listener that attaches and records nothing is not a capture. Its *scheduled*
+  firing remains unproven — the first Monday is the evidence for that.
 * New dependencies require an ADR (see [ADR-0011](decisions/ADR-0011-build-and-dependencies.md)).
 
 ## 10. API discipline (required)

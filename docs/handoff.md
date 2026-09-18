@@ -2582,9 +2582,18 @@ person.
   evidence against the P17 tree. P18a changed install rules and not the
   protocol path, so there is every reason to *expect* it to pass, which is not
   the same as knowing. It is filed as follow-up work owned by the bench.
-* **`.github/workflows/osv.yml` has never fired.** Written from a container with
-  no way to trigger a schedule. Its first evidence is its first Monday; check
-  then that the action accepts the SBOM `sbom.py` emits.
+* **A job can be green and have done nothing, and `osv.yml`'s first run was.**
+  It fired on the push that added it, the scanner action ran in a Docker
+  container that mounts only the workspace, the SBOM had been written to
+  `runner.temp` — which does not exist inside that container — and the scan
+  exited 127 having read no input. The job reported **success**, because
+  `continue-on-error: true` was on the step and swallows every exit code
+  equally. That flag was there so a *finding* would not fail an advisory job;
+  it also made "could not run" indistinguishable from "found nothing". There is
+  now a step that fails when no SARIF was produced. Same shape as
+  `hci_capture.py` gating on the packet count, and the same lesson: **ask what
+  a green run would look like if the thing did nothing.** The cron itself is
+  still unproven.
 * **`check_docs.py` R5 was much narrower than it looked, and the count is why we
   know.** It read only the *first* token on a layout line, and most of
   `architecture.md` §10's tree names several files per line — so two entries
