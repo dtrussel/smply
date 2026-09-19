@@ -17,16 +17,17 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P17 complete — the library is done, it has met a real device, and
+**Phases P0–P20 complete — the library is done, it has met a real device, and
 it is packaged: it does what it exists to do, its untrusted-input surface is
-fuzzed, adapter authors have both the marshalling helper the threading model
-assumes and the BLE helpers a correct adapter needs, and there is a runnable
-example that performs a whole update.**
+fuzzed, adapter authors have the marshalling helper the threading model
+assumes, the BLE helpers a correct adapter needs and the serial framing a
+non-radio device needs, and there is a runnable example that performs a whole
+update.**
 SMP framing and streaming reassembly, a bounded CBOR façade, request
 correlation with timeouts and cancellation, the OS and image management groups,
 MCUboot image parsing with SHA-256, the image upload state machine, and
 `FirmwareUpdater`: the whole update, including the reset and the reconnect.
-Seven libFuzzer targets over every decoder that reads bytes it did not write,
+Eight libFuzzer targets over every decoder that reads bytes it did not write,
 with the coverage thresholds and a fuzz smoke run now blocking. And
 `smply::Dispatcher`: the thread-marshalling helper every transport adapter
 needs, shipped as a separate target the core does not link. And
@@ -35,7 +36,12 @@ trial boot, confirmation — against a stub device on another thread, and runs o
 every push.
 And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
 `examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
-668 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
+And, for the many Zephyr devices with no radio at all, **MCUmgr's serial
+console framing** — markers, base64, length and CRC, both directions,
+portable and tested. That is the protocol half only: opening the port is still
+the application's, and nothing in this repository has yet put a serial byte on
+a wire.
+707 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
 scan, and an installed package that
 three separate out-of-tree projects consume on every push — by `find_package`,
 by `add_subdirectory` and by `FetchContent`. Fourteen more cases run on
@@ -132,7 +138,7 @@ target_link_libraries(my_app PRIVATE smply::smply)
 
 The package installs three targets: `smply::smply`, `smply::util` (the
 thread-marshalling helper an adapter needs) and `smply::transport_common` (the
-portable BLE framing and send admission a BLE adapter needs). `add_subdirectory`
+portable BLE framing, send admission and serial framing an adapter needs). `add_subdirectory`
 and `FetchContent` work too, and `tools/check_install.sh` builds and runs a
 consumer all three ways on every push.
 [ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) says

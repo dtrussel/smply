@@ -10,13 +10,14 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **None scheduled.** P0 through P19 are all `Complete`. What remains is not a phase: two acceptance items that need hardware or repository settings this container does not have (re-running an update against a device from a fresh clone, and commissioning the `smply-bench` runner), plus the standing follow-up table below and open questions O3, O5 and O6. A session with the bench should start at those two; a session without one should start by asking whether a follow-up row has become worth doing — which is how P19 was chosen |
-| Last completed phase | **P19 — the A24 follow-up.** A shipped recovery path could not fire against the server configuration the bench peer (and most shipping devices) use: `update_state_machine.cpp` recovered a lost mark-for-test by branching on `ImageError::ImageAlreadyPending`, which SMP v1 destroys on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`. It now also accepts a group-less `SmpError::BadState`. The branch is one line; the finding is that `tests/unit/test_update_state_machine.cpp` had **no way to build the v1 shape at all** — its only helper hard-coded `MgmtError::scoped` — so no test in the suite could have caught it |
-| Previously | **P18b — the 1.0 documentation and ADR audit.** Every living document read against the code: thirteen contradictions and six omissions fixed, among them `design.md` describing the CBOR nesting defect P13 *fixed* as though it were the design, a threat-model row mitigating a logging subsystem that does not exist, and two documents naming a file (`src/cbor/backend_qcbor.*`) that has never existed. Sixteen ADRs reviewed and **none superseded**; four carry a `Status`-line note. `check_docs.py` R5 was widened from reading the first token of a layout line to reading all of them — 44 checked before, 109 after — because that narrowness is why two of the findings survived four phases. Before it, **P18a** decided the installed package's shape in ADR-0016 (`smply::transport_common` in, `dfu_app`/`minicbor`/`winrt_ble` out, each with a reason), proved all three consumption modes, and made the SBOM and OSV-scanning claims true instead of aspirational |
-| And before that | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **668 tests** (667 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak and a weekly dependency scan, and **fourteen more cases on hardware** — in thirteen groups, twelve of them unattended — that no CI preset builds. And, from P18, **an installed package proved out of tree three ways on every push** (`find_package`, `add_subdirectory`, `FetchContent`), carrying `smply::smply`, `smply::util` and `smply::transport_common`, with an SPDX SBOM generated from the same pins the build uses. **The product is complete, packaged, documented against itself, and has met a device.** What is deliberately not done is the 1.0 *declaration*: the version stays `0.1.0` so that promising compatibility is a decision somebody makes (ADR-0016). |
+| **Next phase to work on** | **None scheduled.** P0 through P20 are all `Complete`. What remains is not a phase: two acceptance items that need hardware or repository settings this container does not have (re-running an update against a device from a fresh clone, and commissioning the `smply-bench` runner), plus the standing follow-up table below and open questions O3, O5 and O6. A session with the bench should start at those two; a session without one should start by asking whether a follow-up row has become worth doing — which is how P19 was chosen |
+| Last completed phase | **P20 — serial (MCUmgr console) framing.** `transports/serial/` ships the protocol half of a serial link: markers, base64, the length prefix and the CRC-16/XMODEM, in both directions, header-only and portable, under the existing `smply::transport_common` (ADR-0017). The **port is not here** — no `termios`, no `CreateFile`, no `Transport` implementation — so no serial byte has been on a wire; what is proved is byte-identity with a transcription of Zephyr's `serial_util.c` for every packet size from 1 to 300, which is a weaker claim than P17's and `architecture.md` §11 says so. Rewriting `protocol-notes.md` §8 from that source corrected two things the `.rst` summary had blurred: "124" is base64 characters and the payload figure is 93, and the CRC covers the packet but not the length prefix |
+| Previously | **P19 — the A24 follow-up.** A shipped recovery path could not fire against the server configuration the bench peer (and most shipping devices) use: `update_state_machine.cpp` recovered a lost mark-for-test by branching on `ImageError::ImageAlreadyPending`, which SMP v1 destroys on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`. It now also accepts a group-less `SmpError::BadState`. The branch is one line; the finding is that `tests/unit/test_update_state_machine.cpp` had **no way to build the v1 shape at all** — its only helper hard-coded `MgmtError::scoped` — so no test in the suite could have caught it |
+| And before that | **P18b — the 1.0 documentation and ADR audit.** Every living document read against the code: thirteen contradictions and six omissions fixed, among them `design.md` describing the CBOR nesting defect P13 *fixed* as though it were the design, a threat-model row mitigating a logging subsystem that does not exist, and two documents naming a file (`src/cbor/backend_qcbor.*`) that has never existed. Sixteen ADRs reviewed and **none superseded**; four carry a `Status`-line note. `check_docs.py` R5 was widened from reading the first token of a layout line to reading all of them — 44 checked before, 109 after — because that narrowness is why two of the findings survived four phases. Before it, **P18a** decided the installed package's shape in ADR-0016 (`smply::transport_common` in, `dfu_app`/`minicbor`/`winrt_ble` out, each with a reason), proved all three consumption modes, and made the SBOM and OSV-scanning claims true instead of aspirational |
+| Earlier | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **eight libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **707 tests** (706 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak and a weekly dependency scan, and **fourteen more cases on hardware** — in thirteen groups, twelve of them unattended — that no CI preset builds. And, from P18, **an installed package proved out of tree three ways on every push** (`find_package`, `add_subdirectory`, `FetchContent`), carrying `smply::smply`, `smply::util` and `smply::transport_common` — which from P20 ships **MCUmgr's serial console framing** beside the BLE helpers, so a device with no radio now has a protocol implementation waiting for a port — with an SPDX SBOM generated from the same pins the build uses. **The product is complete, packaged, documented against itself, and has met a device.** What is deliberately not done is the 1.0 *declaration*: the version stays `0.1.0` so that promising compatibility is a decision somebody makes (ADR-0016). |
 | Blocked phases | none |
-| Open decisions | **Three open** — O3, O5, O6. O1 (licence), O2 (SMP v2 probing, resolved in P17c from hardware) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
+| Open decisions | **Four open** — O3, O5, O6 and the new O7 (what a device reset does to a serial link). O1 (licence), O2 (SMP v2 probing, resolved in P17c from hardware) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
 ## Phase summary
 
@@ -47,6 +48,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P18a](#p18a) | Packaging, install/export and out-of-tree consumption | **Complete** | P17c |
 | [P18b](#p18b) | The 1.0 documentation and ADR audit | **Complete** | P18a |
 | [P19](#p19) | The A24 follow-up: a recovery path that could not fire | **Complete** | P17c |
+| [P20](#p20) | Serial (MCUmgr console) framing (`transports/serial/`) | **Complete** | P15a |
 
 Phases P1–P15a are portable and can be developed and verified entirely on Linux.
 P15b–P17c require Windows; P17a–P17c additionally require the hardware bench
@@ -61,14 +63,17 @@ from a container with no bench, and left it filed in the follow-up table with
 the nightly schedule removed from `hil.yml` so that it stops queueing against a
 runner that does not exist.
 
-**Every phase in this roadmap is Complete**, P19 included. Two acceptance items
+**Every phase in this roadmap is Complete**, P19 and P20 included. Two acceptance items
 are not, and neither can be closed without hardware: re-running an update
 against a device from a fresh clone (P18a), and commissioning the runner. Both
 are in the follow-up table, owned by the bench rather than by a phase.
 
-**P19 is not part of P18 and does not reopen it.** It is a follow-up row from
-P17c worked on its own, which is what the current-state table says a session
-without a bench should do.
+**P19 and P20 are not part of P18 and do not reopen it.** P19 is a follow-up
+row from P17c and P20 is the first item on `architecture.md` §12's own
+value-ordered list, both worked on their own — which is what the current-state
+table says a session without a bench should do. They were worked in one session
+as two commits, the way P18a and P18b were, because one diff would have been
+well past the ~1000-line rule in [`handoff.md`](handoff.md).
 
 ---
 
@@ -3013,6 +3018,176 @@ run, applied to a test rather than to a bench.
 
 ---
 
+<a id="p20"></a>
+## P20 — serial (MCUmgr console) framing
+
+**Status: Complete** (2026-09-19) · **Depends on:** P15a
+
+**Objective.** Close the largest gap between "smply works" and "smply works for
+my device": give a serial link the protocol half of a transport, portably and
+with a test suite, so that an application supplies a port and nothing else.
+
+**Scope.** `transports/serial/` -- `crc16.hpp`, `base64.hpp`,
+`serial_framing.hpp` -- shipped by the existing `smply::transport_common`
+target. A unit suite, a libFuzzer target over the decoder, and the documents
+ADR-0013 makes part of the same change.
+
+**Out of scope, and it is the bigger half.** Any **port**: no `termios`, no
+`CreateFile`, no file descriptor, no reader thread, no `Transport`
+implementation and no example. Raw UART
+(`CONFIG_MCUMGR_TRANSPORT_RAW_UART`), which needs no framing at all. A bench
+with a serial peer.
+
+**Prerequisites.** P15a's `transports/` include root, install rule and the
+precedent that portable transport code lives outside an adapter.
+
+**Tasks.**
+1. Read the framing out of primary sources (S26-S29) and rewrite
+   `protocol-notes.md` §8's UART subsection from them.
+2. `crc16_xmodem()`, strict base64, `SerialFramer`, `LineSplitter`,
+   `SerialDeframer`.
+3. A unit suite whose oracles are the published CRC and base64 vectors and a
+   transcription of Zephyr's C, not this module.
+4. `fuzz_serial_deframe` plus a seeded corpus; extend `tools/coverage.sh`'s
+   filter and `tests/consumption/smoke.cpp`.
+5. ADR-0017, and reconcile `architecture.md`, `design.md`, `api.md`,
+   `testing.md` and `quality-gates.md`.
+
+**Files.** `transports/serial/*`, `transports/CMakeLists.txt`,
+`tests/unit/test_serial_framing.cpp`, `tests/unit/CMakeLists.txt`,
+`tests/fuzz/fuzz_serial_deframe.cpp`, `tests/fuzz/CMakeLists.txt`,
+`tests/fuzz/corpus/fuzz_serial_deframe/*`, `tests/consumption/smoke.cpp`,
+`tools/coverage.sh`, `tools/lint.sh`,
+`docs/decisions/ADR-0017-serial-framing-placement.md`, six living documents,
+`CHANGELOG.md`.
+
+**Tests.** 39 unit cases. The acceptance ones are the two whose oracle is
+outside this repository; the rest are the bounds and the line-cutting
+invariant. 706 tests on Linux, up from 667.
+
+**Docs.** `protocol-notes.md` §1 and §8; `architecture.md` §3, §10, §11, §12;
+`design.md` §12 (new); `api.md`'s transport section, retitled to cover both
+directories; `testing.md` §3 and the fuzz table; `quality-gates.md` §3 and §6;
+`security.md` T15, T16 and its scope statement.
+
+**Gates.** All ten Linux presets, both sanitizers, TSan, the fuzz preset,
+`verify_gates.sh` (because `tools/coverage.sh` and `tools/lint.sh` both
+changed) and `check_install.sh` (because `smoke.cpp` and an install rule
+changed).
+
+**Acceptance.** The encoder is byte-identical to a transcription of
+`mcumgr_serial_tx_pkt()` for every packet size from 1 to 300, the decoder
+accepts everything that transcription emits, and a packet survives the round
+trip through both at every read size from 1 to 64.
+
+**Exit.** Nobody writing a serial adapter for smply has to read
+`serial_util.c`.
+
+### Outcome
+
+**Completed.** All five tasks. Three headers (~620 lines with their file
+comments), 39 unit cases, one fuzz target with 15 seeded inputs, one ADR, six
+documents.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.**
+
+1. **The plan named three primitives; it shipped three, but the shape of the
+   receiving two changed.** A callback-driven `feed(bytes, on_packet)` was
+   sketched first and dropped: it would have been a template in a header that
+   clang-tidy only sees at instantiation, and it would have fused two bounds
+   that want separate tests. `LineSplitter` and `SerialDeframer` are
+   independently testable and an adapter with a line-oriented reader can use
+   the second alone.
+2. **The diff is over the ~1000-line rule, and this says so rather than
+   letting it grow quietly.** P20 is roughly 2050 lines under `transports/`,
+   `tests/` and `tools/` and 1000 of documentation; of the first figure, ~1000
+   is the unit suite and ~750 the three headers with their file comments. The
+   plan named the split point in advance — the deframer plus its fuzz target as
+   a P20b — and it was **not** taken, for a reason worth recording: a P20a of
+   encoder-only would be unable to state its own acceptance criterion. Both
+   halves of that criterion are cross-checks against the same transcription of
+   Zephyr's C, one in each direction, and a phase that ships an encoder with no
+   decoder can test it only against itself — which is precisely the thing the
+   suite is built to avoid. ADR-0017's clause 2, the one a reviewer will look
+   for, is also about the receiver existing. Splitting would have bought a
+   smaller diff and a weaker phase.
+3. **`LineSplitter` returns a view into a second buffer, not into a cleared
+   one.** The first version cleared its accumulator and returned a span over
+   the storage, which works and is reading past a vector's `size()`. Two
+   buffers swapping is the same cost after warm-up and does not rely on
+   something that is not guaranteed.
+
+**Discovered.**
+
+* **`protocol-notes.md` §8 was imprecise in two ways that would each have
+  produced a client no device accepts**, and both were only visible in the
+  server's code rather than in the transport `.rst` it was written from. "127-byte
+  frame limit (124 payload)" reads as 124 payload *bytes*; 124 is a count of
+  base64 **characters** and the payload figure is **93**. And "CRC16 over the
+  raw body" is ambiguous where it matters: the CRC covers the packet and **not**
+  the two-byte length prefix that precedes it in the encoded body. The section
+  is rewritten from S27 with both stated explicitly.
+* **The binding constraint on frame splitting is written down nowhere.** Each
+  frame must carry whole base64 quartets -- whole triplets of body bytes --
+  except the last, because the receiver decodes each frame independently. Any
+  splitting scheme that ignores it produces frames that decode to nothing, and
+  no document says so.
+* **`crc16_itu_t` does not name its variant.** Zephyr's function name covers
+  several CRCs that share the polynomial `0x1021`; only the header's prose says
+  MSB-first with no reflection. A reflected implementation round-trips
+  perfectly inside a client and matches no device, which is why the suite
+  checks the published check value rather than a round trip.
+* **The reference transmitter defers a data byte rather than splitting the
+  CRC across frames.** A 183- or 184-byte packet therefore yields a 123-byte
+  second frame where the obvious packing yields 127. smply reproduces it, and
+  removing that one arm is what the byte-identity test catches -- verified by
+  removing it.
+* **A coverage filter is a list of directories, and a new one is invisible
+  until it is added.** Without the line in `tools/coverage.sh`,
+  `transports/serial/` would have been measured by nobody while the whole-core
+  percentage went *up*, because its tests still run and its lines still would
+  not count. Same shape as P18b's R5 finding, arriving from the other
+  direction.
+* **clang-tidy had been analysing the fuzz targets under a *guessed* compile
+  command for six phases, and this phase is what found out.**
+  `SMPLY_BUILD_FUZZERS` is on only in `linux-clang-fuzz` while the `gates` job
+  configures `linux-clang`, so `tests/fuzz/`'s translation units are absent
+  from the database clang-tidy is handed — and it analysed them anyway,
+  inferring each command from a neighbouring directory. That worked only
+  because the guess happened to carry every include root the seven existing
+  targets needed. `fuzz_serial_deframe` is the first to include a transport
+  header and failed outright, which is the *useful* failure; the quiet version
+  was seven files checked under flags that are not the flags they compile
+  with. `tools/lint.sh` now names the project's include roots explicitly rather
+  than depending on a second build directory CI does not configure. Same family
+  as the `grep -v winrt` decoy that sits one directory away, and as P18b's R5:
+  **a check that runs is not a check that checks what you think.**
+* **A maximal SMP message cannot be carried over this framing at all**, and
+  nothing said so. The frame's length field is two bytes and holds
+  `packet.size() + 2`, so the ceiling is 65533 — while a maximal SMP message is
+  8 + 65535 = 65543, because its own header `length` is 16-bit too. The first
+  version of the encoder `static_cast`-ed the size into a `uint16_t` and would
+  have put a length on the wire that contradicted the bytes after it, which no
+  receiver can diagnose. Found by re-reading the diff rather than by a test.
+  `kMaxSerialPacket` is now a named constant, the framer refuses above it the
+  same way it refuses an empty message, and `api.md` tells an adapter to cap
+  `max_message_size()` there. In practice `limits::kMaxSmpPayload` is 8192, so
+  nothing reachable today gets near it — which is exactly why it would have
+  sat unnoticed.
+* **One guard in the deframer is unreachable, and it stays.** A body longer
+  than its own declared length cannot reach the check that refuses it, because
+  both routes are closed upstream by the bounds themselves. Removing it would
+  leave the bound with nothing asserting it held; it carries
+  `LCOV_EXCL_START`/`STOP` and the reason, which is the pattern P13 established.
+  The other uncovered line was **reachable and simply untested** -- an opening
+  frame whose base64 decodes to fewer than two bytes -- and got a test rather
+  than a marker. Reading the uncovered list rather than the percentage is what
+  separates the two.
+
+---
+
 ## Open questions
 
 Tracked here until resolved; resolving one means an ADR or a doc update, not a
@@ -3026,6 +3201,7 @@ comment in code.
 | ~~O4~~ | ~~Is `MemoryImageSource` enough, or is a `FileImageSource` wanted in the library?~~ | ~~P9~~ | **Resolved in P9: `MemoryImageSource` only.** `ImageSource` is two virtual functions, so a file-backed source is a dozen lines in the application, and adding one to the core would drag in file I/O, paths and error mapping across three platforms for no protocol benefit (architecture.md §2). The **P14b** example provides one. |
 | O5 | Multi-image (image ≥ 1) support in `UpdatePlan` — exercise it, or document as untested? | when multi-image hardware exists | Representable already; the question is test/HIL coverage. The owner phase read `P12` until P17c, which had been Complete for five phases — so the question was blocked on something that could never happen. The bench device has one image pair, so no hardware here can exercise it; deciding it means either extending `ServerSimulator` to two pairs or documenting it as untested in `api.md`. |
 | O6 | Expose a `std::error_code` interop layer? | after P12 | Only if a consumer asks. |
+| O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | when a serial port adapter exists | `AwaitingDisconnect`, `AwaitingReconnect` and `UpdatePlan::disconnect_grace` all assume a link that drops when the device resets, which is what a BLE link does. A hardware UART stays open across a reset; a USB CDC port disappears and comes back, possibly under a different name. So the updater may wait out its whole grace period on a link that never dropped, or see a drop that is enumeration rather than a reboot. P20 shipped the framing and deliberately no port, so there is nothing to measure against yet — and ADR-0017 records it rather than guessing, which is what [`handoff.md`](handoff.md) says to do with a conflict that cannot be settled inside a session. |
 
 ## Discovered follow-up work
 
@@ -3100,7 +3276,7 @@ them.
 | P17c | **Commissioning the self-hosted `smply-bench` runner.** `hil.yml` is committed and advisory, but no runner is registered, so the hardware suite has only ever run from the bench by hand. Configuration rather than code — which is why `hil.yml` was committed in P17b, so that commissioning changes no source. The cross-check's HCI half needs BTVS running **elevated**, which a runner registered as a *service* can provide and an interactive session cannot; that is part of commissioning, not a separate problem. **P18a reviewed it and could not do it** — it needs the physical bench and repository settings, and a container has neither — so it stays open, now owned by the bench rather than by a phase. P18a did remove the nightly `schedule:` while that remains true: it was queueing a 90-minute timeout every night against a runner that does not exist, and a standing reminder that only ever says the same thing is noise. `hil.yml`'s header carries the steps and the schedule block to restore. | a session with the bench |
 | P17c | **HCI capture does not work on this bench, and the remaining lead is a WPP provider.** BTVS never opens its remote listener here (`Wireshark Viewer: Disabled`, `Connection failed`, no socket held), and enabling the *manifest* provider `Microsoft-Windows-BTH-BTHPORT` by hand -- every keyword, level 255, `logman query` confirming it attached -- captured **zero Bluetooth events across three minutes of BLE traffic**. What is left untried at its last step is Microsoft's own recording profile, which enables `Microsoft.Windows.Bluetooth.WPP.BthPort` `{d88ace07-...}`, converted with `BTETLParse.exe -pcap`; `tests/hil/README.md` has the commands and the two syntax traps. Until that lands, Tier B of the cross-check is decode-verified against the device's recorded bytes and **unproven against a live capture**. | when a capture is wanted, or with the runner |
 | ~~P17c~~ | ~~**A shipped recovery path is dead against a server that translates v1 errors.** `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` a v1 request never carries that code.~~ **Done in P19**, and the review it was waiting for is written into ADR-nothing rather than an ADR: no decision was contradicted, only a branch widened. It now also accepts a group-less `SmpError::BadState`, which `img_mgmt_translate_error_code()` produces for all three of the codes A16 lists, each wanting the same re-read-and-replan; the one-shot `mark_retried` budget already bounded it. **The reason it survived eleven phases is worth more than the fix**: the only injection helper in `tests/unit/test_update_state_machine.cpp` built `MgmtError::scoped`, so no test in the suite could express what a v1 peer actually sends. The missing dual, `flat_failure()`, is now there. | — |
-| P17c | **The UART client arm could not complete an upload, so the cross-check is two clients and an oracle.** `mcumgr-client` 0.0.9 over the shell transport reads state reliably but failed three different ways mid-transfer (protocol-notes §9, "the UART arm is an oracle, not a third client"), and the peer's console UART carries an echoing shell and a deferred raw-UART log backend on the same stream. To make it a third *client*, a bench revision would have to move logs off USART1 — RTT, say — or use the raw UART MCUmgr transport instead of the shell one. Worth doing only if a UART comparison is wanted; smply implements no UART transport. | when a UART comparison is wanted |
+| P17c | **The UART client arm could not complete an upload, so the cross-check is two clients and an oracle.** `mcumgr-client` 0.0.9 over the shell transport reads state reliably but failed three different ways mid-transfer (protocol-notes §9, "the UART arm is an oracle, not a third client"), and the peer's console UART carries an echoing shell and a deferred raw-UART log backend on the same stream. To make it a third *client*, a bench revision would have to move logs off USART1 — RTT, say — or use the raw UART MCUmgr transport instead of the shell one. Worth doing only if a UART comparison is wanted; smply implements no UART transport. **P20 changed the arithmetic here**: smply now implements the framing (not a transport), so the third-client option is "write ~50 lines of port code" rather than "implement the protocol". Still worth doing only if a UART comparison is wanted. | when a UART comparison is wanted |
 | P17c | **`smp_decode.py`'s CBOR reader and SMP reassembler are a second implementation of things smply already has.** They exist because the decode must not be inferred from the tools being compared (ADR-0015), and they are self-tested against the device's own recorded bytes — but two decoders can drift, and a divergence traced with a buggy one would be worse than no comparison. If the cross-check grows, consider driving it through smply itself (a small `--decode` mode over the public reader) rather than growing the Python copy. | if the cross-check grows |
 | P17b | **A `TransportBusy` seen again would need a clock-driven backoff, and that needs an ADR.** The transport now absorbs the handover window itself, so anything still reaching the upload driver means the medium genuinely is not draining. The driver cannot help: `is_transient()` excludes `TransportBusy` deliberately because nothing below `FirmwareUpdater` owns a clock, and a retry there would spend the whole budget with zero elapsed time (design.md §6). Giving a lower layer a clock, or giving the updater the retry, touches ADR-0003 and ADR-0004. Do not patch it quietly. | if it is seen again |
 | ~~P17b~~ | ~~**`WinRtBleTransport::send_counters()` is public API that P18 will have to keep or drop.**~~ **Kept in P18a, as a per-adapter diagnostic** — the middle of the three options this row listed, and the packaging decision is what makes it cheap. Since `smply::winrt_ble` is not in the installed package, the method carries no compatibility promise at all, while dropping it would cost the bench the only evidence that the A22 fix does anything: a green suite with `deferred_sends == 0` says the race did not fire, not that the queue absorbed it. Putting it in the `Transport` contract was rejected — that means superseding ADR-0005 to generalise from one adapter. Recorded against ADR-0015 and in `api.md`. | — |
@@ -3117,3 +3293,6 @@ them.
 | P18a | **An installed package cannot be consumed by the examples.** `cli_dfu` links `smply::minicbor` and `smply::dfu_app`, neither of which is installed (deliberately, ADR-0016), so the examples build in-tree only. That is correct for what they are — worked code to read — but it means "build the example against an install" is not a thing a consumer can do, and somebody will try. Either say so in `examples/README` terms, or give `cli_dfu` a mode that does not need the stub device. | when a consumer tries it |
 | P18b | **R5 still cannot read a glob.** `server_simulator.*` and `update_state_machine.*` are skipped, so a layout entry written with a glob is checked by nobody. P18b fixed two such entries by hand and the gate would not catch them coming back. Resolving a glob against `git ls-files` is not hard; what stopped it was that the skip count is currently honest and a half-working resolver would make it less so. | when a glob entry drifts again |
 | P18b | **`protocol-notes.md` now carries two kinds of verification date and nothing distinguishes them mechanically.** "Verified 2026-09-04" means *read from Zephyr and MCUboot source*; "2026-09-08" means *observed on a radio*. P17 found seven facts of the first kind that the second contradicted, so the difference matters — but a §9 entry that does not say which it is reads as though both apply. A per-fact marker (`[source]` / `[bench]`) would make it checkable; today it is prose discipline. | when a third verification source appears |
+| P20 | **A serial port adapter, and an example that drives it.** `transports/serial/` is the protocol and nothing else, so smply still has no `Transport` over a serial link: an integrator writes the `termios`/`CreateFile` half, the reader thread and its `Dispatcher` themselves. That was ADR-0017's deliberate line, and the reason to hold it was evidence — no CI job can open a tty against a device, so a port's only witness would be a bench that has no serial peer configured, and it would be the second directory in the tree outside clang-tidy and cppcheck. The framing it would use is tested; what is missing is somebody with a board. | a session with a bench that has a serial peer |
+| P20 | **Nothing has put a serial byte on a wire.** The encoder is byte-identical to a transcription of `mcumgr_serial_tx_pkt()` and the decoder accepts everything that transcription emits — which is agreement between two readings of the same C, not evidence from a device. P17 exists because seven facts the simulated suite accepted turned out to be wrong on a radio (§9 A18-A24); there is no reason to think a serial peer is kinder. Treat `architecture.md` §11's wording as the honest claim and do not upgrade it without a run. | with the port adapter above |
+| P20 | **`LineSplitter` drops an over-long line silently apart from a counter.** That is right for a console that also carries a log backend — over-long lines are the *normal* case there — but it means a peer whose frames are consistently too long (a misconfigured `CONFIG_MCUMGR_TRANSPORT_SHELL_RX_BUF_SIZE`, say) looks exactly like a silent device. `dropped_lines()` is the only signal, and nothing above the splitter reads it. An adapter should surface it; what shape that takes is a question for the first one. | when the port adapter is written |

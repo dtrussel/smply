@@ -17,6 +17,7 @@ add_executable(smply_unit_tests
     test_reconnect_policy.cpp
     test_result.cpp
     test_send_queue.cpp
+    test_serial_framing.cpp
     test_sha256.cpp
     test_smp_client.cpp
     test_smp_codec.cpp

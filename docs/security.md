@@ -1,7 +1,8 @@
 # Security considerations
 
-Scope: a **host-side firmware update client**. It runs on a Windows desktop with
-the user's privileges and talks to a possibly-untrustworthy embedded peer.
+Scope: a **host-side firmware update client**. It runs on a desktop or a
+build machine with the user's privileges and talks to a possibly-untrustworthy
+embedded peer, over BLE or -- since P20's framing -- a serial console.
 
 ## 1. Trust boundaries
 
@@ -9,8 +10,8 @@ the user's privileges and talks to a possibly-untrustworthy embedded peer.
 ┌──────────────────────┐   signs    ┌──────────────────────┐   verifies  ┌──────────────┐
 │ build/signing        │──────────► │ smply (host)         │────────────►│ MCUboot      │
 │ pipeline             │  image +   │ moves bytes,         │  image over │ (device)     │
-│ holds the PRIVATE KEY│  TLV hash  │ checks TRANSFER      │  SMP/BLE    │ holds the    │
-│                      │  + sig     │ integrity only       │             │ PUBLIC KEY   │
+│ holds the PRIVATE KEY│  TLV hash  │ checks TRANSFER      │  SMP over a │ holds the    │
+│                      │  + sig     │ integrity only       │  link       │ PUBLIC KEY   │
 └──────────────────────┘            └──────────────────────┘             └──────────────┘
         AUTHENTICITY                     INTEGRITY ONLY                    AUTHENTICITY
         originates here                  no authority                      enforced here
@@ -43,6 +44,8 @@ array size, string, hash and flag — is **untrusted input**.
 | T12 | **Sensitive data in logs.** | **smply has no logging**, which is the strongest form this mitigation can take: there is no log statement in `include/` or `src/` to leak anything, no log level to misconfigure, and no sink the library writes to. The application logs, and what it may be handed is bounded here — a device-supplied `rsn` string is capped at `limits::kMaxReasonLength`, and `error.hpp` states at the declaration that it is attacker-controlled text an application must escape before displaying it. P18's audit corrected this row: it previously described log levels, truncation and default verbosity for a logging subsystem that does not exist. |
 | T13 | **Denial of service against the device** — a runaway client hammering the SMP server. | One outstanding request by default; bounded chunk retries and bounded upload restarts; no automatic reconnect loop (reconnection is the application's, and therefore rate-limitable, decision). |
 | T14 | **Supply-chain risk in dependencies.** | Minimal footprint (one runtime dependency), exact tag+hash pinning, an SPDX 2.3 SBOM generated from those pins by `tools/sbom.py` and published by CI, and an advisory weekly OSV-Scanner run over it ([`quality-gates.md`](quality-gates.md) §9). The SBOM and the scanner were claimed here from P0 and built in P18. Read §9 before relying on a clean scan: it runs and produces a report, but its *scheduled* firing is unproven and nothing establishes that OSV has advisory coverage for two C libraries consumed from git — an empty report from a database with nothing to say looks exactly like one from a database that checked. |
+| T15 | **A hostile serial frame stream.** A console link's framing is its own parser — markers, base64, a device-supplied big-endian length and a CRC — and all of it is decoded *before* a single SMP byte exists, so it sits outside every bound T2 and T3 describe. | Three bounds in `transports/serial/`, each with a test named for it ([`design.md`](design.md) §12): a line longer than a frame can be is **dropped, not buffered**, so a peer that never sends a newline cannot grow the line buffer; the declared length is checked against a configured `max_packet` **before the packet buffer is allowed past one frame's worth**, so the peak footprint is bounded by the cap and never by what the device asked for; and a body longer than its own declared length is an error rather than a trim. Base64 decoding is strict — no character outside the alphabet, no length that is not a whole quartet, no padding anywhere but the tail — because a lenient decoder turns a corrupt frame into a plausible one. `fuzz_serial_deframe` asserts all three bounds at every step over an arbitrary stream. |
+| T16 | **A shared console is not a private channel.** On a device with `CONFIG_SHELL_BACKEND_SERIAL` the same stream carries a shell, its echo and a log backend, and the deframer is deliberately tolerant of lines that are not frames — so anything with write access to the port can interleave text of its choosing, including well-formed frames. | **Nothing changes in the trust model, which is the point**: §1 already treats every byte crossing the device boundary as untrusted, so an injected frame is exactly as trusted as a genuine one — which is to say not at all, and bounded by T15. What tolerance does *not* do is widen the attack surface: an ignored line is never decoded, so no byte of it reaches the base64 decoder, the length or the CRC. Who may open the port is the operating system's business and the application's, as T6 says of device identity. A serial link also offers no confidentiality at all, where BLE at least may be encrypted — and per T11 that was never a property of the *image* either. |
 
 ### What the P13 audit found
 

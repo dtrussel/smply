@@ -56,6 +56,7 @@ if command -v gcovr >/dev/null 2>&1; then
           "$BUILD_DIR" \
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \
           --filter "$REPO/transports/common/" \
+          --filter "$REPO/transports/serial/" \
           --exclude '.*/_deps/.*' \
           --exclude-throw-branches \
           --print-summary --txt \

@@ -2660,3 +2660,185 @@ tree**, which closes P18a's one open acceptance item, and **commission the
 and restore `hil.yml`'s `schedule:` block). Everything else is the follow-up
 table and open questions O3, O5 and O6 — none of which is blocking, and each of
 which now names the prerequisite that would make it worth doing.
+
+### 2026-09-19 — P19 and P20: the A24 recovery fix, and serial framing
+
+**Status after this session:** P19 = `Complete`, P20 = `Complete`. Two commits,
+the way P18a and P18b were worked in one session: a combined diff would have
+been far past the ~1000-line rule above, and the two share nothing but a
+branch.
+
+**P20 is over that rule on its own, and the roadmap says so rather than
+pretending otherwise.** ~2050 lines of code and tests plus ~1000 of
+documentation; the split point was named in the plan (the deframer and its
+fuzz target as a P20b) and deliberately not taken, because a P20a shipping an
+encoder with no decoder could only have tested it against itself. Both halves
+of the acceptance criterion are cross-checks against the same transcription of
+Zephyr's C, one in each direction. A smaller diff would have bought a weaker
+phase.
+
+**P19 — a shipped recovery path that could not fire.** `update_state_machine.cpp`
+recovered a mark-for-test whose response was lost by branching on
+`ImageError::ImageAlreadyPending`. Against a server built with
+`CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` — the bench peer, and the common
+configuration — an SMP v1 request never carries a group-scoped code, so
+`image_error()` is always `nullopt` there and the branch was dead on arrival.
+It now also accepts a group-less `SmpError::BadState`, which
+`img_mgmt_translate_error_code()` produces for `NoFreeSlot`,
+`CurrentVersionIsNewer` and `ImageAlreadyPending` alike; all three want the
+same re-read-and-replan, and `mark_retried` already bounded it to one extra
+round trip.
+
+**The finding is worth more than the fix, and it is a shape to watch for.**
+`tests/unit/test_update_state_machine.cpp` had *no way to construct the v1
+shape*: its only injection helper, `image_failure()`, hard-coded
+`MgmtError::scoped`. So every test of every recovery asked the machine a
+question no SMP v1 device ever asks it — with full line coverage the whole
+time, because the lines all ran, just never with the other shape. **A test
+helper that can only build one of two wire shapes silently caps what the suite
+is able to assert, and nothing reports that as a gap.** The missing dual is
+`flat_failure()`, and it is now beside the original.
+
+Deliberately *not* widened to `SmpError::Unknown` — which is the code A24
+actually measured on the bench. The same table gives `EUNKNOWN` to eighteen
+other image codes including every flash failure, so recovering from it would
+retry genuine refusals. The fix is therefore traced to S10's translation table
+rather than to a provocation, and `protocol-notes.md` says so rather than
+letting A24's measurement imply it covered code 28.
+
+**P20 — MCUmgr's serial console framing, `transports/serial/`.** Three
+header-only files (`crc16.hpp`, `base64.hpp`, `serial_framing.hpp`) shipping
+under the existing `smply::transport_common` — a directory, not a fourth
+target, which is what keeps ADR-0016's list intact (ADR-0017). `SerialFramer`
+out, `LineSplitter` + `SerialDeframer` in. **The port is not here** and that is
+the decision, not an omission: no CI job can open a tty against a device, so a
+port's only witness would be a bench, and every byte that can be portable gets
+unit tests, clang-tidy, cppcheck, a coverage gate and a fuzz target instead.
+
+**Read `protocol-notes.md` §8 before touching any of it — it was rewritten, and
+the old text was wrong in two ways that each produce a client no device
+accepts.** "127-byte frame limit (124 payload)" reads as 124 payload *bytes*;
+124 is a count of base64 **characters** and the payload figure is **93**. And
+"CRC16 over the raw body" is ambiguous exactly where it matters: the CRC covers
+the SMP packet and **not** the two-byte length prefix that precedes it in the
+encoded body. Neither is visible in the transport `.rst`; both are plain in
+`serial_util.c`. This is the standing caveat about the documentation and the
+source disagreeing, arriving in a new place.
+
+**Caveats — read these before writing a serial adapter.**
+
+* **Nothing has put a serial byte on a wire.** What is proved is byte-identity
+  with a transcription of `mcumgr_serial_tx_pkt()` for every packet size from 1
+  to 300, and that the decoder accepts what that transcription emits. That is
+  agreement between two readings of the same C, not evidence from a device —
+  a strictly weaker claim than P17's, and P17 exists because seven facts the
+  simulated suite accepted turned out to be wrong on a radio. `architecture.md`
+  §11 states it at that strength; do not upgrade the wording without a run.
+* **`crc16_itu_t` does not name its variant, and the wrong one round-trips
+  perfectly.** Zephyr's function name covers several CRCs sharing polynomial
+  `0x1021`; only `crc.h`'s prose says MSB-first with no reflection. A reflected
+  implementation passes every round-trip test a client can write and matches no
+  device. That is why the suite asserts the published check value (`0x31C3`
+  over `"123456789"`) and RFC 4648's base64 vectors — **two oracles that are
+  not this repository's code**, which is the same discipline as
+  `test_ble_framing.cpp`'s hand-written hex parser.
+* **Every frame carries whole base64 quartets except the last**, because the
+  receiver decodes each frame independently. This is the binding constraint on
+  any splitting scheme and it is written down in no specification. A scheme
+  that ignores it produces frames that decode to nothing.
+* **The reference transmitter defers a data byte rather than splitting the CRC
+  across frames**, so a 183- or 184-byte packet yields a *123*-byte second
+  frame where the obvious packing yields 127. smply reproduces it exactly so
+  that any device tolerating Zephyr's own output tolerates smply's; removing
+  that one arm is what the byte-identity test catches, verified by removing it.
+* **`Ignored` keeps a partial packet; `Error` discards it.** An unrecognised
+  line is ignored because the server ignores it, and because a console with
+  `CONFIG_SHELL_BACKEND_SERIAL` and `CONFIG_LOG_BACKEND_UART` interleaves
+  prompts, echo and log lines with frames as a matter of course — the stream
+  P17c could not get a third-party client to complete an upload over. An
+  ignored line is never *decoded*, so nothing in it reaches the CRC, the length
+  or the buffer. A **continuation** with nothing in progress is different and
+  is fatal.
+* **`Transport::max_message_size()` is not 93, and it does have a ceiling.**
+  93 is the *frame* limit; a whole SMP message spans as many frames as it
+  needs, exactly as a BLE message spans GATT packets, so reporting it there
+  would cap every upload chunk for no reason. The real ceiling is
+  `kMaxSerialPacket`, **65533**, because the frame's length field is two bytes
+  and holds `size + 2` — and note that a *maximal* SMP message is above it
+  (8 + 65535 = 65543), so this framing cannot carry one at all. `SerialFramer`
+  refuses rather than truncating the field. Nothing reachable today gets near
+  it (`kMaxSmpPayload` is 8192), which is precisely why the first version of
+  the encoder truncated silently and no test would have caught it.
+* **A coverage filter is a list of directories, and a new one is invisible
+  until it is added.** `tools/coverage.sh` named `transports/common/` only.
+  Without the new line, `transports/serial/` would have been measured by nobody
+  while the whole-core percentage went *up* — its tests still run and its lines
+  still would not count. Same shape as P18b's R5 finding from the other
+  direction: **a gate that silently narrows reports a pass.**
+* **Read the uncovered-line list, not the percentage** — it separated two cases
+  that look identical at 98 %. One guard is genuinely unreachable (both routes
+  to an over-long body are closed upstream by the bounds themselves) and keeps
+  its `LCOV_EXCL_START`/`STOP` with the reason; the other line was reachable and
+  simply untested — an opening frame whose base64 decodes to fewer than two
+  bytes — and got a test. Excluding that one would have hidden a real gap.
+
+* **clang-tidy had been analysing the fuzz targets under a guessed command,
+  and P20 is what found out.** `SMPLY_BUILD_FUZZERS` is on only in
+  `linux-clang-fuzz`; the `gates` job configures `linux-clang`, so
+  `tests/fuzz/`'s TUs are absent from the compile database clang-tidy is
+  handed. It analysed them anyway, inferring each command from a neighbouring
+  directory — which happened to carry every include root the seven existing
+  targets needed. The first one to include a transport header failed outright
+  with "file not found", which is the *useful* failure; the quiet version was
+  seven files linted under flags that are not the flags they compile with.
+  `tools/lint.sh` now names the project's include roots with `--extra-arg`.
+  **A check that is running is not a check that is checking what you think**,
+  and this one sat one directory away from the `grep -v winrt` decoy that
+  exists for exactly that reason.
+
+**Open question O7 is new and deliberate.** `AwaitingDisconnect`,
+`AwaitingReconnect` and `disconnect_grace` all assume a link that drops when the
+device resets. A hardware UART stays open across one; a USB CDC port disappears
+and returns, possibly renamed. There is no port to measure against, so it is
+recorded rather than guessed — which is what this file says to do with a
+conflict that cannot be settled inside a session.
+
+**Verification.** All ten Linux presets built and green (706 tests, up from
+662); `format.sh --check`, `lint.sh` (clang-tidy and cppcheck, both installed
+first), the three `check_*.py`, `verify_gates.sh` (23/23 — run because
+`tools/coverage.sh` and `tools/lint.sh` both changed) and `check_install.sh`
+(because `smoke.cpp` and an install rule coverage 98.3 % line / 88.0 % branch with the new directory at 100 % / 98.0 %;
+all eight fuzz targets clean over the 20 000-run smoke and `fuzz_serial_deframe`
+over 200 000. **Four things were re-run with the change reverted** to confirm
+they fail without it: the P19 unit and component cases, the P20 byte-identity
+test with the CRC-deferral arm removed, and `check_install.sh` with the
+`install(DIRECTORY serial ...)` line removed — that last one fails in the
+`find_package` mode, which is the only one that could catch it. The roadmap
+records that the P19 budget test had to be *reordered* to make this true of it:
+in its original order it passed either way and protected nothing.
+
+**Docs updated.** `protocol-notes.md` (§1 gains S26-S29; §8's UART subsection
+rewritten from source; the three-size-limits table; a dated addendum to A24),
+`architecture.md` (§3's diagram and the paragraph under it, §10's layout and
+install sentence, §11, §12), `design.md` (§8's recovery row; new §12 —
+appended rather than inserted, because ten files cite "design.md section 11"),
+`api.md` (the transport section retitled for both directories, plus a
+`serial/` subsection), `testing.md` (§3 and the fuzz table), `quality-gates.md`
+(§6's filter and the re-measured table, §3's new note on the inferred fuzz
+command), `security.md` (T15 and T16 for the new untrusted-input surface and
+for a console being a shared channel; §1's scope, which said "a Windows
+desktop"), `roadmap.md` (P19 and P20 with
+outcomes, the current-state table, O7, one follow-up row struck and four
+filed), new **ADR-0017**, `README.md`, `CHANGELOG.md`, and the corrected
+standing caveat above.
+
+**Recommended next.** Still no scheduled phase. The three items the request
+that produced P19 and P20 listed next, in its order: **multi-image (O5)** —
+`UploadOptions::image` is representable and `ServerSimulator` models one image
+pair, so the work is `UpdatePlan` policy plus a simulator that models two;
+**the FS group (8)**, purely additive per G5 and contradicting no ADR; and
+**real transfer telemetry in `UpdateReport`** — bytes actually sent, retries,
+restarts — which two follow-up rows have asked for since P12 and which would
+resolve the lingering case where a resume cannot say how much *this* run moved.
+A session with a bench and a serial peer should instead write the port adapter,
+which is the only thing that can turn P20's claim into P17's kind of claim.

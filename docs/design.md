@@ -1119,3 +1119,142 @@ loop (`poll()` + `Dispatcher::drain()`), print progress, handle
   a state is a compile error at every decision point.
 * Public entry points validate their arguments and return `InvalidArgument`
   rather than asserting.
+
+## 12. Serial (MCUmgr console) framing (`transports/serial/`)
+
+*Numbered 12 and placed after §11 deliberately: ten files across the tree cite
+"design.md section 11" for the robustness checklist above, and renumbering it
+would churn all of them to move a heading.*
+
+Header-only and portable, shipped by `smply::transport_common` alongside
+`transports/common/`. The decision, and in particular why this module has a
+receiver when `common/ble_framing.hpp` deliberately has none, is
+[ADR-0017](decisions/ADR-0017-serial-framing-placement.md). The wire format is
+[`protocol-notes.md`](protocol-notes.md) §8, read out of Zephyr's
+`serial_util.c`.
+
+**This is not a transport.** Nothing here opens a port. An application supplies
+the file descriptor, the `termios`/`CreateFile` setup, the reader thread and
+the `smply::Dispatcher` that marshals inbound bytes onto the client context
+(§9), and implements `Transport` over them. What it does not have to supply is
+the protocol.
+
+### The three pieces
+
+| Type | Direction | Holds |
+| ---- | --------- | ----- |
+| `SerialFramer` | outbound | Borrows one SMP message; writes one frame per call into a caller-owned buffer of `kMaxFrame` bytes. Nothing allocates. |
+| `LineSplitter` | inbound | Turns arbitrary reads into whole lines. Owns one bounded buffer. |
+| `SerialDeframer` | inbound | Turns lines into whole SMP packets. Owns one bounded buffer. |
+
+Split three ways rather than offered as one pipeline because each is separately
+testable with no callback, no template and no virtual — and because an adapter
+that already has a line-oriented reader can use the deframer alone.
+
+```cpp
+// outbound, inside Transport::send()
+std::array<std::byte, smply::transport::kMaxFrame> frame{};
+smply::transport::SerialFramer framer{message};
+while (!framer.done()) {
+    write_all(fd_, frame.data(), framer.next_frame(frame));
+}
+
+// inbound, on the reader thread
+smply::ConstBytes rest{buffer, n};
+while (const auto line = splitter_.next_line(rest)) {
+    if (deframer_.feed_line(*line) == SerialDeframer::Outcome::Packet) {
+        const smply::ConstBytes packet = deframer_.packet();
+        inbound_.post([this, copy = std::vector<std::byte>{packet.begin(), packet.end()}] {
+            listener_->on_bytes(smply::ConstBytes{copy});
+        });
+    }
+}
+```
+
+Note the copy, and note *where* it is. `packet()` is borrowed until the next
+`feed_line()`, which is the same borrowed-buffer rule as everywhere else (§9),
+and anything crossing a thread boundary has to own its bytes.
+
+### The four outcomes
+
+`feed_line()` answers one of four things, and the difference between the last
+two is the interesting part.
+
+| Outcome | Meaning | State |
+| ------- | ------- | ----- |
+| `NeedMore` | a frame was accepted | packet in progress |
+| `Packet` | complete and CRC-verified | available from `packet()` until the next call |
+| `Ignored` | not a frame at all | **partial packet kept** |
+| `Error` | framing violated | partial packet discarded |
+
+`Ignored` exists because a Zephyr console is shared. With
+`CONFIG_SHELL_BACKEND_SERIAL` and `CONFIG_LOG_BACKEND_UART` the same stream
+carries prompts, command echo and log lines, interleaved with frames at
+arbitrary points — and that is the exact stream over which P17c could not get a
+third-party client to complete an upload. The server's own receiver ignores
+such a line without touching its context, and so does this. An ignored line is
+never *decoded*, so nothing a device puts in one reaches the CRC, the length or
+the buffer.
+
+### Three bounds, and where each fires
+
+Everything below comes off a wire a device controls, so each of the three has a
+test named for it.
+
+1. **A line longer than `kMaxFrame` is dropped, not buffered.** No frame can
+   exceed it, so an over-long line is by definition somebody else's output —
+   and without this a peer that never sends a newline grows `LineSplitter`'s
+   buffer without limit.
+2. **The declared length is checked against `max_packet` before the buffer is
+   allowed past one frame's worth.** The device supplies a big-endian length in
+   the first frame; a hostile one is refused while at most 93 bytes have been
+   accumulated, so the peak footprint is bounded by the configured cap and never
+   by what was asked for. A declared length of two or less — a CRC and no
+   packet — is refused with it.
+3. **A body longer than its own declared length is an error, not a trim.** The
+   server refuses the same case, and for the same reason: extra bytes on the end
+   mean the stream has lost sync, not that the packet has rubbish after it.
+
+`buffered()`, `peak_buffered()` and `capacity()` are exposed so a test can
+assert the second directly — the property worth guaranteeing is that the buffer
+never *grew*, not that it was emptied afterwards. `fuzz_serial_deframe` asserts
+all three at every step over an arbitrary stream cut at a fuzzer-chosen size.
+
+### Frame boundaries match the reference exactly
+
+`SerialFramer` reproduces `mcumgr_serial_tx_pkt()` byte for byte, including its
+least obvious behaviour: rather than let the CRC straddle two frames it defers a
+data byte to the next one, so a 183- or 184-byte packet yields a 123-byte
+second frame where a naive 93-bytes-per-frame packing would yield 127.
+
+A conforming receiver accepts either, so this is a deliberate choice to be
+bug-compatible in the harmless direction: any device that tolerates Zephyr's own
+transmitter tolerates smply's. `tests/unit/test_serial_framing.cpp` carries a
+transcription of the C for exactly this, and requires byte-identical output for
+every packet size from 1 to 300.
+
+### Size limits
+
+A serial `Transport::max_message_size()` has a real ceiling and it is **not**
+93. The ceiling is `kMaxSerialPacket`, 65533, because the frame's length field
+is two bytes and carries `packet.size() + 2` — and a maximal SMP message is
+*above* it, since its own header `length` is 16-bit as well (8 + 65535 =
+65543). `SerialFramer` refuses anything larger rather than truncating the
+field, which would put a length on the wire contradicting the bytes after it,
+and which no receiver could diagnose.
+
+93 is the *frame* limit, and it feeds nothing above the transport: a whole SMP message
+spans as many frames as it needs, exactly as a BLE message spans GATT packets.
+What the adapter reports is whatever whole-message budget it is willing to
+carry, and the upload chunk arithmetic in
+[`protocol-notes.md`](protocol-notes.md) §8 takes the minimum of that, the
+device's `buf_size` and the configured cap. Conflating the two would cap
+uploads at a chunk size the protocol never asked for.
+
+### Open
+
+Whether a device reset drops a serial link is unsettled — a hardware UART stays
+open across one, a USB CDC port disappears and returns. `FirmwareUpdater`'s
+`AwaitingDisconnect` / `AwaitingReconnect` states and
+`UpdatePlan::disconnect_grace` assume a link that drops. Roadmap **O7**; it
+cannot be decided without a port adapter.

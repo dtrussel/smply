@@ -50,6 +50,15 @@ install(TARGETS smply_transport_common EXPORT smplyTargets)
 install(DIRECTORY common DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply/transports
     FILES_MATCHING PATTERN "*.hpp")
 
+# serial/ ships under the SAME target rather than as a fourth installed one.
+# ADR-0016 clause 1 names the package's targets and says "and nothing else";
+# clause 4 promises "the installed transport headers". Adding a directory
+# keeps both true, adding a target would not (ADR-0017). One more
+# install(DIRECTORY) is the whole cost, and the include root above already
+# makes "serial/serial_framing.hpp" the spelling in-tree and out of a prefix.
+install(DIRECTORY serial DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply/transports
+    FILES_MATCHING PATTERN "*.hpp")
+
 # --- platform adapters -------------------------------------------------------
 #
 # The option is validated in the top-level CMakeLists (it refuses a non-Windows

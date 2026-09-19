@@ -145,6 +145,31 @@ excluded directory and must survive. A filter written as `grep -v winrt` would
 swallow both decoys and go on passing — the silent-skip shape this project has
 been bitten by six times.
 
+### The fuzz targets are analysed under an inferred command, and P20 found out
+
+`SMPLY_BUILD_FUZZERS` is on only in `linux-clang-fuzz`, and the `gates` job
+configures `linux-clang` — so `tests/fuzz/`'s translation units are **absent
+from the compile database clang-tidy is given**, exactly like the two consumer
+projects. Unlike those they are not excluded, so clang-tidy analysed them
+anyway, inferring each command from a neighbouring directory.
+
+That worked for six phases because the guessed command happened to carry every
+include root the seven targets needed. P20's `fuzz_serial_deframe` is the first
+to include a transport header, and it turned into a hard "file not found" —
+which is the useful failure, because the silent version was seven files being
+checked under flags that are not the flags they compile with.
+
+`tools/lint.sh` now passes the project's own include roots to clang-tidy with
+`--extra-arg`. For a TU that *has* a real command the duplicate `-I` is a
+no-op; what it deliberately does not do is supply a *system* include, so a
+genuinely missing one still fails. The alternative — pointing the gate at a
+second build directory — would have made it depend on a preset CI does not
+configure.
+
+**The general shape is this project's recurring one**: a check that is running
+is not the same as a check that is checking what you think. It sat one
+directory away from the `grep -v winrt` decoy that exists for the same reason.
+
 Note that `.clang-tidy`'s `Checks:` value is a YAML *folded scalar*: a `#`
 inside it is not a comment, it becomes part of the check list. Rationale
 comments go above the key.
@@ -198,14 +223,23 @@ logic without a test is a review blocker, not a CI blocker
 
 ## 6. Coverage (required, with judgement)
 
-Measured on `linux-gcc-coverage`, over `src/`, `include/smply/` and
-`transports/common/` (tests, examples, `support/` and the *platform* adapters
-under `transports/` excluded).
+Measured on `linux-gcc-coverage`, over `src/`, `include/smply/`,
+`transports/common/` and `transports/serial/` (tests, examples, `support/` and
+the *platform* adapters under `transports/` excluded).
 
-`transports/common/` is in because it is portable library code with real tests
-(P15a's BLE framing), and leaving it out would mean new logic with a full suite
-that the gate cannot see. The platform adapters stay out: a WinRT translation
-unit cannot be compiled, let alone instrumented, on the coverage runner.
+The portable transport directories are in because they are library code with
+real tests — P15a's BLE framing, P20's serial framing — and leaving them out
+would mean new logic with a full suite that the gate cannot see. The platform
+adapters stay out: a WinRT translation unit cannot be compiled, let alone
+instrumented, on the coverage runner.
+
+**The filter is a list of directories, so a new one is invisible until it is
+added.** `transports/serial/` needed a line in `tools/coverage.sh`; without it
+the module would have been measured by nobody while the whole-core percentage
+went *up*, because its tests would still run and its lines would still not
+count. That is the failure mode this section warns about one paragraph down,
+arriving from a different direction: **a gate that silently narrows reports a
+pass.**
 
 **The metric is exactly what `tools/coverage.sh` reports**: gcovr with
 `--exclude-throw-branches`. Pinning this matters more than it sounds — on the
@@ -238,12 +272,16 @@ The two questions that blocked enforcement are both settled:
   except where the guard's `else` arm is the ordinary path and must stay
   counted. A marker on a comment line above the code is silently ignored.
 
-| Gate | Threshold | Measured 2026-09-18 (P18b) |
-| ---- | --------- | ------------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.2 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 87.2 % ✓ |
+| Gate | Threshold | Measured 2026-09-19 (P20) |
+| ---- | --------- | ------------------------ |
+| Line coverage, whole core | **≥ 85 %** | 98.3 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 88.0 % ✓ |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.1 % ✓ |
+| `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | Regression | no drop > 1 pp vs. the base branch | — |
+
+The four elevated figures are unchanged from P18b's re-measurement, which is
+worth one line rather than none: they were re-measured, not carried forward.
 
 **The elevated per-directory gates are not enforced by the script**, only the
 two whole-core thresholds are. gcovr has no per-directory threshold, and four

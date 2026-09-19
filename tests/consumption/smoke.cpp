@@ -14,12 +14,14 @@
 
 #include "common/ble_framing.hpp"
 #include "common/send_queue.hpp"
+#include "serial/serial_framing.hpp"
 
 #include <smply/error.hpp>
 #include <smply/smp/header.hpp>
 #include <smply/util/dispatcher.hpp>
 #include <smply/version.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdlib>
 #include <iostream>
@@ -71,6 +73,27 @@ int main()
     if (queue.offer(std::vector<std::byte>{std::byte{0}}) !=
         smply::transport::Admission::StartWriter) {
         std::cerr << "consumption check: first send was not admitted\n";
+        return EXIT_FAILURE;
+    }
+
+    // serial/ ships under that same target and from the same include root
+    // (ADR-0017), so a prefix that installed common/ and forgot serial/ fails
+    // here and nowhere else. Round-tripping one packet exercises both halves.
+    const std::vector<std::byte> packet{encoded.begin(), encoded.end()};
+    smply::transport::SerialFramer framer{smply::ConstBytes{packet}};
+    smply::transport::SerialDeframer deframer;
+    smply::transport::LineSplitter splitter;
+    std::array<std::byte, smply::transport::kMaxFrame> frame{};
+    bool arrived = false;
+    while (!framer.done()) {
+        smply::ConstBytes rest{frame.data(), framer.next_frame(frame)};
+        while (const auto line = splitter.next_line(rest)) {
+            arrived =
+                deframer.feed_line(*line) == smply::transport::SerialDeframer::Outcome::Packet;
+        }
+    }
+    if (!arrived || deframer.packet().size() != packet.size()) {
+        std::cerr << "consumption check: serial round trip failed\n";
         return EXIT_FAILURE;
     }
 

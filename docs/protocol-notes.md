@@ -51,6 +51,10 @@ earlier.
 | S23 | `include/zephyr/mgmt/mcumgr/transport/smp_bt.h` | `SMP_BT_SVC_UUID_VAL` and `SMP_BT_CHR_UUID_VAL` -- the service and characteristic UUIDs at their definition | same |
 | S24 | `zcbor/src/zcbor_encode.c` (`list_map_start_encode()`, `list_map_end_encode()`) | How the server's CBOR encoder opens a list or map: an **indefinite-length** header unless `ZCBOR_CANONICAL` is defined, in which case a definite header is written and patched at the end | `zephyrproject-rtos/zcbor@9164bd18` as imported by Zephyr `e71ff182` (verified 2026-09-08 on hardware) |
 | S25 | `modules/zcbor/Kconfig`, `modules/zcbor/CMakeLists.txt` | `CONFIG_ZCBOR_CANONICAL` -- off by default, not selected by any MCUmgr option; it is what turns S24's indefinite-length containers into definite ones | `zephyrproject-rtos/zephyr@e71ff182` |
+| S26 | `include/zephyr/mgmt/mcumgr/transport/serial.h` | `MCUMGR_SERIAL_HDR_PKT` (`0x0609`), `MCUMGR_SERIAL_HDR_FRAG` (`0x0414`) and `MCUMGR_SERIAL_MAX_FRAME` (127), at their definition | `zephyrproject-rtos/zephyr@main` (verified 2026-09-19 **from source**) |
+| S27 | `subsys/mgmt/mcumgr/transport/src/serial_util.c` | `mcumgr_serial_tx_pkt()` and `mcumgr_serial_process_frag()` -- the whole console framing, both directions, including the frame-splitting arithmetic and what the receiver does with a line it does not recognise | same |
+| S28 | `subsys/mgmt/mcumgr/transport/src/smp_shell.c` | `smp_shell_rx_bytes()`: how a console backend recognises a frame byte by byte and what terminates one | same |
+| S29 | `include/zephyr/sys/crc.h` | `crc16_itu_t()` -- polynomial `0x1021`, **MSB-first, no input or output reflection**, seed supplied by the caller | same |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -746,21 +750,87 @@ advertisement's 31 bytes, so some will not. A client should therefore prefer the
 UUID filter but never *require* it — connecting by address must stay possible.
 `examples/winrt_ble_dfu/scanner.cpp` scans actively for exactly this reason.
 
-### UART / console (S2)
+### UART / console (S2, S26-S29)
 
-Base64 body, `0x06 0x09` initial marker, `0x04 0x14` continuation marker, `0x0A`
-terminator, 2-byte BE total length prefix, CRC16 (poly `0x1021`, init `0`) over
-the raw body. Zephyr imposes a 127-byte frame limit (124 payload).
-Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) sends binary SMP with no framing.
+**Rewritten in P20 from the server's own code** (S27) rather than from the
+transport `.rst`. The `.rst` summary that stood here until then was right about
+the markers and wrong, or at least ambiguous, about two things that decide
+whether an implementation works: what the CRC covers, and what "124" counts.
 
-Not implemented in the initial scope; documented so the transport contract is
-demonstrably general enough (see [ADR-0005](decisions/ADR-0005-transport-abstraction.md)).
+Implemented as portable framing in `transports/serial/`, senders and receiver
+both; the port is the application's
+([ADR-0017](decisions/ADR-0017-serial-framing-placement.md)).
+
+**One frame** is
+
+    marker(2) || base64 || 0x0A
+
+and is at most **127 bytes in total** (`MCUMGR_SERIAL_MAX_FRAME`, S26). Marker
+and terminator are not encoded, so a frame holds at most **124 base64
+characters**, which is at most **93 raw bytes** -- `((127 - 3) >> 2) * 3`, which
+is the reference transmitter's own `max_input`. Those three numbers are
+routinely conflated, and the old text here said "127-byte frame limit (124
+payload)", which reads as 124 payload *bytes*.
+
+**The body** carried across the frames of one packet is
+
+    be16(len + 2) || packet || be16(crc)
+
+where `packet` is the whole SMP message (8-byte header + payload) and
+`len = packet.size()`. So:
+
+* the length field **counts the CRC but not itself**;
+* the CRC is computed **over the packet alone** -- not over the length prefix.
+  The receiver does not recompute-and-compare: it runs the CRC over everything
+  it accumulated *including* the two CRC bytes and requires **zero**, which for
+  a non-reflected CRC with no final XOR is the same statement.
+
+**The CRC is CRC-16/XMODEM**: polynomial `0x1021`, seed `0x0000`, **MSB-first,
+no input or output reflection, no final XOR** (S29 documents `crc16_itu_t` in
+exactly those words). Its published check value over `"123456789"` is `0x31C3`.
+The name in the Zephyr source does not say which of the several `0x1021`
+variants it is, and the reflected one is a plausible misreading that no round
+trip within a client would catch.
+
+**Every frame carries whole base64 quartets -- whole triplets of body bytes --
+except the last.** The receiver base64-decodes each frame independently
+(`mcumgr_serial_decode_frag()`), so a quartet split across two frames decodes
+as nothing. This is the binding constraint on any splitting strategy, and it is
+not stated anywhere in the documentation.
+
+**The transmitter never splits the CRC across frames.** When the remaining data
+would leave fewer than two spare bytes in the frame it defers one data byte to
+the next one instead. So a packet of 183 or 184 bytes produces a *123*-byte
+second frame where a naive packing would produce 127. A conforming receiver
+accepts either; smply reproduces the reference's boundaries exactly, so that
+any device tolerating Zephyr's own output tolerates smply's, and the unit suite
+asserts byte-identity against a transcription of the C.
+
+**The first frame carries `0x06 0x09`, every continuation `0x04 0x14`.** The
+receiver pulls the two-byte length from the first frame's decoded bytes and
+accumulates until it has that many. More than that is an error; a declared
+length of two or fewer (a CRC and no packet) is an error.
+
+**A line the receiver does not recognise is ignored, and partial state is
+kept.** `mcumgr_serial_process_frag()`'s `default:` arm returns without freeing
+its receive context. That is what makes the transport usable over a console
+that also carries an echoing shell and a log backend -- see the P17c
+test-method finding below, where a third-party client could not complete an
+upload over exactly that stream. A **continuation** frame arriving with nothing
+in progress is different, and *is* fatal: it means the two ends disagree about
+whether a packet is open.
+
+A `0x06 0x09` arriving mid-packet silently abandons what was in flight
+(`net_buf_reset`) rather than erroring -- the peer has plainly restarted.
+
+Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) sends binary SMP with no framing
+at all, and needs no framing module -- only a port. Not implemented.
 
 ### The three size limits — keep them distinct
 
 | Limit | Owner | Source |
 | ----- | ----- | ------ |
-| **Transport fragment size** | transport | BLE `ATT_MTU-3`; UART frame limit |
+| **Transport fragment size** | transport | BLE `ATT_MTU-3`; serial **93 raw bytes per frame**, which is 124 base64 characters inside a 127-byte line (§8) |
 | **Whole-SMP-message size** | server | OS `buf_size` (§5), else conservative default |
 | **Upload chunk size** (`data` bstr length) | upload state machine | derived: `min(msg_budget) − header − CBOR overhead` |
 

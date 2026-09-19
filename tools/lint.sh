@@ -10,6 +10,9 @@
 # Usage: tools/lint.sh [build-dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Absolute, because clang-tidy resolves a relative -I against the compile
+# command's directory rather than against this script's cwd.
+REPO="$PWD"
 
 BUILD_DIR="${1:-build/linux-clang}"
 if [[ ! -f "$BUILD_DIR/compile_commands.json" ]]; then
@@ -77,9 +80,33 @@ if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
     mapfile -t tus < <(tools/sources.sh | grep -E '\.(cpp|cc)$' \
         | grep -Ev '^tests/consumer/|^tests/consumption/' \
         | grep -Ev "$WINRT_EXCLUDE")
+    # The fuzz targets are NOT in this build's compile database: SMPLY_BUILD_FUZZERS
+    # is on only in linux-clang-fuzz, and the gates job configures linux-clang.
+    # clang-tidy therefore *infers* their command from a neighbouring directory,
+    # exactly as it does for the two consumer projects above -- but unlike those
+    # it still analyses them, so for six phases seven fuzz TUs were linted under
+    # flags that are not the flags they compile with. It went unnoticed because
+    # the guessed command happened to carry every include root those seven
+    # needed; the first fuzz target to include a transport header (P20's
+    # fuzz_serial_deframe) turned it into a hard "file not found".
+    #
+    # Naming the project's own include roots explicitly fixes it without making
+    # the gate depend on a second build directory that CI does not configure.
+    # These are roots every real target already carries, so a duplicate -I is a
+    # no-op for the TUs that do have a command; what it cannot do is paper over
+    # a missing *system* include, which would still fail here.
+    tidy_roots=(
+        "--extra-arg=-I$REPO/include"
+        "--extra-arg=-I$REPO/src"
+        "--extra-arg=-I$REPO/support"
+        "--extra-arg=-I$REPO/transports"
+        "--extra-arg=-I$REPO/tests/support"
+        "--extra-arg=-I$REPO/tests/fuzz"
+        "--extra-arg=-I$REPO/$BUILD_DIR/generated"
+    )
     if [[ ${#tus[@]} -gt 0 ]]; then
         echo "running $("$CLANG_TIDY" --version | grep -m1 -oE '[Vv]ersion [0-9.]+') over ${#tus[@]} TUs"
-        "$CLANG_TIDY" -p "$BUILD_DIR" "${tus[@]}" || status=1
+        "$CLANG_TIDY" -p "$BUILD_DIR" "${tidy_roots[@]}" "${tus[@]}" || status=1
     fi
 else
     echo "error: $CLANG_TIDY not found (required)" >&2
