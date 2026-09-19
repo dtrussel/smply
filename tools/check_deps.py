@@ -2,13 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dependency-inventory gate (docs/quality-gates.md section 9).
 
-Every dependency declared to CMake must:
+Every *third-party* dependency declared to CMake must:
 
   1. appear by name in docs/dependencies.md;
   2. be pinned to an exact 40-character commit hash, not a tag or a branch.
 
 Rule 2 is what makes the build reproducible and the SBOM meaningful: a tag can
 be moved, a commit hash cannot.
+
+"Third-party" is the whole scope, and it is why PROJECT_NAME below is skipped:
+tests/consumption/fetchcontent/ declares smply *itself*, because proving smply
+can be consumed by FetchContent means writing a FetchContent_Declare for it.
+Nothing can be a third-party dependency of itself, and that declaration is
+deliberately a SOURCE_DIR with no GIT_TAG -- a fetch would populate the last
+commit and test a tree nobody has.
 
 Usage:
     tools/check_deps.py
@@ -22,6 +29,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 INVENTORY = REPO / "docs" / "dependencies.md"
+
+# Exactly this name, never a prefix of it and never a directory: a
+# FetchContent_Declare(smply_anything) is a real dependency and must be
+# inventoried like any other. tools/verify_gates.sh plants one to prove it.
+PROJECT_NAME = "smply"
 
 DECLARE_RE = re.compile(r"FetchContent_Declare\s*\(\s*([A-Za-z0-9_.-]+)", re.M)
 GIT_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
@@ -65,6 +77,8 @@ def declared_dependencies() -> dict[str, list[tuple[Path, str]]]:
         text = strip_comments(path.read_text(encoding="utf-8"))
         for match in DECLARE_RE.finditer(text):
             name = match.group(1)
+            if name == PROJECT_NAME:
+                continue
             # The GIT_TAG belonging to this declaration: search from the
             # declaration to the closing parenthesis.
             end = text.find(")", match.end())

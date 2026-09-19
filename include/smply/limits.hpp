@@ -102,7 +102,8 @@ inline constexpr Duration kFirstChunkTimeout = std::chrono::seconds{30};
 /// Deadline for the final upload chunk, which a device built with
 /// `CONFIG_IMG_ENABLE_IMAGE_CHECK` answers only after hashing the whole image
 /// out of flash (docs/protocol-notes.md section 9, A19). Measured at about
-/// 25 KiB/s on an STM32WB55 in P17 -- 5.3 s for a 134 KiB image -- so the 5 s
+/// 25 KiB/s on an STM32WB55 in P17 -- 5.0 to 5.6 s across runs for a 134 160
+/// byte image -- so the 5 s
 /// default timed out on every update and forced a retransmission.
 inline constexpr Duration kFinalChunkTimeout = std::chrono::seconds{30};
 

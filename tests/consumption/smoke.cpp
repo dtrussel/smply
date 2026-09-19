@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // What an out-of-tree consumer does: include the public headers, link the
-// exported targets, and use them. Built by tools/check_install.sh against an
-// installed prefix, never inside smply's own build tree.
+// exported targets, and use them.
 //
-// It exercises one thing from each exported target, and a decoder, so that a
+// **One program, three consumption modes.** find_package/, add_subdirectory/
+// and fetchcontent/ each compile this same file (tools/check_install.sh drives
+// all three). Sharing it is the point: three smoke programs would drift, and
+// the mode that drifted would be the one nobody noticed had stopped checking.
+//
+// It exercises one thing from each installed target, and a decoder, so that a
 // broken export shows up as a link error rather than as a header-only success
 // that would have passed even if the archive were missing.
+
+#include "common/ble_framing.hpp"
+#include "common/send_queue.hpp"
 
 #include <smply/error.hpp>
 #include <smply/smp/header.hpp>
@@ -17,6 +24,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 int main()
 {
@@ -31,13 +39,13 @@ int main()
     const auto encoded = smply::encode(header);
     const smply::Result<smply::Header> decoded = smply::decode_header(smply::ConstBytes{encoded});
     if (!decoded.has_value() || decoded->seq != 7) {
-        std::cerr << "install check: header round trip failed\n";
+        std::cerr << "consumption check: header round trip failed\n";
         return EXIT_FAILURE;
     }
 
     // Also out of the archive: to_string(ErrorCode) is defined in core.cpp.
     if (smply::to_string(smply::ErrorCode::Timeout).empty()) {
-        std::cerr << "install check: to_string returned nothing\n";
+        std::cerr << "consumption check: to_string returned nothing\n";
         return EXIT_FAILURE;
     }
 
@@ -48,7 +56,21 @@ int main()
     int ran = 0;
     dispatcher.post([&ran] { ++ran; });
     if (dispatcher.drain() != 1 || ran != 1) {
-        std::cerr << "install check: dispatcher did not run its closure\n";
+        std::cerr << "consumption check: dispatcher did not run its closure\n";
+        return EXIT_FAILURE;
+    }
+
+    // smply::transport_common -- header-only, so this proves the *include root*
+    // rather than an archive: an adapter out of the install tree must be able
+    // to write "common/..." exactly as an in-tree one does.
+    if (smply::transport::fragment_size(247) != 244) {
+        std::cerr << "consumption check: fragment_size is wrong\n";
+        return EXIT_FAILURE;
+    }
+    smply::transport::SendQueue queue;
+    if (queue.offer(std::vector<std::byte>{std::byte{0}}) !=
+        smply::transport::Admission::StartWriter) {
+        std::cerr << "consumption check: first send was not admitted\n";
         return EXIT_FAILURE;
     }
 
@@ -57,11 +79,11 @@ int main()
     // If a prefix ever mixed the two, this is where it shows.
     const std::string linked = smply::version();
     if (linked != SMPLY_VERSION_STRING) {
-        std::cerr << "install check: header says " << SMPLY_VERSION_STRING << ", library says "
+        std::cerr << "consumption check: header says " << SMPLY_VERSION_STRING << ", library says "
                   << linked << '\n';
         return EXIT_FAILURE;
     }
 
-    std::cout << "install check OK, smply " << linked << '\n';
+    std::cout << "consumption check OK, smply " << linked << '\n';
     return EXIT_SUCCESS;
 }

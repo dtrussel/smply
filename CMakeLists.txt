@@ -43,6 +43,19 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# Before anything that names CMAKE_INSTALL_INCLUDEDIR or its siblings, which
+# means before the targets: an $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+# expands the variable when the line *runs*, not when the export is written.
+#
+# It genuinely has to be here and not further down. GNUInstallDirs sets cache
+# variables, so once anything includes it the values are visible everywhere
+# afterwards -- and QCBOR's own CMakeLists does, from FetchContent below. That
+# makes a late include *appear* to work while quietly depending on a dependency
+# having been built from source: under SMPLY_USE_SYSTEM_QCBOR=ON that
+# subdirectory is never added, the variable is empty, and the installed include
+# path silently becomes the prefix root.
+include(GNUInstallDirs)
+
 include(cmake/warnings.cmake)
 include(cmake/sanitizers.cmake)
 include(cmake/dependencies.cmake)
@@ -84,7 +97,7 @@ target_include_directories(smply
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
-        $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         # Internal headers (src/smp/assembler.hpp and the like) are included as
         # "smp/assembler.hpp" by smply's own sources. PRIVATE: consumers must
@@ -228,12 +241,17 @@ endif()
 
 # --- Install and export -----------------------------------------------------
 #
-# Enough for an out-of-tree adapter to consume smply: the library and the
-# marshalling helper it needs (P15a). The full three-way consumption matrix, the
-# SBOM and the version policy remain P18's.
+# What an out-of-tree adapter needs and nothing more: the library, the
+# marshalling helper ADR-0004 makes its obligation, and the portable BLE
+# helpers it would otherwise re-derive. The shape is decided in ADR-0016;
+# transport_common's own install rules live in transports/CMakeLists.txt,
+# beside the target, and land in this same export set.
 #
-# What is NOT installed, and deliberately: smply::minicbor and every test
-# target. They are development scaffolding.
+# What is NOT installed, and deliberately (ADR-0016 has the reasoning per
+# target): smply::minicbor and every test target, which are development
+# scaffolding; smply::dfu_app, which is application policy rather than
+# protocol; and smply::winrt_ble, which ships as a reference adapter to read
+# and copy.
 #
 # Note on the interface. smply links smply_internal_options as
 # $<BUILD_INTERFACE:...> so the strict warning set stays in the build tree and
@@ -242,7 +260,8 @@ endif()
 # be worse than the error. One consequence: an installed *sanitizer* build would
 # not carry the runtime's link options either. Nobody ships one, and the
 # sanitizer presets do not install.
-include(GNUInstallDirs)
+# GNUInstallDirs is included at the top of this file, deliberately early; see
+# the comment there for why a late include only looks like it works.
 include(CMakePackageConfigHelpers)
 
 install(TARGETS smply smply_util
@@ -252,7 +271,11 @@ install(TARGETS smply smply_util
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(DIRECTORY include/smply DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# PATTERN "*.in" EXCLUDE: version.hpp.in lives beside the public headers and is
+# a template, not a header. Without the filter the package shipped both it and
+# the configured version.hpp, and the un-configured one does not compile.
+install(DIRECTORY include/smply DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "*.in" EXCLUDE)
 # version.hpp is configured into the build tree, so it ships from there.
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/smply/version.hpp"
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply)

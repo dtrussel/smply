@@ -40,9 +40,9 @@ array size, string, hash and flag — is **untrusted input**.
 | T9 | **Silent corruption in transit.** | The `sha` field (SHA-256 of the whole file) plus the device's `match` response detect it; a `match == false` fails the update. MCUboot's own verification is the backstop. |
 | T10 | **Bricking via a bad image.** | Default `UpdateMode::TestThenConfirm` uses MCUboot's trial-boot/revert mechanism: an image that never boots, or that boots but is never confirmed, is reverted on the next reset. `ConfirmImmediately` removes this net and is opt-in with that stated in its documentation. |
 | T11 | **BLE link security mistaken for authenticity.** | Stated explicitly here, in [`architecture.md`](architecture.md) §8 and in the WinRT adapter's documentation. The adapter never reports pairing/encryption state as a security property of the *image*. Encryption protects the transfer; it says nothing about who signed the firmware. |
-| T12 | **Sensitive data in logs.** | Log levels carry no payload bytes by default; hashes are truncated to 8 hex characters; device-supplied `rsn` strings are length-capped and escaped before logging (they are attacker-controlled text). No log statement in the library formats a raw buffer at default verbosity. |
+| T12 | **Sensitive data in logs.** | **smply has no logging**, which is the strongest form this mitigation can take: there is no log statement in `include/` or `src/` to leak anything, no log level to misconfigure, and no sink the library writes to. The application logs, and what it may be handed is bounded here — a device-supplied `rsn` string is capped at `limits::kMaxReasonLength`, and `error.hpp` states at the declaration that it is attacker-controlled text an application must escape before displaying it. P18's audit corrected this row: it previously described log levels, truncation and default verbosity for a logging subsystem that does not exist. |
 | T13 | **Denial of service against the device** — a runaway client hammering the SMP server. | One outstanding request by default; bounded chunk retries and bounded upload restarts; no automatic reconnect loop (reconnection is the application's, and therefore rate-limitable, decision). |
-| T14 | **Supply-chain risk in dependencies.** | Minimal footprint (one runtime dependency), exact tag+hash pinning, weekly OSV scanning, SBOM per release ([`quality-gates.md`](quality-gates.md) §9). |
+| T14 | **Supply-chain risk in dependencies.** | Minimal footprint (one runtime dependency), exact tag+hash pinning, an SPDX 2.3 SBOM generated from those pins by `tools/sbom.py` and published by CI, and an advisory weekly OSV-Scanner run over it ([`quality-gates.md`](quality-gates.md) §9). The SBOM and the scanner were claimed here from P0 and built in P18. Read §9 before relying on a clean scan: it runs and produces a report, but its *scheduled* firing is unproven and nothing establishes that OSV has advisory coverage for two C libraries consumed from git — an empty report from a database with nothing to say looks exactly like one from a database that checked. |
 
 ### What the P13 audit found
 
@@ -92,6 +92,7 @@ malicious application using the library; anti-rollback enforcement.
 
 ## 4. Reporting
 
-Security-relevant defects are handled through the repository's normal issue
-process until a `SECURITY.md` disclosure policy is added (tracked as a P0
-follow-up).
+The disclosure policy is [`SECURITY.md`](../SECURITY.md) at the repository
+root: private vulnerability reporting through GitHub's Security tab, an
+acknowledgement within 7 days, and an explicit out-of-scope list that matches
+§3 above. This document is the threat model; that one is how to tell us.

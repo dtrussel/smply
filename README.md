@@ -4,7 +4,9 @@ A small, transport-agnostic C++ client library for the Zephyr **MCUmgr / SMP**
 protocol, focused on **MCUboot firmware update (DFU)**.
 
 * **Portable core** — no Windows, WinRT, Qt, BLE or GUI dependency. Builds and is
-  fully testable on Linux, macOS and Windows without any radio hardware.
+  fully testable without any radio hardware. CI builds and runs the whole suite
+  on **Linux and Windows**; nothing in the core is platform-specific, but macOS
+  has no CI job and so is untried rather than supported.
 * **Sans-IO** — the core never opens a socket, never starts a thread and never
   looks at a real clock. The application supplies the transport, the clock and
   the thread that drives it.
@@ -15,10 +17,11 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P16 complete — the portable library is done: it does what it exists
-to do, its untrusted-input surface is fuzzed, adapter authors have the
-marshalling helper the threading model assumes, and there is a runnable example
-that performs a whole update.**
+**Phases P0–P17 complete — the library is done, it has met a real device, and
+it is packaged: it does what it exists to do, its untrusted-input surface is
+fuzzed, adapter authors have both the marshalling helper the threading model
+assumes and the BLE helpers a correct adapter needs, and there is a runnable
+example that performs a whole update.**
 SMP framing and streaming reassembly, a bounded CBOR façade, request
 correlation with timeouts and cancellation, the OS and image management groups,
 MCUboot image parsing with SHA-256, the image upload state machine, and
@@ -32,7 +35,11 @@ trial boot, confirmation — against a stub device on another thread, and runs o
 every push.
 And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
 `examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
-663 tests, 16 CI jobs green plus a nightly soak, and an installed package that an out-of-tree project consumes on every push. Thirteen more cases run on hardware, on a bench, by hand.
+663 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
+scan, and an installed package that
+three separate out-of-tree projects consume on every push — by `find_package`,
+by `add_subdirectory` and by `FetchContent`. Fourteen more cases run on
+hardware, on a bench, by hand.
 
 **The Windows side has now run against a real device** (roadmap P17a): the
 WinRT adapter and `winrt_ble_dfu` completed updates in both directions against a
@@ -46,17 +53,21 @@ first hardware run found three defects, none in the adapter: a real device's
 CBOR is indefinite-length, its final upload chunk takes longer than 5 s to
 answer, and the report misread the retransmission that hid.
 
-**The hardware suite runs unattended** (P17b): thirteen cases over the public
-API, a supervisor that reflashes the board between groups and reports
-pass / fail / **unavailable** per case, and a cross-check that installs the same
+**The hardware suite runs unattended** (P17b): fourteen cases over the public
+API in thirteen groups, twelve of which need nobody present, a supervisor that
+reflashes the board between groups and reports pass / fail / **unavailable**
+per case, and a cross-check that installs the same
 image with smply and with a third-party client and compares what the device
 reports afterwards through a UART path neither of them touches (P17c). None of
 it is in the pull-request gate, and no self-hosted runner is registered yet, so
 it runs from the bench by hand.
 
-What is not built yet: the 1.0 packaging review. See
-[`docs/roadmap.md`](docs/roadmap.md) for the
-phase-by-phase plan and what is next.
+What is deliberately not done: **the 1.0 declaration**. P18 built and proved
+the package, wrote the versioning policy and left the version at `0.1.0`, so
+that promising compatibility stays a decision somebody makes rather than a
+side-effect of the packaging being finished
+([ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md)). See
+[`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase history.
 
 A whole update, with the application owning the pump and the connection:
 
@@ -112,6 +123,21 @@ firmware file instead; `--mode` picks one of the three `UpdateMode`s.
 `examples/cli_dfu/main.cpp` is the file to read: the other four are the stub
 device it drives.
 
+### Consuming it
+
+```cmake
+find_package(smply REQUIRED)
+target_link_libraries(my_app PRIVATE smply::smply)
+```
+
+The package installs three targets: `smply::smply`, `smply::util` (the
+thread-marshalling helper an adapter needs) and `smply::transport_common` (the
+portable BLE framing and send admission a BLE adapter needs). `add_subdirectory`
+and `FetchContent` work too, and `tools/check_install.sh` builds and runs a
+consumer all three ways on every push.
+[ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) says
+which targets ship and why the others do not.
+
 ### Checks
 
 ```sh
@@ -121,6 +147,8 @@ tools/coverage.sh            # coverage report; --enforce applies the thresholds
 python3 tools/check_public_headers.py   # no platform/third-party types in public headers
 python3 tools/check_deps.py             # dependencies declared and pinned by hash
 python3 tools/check_docs.py             # documentation gate (ADR-0013)
+python3 tools/sbom.py --check           # every dependency has a licence entry
+tools/check_install.sh       # consume the package out of tree, all three ways
 tools/verify_gates.sh        # proves each gate rejects a deliberate violation
 ```
 
@@ -146,8 +174,8 @@ modifies the working tree.
   request tracking, upload state machine, DFU state machine.
 * [`docs/protocol-notes.md`](docs/protocol-notes.md) — authoritative spec
   inventory, verified wire details, ambiguities and version dependencies.
-* [`docs/api.md`](docs/api.md) — the public C++ headers, each marked
-  shipped or proposed.
+* [`docs/api.md`](docs/api.md) — the public C++ headers, every one of them
+  shipped.
 * [`docs/testing.md`](docs/testing.md) — unit, component, fuzz and HIL strategy.
 * [`docs/quality-gates.md`](docs/quality-gates.md) — CI matrix, warnings,
   static analysis, coverage, sanitizers, Definition of Done.
@@ -157,6 +185,9 @@ modifies the working tree.
 * [`docs/roadmap.md`](docs/roadmap.md) — phased, status-tracked execution plan.
 * [`docs/handoff.md`](docs/handoff.md) — agent session handoff protocol and log.
 * [`docs/decisions/`](docs/decisions/) — Architecture Decision Records.
+* [`CHANGELOG.md`](CHANGELOG.md) — what changed, and the versioning policy.
+* [`SECURITY.md`](SECURITY.md) — how to report a vulnerability, and what smply
+  is and is not an authority on.
 
 ## Licence
 

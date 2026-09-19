@@ -1,6 +1,16 @@
 # ADR-0015 — Hardware evidence and isolated bench tooling
 
-**Status:** Accepted (2026-09-08)
+**Status:** Accepted (2026-09-08); re-read in P18's audit (2026-09-18)
+
+*P18 note. The decision stands, and P18 settled the one API question it had
+left open. `WinRtBleTransport::send_counters()` exists to serve decision 2 —
+that a green bench run must be distinguishable from a run in which the race
+merely did not fire — and it is **kept**. It is not part of the `Transport`
+contract and is not promised to anyone: `smply::winrt_ble` is deliberately not
+in the installed package (ADR-0016), so a per-adapter diagnostic costs no
+compatibility promise, while dropping it would cost the bench the only evidence
+that the A22 fix does anything. An adapter may have diagnostics; what it may
+not do is put them in the contract.*
 
 ## Context
 

@@ -179,8 +179,19 @@ jobs:
       # Nothing in the main build proves the export works -- in-tree consumers
       # use the build-tree targets, where even a wrong exported target name
       # resolves (docs/quality-gates.md section 13).
-      - name: Consume an installed smply from outside the tree
+      - name: Consume smply from outside the tree, three ways
         run: tools/check_install.sh "${{ runner.temp }}/install-check"
+
+      # The SBOM quality-gates.md section 9 has promised since P0. Generated
+      # from the same pins the build uses, so it cannot describe a different
+      # dependency set than the one that was just installed.
+      - name: Generate the SBOM
+        run: python3 tools/sbom.py -o "${{ runner.temp }}/smply.spdx.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/smply.spdx.json
 
   coverage:
     name: coverage
@@ -233,6 +244,11 @@ jobs:
 
       - name: Dependency inventory
         run: python3 tools/check_deps.py
+
+      # Fails when a FetchContent_Declare has no licence entry in tools/sbom.py.
+      # An SBOM silently missing a component is worse than no SBOM at all.
+      - name: SBOM inventory
+        run: python3 tools/sbom.py --check
 
       - name: Documentation
         run: python3 tools/check_docs.py --verbose

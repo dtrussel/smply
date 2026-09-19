@@ -291,9 +291,28 @@ def _phase_status() -> dict[str, str]:
     return out
 
 
-# A layout-tree line: box-drawing glyphs, then a path, then optional prose after
-# two or more spaces.
-LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(\S+)")
+# A layout-tree line: box-drawing glyphs, then everything after them.
+#
+# **Everything**, not the first token. It captured only the first token until
+# P18, which meant that on a line like
+#
+#     ├── tests/support/    fake_transport.*  manual_clock.hpp  message_builder.hpp
+#
+# only `tests/support/` was ever looked at -- and most of section 10's tree
+# names several files per line. Two of P18's audit findings were files listed
+# in second position that do not exist, sitting under a gate reporting a pass.
+# Worse, they were not counted as skipped either, so the skip count that exists
+# to expose a narrowed rule could not see this one.
+LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(.*)$")
+
+# A continuation line: the glyph column, then prose that continues the entry
+# above. These carry file names too -- the second and third lines of the
+# tests/hil/ entry name half a dozen -- but they also carry ordinary prose, so
+# a token here is only checked when it *looks* like a repository path and
+# resolves. An unresolvable token on a continuation line is counted as skipped
+# rather than reported, because "run_hil.py supervises" is a sentence, not a
+# listing, and demanding otherwise would make the rule unusable.
+LAYOUT_CONTINUATION = re.compile(r"^[│|\s]{2,}(\S.*)$")
 
 # ...and the token has to look like a path. Without this, R5 reads the borders
 # of the *other* fenced diagrams in architecture.md as entries: a line such as
@@ -303,6 +322,21 @@ LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(\S+)")
 # with them would hide a real narrowing of the rule, which the count exists to
 # expose.
 PATHISH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+@/{}*-]*$")
+
+# Extensions the layout tree actually names. A token carrying one of these is
+# meant to be a file, so failing to resolve it is an error even in second
+# position; a token that does not is prose until proven otherwise. Keeping this
+# an explicit list rather than "anything with a dot" is deliberate -- prose in
+# the tree contains "e.g." and version numbers.
+FILE_SUFFIXES = (
+    ".cpp", ".hpp", ".h", ".c", ".cc", ".py", ".sh", ".md", ".in",
+    ".txt", ".json", ".cmake", ".yml", ".yaml", ".conf",
+)
+
+
+def _looks_like_a_file(token: str) -> bool:
+    return token.endswith(FILE_SUFFIXES)
+
 
 _TRACKED: list[str] | None = None
 
@@ -329,11 +363,20 @@ def _tracked_paths() -> list[str]:
 def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
     """Every path named in architecture.md's layout tree must exist.
 
-    The tree is prose, not data, so this rule is deliberately conservative: it
-    checks the first token after the glyphs and **skips anything it cannot read
-    as a single path** -- a brace expansion (`upload_session.{hpp,cpp}`), a glob
-    (`update_state_machine.*`), a line naming several files, or an entry marked
-    `(planned`.
+    The tree is prose, not data, so this rule is deliberately conservative. It
+    reads **every** path-shaped token on an entry line, not just the first, and
+    **skips anything it cannot read as a single path** -- a brace expansion
+    (`upload_session.{hpp,cpp}`), a glob (`update_state_machine.*`), or an entry
+    marked `(planned`.
+
+    The first token is special in one way: an entry line begins with the thing
+    the line is about, so an unresolvable token *there* is an error. Later
+    tokens on the same line, and tokens on the continuation lines under it, are
+    a mix of file names and prose; those are reported only when they look like
+    a repository path (a suffix, or a name with an extension the tree actually
+    uses) and are counted as skipped otherwise. That asymmetry is what lets the
+    rule read `fake_transport.*  manual_clock.hpp  message_builder.hpp` without
+    tripping over `run_hil.py supervises the case suite`.
 
     It prints how many entries it skipped. That number is the point: a rule that
     silently narrows to nothing still reports a pass, which is exactly how
@@ -352,41 +395,66 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
     errors: list[str] = []
     checked = skipped = 0
     in_fence = False
+    entry_open = False
     for line in text.splitlines():
         if line.startswith("```"):
             in_fence = not in_fence
+            entry_open = False
             continue
         if not in_fence:
             continue
         match = LAYOUT_LINE.match(line)
-        if not match:
-            continue
-        token = match.group(1)
-        if not PATHISH.match(token):
-            continue
-        if "(planned" in line or any(c in token for c in "{}*?"):
-            skipped += 1
-            continue
-        bare = token.rstrip("/")
-        # A directory entry ends in "/"; a file entry does not. Both resolve
-        # against the repository root first.
-        if (REPO / bare).exists():
-            checked += 1
-            continue
-        # A leaf named without its directories -- `header.hpp` inside a nested
-        # branch of the tree -- cannot be resolved without tracking indentation,
-        # which is the parsing this rule refuses to do. So it is accepted when
-        # something tracked ends with that path.
-        #
-        # Matched against `git ls-files` rather than a filesystem walk: `build/`
-        # here holds dependency checkouts, peer firmware and every past bench
-        # run, and a recursive glob through it takes minutes per unresolved
-        # token. Tracked files are also the right set -- the layout describes
-        # the repository, not whatever a build left behind.
-        if any(p == bare or p.endswith("/" + bare) for p in _tracked_paths()):
-            checked += 1
+        if match:
+            rest, first_is_entry = match.group(1), True
+            # `entry_open` gates the continuation rule below, and it is set only
+            # for a line whose first token is path-shaped. architecture.md's
+            # *other* fenced diagrams draw boxes with the same glyphs -- a line
+            # like "└─────────────┘" matches LAYOUT_LINE and yields a "path" of
+            # box-drawing characters -- and opening an entry on one of those
+            # would make the prose inside that diagram look like a file listing.
+            entry_open = bool(PATHISH.match(rest.split()[0])) if rest.split() else False
+            if not entry_open:
+                continue
         else:
-            errors.append(f"architecture.md's layout names {token!r}, which does not exist")
+            continuation = LAYOUT_CONTINUATION.match(line) if entry_open else None
+            if not continuation:
+                continue
+            rest, first_is_entry = continuation.group(1), False
+        for index, token in enumerate(rest.split()):
+            is_entry_name = first_is_entry and index == 0
+            if not PATHISH.match(token):
+                continue
+            if "(planned" in line or any(c in token for c in "{}*?"):
+                skipped += 1
+                continue
+            bare = token.rstrip("/")
+            # A directory entry ends in "/"; a file entry does not. Both resolve
+            # against the repository root first.
+            if (REPO / bare).exists():
+                checked += 1
+                continue
+            # A leaf named without its directories -- `header.hpp` inside a
+            # nested branch of the tree -- cannot be resolved without tracking
+            # indentation, which is the parsing this rule refuses to do. So it
+            # is accepted when something tracked ends with that path.
+            #
+            # Matched against `git ls-files` rather than a filesystem walk:
+            # `build/` here holds dependency checkouts, peer firmware and every
+            # past bench run, and a recursive glob through it takes minutes per
+            # unresolved token. Tracked files are also the right set -- the
+            # layout describes the repository, not whatever a build left behind.
+            if any(p == bare or p.endswith("/" + bare) for p in _tracked_paths()):
+                checked += 1
+            elif is_entry_name or _looks_like_a_file(bare):
+                errors.append(
+                    f"architecture.md's layout names {token!r}, which does not exist"
+                )
+            else:
+                # Prose. "supervises", "reproducible", "PR" and the like all
+                # reach here; so would a real path spelled in a way the tree
+                # does not use elsewhere, which is the cost of not demanding
+                # that a documentation tree be machine-readable.
+                skipped += 1
     print(f"R5: checked {checked} layout path(s), skipped {skipped} "
           f"entry(ies) it could not read as a single path")
     if verbose:

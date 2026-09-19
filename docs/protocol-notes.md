@@ -5,7 +5,20 @@ source of truth for wire behaviour.** Do not re-derive protocol details from
 third-party clients; add findings here instead.
 
 Verified on **2026-09-04** against Zephyr `main` and MCUboot `main`; sections 6
-and 7 re-verified against the image-group implementation on **2026-09-05**.
+and 7 re-verified against the image-group implementation on **2026-09-05**;
+sections 5 to 9 extended and in places **corrected by hardware** across P17a to
+P17c, **2026-09-08** and **2026-09-09** — see S24 and S25 for the peer that
+produced those facts, and §9 A18 to A24 for what it found. Where a §9 entry
+carries a measurement, the device is the NUCLEO-WB55RG described in
+`tests/hil/README.md` and the finding is dated in the entry.
+
+A note on what "verified" means per layer, because the two dates are not the
+same kind of evidence: 2026-09-04/05 means *read from primary sources* —
+Zephyr and MCUboot documentation and code, inventoried in §1. 2026-09-08/09
+means *observed on a radio*. P17 found seven things the first kind had missed,
+every one of them contradicting something the simulated suite accepted, which
+is the reason both dates are kept rather than the later one replacing the
+earlier.
 
 ---
 

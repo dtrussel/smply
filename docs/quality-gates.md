@@ -37,9 +37,10 @@ A18–A24).
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
 | `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
-| `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then `find_package`s it from a separate project and runs the result (§13) |
+| `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI, and it grew the other two modes in P18a |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
+| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory* about findings; a scan that could not run **does** fail). Written in P18a; its scheduled firing is still unproven |
 | `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, nightly plus on demand; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand (roadmap P17b). Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
@@ -237,11 +238,11 @@ The two questions that blocked enforcement are both settled:
   except where the guard's `else` arm is the ordinary path and must stay
   counted. A marker on a comment line above the code is silently ignored.
 
-| Gate | Threshold | Measured 2026-09-07 (P14b) |
+| Gate | Threshold | Measured 2026-09-18 (P18b) |
 | ---- | --------- | ------------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ |
+| Line coverage, whole core | **≥ 85 %** | 98.2 % ✓ |
 | Branch coverage, whole core | **≥ 75 %** | 87.2 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 97.7 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 95.5 % ✓ · `src/dfu/` 92.3 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.1 % ✓ |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 **The elevated per-directory gates are not enforced by the script**, only the
@@ -249,6 +250,18 @@ two whole-core thresholds are. gcovr has no per-directory threshold, and four
 separate invocations would turn one number into five that can disagree. They are
 measured and recorded here each phase instead, which is what has actually caught
 things — see below.
+
+**Three of those four numbers had drifted, and P18b's audit is what noticed.**
+The row read `src/cbor/` 97.7 %, `upload_session.*` 95.5 % and `src/dfu/`
+92.3 % — measured in P13 and P14b and then carried forward unmeasured, through
+three phases in which P17 added code. Re-measured they are 94.6 %, 91.0 % and
+92.1 %: all still above the ≥ 90 % gate, so **nothing was broken and nobody
+would have been told if it had been**. That is precisely the P13 follow-up row
+which says a directory could fall below 90 % with CI green and only a person
+reading this section would notice; it is still open, and this is the first
+evidence that the mechanism it describes actually operates. A number recorded
+by hand is a number that decays — treat these as "true when last measured", and
+re-measure rather than quote them.
 
 **A new *consumer* moves the whole-core number, and it is not a regression.**
 P14b added an example and the figure moved from 98.4 / 87.5 to 98.1 / 87.2 with
@@ -374,9 +387,57 @@ what the repository carries is a decision for a person.
   maintenance status, public-API exposure and replaceability. CI fails if a
   `FetchContent_Declare` name is absent from that file (`tools/check_deps.py`).
 * Every dependency is pinned to an exact tag **and** commit hash.
-* An SPDX SBOM is generated per release build and attached to the release.
-* **OSV-Scanner** runs weekly and on every dependency change against the pinned
-  set; a known vulnerability opens an issue and blocks a release.
+* **A declaration of smply itself is skipped**, by exact name. Proving smply can
+  be consumed by FetchContent means writing a `FetchContent_Declare(smply …)`
+  for it (§13), and nothing is a third-party dependency of itself — the gate's
+  scope is third-party. P18a's first CI run failed on exactly this, because the
+  fixture's declaration is deliberately a `SOURCE_DIR` with no `GIT_TAG`. The
+  exemption is an identity and not a prefix: a `FetchContent_Declare(smply_x …)`
+  is an ordinary dependency, and `verify_gates.sh` plants one to prove it is
+  still rejected — the same shape as §3's "directories, not the substring
+  `winrt`" case.
+* **An SPDX 2.3 SBOM** is generated by `tools/sbom.py` from the pins in
+  `cmake/dependencies.cmake` — the same ones the build uses, so it cannot
+  describe a different dependency set than the one that shipped — and is
+  uploaded as an artefact by the `out-of-tree consumption` job, which is the
+  job that already produces a Release install. `tools/sbom.py --check` runs in
+  the `gates` job and **fails when a `FetchContent_Declare` has no licence
+  entry or no PURL**. Licences are declared in `sbom.py`, never inferred.
+  The PURL half was added after OSV-Scanner read the first version of the
+  document, listed all three packages and reported **"found 0 packages"**: a
+  scanner matches advisories on a package *identifier*, not on a name, so an
+  SBOM without PURLs parses perfectly and is unusable by any consumer of it.
+  Each dependency carries `pkg:github/<owner>/<repo>@<commit>` — the commit,
+  because that is what the build actually pins.
+* **OSV-Scanner** (`.github/workflows/osv.yml`) runs weekly, on
+  `workflow_dispatch`, and on any change to what is pinned, scanning the SBOM.
+  It is **advisory**: the result is a SARIF artefact, and acting on a finding
+  is a decision — ADR-0011 says a dependency change needs one. It does not
+  block a pull request, and it does not open an issue.
+  *Both of these were claimed in this section from P0 and neither existed until
+  P18 built them, and getting the scanner to actually scan took three runs.*
+  `osv.yml` is in its own `paths` filter so that a change to it tests itself,
+  and the first two attempts are worth recording because each failed in a way
+  that looked like success:
+
+  1. **Scanned nothing, reported success.** The action runs in a container that
+     mounts only the workspace; the SBOM had been written to the runner's temp
+     directory, and `continue-on-error` swallowed the resulting exit 127.
+  2. **Read the SBOM, found 0 packages.** Fixed the path, and the scanner
+     listed all three packages by name and had nothing to look up — an SBOM
+     without a PURL or a CPE is a list of names. That is what added the PURL
+     requirement above.
+
+  The job now **fails when no SARIF was produced**, which is what caught the
+  second of those, and is the discipline `hci_capture.py` applies to a packet
+  capture: a listener that attaches and records nothing is not a capture.
+
+  Two things are still unproven and should not be read as passing. The
+  **scheduled** firing — the first Monday is the evidence for that. And whether
+  OSV has advisory **coverage** for two C libraries consumed from git as
+  `pkg:github` PURLs: a clean report from a database with nothing to say about
+  an ecosystem looks exactly like a clean report from one that checked. The
+  report is evidence that the scan ran, not yet that it would find something.
 * New dependencies require an ADR (see [ADR-0011](decisions/ADR-0011-build-and-dependencies.md)).
 
 ## 10. API discipline (required)
@@ -429,11 +490,28 @@ same habit as committing a fuzz reproducer with its fix.
 
 The layout rule is deliberately conservative, and **says how much it skipped**:
 the tree is prose, so an entry it cannot read as a single path — a brace
-expansion, a glob, a line naming several files — is skipped rather than guessed
-at, and the printed count is what would reveal a rule that had quietly narrowed
-to checking nothing. A silently inert gate is the failure mode this repository
-has hit most (§1's gate self-check exists for it), so the number is part of the
-output rather than a debug aid.
+expansion, a glob, prose that is not a file name — is skipped rather than
+guessed at, and the printed count is what would reveal a rule that had quietly
+narrowed to checking nothing. A silently inert gate is the failure mode this
+repository has hit most (§1's gate self-check exists for it), so the number is
+part of the output rather than a debug aid.
+
+**P18 widened it, because the conservative version was narrower than anyone
+realised.** R5 read only the *first* token on a layout line — and most of §10's
+tree names several files per line, so `fake_transport.*  manual_clock.hpp
+message_builder.hpp` was one checked entry and two unread ones. Two of P18's
+audit findings were files listed in second position that do not exist, sitting
+under a gate that reported a pass. Worse, they were not counted as skipped
+either, so the number that exists to expose a narrowed rule could not see this
+narrowing. R5 now reads every path-shaped token on an entry line and on the
+continuation lines under it, which is why the count jumped from **44 checked to
+109**. Its one asymmetry is deliberate: an unresolvable token in first position
+is an error, because that is what the line is *about*, while a later token is
+an error only if it carries a file extension the tree uses — otherwise the rule
+would trip over "run_hil.py supervises the case suite", which is a sentence and
+not a listing. `verify_gates.sh` has a decoy for each half: one entry that does
+not exist, and one file name in second position that does not, and the second
+would pass under the old regex.
 
 ## 12. Definition of Done
 
@@ -461,32 +539,52 @@ A change — feature, phase, or fix — is done only when **all** hold:
 
 ## 13. Out-of-tree consumption (required)
 
-*(P15a.)* `tools/check_install.sh` builds smply in **Release**, installs it into
-a throwaway prefix, then configures a **separate CMake project**
-(`tests/install/`) against that prefix with `find_package(smply)`, builds it and
-**runs** it.
+*(P15a; the other two modes and the SBOM are P18's.)* `tools/check_install.sh`
+builds smply in **Release**, installs it into a throwaway prefix, and then
+builds and **runs** a consumer **three ways**:
 
-Every part of that is load-bearing:
+| Mode | Consumes | What only this mode can catch |
+| ---- | -------- | ----------------------------- |
+| `find_package` | the installed prefix | the **export** — a wrong exported target name, a missing archive, a header left out of the package |
+| `add_subdirectory` | the source tree | smply misbehaving as a **subproject**: tests or examples defaulting ON, the strict warning set reaching the parent |
+| `FetchContent` | the source tree, declared | that smply can be a FetchContent dependency at all, populated into a build directory it does not name |
 
-* **Separate project.** Anything built inside our own tree consumes the
+All three compile the **same** program, `tests/consumption/smoke.cpp`. One
+program on purpose: three would drift, and the one that drifted would be the
+mode nobody noticed had stopped checking anything.
+
+Every part of the arrangement is load-bearing:
+
+* **Separate projects.** Anything built inside our own tree consumes the
   build-tree targets, where the in-tree `ALIAS` names resolve. It proves nothing
   about the export. The first run of this check caught exactly that:
   `install(EXPORT)` names an exported target `<namespace><target-name>`, so
   `smply_util` shipped as `smply::smply_util` while every consumer in the
   repository says `smply::util`. Fixed with `EXPORT_NAME`; invisible without
-  this gate.
+  this gate, and the reason `smply::transport_common` got an `EXPORT_NAME` the
+  day it was added.
 * **Running it.** A package that exports the headers but forgets the archive can
-  still configure and build a program that never calls into it. The check calls
-  a symbol from each installed target, and compares `smply::version()` (from the
-  archive) against `SMPLY_VERSION_STRING` (from the header), so a prefix mixing
-  two installs fails.
+  still configure and build a program that never calls into it. The smoke
+  program calls a symbol from each installed target, and compares
+  `smply::version()` (from the archive) against `SMPLY_VERSION_STRING` (from
+  the header), so a prefix mixing two installs fails.
 * **Release.** It is what a consumer builds, and see §1.
+* **`FetchContent` with `SOURCE_DIR`, not `GIT_REPOSITORY`.** A git fetch would
+  populate the last *commit*, so the check would pass or fail on a tree nobody
+  has — the stale-binary trap of §1 wearing different clothes. Whether CMake can
+  clone is CMake's problem; whether *this* tree can be consumed is ours.
+* **The `.in` check.** `include/smply/version.hpp.in` sits beside the public
+  headers, and an unfiltered `install(DIRECTORY)` shipped it next to the
+  configured `version.hpp` until P18. The script fails if it reappears.
 
-`smply::minicbor` and the test doubles are **not** installed; they are
-development scaffolding. The installed prefix does contain QCBOR's headers and
-config package — QCBOR's own install rules run alongside ours — which is a
-packaging fact, not an API leak: ADR-0007 keeps QCBOR out of `include/smply/`
-and §10 still enforces it.
+What the package contains, and why each excluded target is excluded, is
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md):
+`smply::smply`, `smply::util` and `smply::transport_common` ship;
+`smply::minicbor`, `smply::dfu_app`, `smply::winrt_ble` and the test doubles do
+not. The installed prefix does also contain QCBOR's headers and config package —
+QCBOR's own install rules run alongside ours — which is a packaging fact, not an
+API leak: ADR-0007 keeps QCBOR out of `include/smply/` and §10 still enforces it.
 
-Only the `find_package` mode is covered. `add_subdirectory` and `FetchContent`,
-the SBOM and the version policy remain P18's.
+`verify_gates.sh` stages the negative arm: with `smply::transport_common`
+removed from the export set, the `find_package` consumer must fail to
+configure. The positive arm is this gate itself, which runs on every push.

@@ -1,6 +1,25 @@
 # ADR-0007 — QCBOR behind a narrow façade
 
-**Status:** Accepted (2026-09-04); assumptions validated in P5 (2026-09-05)
+**Status:** Accepted (2026-09-04); assumptions validated in P5 (2026-09-05);
+qualified by P17a and re-read in P18's audit (2026-09-18)
+
+*P18 note, and the only edit this decision's body receives — ADR-0013 forbids
+changing an accepted decision in place. The decision stands: QCBOR is still the
+backend and nothing about the façade's shape changed. Two corrections to what
+this file asserts:*
+
+* *The seam is `src/cbor/reader.cpp` and `writer.cpp` — they **are** the
+  backend. `src/cbor/backend_qcbor.*`, named below and in
+  `dependencies.md`, has never existed; P5 decided a third file holding only
+  includes was not worth having (roadmap, P5 deviation 1). The property that
+  mattered — one replaceable pair of translation units, no QCBOR in any public
+  header — is intact and is enforced by `tools/check_public_headers.py`.*
+* *QCBOR has a **defect** smply works around: it mishandles two consecutive
+  indefinite-length breaks, which is precisely what Zephyr's zcbor emits
+  (PN §9 A18, found on hardware in P17a). `cbor::Reader::for_each_map_in_array`
+  decodes each element in a child reader because of it. This is a cost the
+  decision did not anticipate, and it is recorded rather than hidden: a future
+  session weighing TinyCBOR should weigh it.*
 
 ## Context
 
