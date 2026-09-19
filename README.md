@@ -35,7 +35,7 @@ trial boot, confirmation — against a stub device on another thread, and runs o
 every push.
 And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
 `examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
-663 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
+668 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
 scan, and an installed package that
 three separate out-of-tree projects consume on every push — by `find_package`,
 by `add_subdirectory` and by `FetchContent`. Fourteen more cases run on

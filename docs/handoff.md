@@ -162,12 +162,20 @@ entry when it stops being true.
 * **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1
   destroys image-group error codes** (PN §9, A16 and A24 — measured on the P17
   peer, which sets it). Two different refusals both arrive as a flat `rc=1`.
-  That is not only a diagnostic loss: `src/dfu/update_state_machine.cpp`
-  recovers a lost mark-for-test by branching on
-  `ImageError::ImageAlreadyPending`, and against such a server under v1
-  `image_error()` is always `nullopt`, so that branch cannot fire. If you need
-  the group code, the answer is `SmpClientConfig::smp_version = Version::V2`,
-  which this peer accepts for the ordinary path as well.
+  **`image_error()` returning `nullopt` for a real image failure is the normal
+  case on that configuration, not a malformed reply** — always check
+  `smp_error()` as well. P19 fixed the one place where that had become a
+  behavioural bug rather than a diagnostic one: the lost-mark-for-test recovery
+  in `src/dfu/update_state_machine.cpp` branched on
+  `ImageError::ImageAlreadyPending` alone and therefore could not fire at all
+  against such a server. It now also accepts a group-less `SmpError::BadState`,
+  which is what the translation table produces for that code. **Before writing
+  any new branch on `image_error()`, ask what a v1 peer sends instead**; the
+  test helper for it is `flat_failure()` in
+  `tests/unit/test_update_state_machine.cpp`, and the suite had no such helper
+  for eleven phases, which is precisely why A24 survived. If you need the group
+  code itself, the answer is `SmpClientConfig::smp_version = Version::V2`, which
+  this peer accepts for the ordinary path as well.
 * MCUmgr uses **two different hashes** — the upload `sha`, SHA-256 over the whole
   file, and image-state `hash`, MCUboot's `IMAGE_TLV_SHA` over header and body.
   Conflating them is the classic client bug, so they are different types:

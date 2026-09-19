@@ -40,6 +40,18 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
 
 ### Fixed
 
+- **The firmware updater now recovers a lost mark-for-test over SMP v1.** It
+  branched on `ImageError::ImageAlreadyPending`, which a server built with
+  `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates away for a v1
+  client — so a shipped recovery path could not fire at all on the commonest
+  configuration, including the bench peer's
+  ([`protocol-notes.md`](docs/protocol-notes.md) §9, A16 and A24). It now also
+  accepts a group-less `SmpError::BadState`, which is what that translation
+  produces for `NoFreeSlot`, `CurrentVersionIsNewer` and `ImageAlreadyPending`
+  alike; all three want the same re-read-and-replan, and the existing one-shot
+  budget still bounds it. Deliberately *not* extended to `SmpError::Unknown`,
+  the same table's catch-all for eighteen codes including every flash failure.
+  No public signature changed.
 - The package no longer installs `include/smply/version.hpp.in`, the
   un-configured template, beside the generated `version.hpp`.
 - The installed include root follows `CMAKE_INSTALL_INCLUDEDIR` instead of a

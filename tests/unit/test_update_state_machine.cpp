@@ -9,7 +9,8 @@
 // (docs/protocol-notes.md section 7):
 //
 //   * a rollback is recognised from the FLAGS, not from a hash alone;
-//   * `ImageAlreadyPending` is recoverable exactly once;
+//   * a refused mark-for-test is recoverable exactly once, in EITHER shape --
+//     `ImageAlreadyPending` over v2 and a group-less `BadState` over v1;
 //   * a refused confirm is fatal *and* leaves the device about to revert.
 
 #include "dfu/update_state_machine.hpp"
@@ -164,6 +165,18 @@ struct SlotSpec
 {
     return failed(Error{ErrorCode::ProtocolError,
                         MgmtError::scoped(Group::Image, static_cast<std::uint16_t>(code))});
+}
+
+/// The same refusal as a **v1** server reports it: a flat `rc` with no group.
+///
+/// This helper is the reason A24 survived review. Until it existed the suite
+/// could only express the group-scoped shape, so every recovery test asked the
+/// machine a question no SMP v1 device ever asks it (docs/protocol-notes.md
+/// section 9, A16).
+[[nodiscard]] Event flat_failure(SmpError code)
+{
+    return failed(
+        Error{ErrorCode::ProtocolError, MgmtError::smp(static_cast<std::uint16_t>(code))});
 }
 
 [[nodiscard]] Context fresh()
@@ -465,6 +478,59 @@ TEST_CASE("ImageAlreadyPending is recoverable exactly once", "[dfu][machine]")
                 UpdatePlan{}, context);
     CHECK(again.next == UpdateState::Failed);
     REQUIRE(context.cause.has_value());
+}
+
+TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine]")
+{
+    // The same rule over SMP v1. A server with
+    // CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL translates the image code
+    // onto `mcumgr_err_t` and drops the group, so the recovery above never
+    // sees `ImageAlreadyPending` and, before P19, could not fire at all.
+    Context context = fresh();
+    const Step retried = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
+                                 UpdatePlan{}, context);
+    CHECK(retried.next == UpdateState::InspectingImages);
+    CHECK(retried.effect == Effect::ReadState);
+    CHECK(context.mark_retried);
+    CHECK_FALSE(context.cause.has_value());
+
+    const Step again = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
+                               UpdatePlan{}, context);
+    CHECK(again.next == UpdateState::Failed);
+    REQUIRE(context.cause.has_value());
+}
+
+TEST_CASE("the budget is one recovery, not one of each shape", "[dfu][machine]")
+{
+    // Spending it on either shape spends it for both: a device that answers
+    // v2 once and v1 once is still one lost response, not two. The v1 shape
+    // goes first deliberately -- that ordering is the one that fails if the
+    // flat arm is ever removed again, and an invariant test that passes either
+    // way protects nothing.
+    Context context = fresh();
+    const Step first = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
+                               UpdatePlan{}, context);
+    CHECK(first.next == UpdateState::InspectingImages);
+
+    const Step second =
+        advance(UpdateState::MarkingForTest, image_failure(ImageError::ImageAlreadyPending),
+                UpdatePlan{}, context);
+    CHECK(second.next == UpdateState::Failed);
+}
+
+TEST_CASE("a group-less code that is not BadState is still fatal", "[dfu][machine]")
+{
+    // `Unknown` is what A24 actually measured on the bench, and it is where
+    // the widening deliberately stops: the same translation table gives it to
+    // eighteen other image codes, every flash failure among them, so treating
+    // it as recoverable would retry genuine refusals.
+    Context context = fresh();
+    const Step step = advance(UpdateState::MarkingForTest, flat_failure(SmpError::Unknown),
+                              UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Failed);
+    CHECK_FALSE(context.mark_retried);
+    REQUIRE(context.cause.has_value());
+    CHECK(smply::smp_error(*context.cause) == SmpError::Unknown);
 }
 
 TEST_CASE("marking the running slot for test is fatal with the device's own code", "[dfu][machine]")

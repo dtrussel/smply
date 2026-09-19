@@ -18,9 +18,12 @@
 ///   a trial boot the running image reports `active` with *no* `confirmed`, so
 ///   "not confirmed" cannot mean "wrong image". A revert is: the active slot
 ///   does not carry the target hash **and** nothing is pending.
-/// * **`ImageAlreadyPending` is recoverable.** Re-reading the state and finding
-///   our own image already marked means the previous attempt succeeded and its
-///   response was lost.
+/// * **A refused mark-for-test is recoverable once.** Re-reading the state and
+///   finding our own image already marked means the previous attempt succeeded
+///   and its response was lost. The refusal arrives in two shapes and both are
+///   accepted: `ImageError::ImageAlreadyPending` over SMP v2, and a group-less
+///   `SmpError::BadState` from a v1 server that translated the group code away
+///   (docs/protocol-notes.md section 9, A16 and A24).
 /// * **A refused confirm is fatal *and* leaves the device about to revert.**
 ///   The report has to say so; "failed" alone would let a caller believe
 ///   nothing had changed.
@@ -127,7 +130,8 @@ struct Context
     /// A swap is scheduled and not yet confirmed, so an update that ends now
     /// leaves the device about to revert.
     bool swap_scheduled = false;
-    /// The one `ImageAlreadyPending` recovery has been spent.
+    /// The one mark-for-test recovery has been spent -- for either shape of
+    /// refusal, `ImageAlreadyPending` or a group-less `BadState`.
     bool mark_retried = false;
     /// The one `Busy` reset retry has been spent.
     bool reset_forced = false;

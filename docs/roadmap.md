@@ -10,10 +10,11 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 
 | | |
 | - | - |
-| **Next phase to work on** | **None — the roadmap is complete.** P0 through P18b are all `Complete`. What remains is not a phase: two acceptance items that need hardware or repository settings this container does not have (re-running an update against a device from a fresh clone, and commissioning the `smply-bench` runner), plus the standing follow-up table below and open questions O3, O5 and O6. A session with the bench should start at those two; a session without one should start by asking whether a follow-up row has become worth doing |
-| Last completed phase | **P18b — the 1.0 documentation and ADR audit.** Every living document read against the code: thirteen contradictions and six omissions fixed, among them `design.md` describing the CBOR nesting defect P13 *fixed* as though it were the design, a threat-model row mitigating a logging subsystem that does not exist, and two documents naming a file (`src/cbor/backend_qcbor.*`) that has never existed. Sixteen ADRs reviewed and **none superseded**; four carry a `Status`-line note. `check_docs.py` R5 was widened from reading the first token of a layout line to reading all of them — 44 checked before, 109 after — because that narrowness is why two of the findings survived four phases. Before it, **P18a** decided the installed package's shape in ADR-0016 (`smply::transport_common` in, `dfu_app`/`minicbor`/`winrt_ble` out, each with a reason), proved all three consumption modes, and made the SBOM and OSV-scanning claims true instead of aspirational |
-| Previously | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
-| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **663 tests** (662 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak and a weekly dependency scan, and **fourteen more cases on hardware** — in thirteen groups, twelve of them unattended — that no CI preset builds. And, from P18, **an installed package proved out of tree three ways on every push** (`find_package`, `add_subdirectory`, `FetchContent`), carrying `smply::smply`, `smply::util` and `smply::transport_common`, with an SPDX SBOM generated from the same pins the build uses. **The product is complete, packaged, documented against itself, and has met a device.** What is deliberately not done is the 1.0 *declaration*: the version stays `0.1.0` so that promising compatibility is a decision somebody makes (ADR-0016). |
+| **Next phase to work on** | **None scheduled.** P0 through P19 are all `Complete`. What remains is not a phase: two acceptance items that need hardware or repository settings this container does not have (re-running an update against a device from a fresh clone, and commissioning the `smply-bench` runner), plus the standing follow-up table below and open questions O3, O5 and O6. A session with the bench should start at those two; a session without one should start by asking whether a follow-up row has become worth doing — which is how P19 was chosen |
+| Last completed phase | **P19 — the A24 follow-up.** A shipped recovery path could not fire against the server configuration the bench peer (and most shipping devices) use: `update_state_machine.cpp` recovered a lost mark-for-test by branching on `ImageError::ImageAlreadyPending`, which SMP v1 destroys on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`. It now also accepts a group-less `SmpError::BadState`. The branch is one line; the finding is that `tests/unit/test_update_state_machine.cpp` had **no way to build the v1 shape at all** — its only helper hard-coded `MgmtError::scoped` — so no test in the suite could have caught it |
+| Previously | **P18b — the 1.0 documentation and ADR audit.** Every living document read against the code: thirteen contradictions and six omissions fixed, among them `design.md` describing the CBOR nesting defect P13 *fixed* as though it were the design, a threat-model row mitigating a logging subsystem that does not exist, and two documents naming a file (`src/cbor/backend_qcbor.*`) that has never existed. Sixteen ADRs reviewed and **none superseded**; four carry a `Status`-line note. `check_docs.py` R5 was widened from reading the first token of a layout line to reading all of them — 44 checked before, 109 after — because that narrowness is why two of the findings survived four phases. Before it, **P18a** decided the installed package's shape in ADR-0016 (`smply::transport_common` in, `dfu_app`/`minicbor`/`winrt_ble` out, each with a reason), proved all three consumption modes, and made the SBOM and OSV-scanning claims true instead of aspirational |
+| And before that | **P17c — the cross-check, and P17 closed.** smply and `smpmgr` install the same image from an identical baseline and agree at all three checkpoints including the trial boot, twice, with zero divergences, oracled over a UART path neither touches; a negative control that leaves one arm untrialled produces ten. O2 is resolved from measurement (A24) and O3 restated with its input measured. Two honest non-results: the HCI capture produced no packets without an elevated shell and reports itself unavailable, and the UART client could not complete an upload so serves as the oracle only. P17 as a whole produced seven §9 findings, A18-A24, every one of them contradicting something the simulated suite accepted |
+| Shipped so far | SMP codec · reassembly · transport contract · CBOR façade · `SmpClient` · OS group · **the whole image group, upload included** · MCUboot image parsing, SHA-256 and TLV scan · a simulated device and a component suite that drives the real stack into it · **`FirmwareUpdater`: the end-to-end update, reset and reconnect included** · **seven libFuzzer targets over the untrusted-input surface, with the coverage thresholds and the fuzz smoke job now blocking** · **`smply::Dispatcher`, the adapter marshalling helper, in its own target under a TSan job** · **`examples/cli_dfu/`: a whole update, on a real clock, against a device on another thread**. **`smply::winrt_ble`, the reference BLE adapter, and `examples/winrt_ble_dfu/`, the tool that drives it — both compiled at `/W4 /WX` by CI and now run against a radio across P17a-P17c**, including a cross-check against a third-party client on the same device. The reconnect backoff they need is `smply::dfu_app`, shared with `cli_dfu` and exercised on every push. **668 tests** (667 on Linux; the extra is the adapter's Windows-only smoke test) **and 16 CI jobs** plus a nightly soak and a weekly dependency scan, and **fourteen more cases on hardware** — in thirteen groups, twelve of them unattended — that no CI preset builds. And, from P18, **an installed package proved out of tree three ways on every push** (`find_package`, `add_subdirectory`, `FetchContent`), carrying `smply::smply`, `smply::util` and `smply::transport_common`, with an SPDX SBOM generated from the same pins the build uses. **The product is complete, packaged, documented against itself, and has met a device.** What is deliberately not done is the 1.0 *declaration*: the version stays `0.1.0` so that promising compatibility is a decision somebody makes (ADR-0016). |
 | Blocked phases | none |
 | Open decisions | **Three open** — O3, O5, O6. O1 (licence), O2 (SMP v2 probing, resolved in P17c from hardware) and O4 (`FileImageSource`) are resolved. See [§ Open questions](#open-questions) |
 
@@ -45,6 +46,7 @@ Status values: `Planned` · `In Progress` · `Blocked` · `Complete`.
 | [P17c](#p17c) | Cross-check against third-party clients, docs, close-out | **Complete** (two clients agree; the HCI half needs an elevated shell) | P17b |
 | [P18a](#p18a) | Packaging, install/export and out-of-tree consumption | **Complete** | P17c |
 | [P18b](#p18b) | The 1.0 documentation and ADR audit | **Complete** | P18a |
+| [P19](#p19) | The A24 follow-up: a recovery path that could not fire | **Complete** | P17c |
 
 Phases P1–P15a are portable and can be developed and verified entirely on Linux.
 P15b–P17c require Windows; P17a–P17c additionally require the hardware bench
@@ -59,10 +61,14 @@ from a container with no bench, and left it filed in the follow-up table with
 the nightly schedule removed from `hil.yml` so that it stops queueing against a
 runner that does not exist.
 
-**Every phase in this roadmap is Complete.** Two acceptance items are not, and
-neither can be closed without hardware: re-running an update against a device
-from a fresh clone (P18a), and commissioning the runner. Both are in the
-follow-up table, owned by the bench rather than by a phase.
+**Every phase in this roadmap is Complete**, P19 included. Two acceptance items
+are not, and neither can be closed without hardware: re-running an update
+against a device from a fresh clone (P18a), and commissioning the runner. Both
+are in the follow-up table, owned by the bench rather than by a phase.
+
+**P19 is not part of P18 and does not reopen it.** It is a follow-up row from
+P17c worked on its own, which is what the current-state table says a session
+without a bench should do.
 
 ---
 
@@ -2918,6 +2924,95 @@ unless its §9 entry says otherwise.
 
 ---
 
+<a id="p19"></a>
+## P19 — the A24 follow-up: a recovery path that could not fire
+
+**Status: Complete** (2026-09-19) · **Depends on:** P17c
+
+**Objective.** Make the lost-mark-for-test recovery reachable on the server
+configuration most devices actually ship, and give the test suite a way to
+express what such a server sends.
+
+**Scope.** The `MarkingForTest` / `Failed` arm of
+`src/dfu/update_state_machine.cpp`, its two header comments, and the tests that
+cover it at both levels.
+
+**Out of scope.** Anything else about the updater's retries. The SMP version
+default (O2, resolved in P17c: v1 stays the default). Widening any other branch
+that reads `image_error()` — the rest were audited and none has the same defect,
+because `Resetting` already reads `smp_error()` and no other state recovers from
+a group-scoped code at all.
+
+**Prerequisites.** P17c's measurement (A24) and the follow-up row it filed.
+
+**Tasks.**
+1. Widen the branch to accept a group-less `SmpError::BadState` beside
+   `ImageError::ImageAlreadyPending`, still bounded by `mark_retried`.
+2. Add the missing injection helper `flat_failure(SmpError)` to the unit suite,
+   and three cases: the v1 shape recovering once, the shared budget, and a
+   group-less code that is *not* `BadState` staying fatal.
+3. Add a component case driving the whole update over v1 against a default
+   simulator, plus its group-scoped control.
+4. Reconcile `design.md` §8, `protocol-notes.md` A24 and the standing caveat in
+   `handoff.md`.
+
+**Files.** `src/dfu/update_state_machine.{hpp,cpp}`,
+`tests/unit/test_update_state_machine.cpp`,
+`tests/component/test_firmware_update.cpp`, `docs/design.md`,
+`docs/protocol-notes.md`, `docs/handoff.md`, `docs/roadmap.md`, `CHANGELOG.md`.
+
+**Tests.** The five listed above, and each was run with the source change
+reverted to confirm it fails: the two v1-shape cases and the ordering of the
+budget case do; the group-scoped cases correctly do not, because they were
+always passing.
+
+**Docs.** `design.md` §8's failure/recovery row; a dated addendum to A24 that
+points at the fix without rewriting the measurement; the corrected standing
+caveat.
+
+**Gates.** All of P18b's.
+
+**Acceptance.** A default `ServerSimulator` (`translate_v1_errors = true`) and a
+default `SmpClient` (v1) complete an update whose mark-for-test is refused once
+— and the same test fails with the branch reverted.
+
+**Exit.** No shipped recovery path depends on a code that the commonest server
+configuration destroys.
+
+### Outcome
+
+**Completed.** All four tasks. One source condition, one new test helper, five
+new cases (three unit, two component), four documents.
+
+**Remaining in this phase.** None.
+
+**Deviations from the original plan.** One. The plan had the budget case run the
+group-scoped shape first; it was rewritten to run the **v1** shape first,
+because in the original order it passed with the fix reverted and therefore
+protected nothing. That is the same question `handoff.md` asks of every green
+run, applied to a test rather than to a bench.
+
+**Discovered.**
+
+* **The fix is one line; the hole in the suite was eleven phases old.**
+  `image_failure()` has been the only way to build a device-reported image
+  failure since P12, and it hard-codes `MgmtError::scoped`. So every test of
+  every recovery asked the machine a question no SMP v1 device ever asks it.
+  A24 was found on a bench precisely because nothing in the simulated suite
+  *could* have found it. The general shape: **a test helper that can only
+  construct one of two wire shapes silently restricts what the suite is able to
+  assert**, and nothing reports that as a gap — coverage is full, because the
+  lines are all executed, just never with the other shape.
+* **The widening stops short of the code A24 measured, on purpose.** The bench
+  saw a flat `rc=1` (`EUNKNOWN`) for image codes 8 and 33. `EUNKNOWN` is the
+  translation table's catch-all for eighteen codes including every flash
+  failure, so recovering from it would retry genuine refusals. Code 28's own
+  translation is `EBADSTATE`, which is what the fix accepts — traced to S10's
+  table rather than provoked, and the roadmap says so rather than implying the
+  measurement covered it.
+
+---
+
 ## Open questions
 
 Tracked here until resolved; resolving one means an ADR or a doc update, not a
@@ -3004,7 +3099,7 @@ them.
 | ~~P15b~~ | ~~`smply::winrt_ble` is **not installed or exported**, like `smply::transport_common` before it.~~ **Decided in P18a: it stays out**, and unlike `transport_common` that is the answer rather than a deferral ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)). It is a *reference* adapter — source to read and copy — and it is the one target neither clang-tidy nor cppcheck sees, so a compatibility promise about its surface would rest on MSVC `/W4` alone, and an installed-package check for it could only run on the Windows CI job. What a Windows consumer needs *from the package* — the core, `Dispatcher`, the framing and the queue — is all installed. The CMake is already shaped for a reversal (`EXPORT_NAME winrt_ble` is set) if a consumer ever asks. | — |
 | P17c | **Commissioning the self-hosted `smply-bench` runner.** `hil.yml` is committed and advisory, but no runner is registered, so the hardware suite has only ever run from the bench by hand. Configuration rather than code — which is why `hil.yml` was committed in P17b, so that commissioning changes no source. The cross-check's HCI half needs BTVS running **elevated**, which a runner registered as a *service* can provide and an interactive session cannot; that is part of commissioning, not a separate problem. **P18a reviewed it and could not do it** — it needs the physical bench and repository settings, and a container has neither — so it stays open, now owned by the bench rather than by a phase. P18a did remove the nightly `schedule:` while that remains true: it was queueing a 90-minute timeout every night against a runner that does not exist, and a standing reminder that only ever says the same thing is noise. `hil.yml`'s header carries the steps and the schedule block to restore. | a session with the bench |
 | P17c | **HCI capture does not work on this bench, and the remaining lead is a WPP provider.** BTVS never opens its remote listener here (`Wireshark Viewer: Disabled`, `Connection failed`, no socket held), and enabling the *manifest* provider `Microsoft-Windows-BTH-BTHPORT` by hand -- every keyword, level 255, `logman query` confirming it attached -- captured **zero Bluetooth events across three minutes of BLE traffic**. What is left untried at its last step is Microsoft's own recording profile, which enables `Microsoft.Windows.Bluetooth.WPP.BthPort` `{d88ace07-...}`, converted with `BTETLParse.exe -pcap`; `tests/hil/README.md` has the commands and the two syntax traps. Until that lands, Tier B of the cross-check is decode-verified against the device's recorded bytes and **unproven against a live capture**. | when a capture is wanted, or with the runner |
-| P17c | **A shipped recovery path is dead against a server that translates v1 errors.** `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` a v1 request never carries that code (protocol-notes §9 A16, measured as A24). Widening the branch to accept a group-less `BadState` would be safe for all three codes A16 lists — each wants the same re-read-and-replan — but it changes the updater's retry logic on the strength of one server's configuration, so it is a decision for review rather than for a cross-check phase. The specific code was not provoked directly: reaching it needs a pending swap plus a mark for a third image, and this bench holds two. | when the updater's retries are next reviewed |
+| ~~P17c~~ | ~~**A shipped recovery path is dead against a server that translates v1 errors.** `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and on a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` a v1 request never carries that code.~~ **Done in P19**, and the review it was waiting for is written into ADR-nothing rather than an ADR: no decision was contradicted, only a branch widened. It now also accepts a group-less `SmpError::BadState`, which `img_mgmt_translate_error_code()` produces for all three of the codes A16 lists, each wanting the same re-read-and-replan; the one-shot `mark_retried` budget already bounded it. **The reason it survived eleven phases is worth more than the fix**: the only injection helper in `tests/unit/test_update_state_machine.cpp` built `MgmtError::scoped`, so no test in the suite could express what a v1 peer actually sends. The missing dual, `flat_failure()`, is now there. | — |
 | P17c | **The UART client arm could not complete an upload, so the cross-check is two clients and an oracle.** `mcumgr-client` 0.0.9 over the shell transport reads state reliably but failed three different ways mid-transfer (protocol-notes §9, "the UART arm is an oracle, not a third client"), and the peer's console UART carries an echoing shell and a deferred raw-UART log backend on the same stream. To make it a third *client*, a bench revision would have to move logs off USART1 — RTT, say — or use the raw UART MCUmgr transport instead of the shell one. Worth doing only if a UART comparison is wanted; smply implements no UART transport. | when a UART comparison is wanted |
 | P17c | **`smp_decode.py`'s CBOR reader and SMP reassembler are a second implementation of things smply already has.** They exist because the decode must not be inferred from the tools being compared (ADR-0015), and they are self-tested against the device's own recorded bytes — but two decoders can drift, and a divergence traced with a buggy one would be worse than no comparison. If the cross-check grows, consider driving it through smply itself (a small `--decode` mode over the public reader) rather than growing the Python copy. | if the cross-check grows |
 | P17b | **A `TransportBusy` seen again would need a clock-driven backoff, and that needs an ADR.** The transport now absorbs the handover window itself, so anything still reaching the upload driver means the medium genuinely is not draining. The driver cannot help: `is_transient()` excludes `TransportBusy` deliberately because nothing below `FirmwareUpdater` owns a clock, and a retry there would spend the whole budget with zero elapsed time (design.md §6). Giving a lower layer a clock, or giving the updater the retry, touches ADR-0003 and ADR-0004. Do not patch it quietly. | if it is seen again |
