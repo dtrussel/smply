@@ -840,6 +840,69 @@ TEST_CASE("a device that refuses to mark the image is a clean failure", "[dfu][u
     CHECK(fixture.simulator.swap_type() == SwapType::None);
 }
 
+TEST_CASE("a lost mark-for-test is recovered over SMP v1", "[dfu][update]")
+{
+    // A24, end to end. The device is a default one, which means
+    // `translate_v1_errors` is on -- it is built as the bench peer is, with
+    // CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL -- and the client speaks v1,
+    // which is smply's default. So the refusal arrives as a flat `rc = 6` with
+    // no group at all, and `image_error()` on it is `nullopt`.
+    //
+    // Before P19 this update failed here. It is the shape a real device
+    // produces, and the whole simulated suite was blind to it because the only
+    // test of the recovery injected the group-scoped shape by hand.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    fixture.simulator.load_slot(1, update); // Present, so the mark is the first write.
+    MemoryImageSource source{ConstBytes{update}};
+
+    // Write only, so the refusal lands on set-state rather than on the
+    // get-state that reads the slot table first.
+    fixture.simulator.fail_next(ImageError::ImageAlreadyPending, smply::Operation::Write);
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    // The recovery is the second visit to InspectingImages: the machine went
+    // back and re-planned rather than failing.
+    CHECK(std::count(outcome.visited.begin(), outcome.visited.end(),
+                     UpdateState::InspectingImages) == 2);
+}
+
+TEST_CASE("the same refusal in its group-scoped shape still recovers", "[dfu][update]")
+{
+    // The control for the case above, and the reason it is not a regression.
+    // With the v1 translation off the server sends `err: {group, rc}` even to a
+    // v1 client, so `image_error()` answers and the original branch is the one
+    // that fires. Both shapes must reach the same place.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.translate_v1_errors = false}};
+    fixture.simulator.load_slot(0, running);
+    fixture.simulator.load_slot(1, update);
+    MemoryImageSource source{ConstBytes{update}};
+
+    fixture.simulator.fail_next(ImageError::ImageAlreadyPending, smply::Operation::Write);
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(std::count(outcome.visited.begin(), outcome.visited.end(),
+                     UpdateState::InspectingImages) == 2);
+}
+
 TEST_CASE("a caller-supplied buffer size is used as given", "[dfu][update]")
 {
     // The plan wins over what the device reports: an application that already

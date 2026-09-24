@@ -366,6 +366,54 @@ every call is made under its mutex, never across a suspension point, and that a
 writer starts on exactly one admission. That is bench territory
 ([`design.md`](design.md) §10 says which parts the bench discharged).
 
+### Serial framing (`transports/serial/`)
+
+The same argument as the section above, one transport over: every byte of
+MCUmgr's console framing is protocol rather than platform, so all of it is
+tested on every preset instead of on a bench that does not exist yet. 38 cases
+(P20), and the two that carry the most weight are the ones whose oracle is not
+this repository.
+
+**Neither oracle is smply's code, and that is the whole design.** The CRC is
+checked against the published CRC-16/XMODEM check value (`0x31C3` over
+`"123456789"`) and base64 against RFC 4648's seven vectors. Both would pass a
+round trip through the wrong variant — a reflected CRC round-trips perfectly
+and matches no device. And `SerialPeer`, in the test file's anonymous
+namespace, is a transcription of Zephyr's `mcumgr_serial_tx_pkt()` and
+`mcumgr_serial_process_frag()` written from the C with its own base64, its own
+CRC and its own `int` arithmetic. The encoder is required to be **byte-identical
+to it for every packet size from 1 to 300**, and the decoder to accept what it
+produces — which is a far stronger claim than "this decodes what this encoded".
+It is the same reason `test_ble_framing.cpp` writes its own hex parser.
+
+Beyond that: a hand-computed single-frame golden; the frame-size sequences at
+91, 92, 182, 183, 184 and 185 bytes, which are where the reference's
+refuse-to-split-the-CRC arm fires and where a naive 93-bytes-per-frame encoder
+silently diverges; and four invariants asserted on *every* frame of every round
+trip — within 127 bytes, correctly marked as opening or continuation,
+newline-terminated, and whole base64 quartets, since the receiver decodes each
+frame on its own.
+
+`LineSplitter` gets the fragmentation invariant in the shape
+`test_assembler.cpp` established: the same lines out for whole delivery, for
+every fixed chunk size from 1 to 64, for CRLF and bare LF. A reader that
+depends on where a read happened to end works on a fast host and fails on a
+slow one.
+
+`SerialDeframer` gets one case per bound and one per framing rule: an
+over-long line dropped with **`capacity()` untouched** rather than merely
+emptied afterwards; a declared length above the cap refused while at most one
+frame's worth has been accumulated; a body longer than its own header, in both
+the opening frame and a continuation; an orphan continuation; undecodable
+base64; a corrupted CRC costing one packet and not the stream. Plus the case
+this module exists for — **log lines and a shell prompt interleaved between the
+frames of one packet, and the packet still arrives**, which is the stream P17c
+could not get a third-party client to complete an upload over.
+
+What none of it checks is a port. No CI job and no bench has put a serial byte
+on a wire, and `architecture.md` §11 says so rather than implying a working
+transport.
+
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is
@@ -457,6 +505,7 @@ has quietly stopped holding.
 | `fuzz_mcuboot_header` | arbitrary bytes | the trailer offset a parsed header implies is never below the header itself — the arithmetic that indexes the file cannot be made to point backwards |
 | `fuzz_tlv_scan` | arbitrary bytes as a `MemoryImageSource` | the scan terminates, and any hash it returns is 32 or 64 bytes — `IMAGE_SHA_LEN`, not a length the file chose (protocol-notes §6) |
 | `fuzz_smp_client_rx` | an arbitrary stream fed to a live client with a request pending | a completed request is only ever completed by a response matching its `seq`, `group` and `command`; unmatched responses never exceed received ones |
+| `fuzz_serial_deframe` | a console stream, read in fuzzer-chosen chunks (the first byte is the read size) | neither the line buffer nor the packet buffer exceeds its bound, at every step; a framing error leaves nothing partial behind; a delivered packet is CRC-verified and within the cap. The only target over a transport, and the first whose input is *expected* to be mostly noise — a shared console carries far more shell and log output than frames |
 
 Three of these — the two CBOR targets and `fuzz_smp_client_rx` — go through a
 real `SmpClient` rather than calling a decoder directly, because the decoders

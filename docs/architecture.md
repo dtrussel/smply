@@ -89,10 +89,15 @@ dependencies between peers, and no cycles.
                           ┌────────────────┼────────────────┐
                           ▼                ▼                ▼
                  ┌─────────────┐   ┌──────────────┐  ┌─────────────┐
-                 │ FakeTransport│  │ WinRT BLE    │  │ future:     │
-                 │ (tests)      │  │ (transports/)│  │ UART/UDP/USB│
+                 │ FakeTransport│  │ WinRT BLE    │  │ a serial    │
+                 │ (tests)      │  │ (transports/)│  │ port; UDP   │
                  └─────────────┘   └──────────────┘  └─────────────┘
 ```
+
+The third box is a gap rather than a plan. Since P20 the **protocol** half of a
+serial link ships -- `transports/serial/` frames and deframes MCUmgr's console
+encapsulation, portably and with a test suite -- but no adapter opens a port,
+so nobody has yet implemented `Transport` over one.
 
 ### Responsibilities
 
@@ -351,6 +356,12 @@ smply/
 │   │                           send_queue.hpp — portable, header-only
 │   │                           smply::transport_common; built and tested everywhere,
 │   │                           and installed as part of the package (ADR-0016)
+│   ├── serial/                 crc16.hpp  base64.hpp  serial_framing.hpp —
+│   │                           MCUmgr's console framing, both directions. Portable and
+│   │                           header-only, shipped by the SAME target as common/
+│   │                           rather than a fourth one (ADR-0017). The port —
+│   │                           termios, CreateFile, a reader thread — is the
+│   │                           application's and is not here
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench (P17): see its README
 ├── support/                    shared by the tests and the examples, part of neither
@@ -406,7 +417,10 @@ CMake is fully target-based: no `include_directories()`, no global
 targets, so consumers never inherit them. Install/export produces
 `smply::smply`, `smply::util` and `smply::transport_common` via
 `smplyConfig.cmake`; which targets ship and why each other one does not is
-[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md).
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md). Both
+`transports/common/` and `transports/serial/` ship under that third target —
+a directory, not a fourth target, which is what keeps ADR-0016's list intact
+([ADR-0017](decisions/ADR-0017-serial-framing-placement.md)).
 
 ## 11. Known limitations
 
@@ -417,7 +431,14 @@ targets, so consumers never inherit them. Install/export produces
 * Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
   but nothing yet exercises it; O5 tracks whether a later phase exercises it or documents it
   as untested.
-* No serial/UART transport in the initial scope.
+* **Serial: the framing ships, the port does not.** `transports/serial/` is a
+  complete, tested implementation of MCUmgr's console encapsulation in both
+  directions, but nothing in this repository opens a tty, so no `Transport` is
+  implemented over one and **no serial byte has been on a wire** — the evidence
+  is agreement with a transcription of Zephyr's source, which is a weaker claim
+  than P17's bench runs (ADR-0017). Raw UART
+  (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented either; it needs no
+  framing, only a port.
 * The core does not manage connections; reconnection is the application's job.
   A dropped link completes the upload with `Disconnected` and keeps the session,
   so `ImageManagement::resume()` can continue it once the application has
@@ -425,7 +446,10 @@ targets, so consumers never inherit them. Install/export produces
 
 ## 12. Planned future extensions
 
-Ordered by expected value, none scheduled: UART/raw-UART transport ·
-UDP transport · SMP v2 by default once the fleet supports it · request
-pipelining driven by `buf_count` · Shell (group 9) and FS (group 8) ·
-`std::error_code` interop for the error model · a C ABI shim.
+Ordered by expected value, none scheduled: a **serial port adapter** over the
+framing P20 shipped, and an example driving it · multi-image (`UploadOptions::image`
+is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
+telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
+transport · UDP transport · SMP v2 by default once the fleet supports it ·
+request pipelining driven by `buf_count` (O3) · `std::error_code` interop for
+the error model · a C ABI shim.

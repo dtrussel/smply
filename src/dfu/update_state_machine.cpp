@@ -249,8 +249,27 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
             // one this request was asking for, whose response was lost. Read
             // the state back and let the planner decide; case 2 there sees our
             // own image already marked and moves on.
+            //
+            // A group-less `BadState` gets the same treatment, and that is the
+            // whole of the A24 fix. A server built with
+            // `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates an
+            // image-group code onto `mcumgr_err_t` for a v1 client and drops
+            // the group, so `image_error()` is always `nullopt` there and the
+            // branch above cannot fire at all (docs/protocol-notes.md section
+            // 9, A16 and A24). Exactly three image codes translate to
+            // `EBADSTATE` -- `NoFreeSlot`, `CurrentVersionIsNewer` and
+            // `ImageAlreadyPending` -- and all three want the same answer:
+            // re-read the state and let the planner decide, which fails
+            // cleanly when the pending swap turns out not to be ours.
+            //
+            // Deliberately not widened to `Unknown`: that is the catch-all the
+            // same table gives eighteen other codes, every flash failure among
+            // them, so recovering from it would retry genuine refusals.
+            // `mark_retried` still bounds this to one extra round trip.
             const std::optional<ImageError> code = image_error(event.error);
-            if (code == ImageError::ImageAlreadyPending && !context.mark_retried) {
+            const bool recoverable = code == ImageError::ImageAlreadyPending ||
+                                     smp_error(event.error) == SmpError::BadState;
+            if (recoverable && !context.mark_retried) {
                 context.mark_retried = true;
                 return Step{UpdateState::InspectingImages, Effect::ReadState};
             }

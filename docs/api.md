@@ -894,20 +894,31 @@ Four behaviours a caller has to know, none of which the signatures show:
 
 ---
 
-## `transports/common/` — the adapter surface (target `smply::transport_common`)
+## `transports/` — the adapter surface (target `smply::transport_common`)
 
 **Header-only, and installed from P18.** An adapter links
-`smply::transport_common` and writes `#include "common/ble_framing.hpp"` — the
-same spelling in this tree and out of an install prefix, where the headers land
-under `<prefix>/include/smply/transports/`.
+`smply::transport_common` and writes `#include "common/ble_framing.hpp"` or
+`#include "serial/serial_framing.hpp"` — the same spelling in this tree and out
+of an install prefix, where the headers land under
+`<prefix>/include/smply/transports/`. **That spelling is the contract**, so
+renaming either directory is a breaking change.
 
-Why these are in the package at all, given that the point of `Transport`
-(ADR-0005) is that anyone can implement it: because two of them are **not
-conveniences**. `fragment_size()` is arithmetic that took a unit suite to get
-right, and `SendQueue` is the fix for a defect that killed an upload on real
-hardware and that the entire simulated suite was blind to (PN §9 A22). An
-adapter author who cannot get them from the package re-derives both, including
-the bug. [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md).
+Two directories, one target. `common/` is what every adapter or every BLE
+adapter needs; `serial/` is MCUmgr's console framing. They ship together
+because a directory is not a compatibility promise the way a target is:
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) names the
+package's three targets and says "and nothing else", and
+[ADR-0017](decisions/ADR-0017-serial-framing-placement.md) is why `serial/`
+joined one rather than becoming a fourth.
+
+Why any of it is in the package at all, given that the point of `Transport`
+(ADR-0005) is that anyone can implement it: because none of it is a
+**convenience**. `fragment_size()` is arithmetic that took a unit suite to get
+right, `SendQueue` is the fix for a defect that killed an upload on real
+hardware and that the entire simulated suite was blind to (PN §9 A22), and the
+serial framing is a protocol an adapter cannot skip and cannot guess. An
+adapter author who cannot get them from the package re-derives all three,
+including the bug.
 
 Everything here is in `namespace smply::transport`.
 
@@ -1035,6 +1046,90 @@ getting a 128-bit UUID's byte order wrong produces a scan that finds nothing
 and looks exactly like a device that is switched off. Filtering a scan on the
 **service UUID** is reliable; matching on **name** requires an *active* scan,
 because Zephyr's `smp_svr` puts the name in the scan response (PN §8 S22).
+
+### `serial/` — MCUmgr's console framing, both directions
+
+**Not a transport.** Nothing here opens a port: `termios`, `CreateFile`, the
+reader thread and its `Dispatcher` are the application's. What this is, is the
+protocol an adapter would otherwise have to re-derive from Zephyr's source —
+see [`design.md`](design.md) §12 for the loop an adapter writes around it and
+[`protocol-notes.md`](protocol-notes.md) §8 for the wire format.
+
+```cpp
+// serial/crc16.hpp
+[[nodiscard]] constexpr std::uint16_t crc16_xmodem(std::uint16_t seed, ConstBytes) noexcept;
+
+// serial/serial_framing.hpp
+inline constexpr std::array<std::byte, 2> kPacketMarker;    // 0x06 0x09
+inline constexpr std::array<std::byte, 2> kFragmentMarker;  // 0x04 0x14
+inline constexpr std::size_t kMaxFrame          = 127;  // marker + base64 + '\n'
+inline constexpr std::size_t kMaxBase64PerFrame = 124;  // characters, NOT bytes
+inline constexpr std::size_t kMaxRawPerFrame    = 93;   // bytes
+inline constexpr std::size_t kMaxSerialPacket   = 65533; // what the length field holds
+
+class SerialFramer {                       // outbound: one message -> frames
+public:
+    explicit SerialFramer(ConstBytes packet) noexcept;   // borrows; must outlive
+    [[nodiscard]] bool        done() const noexcept;
+    [[nodiscard]] std::size_t next_frame(MutBytes out) noexcept;  // 0 if out < kMaxFrame
+    [[nodiscard]] std::size_t count() const noexcept;
+};
+
+class LineSplitter {                       // inbound: reads -> lines
+public:
+    explicit LineSplitter(std::size_t max_line = kMaxFrame) noexcept;
+    [[nodiscard]] std::optional<ConstBytes> next_line(ConstBytes& chunk) noexcept;
+    void reset() noexcept;
+    [[nodiscard]] std::size_t dropped_lines() const noexcept;
+    [[nodiscard]] std::size_t buffered() const noexcept;
+};
+
+struct SerialCounters { std::uint64_t ignored, crc_failures, framing_errors, packets; };
+
+class SerialDeframer {                     // inbound: lines -> SMP packets
+public:
+    enum class Outcome : std::uint8_t { NeedMore, Packet, Ignored, Error };
+    explicit SerialDeframer(std::size_t max_packet = limits::kMaxAssemblyBuffer) noexcept;
+    [[nodiscard]] Outcome    feed_line(ConstBytes line) noexcept;
+    [[nodiscard]] ConstBytes packet() const noexcept;   // valid until the next call
+    void reset() noexcept;
+    [[nodiscard]] std::size_t buffered() const noexcept;
+    [[nodiscard]] std::size_t capacity() const noexcept;
+    [[nodiscard]] std::size_t peak_buffered() const noexcept;
+    [[nodiscard]] std::size_t max_packet() const noexcept;
+    [[nodiscard]] SerialCounters counters() const noexcept;
+};
+```
+
+Five things a caller has to know:
+
+* **`124` is base64 characters and `93` is payload bytes.** They are different
+  numbers for the same frame, and the transport specification's phrasing
+  invites conflating them.
+* **`next_frame()` needs a `kMaxFrame` buffer** and answers `0` for a smaller
+  one without advancing, so a caller that fixes its buffer loses nothing. An
+  empty message yields no frames at all, which mirrors the reference — and so
+  does one above `kMaxSerialPacket`, because the two-byte length field cannot
+  describe it and truncating it would put a length on the wire that contradicts
+  the bytes after it. A *maximal* SMP message is over that ceiling (its own
+  `length` is 16-bit, so 8 + 65535 = 65543), which is why the limit is worth
+  stating rather than assuming away.
+* **`Ignored` keeps the packet in progress; `Error` discards it.** A console
+  carrying a shell and a log backend produces `Ignored` constantly and that is
+  not a fault — `counters().ignored` will be large on a healthy link.
+* **`packet()` is borrowed until the next `feed_line()`**, and an adapter
+  marshalling to the client context must copy it.
+* **`max_packet` is the bound that matters**, and it is checked against the
+  device's declared length before the buffer grows past one frame's worth. The
+  default is `limits::kMaxAssemblyBuffer`; an adapter with a tighter budget
+  should say so.
+
+`Transport::max_message_size()` is **not** `kMaxRawPerFrame`. A whole SMP
+message spans as many frames as it needs, exactly as a BLE message spans GATT
+packets; reporting the frame size there would cap every upload chunk at 93
+bytes for no reason. It should be at most `kMaxSerialPacket`.
+
+---
 
 ---
 

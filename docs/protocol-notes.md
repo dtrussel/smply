@@ -51,6 +51,10 @@ earlier.
 | S23 | `include/zephyr/mgmt/mcumgr/transport/smp_bt.h` | `SMP_BT_SVC_UUID_VAL` and `SMP_BT_CHR_UUID_VAL` -- the service and characteristic UUIDs at their definition | same |
 | S24 | `zcbor/src/zcbor_encode.c` (`list_map_start_encode()`, `list_map_end_encode()`) | How the server's CBOR encoder opens a list or map: an **indefinite-length** header unless `ZCBOR_CANONICAL` is defined, in which case a definite header is written and patched at the end | `zephyrproject-rtos/zcbor@9164bd18` as imported by Zephyr `e71ff182` (verified 2026-09-08 on hardware) |
 | S25 | `modules/zcbor/Kconfig`, `modules/zcbor/CMakeLists.txt` | `CONFIG_ZCBOR_CANONICAL` -- off by default, not selected by any MCUmgr option; it is what turns S24's indefinite-length containers into definite ones | `zephyrproject-rtos/zephyr@e71ff182` |
+| S26 | `include/zephyr/mgmt/mcumgr/transport/serial.h` | `MCUMGR_SERIAL_HDR_PKT` (`0x0609`), `MCUMGR_SERIAL_HDR_FRAG` (`0x0414`) and `MCUMGR_SERIAL_MAX_FRAME` (127), at their definition | `zephyrproject-rtos/zephyr@main` (verified 2026-09-19 **from source**) |
+| S27 | `subsys/mgmt/mcumgr/transport/src/serial_util.c` | `mcumgr_serial_tx_pkt()` and `mcumgr_serial_process_frag()` -- the whole console framing, both directions, including the frame-splitting arithmetic and what the receiver does with a line it does not recognise | same |
+| S28 | `subsys/mgmt/mcumgr/transport/src/smp_shell.c` | `smp_shell_rx_bytes()`: how a console backend recognises a frame byte by byte and what terminates one | same |
+| S29 | `include/zephyr/sys/crc.h` | `crc16_itu_t()` -- polynomial `0x1021`, **MSB-first, no input or output reflection**, seed supplied by the caller | same |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -746,21 +750,87 @@ advertisement's 31 bytes, so some will not. A client should therefore prefer the
 UUID filter but never *require* it — connecting by address must stay possible.
 `examples/winrt_ble_dfu/scanner.cpp` scans actively for exactly this reason.
 
-### UART / console (S2)
+### UART / console (S2, S26-S29)
 
-Base64 body, `0x06 0x09` initial marker, `0x04 0x14` continuation marker, `0x0A`
-terminator, 2-byte BE total length prefix, CRC16 (poly `0x1021`, init `0`) over
-the raw body. Zephyr imposes a 127-byte frame limit (124 payload).
-Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) sends binary SMP with no framing.
+**Rewritten in P20 from the server's own code** (S27) rather than from the
+transport `.rst`. The `.rst` summary that stood here until then was right about
+the markers and wrong, or at least ambiguous, about two things that decide
+whether an implementation works: what the CRC covers, and what "124" counts.
 
-Not implemented in the initial scope; documented so the transport contract is
-demonstrably general enough (see [ADR-0005](decisions/ADR-0005-transport-abstraction.md)).
+Implemented as portable framing in `transports/serial/`, senders and receiver
+both; the port is the application's
+([ADR-0017](decisions/ADR-0017-serial-framing-placement.md)).
+
+**One frame** is
+
+    marker(2) || base64 || 0x0A
+
+and is at most **127 bytes in total** (`MCUMGR_SERIAL_MAX_FRAME`, S26). Marker
+and terminator are not encoded, so a frame holds at most **124 base64
+characters**, which is at most **93 raw bytes** -- `((127 - 3) >> 2) * 3`, which
+is the reference transmitter's own `max_input`. Those three numbers are
+routinely conflated, and the old text here said "127-byte frame limit (124
+payload)", which reads as 124 payload *bytes*.
+
+**The body** carried across the frames of one packet is
+
+    be16(len + 2) || packet || be16(crc)
+
+where `packet` is the whole SMP message (8-byte header + payload) and
+`len = packet.size()`. So:
+
+* the length field **counts the CRC but not itself**;
+* the CRC is computed **over the packet alone** -- not over the length prefix.
+  The receiver does not recompute-and-compare: it runs the CRC over everything
+  it accumulated *including* the two CRC bytes and requires **zero**, which for
+  a non-reflected CRC with no final XOR is the same statement.
+
+**The CRC is CRC-16/XMODEM**: polynomial `0x1021`, seed `0x0000`, **MSB-first,
+no input or output reflection, no final XOR** (S29 documents `crc16_itu_t` in
+exactly those words). Its published check value over `"123456789"` is `0x31C3`.
+The name in the Zephyr source does not say which of the several `0x1021`
+variants it is, and the reflected one is a plausible misreading that no round
+trip within a client would catch.
+
+**Every frame carries whole base64 quartets -- whole triplets of body bytes --
+except the last.** The receiver base64-decodes each frame independently
+(`mcumgr_serial_decode_frag()`), so a quartet split across two frames decodes
+as nothing. This is the binding constraint on any splitting strategy, and it is
+not stated anywhere in the documentation.
+
+**The transmitter never splits the CRC across frames.** When the remaining data
+would leave fewer than two spare bytes in the frame it defers one data byte to
+the next one instead. So a packet of 183 or 184 bytes produces a *123*-byte
+second frame where a naive packing would produce 127. A conforming receiver
+accepts either; smply reproduces the reference's boundaries exactly, so that
+any device tolerating Zephyr's own output tolerates smply's, and the unit suite
+asserts byte-identity against a transcription of the C.
+
+**The first frame carries `0x06 0x09`, every continuation `0x04 0x14`.** The
+receiver pulls the two-byte length from the first frame's decoded bytes and
+accumulates until it has that many. More than that is an error; a declared
+length of two or fewer (a CRC and no packet) is an error.
+
+**A line the receiver does not recognise is ignored, and partial state is
+kept.** `mcumgr_serial_process_frag()`'s `default:` arm returns without freeing
+its receive context. That is what makes the transport usable over a console
+that also carries an echoing shell and a log backend -- see the P17c
+test-method finding below, where a third-party client could not complete an
+upload over exactly that stream. A **continuation** frame arriving with nothing
+in progress is different, and *is* fatal: it means the two ends disagree about
+whether a packet is open.
+
+A `0x06 0x09` arriving mid-packet silently abandons what was in flight
+(`net_buf_reset`) rather than erroring -- the peer has plainly restarted.
+
+Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) sends binary SMP with no framing
+at all, and needs no framing module -- only a port. Not implemented.
 
 ### The three size limits — keep them distinct
 
 | Limit | Owner | Source |
 | ----- | ----- | ------ |
-| **Transport fragment size** | transport | BLE `ATT_MTU-3`; UART frame limit |
+| **Transport fragment size** | transport | BLE `ATT_MTU-3`; serial **93 raw bytes per frame**, which is 124 base64 characters inside a 127-byte line (§8) |
 | **Whole-SMP-message size** | server | OS `buf_size` (§5), else conservative default |
 | **Upload chunk size** (`data` bstr length) | upload state machine | derived: `min(msg_budget) − header − CBOR overhead` |
 
@@ -814,7 +884,7 @@ Recorded so future sessions do not rediscover them.
 | A21 | **The upload session does not survive a BLE disconnect, but does survive a client that merely stops sending.** Confirmed on the NUCLEO-WB55RG (P17b): an upload dropped at ~50 % by closing the GATT link, then resumed on a fresh connection with the same `sha`, is answered near **offset 0** -- the whole image is re-sent (18 s for 134 KiB). The same image abandoned by a client that *stops sending on a live link* and then resumed **by a second process** is answered at the offset already reached (~67 KiB) and continues. So the server keys its `img_mgmt` upload state to the BLE connection and discards it on disconnect (consistent with the state being reset in the disconnect handler), while a new connection that has not disconnected the old session inherits it. This is not a contradiction of rule 6 -- the server's `off` is authoritative in every direction (rule 5) -- it is a measurement of *which* offset this server chooses. | A client must treat a reconnect-and-resume as possibly restarting from zero, which smply already does: `UploadDriver::restart()` sends a first packet and adopts whatever `off` comes back (design.md section 6). Do **not** assume a resume continues from the last acknowledged offset; size the reconnect and deadline budgets for a full re-upload. `FirmwareUpdater`'s reconnect path is unaffected for the *common* case, because an update interrupted by the **reset** (not mid-upload) has already finished the transfer; only an update whose link drops mid-upload pays the re-upload, and it still completes. |
 | A22 | **Two behaviours surface only under back-to-back BLE load, not in an isolated case** (P17b, NUCLEO-WB55RG on a shared Intel radio). (1) `WinRtBleTransport::send()` returns `TransportBusy` when `state_->sending` is still set from a write coroutine whose fragments have gone out but which has not yet cleared the flag -- and the device's SMP notification can arrive *before* that, so the driver's next chunk is refused. The upload then ends with `TransportBusy` rather than being retried, although `TransportBusy` is defined as a retry request, not a link failure (design.md section 9, the P4 caveat). Seen on a plain upload the sixth case into a run, and on the interrupted/cancel cases where a drop leaves a write mid-flight. (2) On a rapid reconnect Windows returns a GATT service that has **no SMP characteristic** (`GetCharacteristicsForUuidAsync` empty) even with `BluetoothCacheMode::Uncached` -- the platform's own service cache, stale for a second or two after a reconnect. Each case passes in isolation; a sequential `run_hil.py --all` fails three of them on these two. **Re-measured before any fix** (two full sequential runs, 2026-09-09): 8 pass / 4 fail both times, but a *different* four -- run 1 already-present, both restart parts and rollback; run 2 restart part 2, corrupt, rollback and erase -- and **every** failure carried (1)'s error string, with (2) appearing in neither run. The failing set is therefore not a property of particular cases, and (2) is far rarer than (1). | **Both fixed in the transport, and the two fixes carry very different weight of evidence.** (1) The adapter no longer conflates "a writer is running" with "no further message may be accepted": `transports/common/send_queue.hpp` admits **one waiting message** beside the one being written, so the handover window stops being a refusal, and only a third message is refused. `TransportBusy` therefore still means the medium is genuinely behind. The bookkeeping is a header-only value type unit-tested on every platform (15 cases); the adapter's mutex guards it and no call crosses a `co_await`. **Evidence:** `run_hil.py --all` is green (12 pass, 0 fail, exit 0) where the same tree failed four cases before, neither busy string appears in any log, `HIL-METRIC deferred_sends` is non-zero on three, six and three cases across the three runs and `refused_sends` is zero throughout -- so the waiting slot was really used rather than the race merely not happening, and no message was accepted and then dropped. The suite's own `timeouts == 0` checks held. A negative control with the slot removed reproduces the failure with `refused_sends=1`, so the slot is what fixed it. (2) `connect()` re-runs **service** discovery -- not just the characteristic query, since the stale object is the service -- up to six times, 400 ms apart, closing the stale service in between, and only while a collection comes back *empty*; a bad status still fails at once. **This fix is not verified in the positive direction:** behaviour (2) did not reproduce in any of five full runs on 2026-09-09, and an instrumented build recorded discovery succeeding on the first attempt in 20 of 20 discoveries, so nothing disappeared when the retry was added. What is proven is that the path works: forcing the empty-characteristic condition makes `connect()` spend 3705 ms over its six attempts and fail with the right one of the two final messages. Its justification remains the observation above, not a failure that went away. Closing the previous link before reconnecting (`Rig::connect()`) was tried as a cause and is **uninformative** for the same reason; it is kept as hygiene, not reported as a fix. |
 | A23 | **This server echoes the requested SMP version, and smply deliberately does not check that it does.** Two P17a captures of the same device disagree in byte 0's version field -- the image-state and MCUmgr-params responses carry `0x09` (version bits `0b01`) and the slot-info response carries `0x01` (version bits `0b00`) -- because they were recorded through clients that asked in different versions. P17c then drove the difference deliberately: the same request under `SMPLY_HIL_SMP_VERSION=1` and `=2` is answered in the version it was sent in, and a v2 request succeeds on the ordinary path as well as on a refusal. | Keep the version field out of the correlation key, which is what `SmpClient` already does (`src/smp/client.cpp` matches on sequence, group, command and operation). That is a robustness property rather than an omission: ADR-0010 discards a message whose correlation fails and leaves the request pending until it times out, so adding the version would turn a peer that answered in the *other* version -- which nothing in the specification forbids -- from a decodable response into a guaranteed timeout. Nothing here licenses *assuming* the echo: both error shapes are still decoded on every response, whatever was asked (A1). |
-| A24 | **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1 destroys image-group error codes many-to-one -- measured, not inferred.** The pinned peer sets that option. Two refusals provoked from an identical baseline, each issued once as v1 and once as v2 (P17c, 2026-09-09): marking an absent image for test, which is `IMG_MGMT_ERR_HASH_NOT_FOUND` (8), and marking the *running* image for test, which is `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` (33). Under **v2** both arrive group-scoped and intact: `group=1 rc=8` and `group=1 rc=33`. Under **v1** both arrive as a flat `rc=1` (`EUNKNOWN`) with no group at all, so two distinct causes become one indistinguishable answer. This is A16's prediction confirmed on hardware, and the second data point is what makes it a demonstration of *loss* rather than of translation. | Confirms smply's position under A16 and answers the evidence half of open question **O2**: v1 stays the default and v2 stays an explicit application opt-in (`SmpClientConfig::smp_version`), because probing costs a round trip and a fallback path to learn what an integrator already knows, and defaulting to v2 fails outright against an older server. But the cost of v1 is now known to be **behavioural, not only diagnostic**: `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and against this server under v1 `image_error()` is always `nullopt`, so that recovery cannot fire. That specific code was **not** provoked -- reaching it needs a pending swap plus a mark for a third image, and this bench holds two -- so it is recorded as following from the same measured mechanism and is filed as a follow-up, not claimed as measured. No code was changed in response. |
+| A24 | **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1 destroys image-group error codes many-to-one -- measured, not inferred.** The pinned peer sets that option. Two refusals provoked from an identical baseline, each issued once as v1 and once as v2 (P17c, 2026-09-09): marking an absent image for test, which is `IMG_MGMT_ERR_HASH_NOT_FOUND` (8), and marking the *running* image for test, which is `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` (33). Under **v2** both arrive group-scoped and intact: `group=1 rc=8` and `group=1 rc=33`. Under **v1** both arrive as a flat `rc=1` (`EUNKNOWN`) with no group at all, so two distinct causes become one indistinguishable answer. This is A16's prediction confirmed on hardware, and the second data point is what makes it a demonstration of *loss* rather than of translation. | Confirms smply's position under A16 and answers the evidence half of open question **O2**: v1 stays the default and v2 stays an explicit application opt-in (`SmpClientConfig::smp_version`), because probing costs a round trip and a fallback path to learn what an integrator already knows, and defaulting to v2 fails outright against an older server. But the cost of v1 is now known to be **behavioural, not only diagnostic**: `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost by branching on `ImageError::ImageAlreadyPending`, and against this server under v1 `image_error()` is always `nullopt`, so that recovery cannot fire. That specific code was **not** provoked -- reaching it needs a pending swap plus a mark for a third image, and this bench holds two -- so it is recorded as following from the same measured mechanism and is filed as a follow-up, not claimed as measured. No code was changed in response. **Acted on in P19** (2026-09-19): the recovery now also accepts a group-less `SmpError::BadState`, which is what `img_mgmt_translate_error_code()` (S10) produces for `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` alike -- all three want the same re-read-and-replan. It is **not** extended to `EUNKNOWN`, the code this row actually measured, because the same table gives that to eighteen others including every flash failure. So the fix is traced to the translation table rather than to a provocation: code 28 has still never been seen on a bench. |
 
 ### P17 test-method correction (not a protocol inference)
 

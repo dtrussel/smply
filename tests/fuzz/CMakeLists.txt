@@ -15,6 +15,7 @@ set(SMPLY_FUZZ_TARGETS
     fuzz_cbor_upload_response
     fuzz_header
     fuzz_mcuboot_header
+    fuzz_serial_deframe
     fuzz_smp_client_rx
     fuzz_tlv_scan
 )
@@ -26,6 +27,10 @@ foreach(target IN LISTS SMPLY_FUZZ_TARGETS)
         PRIVATE
             smply::smply_internal
             smply::test_support
+            # fuzz_serial_deframe is over transports/serial/, which this target
+            # is what puts on the include path. The others do not need it and
+            # linking a header-only INTERFACE target costs them nothing.
+            smply::transport_common
             smply_internal_options
     )
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)
