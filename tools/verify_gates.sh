@@ -74,6 +74,33 @@ expect_fail() {
     fi
 }
 
+# expect_fail_matching <description> <pattern> <command...>
+# expect_fail, and the gate's output must also match <pattern> (grep -E). For a
+# gate that checks several rules: a violation of one rule must not pass the
+# case by tripping a different one.
+expect_fail_matching() {
+    local description="$1"
+    local pattern="$2"
+    shift 2
+    local output
+    output="$(cd "$WORK" && "$@" 2>&1)"
+    local status=$?
+    if [[ $status -ne 0 ]] && grep -qE "$pattern" <<<"$output"; then
+        printf '  PASS  %s\n' "$description"
+        printf '        (gate said: %s)\n' "$(grep -E "$pattern" <<<"$output" | head -1 | sed 's/^ *//' | cut -c1-100)"
+        PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s\n' "$description"
+        if [[ $status -ne 0 ]]; then
+            printf '        The gate failed, but not for this reason: %s\n' \
+                "$(echo "$output" | grep -viE '^\s*$' | head -3 | tail -1 | cut -c1-100)"
+        else
+            printf '        The gate did NOT reject the violation. It is not protecting anything.\n'
+        fi
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # expect_ok <description> <command...>
 # The mirror of expect_fail. A gate that rejects everything protects nothing
 # either -- it just gets disabled. Used where a violation and its absence are
@@ -190,10 +217,29 @@ printf 'inline std::string broken() { return {}; }\n' >> "$WORK/include/smply/ve
 sed -i 's|@PROJECT_VERSION_MAJOR@|0|; s|@PROJECT_VERSION_MINOR@|1|; s|@PROJECT_VERSION_PATCH@|0|; s|"@PROJECT_VERSION@"|"0.1.0"|' \
     "$WORK/include/smply/version.hpp.in"
 cp "$WORK/include/smply/version.hpp.in" "$WORK/include/smply/selfcontain_probe.hpp"
-expect_fail "check_public_headers rejects a header that is not self-contained" \
+# The probe is a new header with no layer, which rule 4 also rejects. Match the
+# self-containment message, or this case would pass on the layer rule alone.
+expect_fail_matching "check_public_headers rejects a header that is not self-contained" \
+    "not self-contained" \
     python3 tools/check_public_headers.py --build-dir "$WORK/build"
 rm -f "$WORK/include/smply/selfcontain_probe.hpp"
 restore include/smply/version.hpp.in
+
+# 5b. Layering: a public header including a higher layer. This is exactly the
+# cycle the image-file header once had with the image group.
+substitute "$WORK/include/smply/mcuboot_image.hpp" \
+    's|#include "smply/bytes.hpp"|#include "smply/bytes.hpp"\n#include "smply/groups/image.hpp"|'
+expect_fail_matching "check_public_headers rejects an upward include between public headers" \
+    "dependencies must point downward" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore include/smply/mcuboot_image.hpp
+
+# 5c. Layering: a src/ directory reaching into one it may not use.
+printf '#include "cbor/cbor.hpp"\n' >> "$WORK/src/image/tlv.cpp"
+expect_fail_matching "check_public_headers rejects a forbidden dependency between src/ directories" \
+    "src/image includes cbor/cbor.hpp" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore src/image/tlv.cpp
 
 # 6. Dependency inventory: undeclared dependency
 cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'

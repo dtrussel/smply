@@ -52,7 +52,9 @@ image signing/verification, BLE connection management, an async framework.
 ## 3. Components and dependency direction
 
 Dependencies point **downward only**. There are no upward or lateral
-dependencies between peers, and no cycles.
+dependencies between peers, and no cycles. `tools/check_public_headers.py`
+enforces this, for the public headers and for the directories under `src/`
+([`quality-gates.md`](quality-gates.md) §10).
 
 ```
                      ┌───────────────────────────────┐

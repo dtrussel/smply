@@ -437,6 +437,18 @@ what the repository carries is a decision for a person.
 * is not self-contained — the script compiles each public header alone in a
   generated translation unit, so a missing include is caught here rather than
   by the first consumer who includes it first.
+* includes a public header of the same or a higher **layer**. The layers are
+  the dependency diagram of [`architecture.md`](architecture.md) §3: core types,
+  then the header codec, transport contract and image source, then the MCUboot
+  image header, then `smp_client.hpp`, then the groups, then the updater. The
+  core headers may include one another. A header the table does not list is
+  rejected, so a new header gets a layer deliberately.
+
+It also fails if a directory under `src/` includes an internal directory it may
+not use, or a public header above its layer ceiling. For example, `src/image/`
+may include neither `cbor/` nor `smp_client.hpp`, so parsing a firmware file
+can never come to depend on the SMP client. Both tables are at the top of the
+script, and `verify_gates.sh` proves each rule fires.
 
 Plus the `core-without-winrt` matrix job (§1), and a configure-time assertion in
 `tests/consumer/` that smply's interface does not propagate its strict warning
