@@ -6,7 +6,7 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 
 - **Stage 0: done** (2026-09-24). See "Stage 0 results" below.
 - **Stage 1: done** (2026-09-24). R6 now covers source, build, CI and tool files as well as documents, so the history cannot creep back.
-- **Next: Stage 2**, the architecture review.
+- **Stage 2: in progress.** 2a (the header cycle) is done.
 - Stages 3–6: not started.
 
 ### Stage 0 results
@@ -92,21 +92,38 @@ Constraints from the repo: stay under about 1,000 lines of diff per commit. Arch
 
 ## Stage 2: architecture review
 
-Check `architecture.md` §3–§9 against the code, and fix the dependency structure:
-- **Upward include.** `include/smply/mcuboot_image.hpp:23` pulls in all of `groups/image.hpp`, and with it `smp_client.hpp` and `transport.hpp`, just to get `ImageHash` and `ImageVersion`.
-  - Move the value types into a new `include/smply/image_types.hpp`, and their code out of `src/groups/image/image_management.cpp:345-451` into `src/image/image_types.cpp`.
-  - The offline parsers then depend on nothing above the core types.
-- **Namespace collision.** `src/image/` and `src/groups/image/` both use `smply::image`. Give the upload internals their own namespace, `smply::upload`, and make `src/smp/` consistent (`assembler.hpp:30` is in plain `smply`).
-- **Record the smp→cbor dependency.** `client.cpp` decodes the MCUmgr error map. Record it in the §3 dependency diagram and leave it as is. It is correct, because error extraction is part of correlation.
-- **Test with the checker.** Extend `check_public_headers.py` with a small allow-list of includes per layer, so the upward include cannot come back.
-- If any of this contradicts an ADR, write the superseding ADR first.
+`architecture.md` §3–§9 was read against the code.
+
+**Checked and accurate:**
+- the §9 limits (all 23 match `limits.hpp`);
+- the §5 threading rules;
+- the §6 ownership table;
+- the §7 `ErrorCode` list.
+
+No ADR constrains anything below. What it found, and the fix for each:
+
+- **2a. A header cycle.**
+  - `mcuboot_image.hpp` included all of `groups/image.hpp` (and so `smp_client.hpp` and `transport.hpp`) for `ImageHash` and `ImageVersion`.
+  - Meanwhile `ImageManagement::upload()` calls `sha256()` from `mcuboot_image.hpp`.
+  - The §3 diagram showed the image-file box as "no deps", with no edge from the image group.
+  - Fix: both types are MCUboot's, so they move down into `mcuboot_image.hpp`, and their code into `src/image/image_values.cpp`. `groups/image.hpp` includes `mcuboot_image.hpp`, and the diagram gains the edge.
+- **2b. Namespaces.**
+  - `smply::image` names two components: `src/image/` and the upload internals in `src/groups/image/`.
+  - `src/smp/assembler.hpp` puts internal types in the public `smply` namespace.
+  - Rule: the public API lives in `smply`, and an internal type in `smply::<component>`. The upload internals become `smply::upload`, and the assembler `smply::smp`.
+- **2c. The layering becomes a gate.** `check_public_headers.py` gets a layer table for public headers and an allowed-dependency table for `src/` directories, with `verify_gates.sh` cases for both.
+- **2d. `architecture.md` accuracy.**
+  - §4 promises a `smply::asyncutil` target that does not exist.
+  - §4 says every operation returns a `RequestHandle`.
+  - §7 misdescribes `UpdateReport::cause`.
+  - The §3 diagram names a `PendingRequestTable` class that does not exist.
 
 ## Stage 3: design and public API review
 
 Breaking changes are allowed. Each one gets a CHANGELOG entry under 0.2.0 and updates to `api.md` and `design.md`. Candidates, in order of value:
 1. **`UpdatePlan::image` vs `UpdatePlan::upload.image`.** `firmware_updater.cpp:403` silently overwrites one with the other. Keep one source of truth.
 2. **Split `groups/image.hpp` (603 lines)** into value types (already moved in Stage 2), `ImageError`, and the upload API plus `ImageManagement`. Keep `groups/image.hpp` as the umbrella header.
-3. **`ImageSlot::version` becomes `ImageVersion`,** not `std::string`. `ImageVersion::parse` then has a real caller.
+3. **`ImageSlot::version` stays a string.** This corrects the original plan: a device reports `"<???>"` when it cannot format a version, so parsing must stay a separate, fallible step (`groups/image.hpp`, `ImageVersion::parse`). At most, add `ImageSlot::parsed_version()` as a convenience.
 4. **Callback styles.**
    - Upload progress becomes a named `ProgressCallback` alias next to `Callback<T>`.
    - `UpdateEvent` with a `Kind` enum, optional fields and `const Result<UpdateReport>*` gets either a `std::variant` or separate typed callbacks. Choose after reading `examples/*/main.cpp` usage. If this changes ADR-0003, write a new ADR.

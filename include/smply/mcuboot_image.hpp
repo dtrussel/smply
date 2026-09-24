@@ -6,6 +6,11 @@
 /// The little smply knows about the MCUboot image format
 /// (docs/protocol-notes.md section 7).
 ///
+/// It also declares the two values a device reports about an image, because
+/// both are defined by MCUboot rather than by MCUmgr: `ImageHash`, the
+/// image-hash TLV, and `ImageVersion`, the header's `ih_ver`. The image group
+/// (`smply/groups/image.hpp`) builds on this header, never the other way round.
+///
 /// The image is essentially opaque, with three narrow exceptions
 /// ([ADR-0009](docs/decisions/ADR-0009-mcuboot-boundary.md)): parse the 32-byte
 /// header, compute the file's SHA-256, and optionally find the image-hash TLV.
@@ -20,14 +25,111 @@
 /// source's length before it is used.
 
 #include "smply/bytes.hpp"
-#include "smply/groups/image.hpp"
 #include "smply/image_source.hpp"
+#include "smply/limits.hpp"
 #include "smply/result.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
+#include <string_view>
 
 namespace smply {
+
+/// A hash as the *device* reports it for an image slot.
+///
+/// This is MCUboot's image-hash TLV over the header and body -- not the hash of
+/// the uploaded file (docs/protocol-notes.md section 7). Its length is
+/// `IMAGE_SHA_LEN` on the device: 32 bytes for the usual SHA-256 build and 64
+/// for a bootloader built with `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512`, so the
+/// length is carried rather than assumed.
+///
+/// Fixed capacity: the value is bounded by `limits::kMaxImageHashLength` before
+/// it is stored, so a device cannot size an allocation.
+class ImageHash
+{
+public:
+    /// An empty hash. Present so the type is a regular value; a decoded hash is
+    /// always non-empty, because an absent field decodes to `std::nullopt`.
+    ImageHash() = default;
+
+    /// Copies \p bytes, rejecting anything empty or longer than
+    /// `limits::kMaxImageHashLength`.
+    [[nodiscard]] static Result<ImageHash> from(ConstBytes bytes) noexcept;
+
+    /// \overload The 32-byte SHA-256 case, which cannot fail.
+    ///
+    /// The conversion is deliberately explicit and one-way: it exists so a hash
+    /// read out of a firmware file's TLVs can be compared against what a device
+    /// reports, not so the upload `sha` can be passed as an image hash.
+    [[nodiscard]] static ImageHash from(const Hash& hash) noexcept;
+
+    /// The bytes, borrowed for as long as this object lives.
+    [[nodiscard]] ConstBytes bytes() const noexcept
+    {
+        return ConstBytes{data_.data(), size_};
+    }
+
+    /// Length in bytes. Zero only for a default-constructed value.
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return size_;
+    }
+
+    /// True for a default-constructed value.
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return size_ == 0;
+    }
+
+    /// Compares length and contents. Hashes of different lengths are never
+    /// equal, even if one is a prefix of the other.
+    [[nodiscard]] friend bool operator==(const ImageHash& lhs, const ImageHash& rhs) noexcept
+    {
+        return lhs.size_ == rhs.size_ &&
+               std::equal(lhs.data_.begin(),
+                          lhs.data_.begin() + static_cast<std::ptrdiff_t>(lhs.size_),
+                          rhs.data_.begin());
+    }
+
+private:
+    std::array<std::byte, limits::kMaxImageHashLength> data_{};
+    std::size_t size_ = 0;
+};
+
+/// An MCUboot image version, `major.minor.revision` plus a build number.
+struct ImageVersion
+{
+    std::uint8_t major = 0;     ///< `ih_ver.iv_major`.
+    std::uint8_t minor = 0;     ///< `ih_ver.iv_minor`.
+    std::uint16_t revision = 0; ///< `ih_ver.iv_revision`.
+    std::uint32_t build = 0;    ///< `ih_ver.iv_build_num`; 0 means unset.
+
+    /// Parses a version string, or fails with `ErrorCode::InvalidArgument`.
+    ///
+    /// Accepts `"major.minor.revision"`, the device's own
+    /// `"major.minor.revision.build"` and imgtool's `"major.minor.revision+build"`.
+    /// Zephyr formats the dotted form and appends the build number only when it
+    /// is non-zero (docs/protocol-notes.md section 6), so the dotted form is
+    /// what a response actually carries; the `+` form is accepted because it is
+    /// what a person types.
+    ///
+    /// A device may report `"<???>"` when it cannot format the version at all,
+    /// which fails here like any other unparseable string. That is why
+    /// `ImageSlot::version` keeps the raw text and parsing is a separate,
+    /// fallible step.
+    [[nodiscard]] static Result<ImageVersion> parse(std::string_view text);
+
+    /// Renders the device's form: `"1.2.3"`, or `"1.2.3.4"` when `build` is
+    /// non-zero. Round-trips through `parse()`.
+    [[nodiscard]] std::string to_string() const;
+
+    [[nodiscard]] friend constexpr bool operator==(const ImageVersion&,
+                                                   const ImageVersion&) noexcept = default;
+};
 
 /// The MCUboot magic, `ih_magic`, at offset 0 of a signed image.
 inline constexpr std::uint32_t kMcubootImageMagic = 0x96F3B83DU;

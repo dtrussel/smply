@@ -73,6 +73,14 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **`ImageHash` and `ImageVersion` are declared in `smply/mcuboot_image.hpp`**,
+  no longer in `smply/groups/image.hpp`. The two headers depended on each other:
+  the image group computes the upload `sha` with `sha256()`, and the MCUboot
+  header used the image group's value types. The include now runs one way only,
+  image group to image file. `groups/image.hpp` includes `mcuboot_image.hpp`, so
+  code that includes the group header sees both types unchanged. **Breaking**
+  only for code that reached the image group through `mcuboot_image.hpp`: it
+  must now include `smply/groups/image.hpp` itself.
 - **`protocol-notes.md` §8's UART subsection is rewritten from the server's own
   code** rather than from the transport specification, correcting two things
   that would each have produced a client no device accepts: "124" is a count of

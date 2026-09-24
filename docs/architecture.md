@@ -66,9 +66,10 @@ dependencies between peers, and no cycles.
      │ ImageManagement    │ │ OsManagement    │ │ ImageFile          │
      │ (groups/image/)    │ │ (groups/os/)    │ │ (image/)           │
      │  + UploadSession   │ │                 │ │ MCUboot hdr + TLV, │
-     └─────────┬──────────┘ └────────┬────────┘ │ SHA-256            │
+     └─────────┬──────────┘ └────────┬────────┘ │ SHA-256, ImageHash,│
+               │                     │          │ ImageVersion       │
                │                     │          └────────────────────┘
-               └──────────┬──────────┘                (no deps)
+               └──────────┬──────────┘            (core types only)
                           ▼
               ┌───────────────────────────┐
               │ SmpClient      (smp/)     │  request lifecycle: seq alloc,
@@ -94,6 +95,12 @@ dependencies between peers, and no cycles.
                  └─────────────┘   └──────────────┘  └─────────────┘
 ```
 
+**ImageManagement also depends on ImageFile**, an edge the drawing leaves out
+to stay legible. It computes the upload `sha` with `sha256()`, and the two
+values a device reports about an image, `ImageHash` and `ImageVersion`, are
+MCUboot's and are declared in `smply/mcuboot_image.hpp`. The reverse never
+holds: parsing a firmware file needs nothing above the core types.
+
 The third box is a gap rather than a plan. The **protocol** half of a serial
 link ships -- `transports/serial/` frames and deframes MCUmgr's console
 encapsulation, portably and with a test suite -- but no adapter opens a port,
@@ -110,7 +117,7 @@ so nobody has yet implemented `Transport` over one.
 | **SmpClient** (`src/smp/client.*`) | sequence allocation, pending-request table, per-request deadlines, cancellation, retired-seq set, dispatch of decoded responses, transport binding | firmware, images, files |
 | **OsManagement** (`src/groups/os/`) | reset, mcumgr params, echo | DFU policy |
 | **ImageManagement** (`src/groups/image/`) | image state get/set, upload request/response encoding, the upload state machine, erase, slot info | files on disk, reconnection |
-| **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply | SMP, CBOR, transports |
+| **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply, the `ImageHash` and `ImageVersion` values | SMP, CBOR, transports, the image group |
 | **FirmwareUpdater** (`src/dfu/`) | the update state machine, reset/disconnect/reconnect protocol with the application, progress reporting | GATT, WinRT, threads, sockets |
 | **Transport** (interface) | delivering one whole SMP message outbound; delivering inbound bytes; reporting link errors | SMP semantics, sequence numbers |
 
@@ -325,11 +332,11 @@ smply/
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
 │   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
-│   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError,
+│   ├── groups/image.hpp        ImageManagement, ImageState, ImageError,
 │   │                           UploadOptions, UploadHandle, SetStateRequest
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
-│   ├── mcuboot_image.hpp       McubootImageInfo, parse_mcuboot_header, sha256,
-│   │                           find_image_tlv_hash
+│   ├── mcuboot_image.hpp       ImageHash, ImageVersion, McubootImageInfo,
+│   │                           parse_mcuboot_header, sha256, find_image_tlv_hash
 │   ├── dfu/firmware_updater.hpp    FirmwareUpdater, UpdatePlan, UpdateMode,
 │   │                           UpdateReport, UpdateEvent
 │   └── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
@@ -344,7 +351,7 @@ smply/
 │   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
-│   │                           sha256.{hpp,cpp}  source_reader.hpp
+│   │                           sha256.{hpp,cpp}  source_reader.hpp  image_values.cpp
 │   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
 │   └── detail/client_thread.hpp    debug-only client-context assertion

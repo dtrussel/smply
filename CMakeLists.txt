@@ -85,6 +85,7 @@ target_sources(smply
         src/groups/image/upload_session.cpp
         src/groups/os/os_management.cpp
         src/image/image_source.cpp
+        src/image/image_values.cpp
         src/image/mcuboot_header.cpp
         src/image/sha256.cpp
         src/image/tlv.cpp

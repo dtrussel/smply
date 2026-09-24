@@ -462,30 +462,8 @@ public:
 ```cpp
 namespace smply {
 
-// A hash as the DEVICE reports it: MCUboot's IMAGE_TLV_SHA over header + body.
-// IMAGE_SHA_LEN is 32, or 64 for a SHA-512 bootloader, so the length is carried
-// rather than assumed (protocol-notes §6). Distinct from `Hash`, which is the
-// 32-byte upload `sha` over the whole file -- different types so the two cannot
-// be swapped by accident (protocol-notes §7).
-class ImageHash {
-public:
-    ImageHash() = default;                              // empty
-    static Result<ImageHash> from(ConstBytes);          // rejects empty or > 64
-    static ImageHash        from(const Hash&);          // the 32-byte case
-    ConstBytes  bytes() const noexcept;
-    std::size_t size()  const noexcept;
-    bool        empty() const noexcept;
-    friend bool operator==(const ImageHash&, const ImageHash&) noexcept;
-};
-
-struct ImageVersion {
-    std::uint8_t major{}, minor{}; std::uint16_t revision{}; std::uint32_t build{};
-    // Accepts "1.2.3", the device's "1.2.3.4" and imgtool's "1.2.3+4".
-    // Fails with InvalidArgument -- including on the "<???>" a device sends
-    // when it cannot format a version at all.
-    static Result<ImageVersion> parse(std::string_view);
-    std::string to_string() const;   // the device's form: "1.2.3" or "1.2.3.4"
-};
+// ImageHash and ImageVersion are declared in smply/mcuboot_image.hpp, which
+// this header includes; see that section.
 
 struct ImageSlot {
     std::uint32_t image = 0;          // absent in the response => 0 (A9)
@@ -703,7 +681,8 @@ public:
 
 ## `smply/mcuboot_image.hpp`
 
-The three narrow exceptions to treating the image as opaque
+The two values a device reports about an image, and the three narrow exceptions
+to treating the image as opaque
 ([ADR-0009](decisions/ADR-0009-mcuboot-boundary.md)). smply does **not** verify
 signatures, decrypt, evaluate dependency TLVs or reimplement swap logic — **a
 successful smply update is not an authenticity statement**
@@ -711,6 +690,31 @@ successful smply update is not an authenticity statement**
 
 ```cpp
 namespace smply {
+
+// A hash as the DEVICE reports it: MCUboot's IMAGE_TLV_SHA over header + body.
+// IMAGE_SHA_LEN is 32, or 64 for a SHA-512 bootloader, so the length is carried
+// rather than assumed (protocol-notes §6). Distinct from `Hash`, which is the
+// 32-byte upload `sha` over the whole file -- different types so the two cannot
+// be swapped by accident (protocol-notes §7).
+class ImageHash {
+public:
+    ImageHash() = default;                              // empty
+    static Result<ImageHash> from(ConstBytes);          // rejects empty or > 64
+    static ImageHash        from(const Hash&);          // the 32-byte case
+    ConstBytes  bytes() const noexcept;
+    std::size_t size()  const noexcept;
+    bool        empty() const noexcept;
+    friend bool operator==(const ImageHash&, const ImageHash&) noexcept;
+};
+
+struct ImageVersion {
+    std::uint8_t major{}, minor{}; std::uint16_t revision{}; std::uint32_t build{};
+    // Accepts "1.2.3", the device's "1.2.3.4" and imgtool's "1.2.3+4".
+    // Fails with InvalidArgument -- including on the "<???>" a device sends
+    // when it cannot format a version at all.
+    static Result<ImageVersion> parse(std::string_view);
+    std::string to_string() const;   // the device's form: "1.2.3" or "1.2.3.4"
+};
 
 inline constexpr std::uint32_t kMcubootImageMagic   = 0x96F3B83D;
 inline constexpr std::uint32_t kMcubootImageMagicV1 = 0x96F3B83C;  // too old to use
@@ -721,7 +725,7 @@ struct McubootImageInfo {
     std::uint32_t image_size  = 0;         // ih_img_size, excludes the header
     std::uint32_t protected_tlv_size = 0;  // includes that area's own 4-byte header
     std::uint32_t flags = 0;               // verbatim; unknown bits are kept
-    ImageVersion  version;                 // from groups/image.hpp
+    ImageVersion  version;                 // ih_ver
     bool          encrypted = false;       // IMAGE_F_ENCRYPTED_AES128|AES256
 };
 
