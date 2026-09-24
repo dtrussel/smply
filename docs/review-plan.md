@@ -7,7 +7,7 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 - **Stage 0: done** (2026-09-24). See "Stage 0 results" below.
 - **Stage 1: done** (2026-09-24). R6 now covers source, build, CI and tool files as well as documents, so the history cannot creep back.
 - **Stage 2: done** (2026-09-24): 2a the header cycle, 2b namespaces, 2c the layering gate, 2d `architecture.md` accuracy.
-- **Stage 3: in progress.** 3a (one image number) is done.
+- **Stage 3: in progress.** 3a (one image number) and 3b (the upload header, resume) are done.
 - Stages 4–6: not started.
 
 ### Stage 0 results

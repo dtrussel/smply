@@ -388,7 +388,7 @@ class ImageManagement::Upload
 {
 public:
     Upload(SmpClient& client, ImageSource& source, const upload::UploadConfig& config,
-           const UploadOptions& options, std::function<void(UploadProgress)> on_progress,
+           const UploadOptions& options, ProgressCallback on_progress,
            Callback<UploadResult> on_done, std::uint64_t upload_generation) noexcept
         : driver{client,
                  source,
@@ -416,8 +416,7 @@ ImageManagement::~ImageManagement()
 }
 
 UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& options,
-                                     std::function<void(UploadProgress)> on_progress,
-                                     Callback<UploadResult> on_done)
+                                     ProgressCallback on_progress, Callback<UploadResult> on_done)
 {
     const auto refuse = [this, &on_done](Error error) {
         return reject(*client_, std::move(on_done), std::move(error)), UploadHandle{};
@@ -493,15 +492,16 @@ UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& o
     return UploadHandle{upload_generation_};
 }
 
-void ImageManagement::resume(const UploadHandle& handle, Callback<UploadResult> on_done)
+UploadHandle ImageManagement::resume(const UploadHandle& handle, Callback<UploadResult> on_done)
 {
     if (upload_ == nullptr || handle.generation_ != upload_->generation ||
         !upload_->driver.resumable()) {
         reject(*client_, std::move(on_done),
                Error{ErrorCode::InvalidState, "image: no upload to resume"});
-        return;
+        return UploadHandle{};
     }
     upload_->driver.restart(std::move(on_done));
+    return handle;
 }
 
 void ImageManagement::cancel(const UploadHandle& handle) noexcept

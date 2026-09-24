@@ -357,7 +357,9 @@ smply/
 │   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
 │   ├── groups/image.hpp        ImageManagement, ImageState, ImageError,
-│   │                           UploadOptions, UploadHandle, SetStateRequest
+│   │                           SetStateRequest, SlotInfo
+│   ├── groups/image_upload.hpp UploadOptions, UploadProgress, UploadResult,
+│   │                           UploadHandle, ProgressCallback
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
 │   ├── mcuboot_image.hpp       ImageHash, ImageVersion, McubootImageInfo,
 │   │                           parse_mcuboot_header, sha256, find_image_tlv_hash

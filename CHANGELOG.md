@@ -73,6 +73,15 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **The upload's values move to `smply/groups/image_upload.hpp`**:
+  `UploadOptions`, `UploadProgress`, `UploadResult`, `UploadHandle`, and a new
+  `ProgressCallback` alias for the progress callback `upload()` takes.
+  `groups/image.hpp` includes the new header, so no source changes.
+- **`ImageManagement::resume()` returns an `UploadHandle`**, like `upload()`:
+  the same handle when the upload resumes, and an invalid one when it is
+  refused. Its callback is documented as what it always was, the callback for
+  the resumed attempt, firing exactly once. The old comment said the callback
+  given to `upload()` "fires again", which it never did.
 - **Breaking: `UpdatePlan::image` is removed.** The plan carried the image
   number twice, in `UpdatePlan::image` and in `UpdatePlan::upload.image`, and
   the updater silently overwrote the second with the first. `upload.image` is

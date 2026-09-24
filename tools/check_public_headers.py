@@ -64,7 +64,7 @@ FORBIDDEN_TOKENS = [
 PUBLIC_LAYERS: dict[str, int] = {
     "bytes": 0, "clock": 0, "group": 0, "error": 0, "result": 0, "limits": 0,
     "detail/expected": 0, "version": 0,
-    "smp/header": 1, "transport": 1, "image_source": 1,
+    "smp/header": 1, "transport": 1, "image_source": 1, "groups/image_upload": 1,
     "mcuboot_image": 2,
     "smp_client": 3,
     "groups/os": 4, "groups/image": 4,

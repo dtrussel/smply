@@ -27,7 +27,7 @@ exactly. If you change a header, change its section here in the same commit
 | ------ | ------ |
 | `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | `smply::smply` |
 | `smp/header.hpp` · `transport.hpp` · `smp_client.hpp` | `smply::smply` |
-| `groups/os.hpp` · `groups/image.hpp` | `smply::smply` |
+| `groups/os.hpp` · `groups/image.hpp` · `groups/image_upload.hpp` | `smply::smply` |
 | `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
 | `dfu/firmware_updater.hpp` | `smply::smply` |
 | `util/dispatcher.hpp` | `smply::util`, a separate target the core does not link |
@@ -558,8 +558,14 @@ the wrong type, is `ErrorCode::CborDecode`; an absent optional field never is.
 
 ### Upload
 
+The upload's values are in `smply/groups/image_upload.hpp`, which
+`groups/image.hpp` includes. Code that only builds options or reads results
+does not need the SMP client.
+
 ```cpp
 namespace smply {
+
+// --- smply/groups/image_upload.hpp ---
 
 struct UploadOptions {
     std::uint32_t image = 0;
@@ -607,6 +613,11 @@ public:
     explicit operator bool() const noexcept;
 };
 
+// Fires on every advance the device confirms, on the client context.
+using ProgressCallback = std::function<void(UploadProgress)>;
+
+// --- smply/groups/image.hpp ---
+
 class ImageManagement {                     // upload half; see above for the rest
 public:
     // `source` and this ImageManagement must both outlive the upload -- the
@@ -620,15 +631,17 @@ public:
     // when this object is destroyed. A second upload while one runs is refused
     // with InvalidState.
     UploadHandle upload(ImageSource&, const UploadOptions&,
-                        std::function<void(UploadProgress)> on_progress,
-                        Callback<UploadResult> on_done);
+                        ProgressCallback on_progress, Callback<UploadResult> on_done);
 
     // A dropped link completes the upload with Disconnected but KEEPS the
     // session. Once the application has rebound the transport, this re-sends
     // the first packet with the same sha and continues from whatever offset the
-    // device reports (§6 rule 6). InvalidState for a stale handle or a session
-    // that ended any other way.
-    void resume(const UploadHandle&, Callback<UploadResult> on_done);
+    // device reports (§6 rule 6). Same contract as upload(): returns the handle
+    // when the upload resumes and an invalid one when it cannot (a stale handle,
+    // or a session that ended any other way), and on_done -- the callback for
+    // THIS attempt -- fires exactly once, with InvalidState on refusal. The
+    // callback given to upload() already fired, with Disconnected.
+    UploadHandle resume(const UploadHandle&, Callback<UploadResult> on_done);
 
     void          cancel(const UploadHandle&) noexcept;   // Cancelled on next poll()
     std::uint64_t transferred(const UploadHandle&) const noexcept;

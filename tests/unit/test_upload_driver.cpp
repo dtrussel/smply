@@ -645,7 +645,8 @@ TEST_CASE("resuming re-sends a first packet and continues from the device's offs
 
     fixture.client.rebind_transport(reconnected);
 
-    fixture.management.resume(handle, resumed.on_done());
+    // Same contract as upload(): the handle back when the upload carries on.
+    REQUIRE(fixture.management.resume(handle, resumed.on_done()) == handle);
 
     REQUIRE(reconnected.send_count() == 1);
     const auto payload = std::vector<std::byte>(
@@ -678,7 +679,7 @@ TEST_CASE("resuming an upload that never disconnected is refused", "[upload][dri
     const UploadHandle handle = fixture.start();
 
     Outcome resumed;
-    fixture.management.resume(handle, resumed.on_done());
+    REQUIRE_FALSE(fixture.management.resume(handle, resumed.on_done()).valid());
     fixture.client.poll(fixture.clock.now());
 
     REQUIRE(resumed.calls == 1);
@@ -690,7 +691,7 @@ TEST_CASE("resuming a stale handle is refused", "[upload][driver][resume]")
     Fixture fixture;
 
     Outcome resumed;
-    fixture.management.resume(UploadHandle{}, resumed.on_done());
+    REQUIRE_FALSE(fixture.management.resume(UploadHandle{}, resumed.on_done()).valid());
     fixture.client.poll(fixture.clock.now());
 
     REQUIRE(resumed.calls == 1);
