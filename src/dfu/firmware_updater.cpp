@@ -421,19 +421,15 @@ private:
         running_ = false;
         grace_deadline_.reset();
 
+        report_ = context_.report;
         report_.final_state = state_;
-        report_.bytes_transferred = context_.bytes_transferred;
-        report_.upload_skipped = context_.upload_skipped;
         report_.target_hash = context_.target;
         report_.final_device_state = context_.device;
-        report_.cause = context_.cause;
-        report_.rolled_back = context_.rolled_back;
-        report_.revert_pending = context_.revert_pending;
 
         Result<UpdateReport> outcome = report_;
         if (state_ != UpdateState::Completed) {
             outcome = unexpected<Error>{
-                context_.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"})};
+                context_.report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"})};
         }
 
         emit(UpdateFinished{.result = std::move(outcome)});

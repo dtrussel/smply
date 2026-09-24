@@ -121,8 +121,13 @@ struct Context
     /// From the device, or zero when it does not implement the command.
     std::uint32_t buf_size = 0;
 
-    std::uint64_t bytes_transferred = 0;
-    bool upload_skipped = false;
+    /// What the update will report. The machine writes the outcome fields
+    /// (`bytes_transferred`, `upload_skipped`, `rolled_back`, `revert_pending`
+    /// and `cause`) here as it decides them, so the updater hands the report
+    /// out rather than copying it field by field. `FirmwareUpdater` adds the
+    /// final state, the target hash and the last slot table when it finishes.
+    UpdateReport report;
+
     /// An upload was started and has not finished, so a reconnect resumes it
     /// rather than moving on.
     bool upload_in_progress = false;
@@ -135,10 +140,6 @@ struct Context
     bool mark_retried = false;
     /// The one `Busy` reset retry has been spent.
     bool reset_forced = false;
-
-    bool rolled_back = false;
-    bool revert_pending = false;
-    std::optional<Error> cause;
 };
 
 /// The next state, and what to do to get there.

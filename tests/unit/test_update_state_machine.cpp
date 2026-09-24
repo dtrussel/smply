@@ -256,9 +256,9 @@ TEST_CASE("a failure while inspecting is fatal and changes nothing", "[dfu][mach
         advance(UpdateState::InspectingImages, failed(ErrorCode::Timeout), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
     CHECK(step.effect == Effect::Finish);
-    REQUIRE(context.cause.has_value());
-    CHECK(context.cause->code() == ErrorCode::Timeout);
-    CHECK_FALSE(context.revert_pending);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(context.report.cause->code() == ErrorCode::Timeout);
+    CHECK_FALSE(context.report.revert_pending);
 }
 
 // --- Planning ---------------------------------------------------------------
@@ -275,7 +275,7 @@ TEST_CASE("an image the device is already running and has confirmed is done",
         advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Completed);
     CHECK(step.effect == Effect::Finish);
-    CHECK(context.upload_skipped);
+    CHECK(context.report.upload_skipped);
 }
 
 TEST_CASE("an image already running unconfirmed lands in the confirmation window",
@@ -325,7 +325,7 @@ TEST_CASE("an image already marked for the next boot skips to the reset",
     CHECK(step.next == UpdateState::Resetting);
     CHECK(step.effect == Effect::Reset);
     CHECK(context.swap_scheduled);
-    CHECK(context.upload_skipped);
+    CHECK(context.report.upload_skipped);
 }
 
 TEST_CASE("an image present but unmarked is marked without uploading", "[dfu][machine][planning]")
@@ -337,7 +337,7 @@ TEST_CASE("an image present but unmarked is marked without uploading", "[dfu][ma
         advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::MarkingForTest);
     CHECK(step.effect == Effect::MarkForTest);
-    CHECK(context.upload_skipped);
+    CHECK(context.report.upload_skipped);
     CHECK_FALSE(context.upload_in_progress);
 }
 
@@ -366,7 +366,7 @@ TEST_CASE("an image the device does not hold is uploaded", "[dfu][machine][plann
         advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Uploading);
     CHECK(step.effect == Effect::StartUpload);
-    CHECK_FALSE(context.upload_skipped);
+    CHECK_FALSE(context.report.upload_skipped);
 }
 
 // --- Uploading --------------------------------------------------------------
@@ -383,7 +383,7 @@ TEST_CASE("a finished upload is verified, unless the caller only wanted the uplo
     const Step step = advance(UpdateState::Uploading, done, UpdatePlan{}, context);
     CHECK(step.next == UpdateState::VerifyingUpload);
     CHECK(step.effect == Effect::ReadState);
-    CHECK(context.bytes_transferred == 4096);
+    CHECK(context.report.bytes_transferred == 4096);
     CHECK_FALSE(context.upload_in_progress);
 
     Context stop_early = fresh();
@@ -406,7 +406,7 @@ TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][mac
     CHECK(step.next == UpdateState::AwaitingReconnect);
     CHECK(step.effect == Effect::RequestReconnect);
     CHECK(context.upload_in_progress);
-    CHECK_FALSE(context.cause.has_value());
+    CHECK_FALSE(context.report.cause.has_value());
 }
 
 TEST_CASE("any other upload failure is fatal", "[dfu][machine]")
@@ -415,8 +415,8 @@ TEST_CASE("any other upload failure is fatal", "[dfu][machine]")
     const Step step =
         advance(UpdateState::Uploading, failed(ErrorCode::ImageMismatch), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.cause.has_value());
-    CHECK(context.cause->code() == ErrorCode::ImageMismatch);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(context.report.cause->code() == ErrorCode::ImageMismatch);
 }
 
 // --- Verifying the upload ---------------------------------------------------
@@ -436,8 +436,8 @@ TEST_CASE("an uploaded image must appear in the slot table", "[dfu][machine]")
     const Step missing =
         advance(UpdateState::VerifyingUpload, state_read(empty), UpdatePlan{}, absent);
     CHECK(missing.next == UpdateState::Failed);
-    REQUIRE(absent.cause.has_value());
-    CHECK(absent.cause->code() == ErrorCode::ImageMismatch);
+    REQUIRE(absent.report.cause.has_value());
+    CHECK(absent.report.cause->code() == ErrorCode::ImageMismatch);
 }
 
 TEST_CASE("a failed verification read is fatal", "[dfu][machine]")
@@ -471,13 +471,13 @@ TEST_CASE("ImageAlreadyPending is recoverable exactly once", "[dfu][machine]")
     CHECK(retried.next == UpdateState::InspectingImages);
     CHECK(retried.effect == Effect::ReadState);
     CHECK(context.mark_retried);
-    CHECK_FALSE(context.cause.has_value());
+    CHECK_FALSE(context.report.cause.has_value());
 
     const Step again =
         advance(UpdateState::MarkingForTest, image_failure(ImageError::ImageAlreadyPending),
                 UpdatePlan{}, context);
     CHECK(again.next == UpdateState::Failed);
-    REQUIRE(context.cause.has_value());
+    REQUIRE(context.report.cause.has_value());
 }
 
 TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine]")
@@ -493,12 +493,12 @@ TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine
     CHECK(retried.next == UpdateState::InspectingImages);
     CHECK(retried.effect == Effect::ReadState);
     CHECK(context.mark_retried);
-    CHECK_FALSE(context.cause.has_value());
+    CHECK_FALSE(context.report.cause.has_value());
 
     const Step again = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
                                UpdatePlan{}, context);
     CHECK(again.next == UpdateState::Failed);
-    REQUIRE(context.cause.has_value());
+    REQUIRE(context.report.cause.has_value());
 }
 
 TEST_CASE("the budget is one recovery, not one of each shape", "[dfu][machine]")
@@ -530,8 +530,8 @@ TEST_CASE("a group-less code that is not BadState is still fatal", "[dfu][machin
                               UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
     CHECK_FALSE(context.mark_retried);
-    REQUIRE(context.cause.has_value());
-    CHECK(smply::smp_error(*context.cause) == SmpError::Unknown);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(smply::smp_error(*context.report.cause) == SmpError::Unknown);
 }
 
 TEST_CASE("marking the running slot for test is fatal with the device's own code", "[dfu][machine]")
@@ -541,10 +541,10 @@ TEST_CASE("marking the running slot for test is fatal with the device's own code
         advance(UpdateState::MarkingForTest,
                 image_failure(ImageError::ImageSettingTestToActiveDenied), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.cause.has_value());
-    CHECK(smply::image_error(*context.cause) == ImageError::ImageSettingTestToActiveDenied);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(smply::image_error(*context.report.cause) == ImageError::ImageSettingTestToActiveDenied);
     // Nothing was scheduled, so nothing will revert.
-    CHECK_FALSE(context.revert_pending);
+    CHECK_FALSE(context.report.revert_pending);
 }
 
 // --- Resetting --------------------------------------------------------------
@@ -583,7 +583,7 @@ TEST_CASE("a lost reset response is treated as the reset happening", "[dfu][mach
         const Step step = advance(UpdateState::Resetting, failed(code), UpdatePlan{}, context);
         CHECK(step.next == UpdateState::AwaitingDisconnect);
         CHECK(step.effect == Effect::AwaitDisconnect);
-        CHECK_FALSE(context.cause.has_value());
+        CHECK_FALSE(context.report.cause.has_value());
     }
 }
 
@@ -594,7 +594,7 @@ TEST_CASE("a refused reset is fatal, and the scheduled swap is reported", "[dfu]
     const Step step =
         advance(UpdateState::Resetting, failed(ErrorCode::ProtocolError), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.revert_pending);
+    CHECK(context.report.revert_pending);
 }
 
 // --- Disconnect and reconnect -----------------------------------------------
@@ -637,7 +637,7 @@ TEST_CASE("a failed reconnect is fatal and says a revert is pending", "[dfu][mac
 
     const Step step = advance(UpdateState::AwaitingReconnect, event, UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.revert_pending);
+    CHECK(context.report.revert_pending);
 }
 
 // --- Verifying what booted --------------------------------------------------
@@ -689,9 +689,9 @@ TEST_CASE("the old image running with nothing pending is a rollback", "[dfu][mac
     const Step step =
         advance(UpdateState::VerifyingBooted, state_read(reverted), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.rolled_back);
+    CHECK(context.report.rolled_back);
     // A revert already happened, so nothing further is pending.
-    CHECK_FALSE(context.revert_pending);
+    CHECK_FALSE(context.report.revert_pending);
 }
 
 TEST_CASE("the old image running with a swap still pending is not a rollback", "[dfu][machine]")
@@ -706,7 +706,7 @@ TEST_CASE("the old image running with a swap still pending is not a rollback", "
     const Step step =
         advance(UpdateState::VerifyingBooted, state_read(not_yet), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK_FALSE(context.rolled_back);
+    CHECK_FALSE(context.report.rolled_back);
 }
 
 TEST_CASE("a device reporting no active slot after the reboot is a failure", "[dfu][machine]")
@@ -716,7 +716,7 @@ TEST_CASE("a device reporting no active slot after the reboot is a failure", "[d
     const Step step =
         advance(UpdateState::VerifyingBooted, state_read(nothing), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK_FALSE(context.rolled_back);
+    CHECK_FALSE(context.report.rolled_back);
 }
 
 TEST_CASE("the image the update inspects is the one it uploads", "[dfu][machine]")
@@ -767,7 +767,7 @@ TEST_CASE("declining to confirm ends the update with a revert pending", "[dfu][m
                               UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Cancelled);
     CHECK(step.effect == Effect::Finish);
-    CHECK(context.revert_pending);
+    CHECK(context.report.revert_pending);
 }
 
 TEST_CASE("an accepted confirm is verified", "[dfu][machine][confirm]")
@@ -790,9 +790,9 @@ TEST_CASE("a refused confirm is fatal and leaves the device about to revert",
         advance(UpdateState::Confirming, image_failure(ImageError::ImageConfirmationDenied),
                 UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.revert_pending);
-    REQUIRE(context.cause.has_value());
-    CHECK(smply::image_error(*context.cause) == ImageError::ImageConfirmationDenied);
+    CHECK(context.report.revert_pending);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(smply::image_error(*context.report.cause) == ImageError::ImageConfirmationDenied);
 }
 
 TEST_CASE("the confirmation is checked against the device's own report", "[dfu][machine]")
@@ -810,7 +810,7 @@ TEST_CASE("the confirmation is checked against the device's own report", "[dfu][
     const Step refused =
         advance(UpdateState::VerifyingConfirmed, state_read(unconfirmed), UpdatePlan{}, bad);
     CHECK(refused.next == UpdateState::Failed);
-    CHECK(bad.revert_pending);
+    CHECK(bad.report.revert_pending);
 }
 
 TEST_CASE("a failed confirmation read reports the pending revert", "[dfu][machine]")
@@ -819,7 +819,7 @@ TEST_CASE("a failed confirmation read reports the pending revert", "[dfu][machin
     const Step step =
         advance(UpdateState::VerifyingConfirmed, failed(ErrorCode::Timeout), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.revert_pending);
+    CHECK(context.report.revert_pending);
 }
 
 // --- Cancellation and terminal states ---------------------------------------
@@ -831,7 +831,7 @@ TEST_CASE("cancellation is legal in every non-terminal state", "[dfu][machine]")
         const Step step = advance(state, just(Event::Kind::Cancel), UpdatePlan{}, context);
         CHECK(step.next == UpdateState::Cancelled);
         CHECK(step.effect == Effect::Finish);
-        CHECK_FALSE(context.revert_pending);
+        CHECK_FALSE(context.report.revert_pending);
     }
 }
 
@@ -863,8 +863,8 @@ TEST_CASE("an event with no rule for the state is an internal error", "[dfu][mac
             continue;
         }
         CHECK(step.next == UpdateState::Failed);
-        REQUIRE(context.cause.has_value());
-        CHECK(context.cause->code() == ErrorCode::Internal);
+        REQUIRE(context.report.cause.has_value());
+        CHECK(context.report.cause->code() == ErrorCode::Internal);
     }
 }
 
@@ -889,7 +889,7 @@ TEST_CASE("planning with no active slot still finds the image", "[dfu][machine][
     const Step step =
         advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::MarkingForTest);
-    CHECK(context.upload_skipped);
+    CHECK(context.report.upload_skipped);
 }
 
 TEST_CASE("UploadOnly stops at every point the image is already there", "[dfu][machine][planning]")
@@ -927,7 +927,7 @@ TEST_CASE("a slot the device reports without a hash cannot be the target", "[dfu
     const Step step =
         advance(UpdateState::VerifyingBooted, state_read(nameless), UpdatePlan{}, booted);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(booted.rolled_back);
+    CHECK(booted.report.rolled_back);
 
     Context confirmed = fresh();
     const Step checked =
@@ -942,7 +942,7 @@ TEST_CASE("a confirmation check with no active slot fails", "[dfu][machine]")
     const Step step =
         advance(UpdateState::VerifyingConfirmed, state_read(nothing), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.revert_pending);
+    CHECK(context.report.revert_pending);
 }
 
 TEST_CASE("every state has a name", "[dfu][machine]")

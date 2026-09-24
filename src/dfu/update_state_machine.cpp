@@ -18,8 +18,8 @@ namespace {
     // A swap that was scheduled and never confirmed does not un-schedule itself
     // because the client gave up: the device will revert on its next reset, and
     // a caller that reads only "failed" would believe nothing had changed.
-    context.revert_pending = context.swap_scheduled;
-    context.cause = std::move(error);
+    context.report.revert_pending = context.swap_scheduled;
+    context.report.cause = std::move(error);
     return Step{UpdateState::Failed, Effect::Finish};
 }
 
@@ -85,12 +85,12 @@ namespace {
     // 1. The device is already running the image being installed.
     if (active != nullptr && holder == active) {
         if (active->confirmed || upload_only(plan)) {
-            context.upload_skipped = true;
+            context.report.upload_skipped = true;
             return Step{UpdateState::Completed, Effect::Finish};
         }
         // Running it unconfirmed: a trial boot is in progress and this is the
         // confirmation window, whoever started it.
-        context.upload_skipped = true;
+        context.report.upload_skipped = true;
         context.swap_scheduled = true;
         return confirmation_fork(plan);
     }
@@ -98,7 +98,7 @@ namespace {
     // 2. Another slot holds it, already marked for the next boot. The mark
     //    succeeded at some point even if we never saw the response.
     if (holder != nullptr && holder->pending) {
-        context.upload_skipped = true;
+        context.report.upload_skipped = true;
         context.swap_scheduled = true;
         return upload_only(plan) ? Step{UpdateState::Completed, Effect::Finish}
                                  : Step{UpdateState::Resetting, Effect::Reset};
@@ -106,7 +106,7 @@ namespace {
 
     // 3. Another slot holds it, unmarked.
     if (holder != nullptr && plan.skip_if_already_present) {
-        context.upload_skipped = true;
+        context.report.upload_skipped = true;
         return upload_only(plan) ? Step{UpdateState::Completed, Effect::Finish}
                                  : Step{UpdateState::MarkingForTest, Effect::MarkForTest};
     }
@@ -131,7 +131,7 @@ namespace {
         // nothing is queued to change that. If something *is* pending the swap
         // simply has not happened, which is a different failure.
         if (!anything_pending(context)) {
-            context.rolled_back = true;
+            context.report.rolled_back = true;
             context.swap_scheduled = false;
             return fail(context, ErrorCode::UpdateFailed, "dfu: device reverted to the old image");
         }
@@ -159,7 +159,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
         if (is_terminal(state)) {
             return Step{state, Effect::None};
         }
-        context.revert_pending = context.swap_scheduled;
+        context.report.revert_pending = context.swap_scheduled;
         return Step{UpdateState::Cancelled, Effect::Finish};
     }
 
@@ -202,12 +202,12 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::Uploading:
         if (event.kind == Event::Kind::UploadFinished) {
             context.upload_in_progress = false;
-            context.bytes_transferred = event.transferred;
+            context.report.bytes_transferred = event.transferred;
             // The pre-flight check is not the only way a transfer gets skipped:
             // the server runs the same check on the first packet and can answer
             // "complete" before any image data is really sent (rule 9a), and
             // UploadResult::already_present says so.
-            context.upload_skipped = context.upload_skipped || event.already_present;
+            context.report.upload_skipped = context.report.upload_skipped || event.already_present;
             if (upload_only(plan)) {
                 return Step{UpdateState::Completed, Effect::Finish};
             }
