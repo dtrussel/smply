@@ -73,6 +73,12 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **Breaking: `UpdatePlan::image` is removed.** The plan carried the image
+  number twice, in `UpdatePlan::image` and in `UpdatePlan::upload.image`, and
+  the updater silently overwrote the second with the first. `upload.image` is
+  now the one image number for the whole update: the image transferred,
+  inspected after the reboot, marked and confirmed. Set `plan.upload.image`
+  where you set `plan.image`.
 - **`ImageHash` and `ImageVersion` are declared in `smply/mcuboot_image.hpp`**,
   no longer in `smply/groups/image.hpp`. The two headers depended on each other:
   the image group computes the upload `sha` with `sha256()`, and the MCUboot

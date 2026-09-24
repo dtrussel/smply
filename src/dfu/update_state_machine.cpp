@@ -79,7 +79,7 @@ namespace {
 /// restarted mid-update.
 [[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
 {
-    const ImageSlot* active = active_of(context, plan.image);
+    const ImageSlot* active = active_of(context, plan.upload.image);
     const ImageSlot* holder = slot_with_target(context);
 
     // 1. The device is already running the image being installed.
@@ -120,7 +120,7 @@ namespace {
 /// `VerifyingBooted`: did the device come up on the new image, or revert?
 [[nodiscard]] Step inspect_boot(const UpdatePlan& plan, Context& context)
 {
-    const ImageSlot* active = active_of(context, plan.image);
+    const ImageSlot* active = active_of(context, plan.upload.image);
     if (active == nullptr) {
         return fail(context, ErrorCode::UpdateFailed, "dfu: no active slot after reboot");
     }
@@ -352,7 +352,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::VerifyingConfirmed:
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
-            const ImageSlot* active = active_of(context, plan.image);
+            const ImageSlot* active = active_of(context, plan.upload.image);
             const bool ours =
                 active != nullptr && active->hash.has_value() && *active->hash == context.target;
             if (ours && active->confirmed) {

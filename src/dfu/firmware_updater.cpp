@@ -400,7 +400,6 @@ private:
     void start_upload()
     {
         UploadOptions options = plan_.upload;
-        options.image = plan_.image;
         if (!options.server_buf_size.has_value() && context_.buf_size != 0) {
             options.server_buf_size = context_.buf_size;
         }

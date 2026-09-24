@@ -774,7 +774,8 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
-    std::uint32_t image = 0;
+    // upload.image is the image the whole update works on: transferred,
+    // inspected, marked and confirmed. There is no second image number.
     UploadOptions upload{};
     // Skip the upload when the device already holds this image (by TLV hash).
     bool          skip_if_already_present = true;

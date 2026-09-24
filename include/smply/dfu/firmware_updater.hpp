@@ -104,12 +104,13 @@ struct UpdatePlan
 {
     UpdateMode mode = UpdateMode::TestThenConfirm;
 
-    /// Which image to update. Zephyr supports two; 0 is the usual one.
-    std::uint32_t image = 0;
-
     /// Passed through to `ImageManagement::upload`. `sha` and `server_buf_size`
     /// are filled in by the updater when absent -- it computes the first from
     /// the source and learns the second from the device.
+    ///
+    /// `upload.image` is also the image the rest of the update inspects, marks
+    /// and confirms: there is one image number for the whole update, not one
+    /// for the transfer and another for everything after it.
     UploadOptions upload{};
 
     /// Skip the transfer when the device already holds this image, recognised

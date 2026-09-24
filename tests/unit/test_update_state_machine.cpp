@@ -719,6 +719,25 @@ TEST_CASE("a device reporting no active slot after the reboot is a failure", "[d
     CHECK_FALSE(context.rolled_back);
 }
 
+TEST_CASE("the image the update inspects is the one it uploads", "[dfu][machine]")
+{
+    // One image number for the whole update: upload.image. Image 0 running the
+    // target says nothing about image 1, which has no active slot at all.
+    Context context = fresh();
+    ImageState booted = state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true}});
+    UpdatePlan plan;
+    plan.upload.image = 1;
+    const Step other = advance(UpdateState::VerifyingBooted, state_read(booted), plan, context);
+    CHECK(other.next == UpdateState::Failed);
+
+    for (ImageSlot& slot : booted.slots) {
+        slot.image = 1;
+    }
+    Context same = fresh();
+    const Step ours = advance(UpdateState::VerifyingBooted, state_read(booted), plan, same);
+    CHECK(ours.next != UpdateState::Failed);
+}
+
 TEST_CASE("a failed boot verification is fatal", "[dfu][machine]")
 {
     Context context = fresh();
