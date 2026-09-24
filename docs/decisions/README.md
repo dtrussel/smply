@@ -37,6 +37,7 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0013](ADR-0013-living-documentation.md) | Documentation is part of the product | Accepted; rule 4 superseded by 0018 |
 | [0014](ADR-0014-confirmation-is-the-applications-call.md) | Confirmation is the application's call | Accepted |
 | [0015](ADR-0015-hardware-evidence.md) | Hardware evidence and isolated bench tooling | Accepted |
-| [0016](ADR-0016-installed-package-and-versioning.md) | What the installed package contains, and what a version promises | Accepted |
+| [0016](ADR-0016-installed-package-and-versioning.md) | What the installed package contains, and what a version promises | Accepted; target list extended by 0019 |
 | [0017](ADR-0017-serial-framing-placement.md) | MCUmgr serial framing: portable, in `transports/serial/`, with a receiver | Accepted |
 | [0018](ADR-0018-maintenance-process.md) | A maintenance process: a backlog, not a phase log | Accepted |
+| [0019](ADR-0019-async-adapters.md) | Coroutine and future adapters, in an installed `smply::asyncutil` | Accepted |

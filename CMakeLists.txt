@@ -163,6 +163,18 @@ set_target_properties(smply_util PROPERTIES
 find_package(Threads REQUIRED)
 target_link_libraries(smply_util PUBLIC Threads::Threads)
 
+# --- smply::asyncutil: coroutine and future adapters (ADR-0019) --------------
+#
+# Header-only, and separate from the core for the same reason as smply::util:
+# libsmply never links it, and check_public_headers.py rejects any core header
+# or src/ file that includes one of its headers. The future adapter posts
+# through a Dispatcher, hence smply::util.
+add_library(smply_asyncutil INTERFACE)
+add_library(smply::asyncutil ALIAS smply_asyncutil)
+target_link_libraries(smply_asyncutil INTERFACE smply::smply smply::util)
+target_compile_features(smply_asyncutil INTERFACE cxx_std_20)
+set_target_properties(smply_asyncutil PROPERTIES EXPORT_NAME asyncutil)
+
 # Internal access for tests only. Not installed, not for consumers.
 add_library(smply_internal INTERFACE)
 add_library(smply::smply_internal ALIAS smply_internal)
@@ -266,7 +278,7 @@ endif()
 # the comment there for why a late include only looks like it works.
 include(CMakePackageConfigHelpers)
 
-install(TARGETS smply smply_util
+install(TARGETS smply smply_util smply_asyncutil
     EXPORT smplyTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -241,6 +241,15 @@ expect_fail_matching "check_public_headers rejects a forbidden dependency betwee
     python3 tools/check_public_headers.py --build-dir "$WORK/build"
 restore src/image/tlv.cpp
 
+# 5d. Layering: a core header reaching into a separate target. smply::asyncutil
+# is header-only, so nothing would fail to link; only the gate stops it.
+substitute "$WORK/include/smply/groups/os.hpp" \
+    's|#include "smply/clock.hpp"|#include "smply/clock.hpp"\n#include "smply/async/task.hpp"|'
+expect_fail_matching "check_public_headers rejects a core header including a separate target" \
+    "a header of a separate target" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore include/smply/groups/os.hpp
+
 # 6. Dependency inventory: undeclared dependency
 cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'
 FetchContent_Declare(totally_undeclared_library

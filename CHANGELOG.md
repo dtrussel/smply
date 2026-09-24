@@ -21,6 +21,17 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Added
 
+- **`smply::asyncutil`: coroutines and futures over the callbacks**
+  ([ADR-0019](docs/decisions/ADR-0019-async-adapters.md)). This is a
+  header-only, installed target that the core does not link.
+  - `smply/async/task.hpp`: `async::await_result<T>()` makes any `Callback<T>`
+    operation awaitable, and `async::Task<T>` is a minimal eager coroutine type,
+    so a sequence of commands reads as straight-line code on the pump thread.
+  - `smply/async/future.hpp`: `async::post_for_future<T>()` starts an
+    operation on the pump thread through a `Dispatcher` and returns a
+    `std::future` for a caller on another thread.
+  - `architecture.md` had promised this target, under this name, for a long
+    time. It now exists.
 - **MCUmgr's serial (console) framing, in `transports/serial/`.** A device with
   no radio now has a protocol implementation waiting for a port:
   `SerialFramer` turns one SMP message into console frames, `LineSplitter`

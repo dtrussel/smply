@@ -7,8 +7,9 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 - **Stage 0: done** (2026-09-24). See "Stage 0 results" below.
 - **Stage 1: done** (2026-09-24). R6 now covers source, build, CI and tool files as well as documents, so the history cannot creep back.
 - **Stage 2: done** (2026-09-24): 2a the header cycle, 2b namespaces, 2c the layering gate, 2d `architecture.md` accuracy.
-- **Stage 3: in progress.** 3a (one image number), 3b (the upload header, resume), 3c (UpdateEvent as a variant) and 3d (report in Context) are done.
-- Stages 4–6: not started.
+- **Stage 3: done** (2026-09-24): 3a–3d the API changes, 3e the `smply::asyncutil` extension.
+- **Next: Stage 4**, the implementation review.
+- Stages 5–6: not started.
 
 ### Stage 0 results
 
@@ -121,18 +122,28 @@ No ADR constrains anything below. What it found, and the fix for each:
 
 ## Stage 3: design and public API review
 
-Breaking changes are allowed. Each one gets a CHANGELOG entry under 0.2.0 and updates to `api.md` and `design.md`. Candidates, in order of value:
-1. **`UpdatePlan::image` vs `UpdatePlan::upload.image`.** `firmware_updater.cpp:403` silently overwrites one with the other. Keep one source of truth.
-2. **Split `groups/image.hpp` (603 lines)** into value types (already moved in Stage 2), `ImageError`, and the upload API plus `ImageManagement`. Keep `groups/image.hpp` as the umbrella header.
-3. **`ImageSlot::version` stays a string.** This corrects the original plan: a device reports `"<???>"` when it cannot format a version, so parsing must stay a separate, fallible step (`groups/image.hpp`, `ImageVersion::parse`). At most, add `ImageSlot::parsed_version()` as a convenience.
-4. **Callback styles.**
-   - Upload progress becomes a named `ProgressCallback` alias next to `Callback<T>`.
-   - `UpdateEvent` with a `Kind` enum, optional fields and `const Result<UpdateReport>*` gets either a `std::variant` or separate typed callbacks. Choose after reading `examples/*/main.cpp` usage. If this changes ADR-0003, write a new ADR.
-5. **`ImageManagement::resume()`** returns `void` and has a callback that "fires again", which is a different contract from `upload()`. Align them.
-6. **Timeouts.** Unify the per-operation timeout fields: `ResetOptions`, `EraseOptions`, the three in `UploadOptions`, `RequestSpec`.
-7. **`UpdateReport` and the state machine's `Context`** hold nearly the same fields (`firmware_updater.cpp:438-467`). Make one contain the other.
+Breaking changes are allowed (0.2.0). Each change has a CHANGELOG entry and matching `api.md` and `design.md` updates. What each candidate became:
 
-Deliberately out of scope, stays as recorded in the roadmap: `std::error_code` interop (O6), pipelining (O3), new groups.
+- **3a. One image number.**
+  - `UpdatePlan::image` is removed, and `upload.image` is the image for the whole update.
+  - The updater had silently overwritten `upload.image` with `UpdatePlan::image`.
+- **3b. Upload header and `resume()`.**
+  - The upload's values move to `groups/image_upload.hpp`, which needs no SMP client, and a `ProgressCallback` alias is added.
+  - `resume()` returns an `UploadHandle` like `upload()`. Its callback is documented as what it always was.
+  - `ImageError` stays in `groups/image.hpp`, now 388 lines, because it is part of that group's answers.
+- **3c. `UpdateEvent` is a `std::variant`**, with a `smply::overloaded` helper. ADR-0014 gets a status note for the rename.
+- **3d. The state machine writes the report it hands out.** `Context` holds an `UpdateReport`, so nothing is copied field by field.
+- **3e. `smply::asyncutil` exists** ([ADR-0019](decisions/ADR-0019-async-adapters.md)).
+  - `async/task.hpp` provides coroutines and `async/future.hpp` provides futures. The target is installed and exported, and the core never includes it.
+  - The layering gate enforces that last point.
+- **Considered and not changed:**
+  - **An `ImageSlot::parsed_version()` accessor.** `ImageVersion::parse(slot.version)` is one call, and an accessor would hide that parsing can fail.
+  - **Unifying the timeout fields.** They are already coherent:
+    - A single command has an optional override of the client's default: `ResetOptions`, `EraseOptions`, `RequestSpec`.
+    - An upload has one deadline per phase, because its first chunk (A7, the implicit erase) and last chunk (A19, the image check) take a different time from the rest.
+    - Merging them would lose exactly that.
+
+Deliberately out of scope, and still in the roadmap: `std::error_code` interop (O6), pipelining (O3), new groups.
 
 ## Stage 4: implementation review
 

@@ -16,6 +16,8 @@
 #include "common/send_queue.hpp"
 #include "serial/serial_framing.hpp"
 
+#include <smply/async/future.hpp>
+#include <smply/async/task.hpp>
 #include <smply/error.hpp>
 #include <smply/smp/header.hpp>
 #include <smply/util/dispatcher.hpp>
@@ -24,9 +26,23 @@
 #include <array>
 #include <cstddef>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <string>
 #include <vector>
+
+namespace {
+
+/// A coroutine over an operation that completes inline, so no client is needed
+/// to drive it.
+smply::async::Task<int> answer()
+{
+    const smply::Result<int> value =
+        co_await smply::async::await_result<int>([](auto done) { done(42); });
+    co_return value.value_or(0);
+}
+
+} // namespace
 
 int main()
 {
@@ -59,6 +75,19 @@ int main()
     dispatcher.post([&ran] { ++ran; });
     if (dispatcher.drain() != 1 || ran != 1) {
         std::cerr << "consumption check: dispatcher did not run its closure\n";
+        return EXIT_FAILURE;
+    }
+
+    // smply::asyncutil -- header-only, and linked through the export like the
+    // others. A coroutine that completes inline, and a future fulfilled when
+    // this thread drains the dispatcher (never get() on the pump thread before
+    // that: see the header).
+    smply::async::Task<int> task = answer();
+    std::future<smply::Result<int>> future =
+        smply::async::post_for_future<int>(dispatcher, [](auto done) { done(7); });
+    dispatcher.drain();
+    if (!task.done() || task.result() != 42 || future.get().value_or(0) != 7) {
+        std::cerr << "consumption check: asyncutil did not deliver\n";
         return EXIT_FAILURE;
     }
 

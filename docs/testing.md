@@ -473,6 +473,21 @@ image is good. Shipped:
 * cancellation mid-update, destruction mid-update, and a callback that outlives
   the updater while the client is still alive.
 
+**`test_async.cpp`** drives `smply::asyncutil` (ADR-0019) against the same
+simulator. It covers:
+* a coroutine that reads, uploads and reads again, in order;
+* two uploads back to back from one coroutine. The second starts from inside the
+  first's completion callback, where the coroutine resumes, which is the chained
+  callback the adapter relies on being legal;
+* an error delivered to the coroutine rather than lost;
+* a `Task` destroyed while suspended: the operation still completes and nothing
+  resumes a freed frame, which the sanitizer presets check;
+* one task awaiting another; an exception rethrown by `result()`; and an
+  operation that completes inline, which must not suspend;
+* a worker thread blocking on `post_for_future()` while the test thread pumps,
+  under TSan in `linux-clang-tsan`; and a cleared dispatcher breaking the
+  promise instead of hanging.
+
 ## 5. Fuzzing (`tests/fuzz/`)
 
 libFuzzer on Linux/Clang, behind the `linux-clang-fuzz` preset. The whole tree

@@ -26,7 +26,7 @@ FetchContent_MakeAvailable(smply)
 add_executable(smply_consumption_check ../smoke.cpp)
 
 target_link_libraries(smply_consumption_check
-    PRIVATE smply::smply smply::util smply::transport_common)
+    PRIVATE smply::smply smply::util smply::transport_common smply::asyncutil)
 
 if(NOT MSVC)
     target_compile_options(smply_consumption_check PRIVATE -Wall)

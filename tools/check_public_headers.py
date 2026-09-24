@@ -69,10 +69,18 @@ PUBLIC_LAYERS: dict[str, int] = {
     "smp_client": 3,
     "groups/os": 4, "groups/image": 4,
     "dfu/firmware_updater": 5,
-    # smply::util is a separate target that the core never links; it may use
-    # the core types and nothing else.
+    # smply::util and smply::asyncutil are separate targets the core never
+    # links (SEPARATE_TARGET_HEADERS below). They build on the core types.
     "util/dispatcher": 1,
+    "async/task": 1,
+    "async/future": 2,
 }
+
+# Headers of the targets libsmply never links. Nothing outside this set may
+# include them -- no core header, and no file under src/ except the one that
+# implements the header. Otherwise a header-only target would compile its way
+# into the core without anything failing to link.
+SEPARATE_TARGET_HEADERS = {"util/dispatcher", "async/task", "async/future"}
 
 # Rule 5. For each directory under src/ ("" is src/ itself): the internal
 # directories it may include, and the highest public layer it may include.
@@ -137,6 +145,10 @@ def check_public_layers(headers: list[Path]) -> list[str]:
                 continue
             if target not in PUBLIC_LAYERS:
                 errors.append(f"{header}:{lineno}: includes {include}, which has no layer")
+            elif target in SEPARATE_TARGET_HEADERS and name not in SEPARATE_TARGET_HEADERS:
+                errors.append(
+                    f"{header}:{lineno}: includes {include}, a header of a separate target "
+                    "the core never links (docs/architecture.md section 5)")
             elif PUBLIC_LAYERS[target] > layer or (PUBLIC_LAYERS[target] == layer and layer != 0):
                 errors.append(
                     f"{header}:{lineno}: layer-{layer} header includes {include} "
@@ -160,6 +172,11 @@ def check_source_dependencies() -> list[str]:
             public = _public_name(include)
             if public is not None:
                 if public == OWN_PUBLIC_HEADER.get(directory):
+                    continue
+                if public in SEPARATE_TARGET_HEADERS:
+                    errors.append(
+                        f"{path}:{lineno}: src/{directory} includes {include}, a header of a "
+                        "separate target libsmply never links (docs/architecture.md section 5)")
                     continue
                 layer = PUBLIC_LAYERS.get(public)
                 if layer is None or layer > ceiling:

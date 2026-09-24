@@ -184,10 +184,19 @@ Supported by construction: timeouts, cancellation, transport disconnection,
 late responses, unexpected sequence IDs, bounded retries, and progress
 reporting.
 
-Futures and coroutines are deliberately not part of the library. A
-callback-to-`std::future` or callback-to-awaitable adapter is a thin wrapper
-over this model; section 12 lists it as a possible extension, and none exists
-today.
+Futures and coroutines are wrappers over this model, not a second model
+([ADR-0019](decisions/ADR-0019-async-adapters.md)). The header-only target
+`smply::asyncutil` provides both, and the core does not link it:
+
+* **`smply/async/task.hpp`: C++20 coroutines, on the pump thread.**
+  `async::await_result<T>()` makes any `Callback<T>` operation awaitable, and
+  `async::Task<T>` is a minimal coroutine type to write the sequence in. The
+  coroutine resumes inside the completion callback, which is exactly where a
+  callback chain would continue, so the threading rules below are unchanged.
+* **`smply/async/future.hpp`: `std::future`, for another thread.**
+  `async::post_for_future<T>()` starts the operation on the pump thread
+  through a `Dispatcher` and returns a future. **Blocking on it from the pump
+  thread deadlocks**, because only the pump thread can complete it.
 
 ## 5. Threading model
 
@@ -206,7 +215,9 @@ Decision: [ADR-0004](decisions/ADR-0004-threading-model.md).
   utility target, `smply::util`, so adapters do not each reinvent the
   marshalling. **Nothing in `libsmply` links it** — the separation is a build
   rule, not a convention, so a change that made the core depend on it fails to
-  build. Adapters and examples opt in.
+  build. Adapters and examples opt in. The same holds for `smply::asyncutil`
+  (section 4). Because it is header-only, a build rule could not catch a core
+  file including it, so `check_public_headers.py` rejects that instead.
 * No hidden threads anywhere in the core. The one mention of a thread inside
   `libsmply` is `SMPLY_ASSERT_CLIENT_THREAD()`, which captures the constructing
   thread's id in `SmpClient` and asserts that later calls come from it. It is
@@ -365,7 +376,9 @@ smply/
 │   │                           parse_mcuboot_header, sha256, find_image_tlv_hash
 │   ├── dfu/firmware_updater.hpp    FirmwareUpdater, UpdatePlan, UpdateMode,
 │   │                           UpdateReport, UpdateEvent
-│   └── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
+│   ├── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
+│   └── async/                  task.hpp  future.hpp — coroutine and future adapters
+│                               (header-only target smply::asyncutil, ADR-0019)
 ├── src/
 │   ├── core.cpp                system_clock, group_name, to_string
 │   ├── version.cpp
@@ -414,7 +427,7 @@ smply/
 │   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
-│   │                           test_firmware_update.cpp
+│   │                           test_firmware_update.cpp  test_async.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
 │   ├── consumer/               consumer_check.cpp — the flag-leak gate: links
@@ -445,11 +458,11 @@ CMake is fully target-based: no `include_directories()`, no global
 `add_compile_options()`. Warnings and sanitizers are applied via
 `smply_internal_options` — an `INTERFACE` target linked `PRIVATE` by smply's own
 targets, so consumers never inherit them. Install/export produces
-`smply::smply`, `smply::util` and `smply::transport_common` via
+`smply::smply`, `smply::util`, `smply::transport_common` and `smply::asyncutil` via
 `smplyConfig.cmake`; which targets ship and why each other one does not is
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md). Both
 `transports/common/` and `transports/serial/` ship under that third target —
-a directory, not a fourth target, which is what keeps ADR-0016's list intact
+a directory rather than a target of its own, which keeps ADR-0016's list intact
 ([ADR-0017](decisions/ADR-0017-serial-framing-placement.md)).
 
 ## 11. Known limitations
@@ -482,5 +495,4 @@ is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·
 request pipelining driven by `buf_count` (O3) · `std::error_code` interop for
-the error model · callback-to-future and callback-to-coroutine adapters, as
-an optional header · a C ABI shim.
+the error model · a C ABI shim.

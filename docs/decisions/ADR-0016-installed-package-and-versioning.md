@@ -1,6 +1,8 @@
 # ADR-0016 — What the installed package contains, and what a version promises
 
-**Status:** Accepted (2026-09-18)
+**Status:** Accepted (2026-09-18). The installed target list gained
+`smply::asyncutil` in [ADR-0019](ADR-0019-async-adapters.md); the rule for
+what may be installed is unchanged.
 
 ## Context
 

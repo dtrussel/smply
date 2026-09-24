@@ -317,8 +317,9 @@ true.
 
 **Packaging**
 
-* **The installed package is three targets, and the list is a decision**:
-  `smply::smply`, `smply::util` and `smply::transport_common`.
+* **The installed package is four targets, and the list is a decision**:
+  `smply::smply`, `smply::util`, `smply::transport_common` and
+  `smply::asyncutil` (ADR-0019).
   `smply::dfu_app`, `smply::minicbor` and `smply::winrt_ble` are deliberately
   left out, and [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)
   gives the reason for each. Adding a target to the package is a compatibility
@@ -373,6 +374,15 @@ true.
 * **The fuzz targets are not part of `ctest`.** Configure `linux-clang-fuzz`,
   then run a target with a *copy* of `tests/fuzz/corpus/<target>/` as its
   argument. libFuzzer writes what it discovers into the directory it is given.
+* **clang-tidy contradicts itself on coroutine hooks.** It wants an awaiter's
+  `await_ready()` and a promise's `initial_suspend()` / `final_suspend()` made
+  `static`. Made static, every `co_await` in the application then trips
+  `readability-static-accessed-through-instance`, because the coroutine
+  machinery calls the hooks through an object. Keep them members, with a
+  `NOLINTNEXTLINE` on the line above, as `smply/async/task.hpp` does. A
+  trailing `NOLINT` does not survive clang-format's line wrapping. Also,
+  cppcheck cannot parse Catch2's `*_THROWS_*` macros; check an exception with
+  a plain `try`/`catch`.
 * **`??>` in a C++ string literal is a trigraph**, and `-Werror` rejects it. The
   device's `<???>` version placeholder needs a raw string literal.
 

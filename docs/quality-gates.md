@@ -573,7 +573,8 @@ Every part of the arrangement is load-bearing:
 
 What the package contains, and why each excluded target is excluded, is
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md):
-`smply::smply`, `smply::util` and `smply::transport_common` ship;
+`smply::smply`, `smply::util`, `smply::transport_common` and
+`smply::asyncutil` ship;
 `smply::minicbor`, `smply::dfu_app`, `smply::winrt_ble` and the test doubles do
 not. The installed prefix does also contain QCBOR's headers and config package —
 QCBOR's own install rules run alongside ours — which is a packaging fact, not an

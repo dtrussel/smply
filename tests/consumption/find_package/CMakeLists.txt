@@ -18,7 +18,7 @@ add_executable(smply_consumption_check ../smoke.cpp)
 # adapter cannot honour the threading contract (ADR-0004), and the portable BLE
 # helpers it would otherwise re-derive (ADR-0016).
 target_link_libraries(smply_consumption_check
-    PRIVATE smply::smply smply::util smply::transport_common)
+    PRIVATE smply::smply smply::util smply::transport_common smply::asyncutil)
 
 # Ordinary warnings only, like a real consumer. If smply's strict set leaked
 # through the export, this would not build.

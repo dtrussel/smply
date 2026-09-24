@@ -31,6 +31,7 @@ exactly. If you change a header, change its section here in the same commit
 | `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
 | `dfu/firmware_updater.hpp` | `smply::smply` |
 | `util/dispatcher.hpp` | `smply::util`, a separate target the core does not link |
+| `async/task.hpp` · `async/future.hpp` | `smply::asyncutil`, header-only; a separate target the core does not link (ADR-0019) |
 | `transports/common/*.hpp`, `transports/serial/*.hpp` | `smply::transport_common`, header-only |
 
 ---
@@ -900,6 +901,76 @@ Four behaviours a caller has to know, none of which the signatures show:
 
 ---
 
+## `smply/async/task.hpp`, `smply/async/future.hpp` — coroutines and futures (target `smply::asyncutil`)
+
+**Header-only, installed, and not used by the core**
+([ADR-0019](decisions/ADR-0019-async-adapters.md)). Both headers wrap the one
+thing every smply operation has in common, its `Callback<T>`. Neither changes
+the threading model: an operation is still started and completed on the pump
+thread, and the application still pumps.
+
+```cpp
+namespace smply::async {
+
+// --- task.hpp: for code ON the pump thread ---
+
+// co_await yields the Result<T> the operation's callback receives. `start` is
+// called once, when the coroutine awaits, with the callback to hand over:
+//   co_await await_result<ImageState>([&](auto done) { images.get_state(std::move(done)); });
+// The coroutine resumes INSIDE that callback -- where a callback chain would
+// continue -- so it may start the next operation at once.
+template<class T, class Start> ResultAwaitable<T, Start> await_result(Start&& start);
+
+// A coroutine that starts eagerly and stays suspended at its end, so the result
+// outlives the body. Move-only; destroying it destroys the coroutine, and an
+// operation it was awaiting still completes with its result dropped. Awaitable
+// from another Task.
+template<class T = void>
+class Task {
+public:
+    bool done() const noexcept;
+    T    result();          // precondition done(); rethrows what escaped the body
+};
+
+// --- future.hpp: for code on ANOTHER thread ---
+
+// Posts `start` through the dispatcher the pump drains, so the operation begins
+// on the pump thread, and returns a future for its Result<T>. NEVER get() it on
+// the pump thread: only that thread can complete it. A dispatcher cleared or
+// destroyed before the work runs breaks the promise; get() then throws
+// std::future_error.
+template<class T, class Start>
+std::future<Result<T>> post_for_future(Dispatcher& dispatcher, Start start);
+
+} // namespace smply::async
+```
+
+A whole update step by step, read as the sequence it is. `FirmwareUpdater` is
+still the component that knows the order; this shows the adapters, not a
+replacement for it:
+
+```cpp
+smply::async::Task<void> read_then_upload(smply::ImageManagement& images,
+                                          smply::ImageSource& firmware)
+{
+    using smply::async::await_result;
+    const auto before = co_await await_result<smply::ImageState>(
+        [&](auto done) { images.get_state(std::move(done)); });
+    if (!before) co_return;
+
+    const auto uploaded = co_await await_result<smply::UploadResult>([&](auto done) {
+        static_cast<void>(images.upload(firmware, {}, {}, std::move(done)));
+    });
+    // ... inspect `uploaded`, then mark for test, reset, and so on.
+}
+
+smply::async::Task<void> task = read_then_upload(images, firmware);
+while (!task.done()) {                     // the same pump as always
+    dispatcher.drain();
+    client.poll(std::chrono::steady_clock::now());
+}
+```
+
 ## `transports/` — the adapter surface (target `smply::transport_common`)
 
 **Header-only, and installed.** An adapter links
@@ -913,9 +984,9 @@ Two directories, one target. `common/` is what every adapter or every BLE
 adapter needs; `serial/` is MCUmgr's console framing. They ship together
 because a directory is not a compatibility promise the way a target is:
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) names the
-package's three targets and says "and nothing else", and
+package's targets and says "and nothing else", and
 [ADR-0017](decisions/ADR-0017-serial-framing-placement.md) is why `serial/`
-joined one rather than becoming a fourth.
+joined one rather than becoming a new one.
 
 Why any of it is in the package at all, given that the point of `Transport`
 (ADR-0005) is that anyone can implement it: because none of it is a

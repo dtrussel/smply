@@ -118,9 +118,10 @@ find_package(smply REQUIRED)
 target_link_libraries(my_app PRIVATE smply::smply)
 ```
 
-The package installs three targets: `smply::smply`, `smply::util` (the
-thread-marshalling helper an adapter needs) and `smply::transport_common` (the
-portable BLE framing, send admission and serial framing an adapter needs). `add_subdirectory`
+The package installs four targets: `smply::smply`, `smply::util` (the
+thread-marshalling helper an adapter needs), `smply::transport_common` (the
+portable BLE framing, send admission and serial framing an adapter needs) and
+`smply::asyncutil` (C++20 coroutines and `std::future` over the callbacks). `add_subdirectory`
 and `FetchContent` work too, and `tools/check_install.sh` builds and runs a
 consumer all three ways on every push.
 [ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) says
