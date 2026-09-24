@@ -1,6 +1,7 @@
 # ADR-0013 — Documentation is part of the product
 
-**Status:** Accepted (2026-09-04)
+**Status:** Accepted (2026-09-04); rule 4 and the session log of rule 1
+superseded by [ADR-0018](ADR-0018-maintenance-process.md) (2026-09-24)
 
 ## Context
 

@@ -9,13 +9,16 @@ a new ADR that supersedes it and update the old one's status
 ([`../quality-gates.md`](../quality-gates.md) §11, and the process in
 [ADR-0013](ADR-0013-living-documentation.md)).
 
-Four ADRs carry a note appended to the `Status` line rather than a
-supersession. That is the one edit an accepted decision may receive, and it is
-used where **the decision still holds but something learned since changes how
-to read it** — a validated assumption, a defect in a chosen dependency, a
-deferred question later answered from measurement. A note never changes what
-was decided; if it needed to, it would be a new ADR. P18's audit read all
-sixteen against the code and found **none that reality had superseded**.
+Some ADRs carry a note appended to the `Status` line. That is the one edit an
+accepted decision may receive. It is used where **the decision still holds but
+something learned since changes how to read it**: a validated assumption, a
+defect in a chosen dependency, a question later answered by measurement, or a
+part superseded by a later ADR. A note never changes what was decided. If it
+had to, the change would be a new ADR.
+
+ADR bodies record the context of their day, including development-phase IDs
+(`P<n>`) that the living documents no longer use
+([ADR-0018](ADR-0018-maintenance-process.md)). `git log` resolves them.
 
 | ADR | Title | Status |
 | --- | ----- | ------ |
@@ -23,15 +26,17 @@ sixteen against the code and found **none that reality had superseded**.
 | [0002](ADR-0002-result-and-error-type.md) | `Result<T>` + structured `Error` | Accepted |
 | [0003](ADR-0003-async-model.md) | Sans-IO callbacks with an application-driven pump | Accepted |
 | [0004](ADR-0004-threading-model.md) | Single client context, no internal threads | Accepted |
-| [0005](ADR-0005-transport-abstraction.md) | Abstract `Transport`: whole message out, byte stream in | Accepted, qualified by P17b |
+| [0005](ADR-0005-transport-abstraction.md) | Abstract `Transport`: whole message out, byte stream in | Accepted, qualified on hardware |
 | [0006](ADR-0006-reassembly-location.md) | SMP reassembly lives in the core | Accepted |
-| [0007](ADR-0007-cbor-library.md) | QCBOR behind a narrow façade | Accepted, validated P5, qualified P17a |
+| [0007](ADR-0007-cbor-library.md) | QCBOR behind a narrow façade | Accepted; QCBOR defect noted |
 | [0008](ADR-0008-upload-state-ownership.md) | Upload state as a pure function owned by `ImageManagement` | Accepted |
 | [0009](ADR-0009-mcuboot-boundary.md) | MCUboot responsibility boundary | Accepted |
-| [0010](ADR-0010-request-correlation.md) | Correlation, SMP version default, one request in flight | Accepted, O2 resolved P17c |
+| [0010](ADR-0010-request-correlation.md) | Correlation, SMP version default, one request in flight | Accepted; O2 resolved |
 | [0011](ADR-0011-build-and-dependencies.md) | Target-based CMake, FetchContent, pinning | Accepted |
 | [0012](ADR-0012-test-and-fuzz-tooling.md) | Catch2 v3 and libFuzzer | Accepted |
-| [0013](ADR-0013-living-documentation.md) | Documentation is part of the product | Accepted |
+| [0013](ADR-0013-living-documentation.md) | Documentation is part of the product | Accepted; rule 4 superseded by 0018 |
 | [0014](ADR-0014-confirmation-is-the-applications-call.md) | Confirmation is the application's call | Accepted |
 | [0015](ADR-0015-hardware-evidence.md) | Hardware evidence and isolated bench tooling | Accepted |
 | [0016](ADR-0016-installed-package-and-versioning.md) | What the installed package contains, and what a version promises | Accepted |
+| [0017](ADR-0017-serial-framing-placement.md) | MCUmgr serial framing: portable, in `transports/serial/`, with a receiver | Accepted |
+| [0018](ADR-0018-maintenance-process.md) | A maintenance process: a backlog, not a phase log | Accepted |
