@@ -2842,3 +2842,23 @@ restarts — which two follow-up rows have asked for since P12 and which would
 resolve the lingering case where a resume cannot say how much *this* run moved.
 A session with a bench and a serial peer should instead write the port adapter,
 which is the only thing that can turn P20's claim into P17's kind of claim.
+
+### 2026-09-24 — Planning session: the quality review
+
+**Status after this session:** no phase changed; the review plan is `Planned`.
+
+**Completed.** Surveyed the project from architecture down to tooling and wrote
+[`review-plan.md`](review-plan.md), a six-stage plan. The user settled three
+decisions: phase history is deleted (git keeps it), the process is simplified
+through a new ADR, and breaking API changes are allowed before 1.0.
+**Changed.** `docs/review-plan.md` (new); the "Next phase" row in `roadmap.md`
+now points to it. No code changed.
+**Remaining in this phase.** All of it. Nothing in the plan has been carried out.
+**Discovered / follow-up.** Listed in the plan. The most urgent:
+`docs/decisions/README.md` does not list ADR-0017, and nothing checks that it
+does; `nightly-fuzz.yml` leaves out `fuzz_serial_deframe`; the coverage artifact
+upload in `ci.yml` never finds its file; `gate-self-check` never installs
+cppcheck or gcovr, so those self-check cases are always skipped.
+**Caveats.** Line numbers in the plan are as of `97f1647`.
+**Docs updated.** `roadmap.md`, `review-plan.md`, this log.
+**Recommended next.** `review-plan.md` Stage 0, the baseline, then Stage 1a.
