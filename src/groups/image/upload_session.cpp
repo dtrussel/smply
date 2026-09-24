@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <utility>
 
-namespace smply::image {
+namespace smply::upload {
 namespace {
 
 /// Room for the largest first-packet envelope, so the probe encode below can
@@ -275,4 +275,4 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
     return send_from(state, config);
 }
 
-} // namespace smply::image
+} // namespace smply::upload

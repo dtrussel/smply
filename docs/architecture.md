@@ -130,6 +130,13 @@ so nobody has yet implemented `Transport` over one.
   `src/` to the include path — production consumers cannot.
 * **Adapters**: `transports/` and `examples/` are separate CMake targets,
   never linked into the core.
+* **Namespaces follow the same line.** The public API is in `smply` (plus
+  `smply::limits` for the constants). An internal type is in a namespace named
+  after its component: `smply::smp` (the assembler), `smply::cbor`,
+  `smply::upload` (the upload state machine and its driver), `smply::image`
+  (SHA-256 and the source reader), `smply::dfu` (the update state machine) and
+  `smply::detail`. A function defined in `src/` that implements a public
+  declaration stays in `smply`, like its declaration.
 
 ### Extension points
 

@@ -494,10 +494,10 @@ TEST_CASE("FakeTransport satisfies the Transport interface", "[fake-transport]")
 TEST_CASE("transport fragmentation is invisible once reassembled", "[fake-transport][assembler]")
 {
     /// Bridges the transport's listener interface to the assembler's sink.
-    class Bridge final : public TransportListener, public smply::MessageSink
+    class Bridge final : public TransportListener, public smply::smp::MessageSink
     {
     public:
-        smply::MessageAssembler assembler;
+        smply::smp::MessageAssembler assembler;
         std::vector<Header> headers;
         std::vector<std::vector<std::byte>> payloads;
         std::vector<Error> errors;

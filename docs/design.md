@@ -38,6 +38,8 @@ groups and an open range; unknown groups round-trip unchanged.
 ## 2. Streaming reassembly (`src/smp/assembler.*`)
 
 ```cpp
+namespace smply::smp {                    // internal: not in include/smply/
+
 class MessageSink {                       // implemented by SmpClient
 public:
     // payload is borrowed for the duration of this call only. Must not
@@ -59,6 +61,8 @@ public:
     std::size_t  peak_buffered() const noexcept;         // high-water mark
     std::size_t  capacity() const noexcept;              // for bound assertions
 };
+
+} // namespace smply::smp
 ```
 
 Algorithm, driven purely by the header length (PN §2). It has two paths, and
@@ -490,9 +494,13 @@ absent image code as normal rather than as a malformed reply.
 ## 6. Upload state machine (`src/groups/image/upload_session.*`)
 
 The most intricate part of the library, and deliberately a **pure function** so
-it can be exhaustively unit-tested with no client, transport or clock:
+it can be exhaustively unit-tested with no client, transport or clock. Like
+every internal type it lives in a namespace named after its component,
+`smply::upload` (`architecture.md` §3):
 
 ```cpp
+namespace smply::upload {
+
 struct UploadState {
     std::uint64_t confirmed_off = 0;   // server-acknowledged offset (authoritative)
     std::uint64_t in_flight_off = 0;   // what the outstanding request asked for,
@@ -511,6 +519,8 @@ struct Step { Action action; UploadRequest request; Error error; std::optional<b
 Step plan_next  (const UploadState&, const UploadConfig&);          // what to send
 void record_sent(UploadState&, const UploadRequest&);               // what went out
 Step on_response(UploadState&, const UploadResponse&, const UploadConfig&);
+
+} // namespace smply::upload
 ```
 
 **A restart is not its own action.** It is "set `first_packet_pending`, zero

@@ -387,7 +387,7 @@ std::optional<ImageError> image_error(const Error& error) noexcept
 class ImageManagement::Upload
 {
 public:
-    Upload(SmpClient& client, ImageSource& source, const image::UploadConfig& config,
+    Upload(SmpClient& client, ImageSource& source, const upload::UploadConfig& config,
            const UploadOptions& options, std::function<void(UploadProgress)> on_progress,
            Callback<UploadResult> on_done, std::uint64_t upload_generation) noexcept
         : driver{client,
@@ -401,7 +401,7 @@ public:
           generation{upload_generation}
     {}
 
-    image::UploadDriver driver;
+    upload::UploadDriver driver;
     std::uint64_t generation;
 };
 
@@ -441,7 +441,7 @@ UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& o
         return refuse(Error{ErrorCode::InvalidArgument, "image: chunk size out of range"});
     }
 
-    image::UploadConfig config;
+    upload::UploadConfig config;
     config.image_size = image_size;
     config.image = options.image;
     config.sha = options.sha;
@@ -461,18 +461,18 @@ UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& o
         config.sha = *digest;
     }
 
-    const image::FirstPacketFields fields{.image_size = image_size,
-                                          .image = config.image,
-                                          .sha = config.sha,
-                                          .upgrade_only = config.upgrade_only};
+    const upload::FirstPacketFields fields{.image_size = image_size,
+                                           .image = config.image,
+                                           .sha = config.sha,
+                                           .upgrade_only = config.upgrade_only};
     if (options.chunk_size != 0) {
         config.chunk_size = options.chunk_size;
     } else {
-        const image::ChunkBudget budget{.server_buf_size = options.server_buf_size,
-                                        .transport_max_message_size =
-                                            client_->transport_max_message_size(),
-                                        .configured_max = limits::kUploadChunkMax};
-        const auto chunk = image::compute_chunk_size(budget, fields);
+        const upload::ChunkBudget budget{.server_buf_size = options.server_buf_size,
+                                         .transport_max_message_size =
+                                             client_->transport_max_message_size(),
+                                         .configured_max = limits::kUploadChunkMax};
+        const auto chunk = upload::compute_chunk_size(budget, fields);
         if (!chunk.has_value()) {
             return refuse(chunk.error());
         }

@@ -110,7 +110,7 @@ struct Fixture
 };
 
 /// A do-nothing sink, for feeding the assembler.
-class NullSink final : public smply::MessageSink
+class NullSink final : public smply::smp::MessageSink
 {
 public:
     void on_message(const Header& /*header*/, ConstBytes /*payload*/) override
@@ -136,7 +136,7 @@ TEST_CASE("kMaxSmpPayload bounds a declared message length", "[limits]")
     // The length field is the first number a device controls, and it is checked
     // before a single byte is buffered on its behalf.
     NullSink sink;
-    smply::MessageAssembler assembler;
+    smply::smp::MessageAssembler assembler;
 
     const Header oversized{.op = Operation::ReadResponse,
                            .version = Version::V1,
@@ -158,7 +158,7 @@ TEST_CASE("kMaxAssemblyBuffer bounds what a partial message may hold", "[limits]
     // A device that sends a large header and then goes quiet must not be able
     // to make the client hold memory indefinitely.
     NullSink sink;
-    smply::MessageAssembler assembler;
+    smply::smp::MessageAssembler assembler;
 
     const Header header{.op = Operation::ReadResponse,
                         .version = Version::V1,

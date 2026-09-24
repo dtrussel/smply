@@ -10,7 +10,7 @@
 #include <memory>
 #include <utility>
 
-namespace smply::image {
+namespace smply::upload {
 namespace {
 
 /// Image-group command ID for upload (docs/protocol-notes.md section 6).
@@ -271,4 +271,4 @@ void UploadDriver::finish(Result<UploadResult> outcome)
     callback(std::move(outcome));
 }
 
-} // namespace smply::image
+} // namespace smply::upload
