@@ -49,6 +49,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -133,33 +134,63 @@ void usage()
     return true;
 }
 
-/// Writes the generated image somewhere `FileImageSource` can open it, so the
-/// update reads through a real file even in the no-arguments case.
+/// The generated image, as a file: `FileImageSource` reads through a real file
+/// even in the no-arguments case. Removed when the run ends, however it ends.
 ///
 /// Into the temporary directory rather than the working one: this runs as a
 /// `ctest` test, and a test that drops files into the build tree is a test that
 /// makes the next build's diff noisy.
-[[nodiscard]] std::optional<std::string> write_demo_image(const std::vector<std::byte>& image)
+///
+/// **The name is unique per run.** Several `cli_dfu` tests run at once under
+/// `ctest -j`, and with one shared name each truncated the file another was
+/// reading. The failure was a short read, which also let the `WILL_FAIL` test
+/// pass for the wrong reason.
+class DemoImageFile
 {
-    std::error_code ec;
-    const std::filesystem::path directory = std::filesystem::temp_directory_path(ec);
-    if (ec) {
-        return std::nullopt;
-    }
-    const std::string path = (directory / "cli_dfu_demo_image.bin").string();
+public:
+    DemoImageFile() = default;
+    DemoImageFile(const DemoImageFile&) = delete;
+    DemoImageFile& operator=(const DemoImageFile&) = delete;
+    DemoImageFile(DemoImageFile&&) = delete;
+    DemoImageFile& operator=(DemoImageFile&&) = delete;
 
-    std::ofstream out{path, std::ios::binary | std::ios::trunc};
-    if (!out) {
-        return std::nullopt;
+    ~DemoImageFile()
+    {
+        if (!path_.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(path_, ignored);
+        }
     }
-    // ostream speaks char, and these are bytes this process just built. The
-    // marker has to be the last comment line before the code, or it silences
-    // the comment instead.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    out.write(reinterpret_cast<const char*>(image.data()),
-              static_cast<std::streamsize>(image.size()));
-    return out ? std::optional<std::string>{path} : std::nullopt;
-}
+
+    /// Writes `image` to a new file and returns its path, or `nullopt`.
+    [[nodiscard]] std::optional<std::string> write(const std::vector<std::byte>& image)
+    {
+        std::error_code ec;
+        const std::filesystem::path directory = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            return std::nullopt;
+        }
+        std::random_device entropy;
+        const std::string name = "cli_dfu_demo_image_" + std::to_string(entropy()) + "_" +
+                                 std::to_string(entropy()) + ".bin";
+        path_ = (directory / name).string();
+
+        std::ofstream out{path_, std::ios::binary | std::ios::trunc};
+        if (!out) {
+            return std::nullopt;
+        }
+        // ostream speaks char, and these are bytes this process just built. The
+        // marker has to be the last comment line before the code, or it
+        // silences the comment instead.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        out.write(reinterpret_cast<const char*>(image.data()),
+                  static_cast<std::streamsize>(image.size()));
+        return out ? std::optional<std::string>{path_} : std::nullopt;
+    }
+
+private:
+    std::string path_;
+};
 
 /// The application's side of the loop: what it has been asked to do next.
 struct Pending
@@ -183,9 +214,10 @@ int main(int argc, char** argv)
 
     const std::vector<std::byte> running = build_demo_image(DemoVersion{.major = 1});
     std::string image_path = options.image_path;
+    DemoImageFile demo_file; // before `source`, which reads it
     if (image_path.empty()) {
         const std::vector<std::byte> update = build_demo_image(DemoVersion{.major = 2});
-        const std::optional<std::string> written = write_demo_image(update);
+        const std::optional<std::string> written = demo_file.write(update);
         if (!written.has_value()) {
             std::cerr << "cli_dfu: cannot write the demo image\n";
             return 1;

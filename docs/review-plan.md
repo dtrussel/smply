@@ -1,6 +1,22 @@
 # Quality review and cleanup plan
 
-Written 2026-09-24, before any of it was carried out. The roadmap's "Current state" points here. Work the stages in order, and strike each one out as it lands. Once Stage 1 is done, the backlog in `roadmap.md` becomes this plan's home, and this file is deleted in Stage 6.
+Written 2026-09-24. The roadmap's "In progress" section points here. Work the stages in order, and record each one under Progress as it lands. This file is deleted in Stage 6.
+
+## Progress
+
+- **Stage 0: done** (2026-09-24). See "Stage 0 results" below.
+- **Stage 1: 1a–1e done.** 1f (code comments) is next.
+- Stages 2–6: not started.
+
+### Stage 0 results
+
+All ten Linux presets build. Each runs 707 tests, apart from `linux-clang-fuzz`, which builds the fuzz targets and has no ctest suite.
+
+**One pre-existing defect:** every `cli_dfu` ctest writes the same temporary file (`$TMPDIR/cli_dfu_demo_image.bin`, truncated on open). Under `ctest -j` the runs race. `cli_dfu_demo` or `cli_dfu_flaky_reconnect` then fails with "short read from the image file" in 6 of 10 preset runs.
+- Worse, `cli_dfu_reconnect_gives_up` is a `WILL_FAIL` test, so a short read makes it pass for the wrong reason.
+- It is fixed in its own commit, ahead of Stage 5, because it made every later verification step unreliable.
+
+**Found while doing 1d:** the documentation cases in `verify_gates.sh` had been passing without testing anything. The scratch copy had no git index, and R5 reads `git ls-files`, so `check_docs.py` failed on the unmodified tree. Fixed in 1d.
 
 ## Context
 

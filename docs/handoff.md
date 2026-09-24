@@ -287,10 +287,11 @@ true.
   **`-Wnull-dereference` is deliberately absent** from the GCC set.
   `cmake/warnings.cmake` has the reasoning. Do not add it back without a
   Release build.
-* **`cli_dfu_reconnect_gives_up` is a `WILL_FAIL` test.** It must fail *through*
-  `FirmwareUpdater::reconnect_failed()`, and its output says "giving up after N
-  reconnection attempts". If it ever fails for another reason, ctest still
-  reports it green, and it is testing nothing.
+* **`cli_dfu_reconnect_gives_up` passes on its output, not its exit code.** It
+  must fail *through* `FirmwareUpdater::reconnect_failed()`, so ctest matches
+  "could not reconnect" rather than accepting any failure. A `WILL_FAIL` test
+  that fails for another reason still reports green. Prefer a
+  `PASS_REGULAR_EXPRESSION` for any test that is meant to fail.
 * **A gate that passes has checked less than you think.** `check_docs.py` R5
   prints how many layout entries it skipped for this reason. The documentation
   rules catch *shapes* of drift, not wrong claims. A document describing a
