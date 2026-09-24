@@ -26,9 +26,9 @@ a hardware bench. The serial framing has not yet been used against a device.
 ## In progress
 
 **The quality review in [`review-plan.md`](review-plan.md).** Work it stage by
-stage, in order. Stage 1, process and documentation, is done: it produced
-this file. Stages 2 to 6 cover architecture, design and API, implementation,
-tooling and the 0.2.0 release.
+stage, in order. Stage 1 (process and documentation, which produced this file)
+and Stage 2 (architecture) are done. Stages 3 to 6 cover design and API,
+implementation, tooling and the 0.2.0 release.
 
 ## Acceptance gaps that need the hardware bench
 

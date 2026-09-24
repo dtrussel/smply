@@ -75,7 +75,7 @@ enforces this, for the public headers and for the directories under `src/`
                           ▼
               ┌───────────────────────────┐
               │ SmpClient      (smp/)     │  request lifecycle: seq alloc,
-              │  PendingRequestTable      │  correlation, timeouts,
+              │  pending-request table    │  correlation, timeouts,
               │  MessageAssembler         │  cancellation, reassembly
               └───────────┬───────────────┘
                           │
@@ -86,7 +86,7 @@ enforces this, for the public headers and for the directories under `src/`
    │ (smp/)     │  │ (cbor/)    │   │ (interface) │ │ Result,    │
    │ Header,    │  │ Reader/    │   │             │ │ Error,     │
    │ encode/    │  │ Writer     │   │             │ │ Clock,     │
-   │ decode     │  │  ▲ QCBOR   │   │             │ │ Buffer     │
+   │ decode     │  │  ▲ QCBOR   │   │             │ │ bytes      │
    └────────────┘  └────────────┘   └──────┬──────┘ └────────────┘
                                            │ implemented by
                           ┌────────────────┼────────────────┐
@@ -165,8 +165,12 @@ individually testable. See [`testing.md`](testing.md).
 **Sans-IO + explicit completion callbacks + an application-driven pump.**
 Decision and alternatives: [ADR-0003](decisions/ADR-0003-async-model.md).
 
-* Every operation takes a completion callback and returns a
-  `RequestHandle` (cancellation token).
+* Every operation takes a completion callback and returns a token to cancel
+  it with. A single request (every group command, and `SmpClient::request()`)
+  returns a `RequestHandle`. An upload, which is many requests, returns an
+  `UploadHandle`. `FirmwareUpdater` runs one update at a time: `start()`
+  returns `Result<void>` for arguments it rejects outright, and everything
+  after that arrives through its event callback.
 * The core performs no I/O and starts no threads. It writes to the transport
   when the application calls into it, and it makes progress on timeouts only
   when the application calls `SmpClient::poll(now)`.
@@ -180,9 +184,10 @@ Supported by construction: timeouts, cancellation, transport disconnection,
 late responses, unexpected sequence IDs, bounded retries, and progress
 reporting.
 
-Optional, non-core convenience headers (opt-in, `smply::asyncutil` target):
-`future_adapter.hpp` (callback → `std::future`) and `coro_adapter.hpp`
-(callback → C++20 awaitable). Neither is used by the core.
+Futures and coroutines are deliberately not part of the library. A
+callback-to-`std::future` or callback-to-awaitable adapter is a thin wrapper
+over this model; section 12 lists it as a possible extension, and none exists
+today.
 
 ## 5. Threading model
 
@@ -258,11 +263,21 @@ logs. **Strings are never the machine-readable representation.**
 `Cancelled`, `TransportError`, `TransportBusy`, `Disconnected`,
 `ImageMismatch`, `UpdateFailed`, `Internal`.
 
-Propagation: transport/codec errors surface as the `Result` of the affected
-request; a link loss fails **all** pending requests with `Disconnected`; the
-DFU state machine translates a failed step into a terminal `UpdateFailed`
-carrying the underlying `Error` as its cause. Errors are never silently
-swallowed and never converted to strings inside the library.
+Propagation: transport and codec errors surface as the `Result` of the
+affected request, and a link loss fails **all** pending requests with
+`Disconnected`. When an update fails, `UpdateReport::cause` carries the
+`Error` that ended it, unchanged. A step that failed on a timeout reports
+`Timeout`, and a device refusal reports `ProtocolError` with the device's own
+`MgmtError`. Two codes are the updater's own verdicts, used where nothing
+below it failed:
+* `ImageMismatch`: after the upload, no slot reports the file's image hash.
+* `UpdateFailed`: the device did not end up running the new image confirmed.
+  It reverted, booted something else, reports no active slot, or did not
+  report the image as confirmed after a confirm. The upload also uses it when
+  it stops making progress.
+
+Errors are never silently swallowed and never converted to strings inside the
+library.
 
 ## 8. Security and trust boundaries
 
@@ -465,4 +480,5 @@ is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·
 request pipelining driven by `buf_count` (O3) · `std::error_code` interop for
-the error model · a C ABI shim.
+the error model · callback-to-future and callback-to-coroutine adapters, as
+an optional header · a C ABI shim.
