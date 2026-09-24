@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# smply_hil -- the hardware interoperability cases (P17b).
+# smply_hil -- the hardware interoperability cases.
 #
 # Opt-in (SMPLY_BUILD_HIL=ON), Windows-only, and never part of a PR preset:
 # every case needs the bench in tests/hil/README.md -- a NUCLEO-WB55RG running

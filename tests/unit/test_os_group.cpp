@@ -317,7 +317,7 @@ TEST_CASE("a parameters response missing a field is rejected", "[os][params][hos
 TEST_CASE("a wrong-typed parameter is a decode failure, not an absent field",
           "[os][params][hostile]")
 {
-    // The distinction P5 exists to preserve: a text buf_size must not read as
+    // The distinction the CBOR reader exists to preserve: a text buf_size must not read as
     // "absent" and then as a default.
     Outcome<McumgrParameters> outcome;
 
@@ -492,7 +492,7 @@ TEST_CASE("an echo reply with no text is rejected", "[os][echo][hostile]")
 
 TEST_CASE("every truncation of an echo reply is handled", "[os][echo][hostile]")
 {
-    // The same prefix sweep P5 applies to the reader, at the group level: no
+    // The same prefix sweep test_cbor.cpp applies to the reader, at the group level: no
     // prefix of a valid reply may crash or be mistaken for a good one.
     const auto full = bytes_of({0xA1, 0x61, 0x72, 0x62, 0x68, 0x69});
 
@@ -636,7 +636,7 @@ TEST_CASE("commands issued together get distinct sequence numbers", "[os]")
 // ---------------------------------------------------------------------------
 // Untrusted numbers in the parameters response
 //
-// P13's audit found these two paths uncovered. Both are reachable by a device
+// Two paths the uncovered-branch list asked for. Both are reachable by a device
 // -- one omits a field, the other reports a number too large for the type the
 // value is used as -- so they are tests rather than coverage exclusions.
 

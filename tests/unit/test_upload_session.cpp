@@ -342,7 +342,7 @@ TEST_CASE("a transfer that finishes normally is not reported as already present"
 
 TEST_CASE("a retransmitted final chunk is not reported as already present", "[upload][session]")
 {
-    // Rules 9b then 9a, as every update on the P17 bench played them out before
+    // Rules 9b then 9a, as every update on the bench played them out before
     // the final chunk had its own deadline: the response to the last chunk is
     // late, the retransmission is answered `off == 0` because the server has
     // already completed and reset its session, the client re-sends a first

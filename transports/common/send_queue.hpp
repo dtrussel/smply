@@ -17,8 +17,8 @@
 /// response travels device → radio → OS → a pool thread → the client, while the
 /// local write's continuation waits for a thread of its own. So the core, having
 /// been answered, offers the next message and is refused — although the previous
-/// message is complete in every sense that matters. P17b measured this on a
-/// NUCLEO-WB55RG: a plain upload died on `TransportBusy` six cases into a run
+/// message is complete in every sense that matters. On a NUCLEO-WB55RG this
+/// made a plain upload die on `TransportBusy` partway through a bench run
 /// (docs/protocol-notes.md section 9, A22).
 ///
 /// The fix is to stop conflating "a writer is running" with "no further message

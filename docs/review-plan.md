@@ -5,8 +5,9 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 ## Progress
 
 - **Stage 0: done** (2026-09-24). See "Stage 0 results" below.
-- **Stage 1: 1a–1e done.** 1f (code comments) is next.
-- Stages 2–6: not started.
+- **Stage 1: done** (2026-09-24). R6 now covers source, build, CI and tool files as well as documents, so the history cannot creep back.
+- **Next: Stage 2**, the architecture review.
+- Stages 3–6: not started.
 
 ### Stage 0 results
 

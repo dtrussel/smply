@@ -36,7 +36,7 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # The reconnect policy in particular is why this target exists at all:
 # examples/winrt_ble_dfu/ cannot be run by CI, so the one part of a real
 # reconnect that is pure arithmetic is put somewhere cli_dfu can exercise it on
-# every push (P16).
+# every push.
 add_library(smply_dfu_app STATIC dfu_app/file_image_source.cpp)
 add_library(smply::dfu_app ALIAS smply_dfu_app)
 

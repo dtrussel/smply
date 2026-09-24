@@ -4,8 +4,8 @@
 #
 # Advisory, not required: it is a search, and a search that finds nothing today
 # may find something tomorrow from the same corpus. What makes it useful is that
-# it keeps running -- P13 replaced the roadmap's one-off "two hours per target
-# locally" with this job, on the grounds that a schedule outlives a measurement.
+# it keeps running. It replaces any one-off soak, because a schedule outlives a
+# measurement.
 #
 # A find is not a broken build; it is a bug report with a reproducer attached.
 # The reproducer is uploaded as an artifact and an issue is opened, and the fix

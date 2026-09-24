@@ -160,7 +160,7 @@ TEST_CASE("an image the device already holds completes on the first packet", "[c
     // `transferred` reads as the whole image, because the device acknowledged
     // the whole image -- which is why a caller needs this flag to tell "already
     // present" from "uploaded". It is what makes UpdateReport::upload_skipped
-    // true in this case; before P14 the report claimed a transfer.
+    // true in this case, rather than the report claiming a transfer.
     CHECK(outcome.value->already_present);
 
     // One request, and not one byte of image data written.
@@ -647,7 +647,7 @@ TEST_CASE("a busy reset is retried with force", "[component][os]")
 
 TEST_CASE("destroying the group mid-upload completes the callback once", "[component][lifetime]")
 {
-    // The lifetime rule P10 introduced, exercised where it actually bites: the
+    // The lifetime rule of a stateful group, exercised where it actually bites: the
     // outcome is declared before the fixture, so it outlives both the client
     // and the group whose destructors complete the callback. Clang's ASan is
     // the only thing that catches getting this wrong.

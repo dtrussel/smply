@@ -42,8 +42,8 @@ target_compile_features(smply_transport_common INTERFACE cxx_std_20)
 #
 # EXPORT_NAME, not just the ALIAS: install(EXPORT) names an exported target
 # <namespace><target-name>, which would give smply::smply_transport_common. The
-# in-tree ALIAS does not travel. This is the P15a lesson that cost smply::util
-# a release; tests/consumption/ is what would find it again.
+# in-tree ALIAS does not travel, and only tests/consumption/find_package
+# notices.
 set_target_properties(smply_transport_common PROPERTIES EXPORT_NAME transport_common)
 
 install(TARGETS smply_transport_common EXPORT smplyTargets)

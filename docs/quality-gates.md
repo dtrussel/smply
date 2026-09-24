@@ -465,10 +465,11 @@ empty.
   comment. This covers namespace scope only; `detail` namespaces are exempt.
 * **R5.** A path named in the repository-layout tree of
   [`architecture.md`](architecture.md) §10 does not exist.
-* **R6.** A living document names a development phase (`P<n>`). The library
-  was built in numbered phases, and that history is in git, not in the
-  documents (ADR-0018). ADR bodies are exempt, because they are immutable
-  records of their day.
+* **R6.** A living document, or a source, build, CI or tool file, names a
+  development phase (`P<n>`). The library was built in numbered phases, and
+  that history is in git, not in the documents or the comments (ADR-0018). ADR
+  bodies are exempt, because they are immutable records of their day. So are
+  fuzz corpora, which are data.
 
 R1 needs a diff base and a pull-request body. A plain branch push or a local run
 has neither, so R1 is skipped with a message and the other rules still run. A

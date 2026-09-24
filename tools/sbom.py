@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate an SPDX 2.3 SBOM for smply, and check it stays honest.
 
-`quality-gates.md` section 9 has promised an SBOM since P0 and nothing produced
-one until P18; this is that promise made true rather than deleted.
+This is the SBOM `quality-gates.md` section 9 describes.
 
 The inventory is read from the same two places the dependency gate reads, so an
 SBOM cannot disagree with the build:

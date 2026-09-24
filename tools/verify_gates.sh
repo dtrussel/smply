@@ -4,9 +4,8 @@
 # Proves that every quality gate actually FAILS when it should.
 #
 # A gate that never fires is worse than no gate: it produces a green tick that
-# means nothing. P0's acceptance criterion is that each gate has been observed
-# rejecting a deliberate violation, and this script is how that is demonstrated
-# and re-demonstrated.
+# means nothing. Each gate must have been observed rejecting a deliberate
+# violation, and this script is how that is demonstrated and re-demonstrated.
 #
 # It operates entirely on a throwaway copy of the tree in a temporary
 # directory. THE WORKING TREE IS NEVER MODIFIED.
@@ -104,9 +103,9 @@ restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$
 # A fixture that injects its violation by rewriting real source rots the moment
 # that source is reworded: sed matches nothing, the scratch tree stays valid, the
 # gate has nothing to reject, and the case reports PASS while testing nothing.
-# It has happened twice -- P1's roadmap fixture, and P15a's, when
+# It has happened twice -- a roadmap fixture, and the flag-leak fixture when
 # smply_internal_options gained a $<BUILD_INTERFACE:> wrapper. A silent no-op is
-# the one failure this script must never have, so it is now loud.
+# the one failure this script must never have, so it is loud.
 substitute() {
     local file="$1"
     local expression="$2"
@@ -299,11 +298,10 @@ restore docs/architecture.md
 
 # 11a-bis. Docs R5: a file named in SECOND position on a layout line.
 #
-# The distinct case, and the reason it exists. R5 read only the first token on
-# an entry line until P18, so every file listed beside another -- most of the
-# tree -- went unchecked *and* uncounted, and two entries naming files that do
-# not exist sat under a passing gate for four phases. 11a above would still
-# pass with that defect restored; this one would not.
+# The distinct case, and the reason it exists. A rule that read only the first
+# token on an entry line would leave every file listed beside another -- most
+# of the tree -- unchecked *and* uncounted. 11a above would still pass with
+# that defect; this one would not.
 python3 - "$WORK/docs/architecture.md" <<'PY2'
 import sys, pathlib
 p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
@@ -317,16 +315,21 @@ expect_fail "check_docs R5 reads past the first token on a layout line" \
 restore docs/architecture.md
 
 # 11b. Docs R6: a development-phase ID in a living document.
-printf '\nThis was added in P99.\n' >> "$WORK/docs/architecture.md"
+printf '\nThis was added in P%s.\n' 99 >> "$WORK/docs/architecture.md"
 expect_fail "check_docs R6 rejects a development-phase ID in a living document" \
     python3 tools/check_docs.py
 restore docs/architecture.md
+
+printf '// Added in P%s.\n' 99 >> "$WORK/src/version.cpp"
+expect_fail "check_docs R6 rejects a development-phase ID in a source comment" \
+    python3 tools/check_docs.py
+restore src/version.cpp
 
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error
 # message, the compile of tests/consumer is the ground truth behind it.
 # The real line links it PRIVATE *and* wraps it in $<BUILD_INTERFACE:> so the
-# install export is possible (P15a). The violation drops both.
+# install export is possible. The violation drops both.
 substitute "$WORK/CMakeLists.txt" \
     's|target_link_libraries(smply PRIVATE .*smply_internal_options.*)|target_link_libraries(smply PUBLIC smply_internal_options)|'
 
@@ -347,9 +350,8 @@ cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 
 # 17. The SBOM inventory.
 #
-# quality-gates.md section 9 promised an SBOM from P0 and nothing produced one
-# until P18, so the interesting failure is not a malformed document -- it is an
-# SBOM that silently omits a component, which reads as a clean bill of health.
+# The interesting failure is not a malformed document -- it is an SBOM that
+# silently omits a component, which reads as a clean bill of health.
 # tools/sbom.py --check exists for exactly that, and this proves it fires.
 cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'
 
@@ -363,7 +365,7 @@ restore cmake/dependencies.cmake
 
 # 18. The export.
 #
-# The P15a defect this guards against: install(EXPORT) names an exported target
+# The defect this guards against: install(EXPORT) names an exported target
 # <namespace><target-name>, so a target without EXPORT_NAME ships under a name
 # no consumer says, while everything in this repository still builds -- the
 # in-tree ALIAS resolves. It configured, built and installed perfectly and
@@ -405,10 +407,9 @@ fi
 
 # 14, 15 and 16. The coverage reporter.
 #
-# This is the gate with the worst history in the project: from P0 to P7 it
-# passed a directory in the position gcovr reads as an output filename, printed
-# nothing, and exited 0 -- so CI reported a coverage gate that had never
-# measured anything. Every other check in this script proves a *checker*
+# This gate has the worst failure mode in the project: passing a directory in
+# the position gcovr reads as an output filename prints nothing and exits 0, so
+# CI reports a coverage gate that has never measured anything. Every other check in this script proves a *checker*
 # rejects a violation; none of them covered the reporter, which is exactly how
 # that survived seven phases.
 #

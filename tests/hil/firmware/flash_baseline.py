@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Return the NUCLEO-WB55RG to the P17 baseline: MCUboot + image A, verified.
+"""Return the NUCLEO-WB55RG to the bench baseline: MCUboot + image A, verified.
 
 This is the bench's one recovery primitive, and the reason every HIL case can run
 unattended: whatever a case leaves in flash -- a pending swap, a corrupted slot,

@@ -464,7 +464,7 @@ public:
     /// returns without freeing its context), and it is what lets this run over
     /// a console that also carries an echoing shell and a log backend -- the
     /// exact configuration that stopped a third-party client from completing an
-    /// upload in P17c (docs/protocol-notes.md section 9).
+    /// upload on the bench (docs/protocol-notes.md section 9).
     [[nodiscard]] Outcome feed_line(ConstBytes line) noexcept
     {
         if (ready_ != 0) {

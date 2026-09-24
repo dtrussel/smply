@@ -7,7 +7,7 @@
 # Read windows-winrt for exactly what it is: a GitHub runner has no Bluetooth
 # radio, so that job COMPILES the WinRT adapter and links a smoke executable
 # against it. It never puts a byte on the air. Green means "it builds", not
-# "it works"; the behavioural coverage arrives with the hardware suite (P17).
+# "it works"; the behavioural coverage is the hardware suite (tests/hil/).
 #
 # The nightly soak lives in its own workflow (nightly-fuzz.yml) because it is
 # scheduled and advisory, not part of this required run.
@@ -33,9 +33,8 @@ jobs:
         include:
           - { os: ubuntu-latest,  preset: linux-gcc }
           - { os: ubuntu-latest,  preset: linux-clang }
-          # Release, because that is what a consumer builds. Nothing in this
-          # project compiled above -O0 until P15a, and the first attempt did
-          # not: an optimisation-only warning had never had the chance to fire.
+          # Release, because that is what a consumer builds, and because some
+          # warnings fire only under optimisation.
           - { os: ubuntu-latest,  preset: linux-gcc-release }
           - { os: ubuntu-latest,  preset: linux-gcc-fallback-expected }
           # Builds the same tests against std::expected. Without this the
@@ -182,7 +181,7 @@ jobs:
       - name: Consume smply from outside the tree, three ways
         run: tools/check_install.sh "${{ runner.temp }}/install-check"
 
-      # The SBOM quality-gates.md section 9 has promised since P0. Generated
+      # The SBOM quality-gates.md section 9 describes. Generated
       # from the same pins the build uses, so it cannot describe a different
       # dependency set than the one that was just installed.
       - name: Generate the SBOM

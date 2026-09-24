@@ -29,10 +29,10 @@
 /// `transports/common/ble_framing.hpp` -- so every delay a test asserts is
 /// exact rather than nearly right.
 ///
-/// ### What the defaults are for, after hardware (P17)
+/// ### What the defaults are for, measured on hardware
 ///
 /// **This is a give-up bound, not a pacing schedule.** The defaults below were
-/// chosen without a radio and P17 measured what they actually do on Windows:
+/// chosen without a radio, and the bench measured what they do on Windows:
 /// nothing. `WinRtBleTransport::connect()` blocks inside the projection until
 /// the device answers, so attempt 1 succeeded in every run and the doubling
 /// never ran; and the bounded discovery retry now absorbs the platform's stale

@@ -629,10 +629,10 @@ def compare(left_name: str, left: list[dict], right_name: str,
 
 # --- self-test ----------------------------------------------------------------
 #
-# The goldens are real bytes from the NUCLEO-WB55RG peer, recorded during P17a
+# The goldens are real bytes from the NUCLEO-WB55RG peer, recorded during bench
 # bring-up and kept in build/hil-evidence/manual/. Using the device's own bytes
 # rather than hand-built ones is the whole point: A18 (indefinite-length CBOR)
-# was invisible to every hand-built golden in P5-P8.
+# was invisible to every hand-built golden.
 
 GOLDEN_PARAMS = bytes.fromhex(
     "0900001900000006"

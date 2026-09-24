@@ -85,8 +85,9 @@ struct Options
     /// The device is left in its trial boot, which MCUboot reverts on the next
     /// reset unless something confirms first. A real deployment tool does
     /// exactly this when the decision to keep an image belongs to a self-test
-    /// that runs later, or to an operator; P17c needs it because a cross-check
-    /// can only compare clients at the trial boot if every client stops there.
+    /// that runs later, or to an operator. The hardware cross-check needs it
+    /// too: it can compare clients at the trial boot only if every client
+    /// stops there.
     bool stop_before_confirm = false;
 
     /// `--mode confirm-only`: confirm whatever the device is running, and stop.
@@ -343,7 +344,7 @@ int main(int argc, char** argv)
     // Every line is stamped with the milliseconds since the update began. On a
     // real link that is the only way to see *where* the time goes -- the
     // device's own work on the final chunk, the reboot, the reconnect -- and it
-    // is what P17 measured the reconnect policy from.
+    // is what the bench measured the reconnect policy from.
     const auto started = std::chrono::steady_clock::now();
     const auto elapsed_ms = [&] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(

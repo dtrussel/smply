@@ -3,9 +3,9 @@
 // The reconnect schedule: how long to wait, and when to stop waiting.
 //
 // This is the portable half of what examples/winrt_ble_dfu/ does and CI cannot
-// run (P16). It is also the first test anywhere of retry-with-backoff-then-
-// give-up: FirmwareUpdater::reconnect_failed() had been public API reached only
-// by the component suite, because cli_dfu reconnects instantly to an in-process
+// run. It is also the one unit test of retry-with-backoff-then-give-up:
+// otherwise FirmwareUpdater::reconnect_failed() is reached only by the
+// component suite, because cli_dfu reconnects instantly to an in-process
 // stub. Every delay below is an exact integer -- the schedule uses no floating
 // point precisely so that a test can say what it should be rather than
 // approximately what it should be.

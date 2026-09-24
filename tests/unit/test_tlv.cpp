@@ -390,7 +390,7 @@ TEST_CASE("more entries than the cap is a bounded failure", "[tlv][hostile]")
 
 TEST_CASE("exactly the cap of entries is accepted", "[tlv]")
 {
-    // The boundary P8 got wrong in the CBOR reader: a cap of N must admit N.
+    // The boundary the CBOR reader once got wrong: a cap of N must admit N.
     ImageBuilder builder;
     for (std::size_t i = 0; i + 1 < smply::limits::kMaxImageTlvs; ++i) {
         builder.tlv(kTlvKeyHash, {});

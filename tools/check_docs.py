@@ -14,8 +14,9 @@ Enforces that documentation stays a first-class product artefact:
       every ADR is listed in the index, docs/decisions/README.md;
   R4  every public symbol declared in include/smply/ has a /// doc comment;
   R5  every path in architecture.md's repository-layout tree exists;
-  R6  no development-phase ID (P<n>) in a living document -- the history is in
-      git (ADR-0018). ADR bodies are exempt: they are immutable records.
+  R6  no development-phase ID (P<n>) in a living document or a source file --
+      the history is in git (ADR-0018). ADR bodies are exempt: they are
+      immutable records.
 
 R1 needs a diff base and, for the escape hatch, a pull-request body. Outside a
 PR (a plain branch push, or a local run) neither exists; R1 is then skipped
@@ -303,16 +304,14 @@ def rule_4_public_symbols_documented() -> list[str]:
 
 # A layout-tree line: box-drawing glyphs, then everything after them.
 #
-# **Everything**, not the first token. It captured only the first token until
-# P18, which meant that on a line like
+# **Everything**, not the first token. On a line like
 #
 #     ├── tests/support/    fake_transport.*  manual_clock.hpp  message_builder.hpp
 #
-# only `tests/support/` was ever looked at -- and most of section 10's tree
-# names several files per line. Two of P18's audit findings were files listed
-# in second position that do not exist, sitting under a gate reporting a pass.
-# Worse, they were not counted as skipped either, so the skip count that exists
-# to expose a narrowed rule could not see this one.
+# a first-token rule looks only at `tests/support/` -- and most of section 10's
+# tree names several files per line. Files listed in second position would go
+# unchecked, and uncounted as skipped too, so the skip count that exists to
+# expose a narrowed rule could not see it.
 LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(.*)$")
 
 # A continuation line: the glyph column, then prose that continues the entry
@@ -390,7 +389,7 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
 
     It prints how many entries it skipped. That number is the point: a rule that
     silently narrows to nothing still reports a pass, which is exactly how
-    `verify_gates.sh`'s R2 fixture rotted (roadmap.md, P1 follow-up). A reader
+    a self-check fixture can rot. A reader
     who sees "checked 3, skipped 60" knows the rule has stopped working; a
     reader who sees "OK" does not.
     """
@@ -472,16 +471,36 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
     return errors
 
 
-# A development-phase ID: P0 ... P20, P14a. The library was built in numbered
-# phases and the living documents used to be written in terms of them; they
-# now describe the present, and the history is in git (ADR-0018).
+# A development-phase ID: a capital P, one or two digits, an optional letter.
+# The library was built in numbered phases and the living documents used to be
+# written in terms of them; they now describe the present, and the history is
+# in git (ADR-0018).
 PHASE_ID = re.compile(r"\bP\d{1,2}[a-z]?\b")
+
+
+# Where R6 also looks, beyond the documents: code comments, build files, CI and
+# tools. A comment explains the code as it is; how it got that way is in git.
+SOURCE_ROOTS = ("include/", "src/", "transports/", "support/", "examples/", "tests/",
+                "tools/", "cmake/", ".github/", "CMakeLists.txt", "CMakePresets.json")
+SOURCE_EXCLUDED = ("tests/fuzz/corpus/",)  # fuzzer inputs are data, not prose
+
+
+def _source_files() -> list[Path]:
+    files: list[Path] = []
+    for name in git("ls-files").splitlines():
+        if name.startswith(SOURCE_ROOTS) and not name.startswith(SOURCE_EXCLUDED):
+            files.append(REPO / name)
+    return files
 
 
 def rule_6_no_phase_ids() -> list[str]:
     errors: list[str] = []
-    for path in _living_documents(include_adrs=False):
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for path in _living_documents(include_adrs=False) + _source_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue  # binary, or deleted in the working tree
+        for number, line in enumerate(text.splitlines(), 1):
             match = PHASE_ID.search(line)
             if match:
                 errors.append(

@@ -2,8 +2,7 @@
 #
 # OSV-Scanner over the pinned dependency set.
 #
-# quality-gates.md section 9 has claimed a weekly scan since P0 and there was
-# nothing behind it until P18. This is that claim made true.
+# The weekly scan quality-gates.md section 9 describes.
 #
 # It is advisory, not a pull-request gate. A vulnerability disclosed in QCBOR
 # on a Tuesday is real whether or not somebody happens to open a PR, and a job

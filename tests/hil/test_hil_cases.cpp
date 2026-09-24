@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// \file
-/// The hardware interoperability cases (docs/testing.md section 6, roadmap P17b).
+/// The hardware interoperability cases (docs/testing.md section 6).
 ///
 /// Every case starts from whatever the device is running and works out its own
 /// target: the image (A or B) that is *not* active. That is what lets the
@@ -104,7 +104,7 @@ struct Session
         // A constructor that throws never runs its destructor, so the timeline
         // below -- which is where the *reason* a connect failed is recorded
         // (Rig::connect notes the error) -- would be lost precisely in the case
-        // worth diagnosing. P17b spent a bench run discovering that: a forced
+        // worth diagnosing. A bench run was spent discovering that: a forced
         // discovery failure produced a bare 'REQUIRE(rig.connect())' and no
         // error string anywhere in the evidence bundle. Handled here rather
         // than in a function-try-block, whose handler may not touch members.
@@ -500,8 +500,8 @@ TEST_CASE("hil: a corrupted image is refused and the device keeps running what i
     const auto report = s.rig.update(source, plan, {});
 
     // The point is that MCUboot refused the image and the device kept running
-    // what it had. The updater surfaces that refusal one of two ways, and P17b
-    // recorded which: a body byte flipped after signing fails the image's own
+    // what it had. The updater surfaces that refusal one of two ways, and the
+    // bench recorded which: a body byte flipped after signing fails the image's own
     // IMAGE_TLV_SHA256, so the bootloader reverts *before* the client can
     // reconnect. VerifyingBooted then finds the old image running and the
     // update ends unsuccessfully -- observed here as a **failure Result**, not

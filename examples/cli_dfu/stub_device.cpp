@@ -176,8 +176,8 @@ std::vector<std::byte> StubDevice::encode_state() const
         // Nine pairs with a hash, eight without. Count them against the block
         // below before changing either: a definite-length CBOR map that lies
         // about its size decodes as garbage from that point on, and the error
-        // surfaces somewhere else entirely ("array element not a map"). P11 hit
-        // this exact off-by-one in the simulator.
+        // surfaces somewhere else entirely ("array element not a map"). The
+        // simulator has had this exact off-by-one.
         out.map(slot.hash.has_value() ? 9 : 8);
         out.text("image").uint(0);
         out.text("slot").uint(index);

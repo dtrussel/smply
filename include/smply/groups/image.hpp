@@ -422,9 +422,9 @@ struct UploadResult
     /// final chunk is lost or late, the retransmitted chunk is answered
     /// `off == 0` (rule 9b) and the session restarts with a first packet, which
     /// the server then completes by that same check -- because it now holds
-    /// the image *this session sent*. That is a transfer, not a skip; P17 saw
-    /// it on every update against a device whose final-chunk work exceeded the
-    /// old deadline. A session that made progress therefore never reports it,
+    /// the image *this session sent*. That is a transfer, not a skip, and it
+    /// happens on every update against a device whose final-chunk work exceeds
+    /// the deadline (protocol-notes A19). A session that made progress therefore never reports it,
     /// whichever packet finished it.
     bool already_present = false;
     /// The device's own verdict on the flashed bytes, when it has one.

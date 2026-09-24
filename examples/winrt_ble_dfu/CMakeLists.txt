@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# The Bluetooth LE DFU tool: the pump loop against a real radio (P16).
+# The Bluetooth LE DFU tool: the pump loop against a real radio.
 #
 # Windows-only, and reached only when SMPLY_BUILD_WINRT is on -- examples/
 # guards the add_subdirectory. Like every example it links the PUBLIC targets

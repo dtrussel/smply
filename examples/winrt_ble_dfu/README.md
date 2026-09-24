@@ -11,7 +11,7 @@ get wrong and impossible to see in a single-shot example.
 
 This program was written on Linux, where it cannot be compiled, and the
 `windows-winrt` CI job compiles and links it on a runner with no Bluetooth radio.
-**It first ran in P17a** (2026-09-08), against a NUCLEO-WB55RG running Zephyr
+**It first ran on 2026-09-08**, against a NUCLEO-WB55RG running Zephyr
 4.4.99's `smp_svr` (`tests/hil/README.md`):
 
 | Claim | Status |
@@ -21,7 +21,7 @@ This program was written on Linux, where it cannot be compiled, and the
 | Reading firmware off disk | **verified** — the same `FileImageSource` `cli_dfu` uses |
 | What Zephyr advertises, and the active-scan requirement | **verified against Zephyr's source** (protocol-notes §8, S22); the device advertised the SMP UUID and was found by it |
 | Connecting by address and a whole update over the air | **verified on hardware** — `Completed` in both directions, about 26 s for a 134 KiB image including the device's 6 s reboot |
-| `--name` (an active scan for the scan-response name) | verified on hardware in P17a's log |
+| `--name` (an active scan for the scan-response name) | verified on hardware, in the first bench run's log |
 
 Each line of the progress output carries the milliseconds since the update
 began, and the report ends with the client's counters (`sent`, `received`,

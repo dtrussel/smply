@@ -759,7 +759,7 @@ TEST_CASE("console noise between frames does not disturb a packet", "[serial][de
 {
     // The reason this module can be used over CONFIG_SHELL_BACKEND_SERIAL at
     // all, and the behaviour Zephyr's own receiver has: a line with no marker
-    // is ignored and the partial packet is KEPT. P17c is what this is for --
+    // is ignored and the partial packet is KEPT. This is what it is for --
     // a third-party client could not complete an upload over exactly this
     // console (docs/protocol-notes.md section 9).
     const std::vector<std::byte> packet = counted(300);

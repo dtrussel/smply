@@ -13,15 +13,14 @@ missingIncludeSystem
 # reach consumers (tests/consumer/CMakeLists.txt).
 *:tests/consumer/consumer_check.cpp
 
-# The `syntaxError:tests/*` suppression that stood here from P7 to P13 is gone.
-# It papered over a parser artefact -- cppcheck was run with no include paths
-# and no pinned preprocessor configuration, so it explored a Catch2 option
+# There is no blanket `syntaxError:tests/*` suppression. Without include paths
+# and a pinned preprocessor configuration, cppcheck explores a Catch2 option
 # combination in which TEST_CASE is undefined and the tests do not parse.
-# tools/lint.sh now supplies both, and the tests parse. Nothing is suppressed
-# for include/, src/ or tests/ any more beyond the two entries above.
+# tools/lint.sh supplies both, and the tests parse. Nothing is suppressed for
+# include/, src/ or tests/ beyond the two entries above.
 
 # ---
-# Dependency headers. Giving cppcheck the project's include paths (P13) also
+# Dependency headers. Giving cppcheck the project's include paths also
 # gives it Catch2's and QCBOR's, and it reports on what it finds there --
 # `duplInheritedMember` in catch_message.hpp, for one. Those are not ours to
 # fix, and the alternative of withholding the include paths is what produced

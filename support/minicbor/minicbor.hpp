@@ -14,9 +14,9 @@
 /// that emits a wrong head and a reader that accepts it -- would sail straight
 /// through. Anchored on this side by hand-built byte vectors, it cannot.
 ///
-/// **Two consumers, and the rule holds for both** (it moved here from
-/// `tests/support/` in P14b): the test doubles in `tests/support/`, and the stub
-/// device in `examples/cli_dfu/`. It lives outside both because an example may
+/// **Two consumers, and the rule holds for both**: the test doubles in
+/// `tests/support/`, and the stub device in `examples/cli_dfu/`. It lives
+/// outside both because an example may
 /// not depend on `tests/` -- examples build when `SMPLY_BUILD_TESTS` is `OFF` --
 /// and because a file named `test_cbor` had no business in a shipped example.
 ///

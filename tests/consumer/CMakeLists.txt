@@ -9,7 +9,8 @@
 # would fail to build.
 #
 # The fuller out-of-tree consumption matrix (find_package / FetchContent /
-# add_subdirectory against an install tree) is P18.
+# add_subdirectory against an install tree) is tests/consumption/, driven by
+# tools/check_install.sh.
 
 add_executable(smply_consumer_check consumer_check.cpp)
 
@@ -53,7 +54,7 @@ if(_smply_iface_libs)
     # $<LINK_ONLY:, which propagates linking but not compile options -- the
     # correct and expected form. The previous version pattern-matched
     # "$<LINK_ONLY:[^>]*>" across the joined string, which stopped at the first
-    # '>' and so misread the *nested* genex P15a introduced
+    # '>' and so misread the *nested* genex the export needs
     # ($<LINK_ONLY:$<BUILD_INTERFACE:smply_internal_options>>, needed to keep the
     # options out of the install export). It reported a leak that was not there.
     # A per-entry prefix test cannot be confused by nesting.

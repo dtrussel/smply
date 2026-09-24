@@ -3,7 +3,7 @@
 /// \file
 /// Proves the WinRT adapter links and can be called. Not a functional test.
 ///
-/// **Why this exists.** P15b's adapter cannot be exercised by CI: a GitHub
+/// **Why this exists.** The adapter cannot be exercised by CI: a GitHub
 /// runner has no Bluetooth radio, so `windows-winrt` compiles the transport and
 /// then never runs a byte through it. A compile-only job would also miss a
 /// whole class of failure that only appears at link time -- a missing
@@ -14,7 +14,7 @@
 /// **What it does not prove.** Nothing about GATT. The one assertion that must
 /// hold needs no radio at all; the connection attempt afterwards is required
 /// only to return rather than to crash or hang. Every behavioural claim about
-/// this adapter is unverified until P17.
+/// this adapter rests on the hardware bench (tests/hil/).
 
 #include "winrt_ble/winrt_ble_transport.hpp"
 

@@ -39,10 +39,9 @@ if(SMPLY_BUILD_TESTS)
     set_tests_properties(cli_dfu_demo PROPERTIES TIMEOUT 60)
 
     # The two below are why --flaky-reconnect exists. A real BLE reconnect after
-    # a reboot needs retry, backoff and a point at which it gives up; before
-    # P16 nothing in this repository exercised any of them, because this example
-    # reconnects instantly to a stub in its own process and
-    # FirmwareUpdater::reconnect_failed() was reached only by the component
+    # a reboot needs retry, backoff and a point at which it gives up. This
+    # example otherwise reconnects instantly to a stub in its own process, and
+    # FirmwareUpdater::reconnect_failed() would be reached only by the component
     # suite. These make both paths run on every push.
     add_test(NAME cli_dfu_flaky_reconnect COMMAND cli_dfu --quiet --flaky-reconnect 3)
     set_tests_properties(cli_dfu_flaky_reconnect PROPERTIES TIMEOUT 60)

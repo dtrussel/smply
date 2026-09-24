@@ -25,7 +25,7 @@ present to answer stalls the bench for as long as it takes someone to notice.
 
 ### A listening port is not a working capture
 
-`build/capture-probe.pcapng`, recorded during P17a, is a **valid pcapng with a
+`build/capture-probe.pcapng`, recorded during bench bring-up, is a **valid pcapng with a
 correct interface name, the right encapsulation, and zero packets**. BTVS's
 listener accepts the TCP connection and negotiates the link type without
 elevation; what it will not do unelevated is deliver packets. So "the socket

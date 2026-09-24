@@ -2,7 +2,7 @@
 """Measure how long the peer is unreachable after an SMP reset.
 
 `support/dfu_app/reconnect_policy.hpp` ships defaults that were chosen without
-hardware (P16). This is the stopwatch that replaces the guess: for each of N
+hardware. This is the stopwatch that replaces the guess: for each of N
 iterations it connects, sends an OS-group reset, and records -- relative to the
 moment the device accepted the reset --
 
@@ -15,7 +15,7 @@ moment the device accepted the reset --
 
 It is a bench instrument, not a protocol reference: the third-party `smp`/`bleak`
 packages are used only to put a reset on the air and listen (ADR-0015). The
-numbers it prints feed ReconnectSettings and the P17 outcome; nothing in the
+numbers it prints feed ReconnectSettings and protocol-notes A20; nothing in the
 library is derived from them without a protocol-notes entry.
 
 Usage (from the bench venv):

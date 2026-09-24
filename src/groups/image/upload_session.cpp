@@ -211,7 +211,7 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
         // so the distinction has to be drawn here, where it is still known.
         // Unless this session already moved bytes: then the first packet was a
         // re-send after the server reset the session (rule 9b) and the image
-        // it "already holds" is the one we just sent (P17, A19).
+        // it "already holds" is the one we just sent (protocol-notes A19).
         const bool on_first_packet = state.in_flight_first_packet && !state.progressed;
         return Step{.action = Action::Complete,
                     .request = {},

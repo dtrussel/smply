@@ -25,8 +25,8 @@ status=0
 
 # --- the directories neither analyser can see -------------------------------
 #
-# The Windows-only code: the WinRT BLE adapter (P15b), the example that drives
-# it (P16) and the hardware cases that drive both against a device (P17b).
+# The Windows-only code: the WinRT BLE adapter, the example that drives it and
+# the hardware cases that drive both against a device.
 # clang-tidy is driven from a LINUX compile database, where these translation
 # units do not appear at all, so it would fall back to default arguments and die
 # on the first <winrt/...> include; cppcheck can parse neither the projection
@@ -84,11 +84,10 @@ if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
     # is on only in linux-clang-fuzz, and the gates job configures linux-clang.
     # clang-tidy therefore *infers* their command from a neighbouring directory,
     # exactly as it does for the two consumer projects above -- but unlike those
-    # it still analyses them, so for six phases seven fuzz TUs were linted under
-    # flags that are not the flags they compile with. It went unnoticed because
-    # the guessed command happened to carry every include root those seven
-    # needed; the first fuzz target to include a transport header (P20's
-    # fuzz_serial_deframe) turned it into a hard "file not found".
+    # it still analyses them, under a guessed command that need not carry the
+    # include roots they need. A fuzz target that includes a transport header
+    # turns that into a hard "file not found"; one that does not is silently
+    # linted under flags that are not the flags it compiles with.
     #
     # Naming the project's own include roots explicitly fixes it without making
     # the gate depend on a second build directory that CI does not configure.
@@ -117,8 +116,8 @@ fi
 #
 # cppcheck is given the project's include paths, unlike clang-tidy it cannot
 # read compile_commands.json for them. Without them it parsed the Catch2 test
-# files blind and reported a syntaxError at the first TEST_CASE, which cost the
-# gate a blanket `syntaxError:tests/*` suppression until P13.
+# files blind and reported a syntaxError at the first TEST_CASE, which would
+# need a blanket `syntaxError:tests/*` suppression.
 #
 # The include paths alone were not enough. The real cause was the *preprocessor
 # configuration*: with no macros pinned, cppcheck explores Catch2's own option

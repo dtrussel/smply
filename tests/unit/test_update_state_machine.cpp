@@ -5,8 +5,8 @@
 // machine out of `FirmwareUpdater`: every recovery rule is a value-in,
 // value-out assertion instead of a scenario needing a device.
 //
-// Three rules the suite exists to protect, each read out of the server in P11
-// (docs/protocol-notes.md section 7):
+// Three rules the suite exists to protect, each read out of the server's
+// source (docs/protocol-notes.md section 7):
 //
 //   * a rollback is recognised from the FLAGS, not from a hash alone;
 //   * a refused mark-for-test is recoverable exactly once, in EITHER shape --
@@ -485,7 +485,8 @@ TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine
     // The same rule over SMP v1. A server with
     // CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL translates the image code
     // onto `mcumgr_err_t` and drops the group, so the recovery above never
-    // sees `ImageAlreadyPending` and, before P19, could not fire at all.
+    // sees `ImageAlreadyPending`. Branching on that code alone, it could not
+    // fire at all.
     Context context = fresh();
     const Step retried = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
                                  UpdatePlan{}, context);
@@ -677,7 +678,7 @@ TEST_CASE("an image that booted already confirmed needs nothing further", "[dfu]
 
 TEST_CASE("the old image running with nothing pending is a rollback", "[dfu][machine]")
 {
-    // The rule P11 exists to protect: decided from the flags. "Not confirmed"
+    // The rule the flags exist to protect: decided from them. "Not confirmed"
     // cannot mean "wrong image", because a trial boot reports exactly that.
     Context context = fresh();
     context.swap_scheduled = true;

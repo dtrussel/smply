@@ -4,16 +4,15 @@
 # Coverage report for smply's own sources (docs/quality-gates.md section 6).
 #
 # With --enforce the thresholds are real and a shortfall fails the run; without
-# it the report is printed and the script exits 0. CI passes --enforce (from
-# P13); a developer running it by hand usually does not want a non-zero exit
+# it the report is printed and the script exits 0. CI passes --enforce; a
+# developer running it by hand usually does not want a non-zero exit
 # while iterating.
 #
 # **Enforcement requires gcovr.** The lcov and gcov fallbacks below produce a
 # different measurement -- the branch figure moves by roughly 12 points -- so
 # enforcing against one of them would be enforcing a different threshold than
 # the one quality-gates.md names. --enforce without gcovr is an error, not a
-# pass: a gate that cannot fail is not a gate, which this script learned the
-# hard way between P0 and P7.
+# pass: a gate that cannot fail is not a gate.
 #
 # Usage: tools/coverage.sh [build-dir] [--enforce]
 set -uo pipefail
@@ -49,9 +48,9 @@ fi
 
 if command -v gcovr >/dev/null 2>&1; then
     # The search path must NOT follow --txt: gcovr takes the next positional as
-    # that option's output file, and a directory there makes it fail. It failed
-    # exactly that way from P0 until P7 -- silently, because this script exits 0
-    # by design, so CI stayed green while producing no report at all.
+    # that option's output file, and a directory there makes it fail --
+    # silently, without --enforce, because this script then exits 0 by design,
+    # so CI would stay green while producing no report at all.
     gcovr --root "$REPO" \
           "$BUILD_DIR" \
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \

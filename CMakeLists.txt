@@ -21,9 +21,10 @@ option(SMPLY_BUILD_TESTS    "Build smply's tests"            ${PROJECT_IS_TOP_LE
 option(SMPLY_BUILD_EXAMPLES "Build smply's examples"         ${PROJECT_IS_TOP_LEVEL})
 option(SMPLY_BUILD_FUZZERS  "Build libFuzzer targets"        OFF)
 option(SMPLY_BUILD_WINRT    "Build the WinRT BLE transport (Windows only)" OFF)
-option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests (P17)" OFF)
+option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests" OFF)
 option(SMPLY_USE_SYSTEM_QCBOR "Use find_package(qcbor) instead of FetchContent" OFF)
-# P1 introduces the expected<> fallback; the option exists now so CI can pin it.
+# Forces smply's own expected<> even where std::expected exists, so CI can test
+# both backings (ADR-0002).
 option(SMPLY_FORCE_FALLBACK_EXPECTED
        "Use smply's expected<> even when std::expected is available" OFF)
 
@@ -212,7 +213,7 @@ endif()
 
 # Portable helpers for transport adapters. Built everywhere, tested on Linux --
 # the arithmetic a BLE adapter needs is not Windows-specific, and putting it
-# here is what lets it be verified without a radio (P15a).
+# here is what lets it be verified without a radio.
 add_subdirectory(transports)
 
 # Shared by the tests and the examples; part of neither, and never linked into

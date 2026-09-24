@@ -170,7 +170,7 @@ RequestHandle OsManagement::mcumgr_parameters(Callback<McumgrParameters> on_done
         static_cast<void>(reader.leave_map());
 
         // Checked before the values are trusted: a wrong-typed field poisons
-        // the reader and leaves both looking merely absent (P5's rule).
+        // the reader and leaves both looking merely absent.
         if (const auto status = reader.status(); !status.has_value()) {
             callback(fail(status.error()));
             return;

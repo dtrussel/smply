@@ -11,8 +11,8 @@
 /// value-in, value-out unit test rather than a scenario needing a device --
 /// the same split ADR-0008 established for the upload, and for the same reason.
 ///
-/// Three rules live here and nowhere else, each read out of the server in P11
-/// (docs/protocol-notes.md section 7):
+/// Three rules live here and nowhere else, each read out of the server's
+/// source (docs/protocol-notes.md section 7):
 ///
 /// * **A rollback is recognised from the flags, not from a hash alone.** After
 ///   a trial boot the running image reports `active` with *no* `confirmed`, so

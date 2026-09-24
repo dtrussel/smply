@@ -11,8 +11,8 @@ arrangement is specified in [`docs/design.md`](../../docs/design.md) §10 and
 
 This adapter was written on Linux, where not one line of it can be compiled, and
 the `windows-winrt` CI job compiles it and runs a link-and-call smoke test on a
-runner that has no Bluetooth radio. **It first ran against a device in P17a**
-(2026-09-08): a NUCLEO-WB55RG running Zephyr 4.4.99's `smp_svr`, driven by
+runner that has no Bluetooth radio. **It first ran against a device on
+2026-09-08**: a NUCLEO-WB55RG running Zephyr 4.4.99's `smp_svr`, driven by
 `examples/winrt_ble_dfu`. So:
 
 | Claim | Status |
@@ -20,12 +20,12 @@ runner that has no Bluetooth radio. **It first ran against a device in P17a**
 | It compiles at `/W4 /WX` and links | **verified** by CI |
 | The SMP UUIDs are the ones in the specification | **verified** — unit-tested bytes (`tests/unit/test_ble_framing.cpp`), and the device answered on them |
 | Fragment sizing and the fragment walk | **verified** — `transports/common/`, 100 % covered; 134 KiB uploads in 512-byte chunks over the air |
-| Discovery, the CCCD write, notification delivery, the write path | **verified on hardware** — five complete updates in both directions, 271 requests each with no loss when deadlines are right (`docs/roadmap.md`, P17a outcome) |
+| Discovery, the CCCD write, notification delivery, the write path | **verified on hardware** — five complete updates in both directions, 271 requests each with no loss when deadlines are right (`docs/protocol-notes.md` §9, A19) |
 | Disconnect detection and reconnect after the device's reset | **verified on hardware** — `ConnectionStatusChanged` fires within a second of the reset; `connect()` blocks and succeeds once the device advertises again (about 6 s after a swap) |
 | MTU | **observed**: Windows negotiates after the connection is up, so reading `MaxPduSize` per `send()` rather than caching it was the right call |
 | The `close()` grace bound, an interrupted link mid-write | **verified on hardware** — the interrupted-upload case measures a close at **2 ms**, so the five-second grace is a bound with three orders of magnitude of headroom, not a wait anything pays |
 | Send admission under back-to-back load | **verified on hardware** — one waiting message beside the one being written (`transports/common/send_queue.hpp`); the sequential suite is green three consecutive times where it failed four cases before, the waiting slot was used on three to six cases per run, and a negative control without it reproduces the failure (`docs/protocol-notes.md` §9, A22) |
-| The bounded service-discovery retry | **error path proven, benefit not** — forcing an empty characteristic collection makes `connect()` run its six attempts and fail with the right message, but the behaviour it exists for did not reproduce in five full runs, and discovery succeeded on the first attempt in 20 of 20 measured discoveries. It rests on the P17b observation, not on a failure that disappeared |
+| The bounded service-discovery retry | **error path proven, benefit not** — forcing an empty characteristic collection makes `connect()` run its six attempts and fail with the right message, but the behaviour it exists for did not reproduce in five full runs, and discovery succeeded on the first attempt in 20 of 20 measured discoveries. It rests on one bench observation (A22), not on a failure that disappeared |
 | Teardown of a failed `connect()` | **exercised** by that same forced failure: the half-built link runs the whole `close()` sequence and returns rather than hanging on the write grace |
 
 Two things in this directory did change to make a *sequential* run work, and
@@ -100,7 +100,7 @@ prove.
 Scanning, pairing and connection policy: this adapter is handed an address. A
 dropped link stays dropped, so reconnecting after a device reboot means a *new*
 transport and `SmpClient::rebind_transport()`. The console application that does
-all of that is P16.
+all of that is `examples/winrt_ble_dfu/`.
 
 ## Static analysis
 
