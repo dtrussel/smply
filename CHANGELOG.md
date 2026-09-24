@@ -73,6 +73,15 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **Breaking: `UpdateEvent` is a `std::variant`** of `UpdateStateChanged`,
+  `UploadProgress`, `DisconnectExpected`, `ReconnectRequired`,
+  `ConfirmationRequired` and `UpdateFinished`, replacing a struct with a `Kind`
+  enum. In the struct, most fields were meaningful for one kind only, and
+  `Finished` handed out a raw pointer valid only during the callback.
+  `UpdateFinished` now holds its `Result<UpdateReport>` by value, and
+  `ReconnectRequired::hint` replaces `reconnect_hint`. A `std::visit` over the
+  event fails to compile when a kind is not handled. `smply::overloaded`
+  combines lambdas into one visitor, and both examples show the idiom.
 - **The upload's values move to `smply/groups/image_upload.hpp`**:
   `UploadOptions`, `UploadProgress`, `UploadResult`, `UploadHandle`, and a new
   `ProgressCallback` alias for the progress callback `upload()` takes.

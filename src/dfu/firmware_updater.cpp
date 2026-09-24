@@ -271,11 +271,7 @@ private:
         const UpdateState previous = state_;
         state_ = next;
 
-        UpdateEvent event;
-        event.kind = UpdateEvent::Kind::StateChanged;
-        event.from = previous;
-        event.to = next;
-        emit(event);
+        emit(UpdateStateChanged{.from = previous, .to = next});
     }
 
     void apply(Effect effect)
@@ -354,25 +350,18 @@ private:
 
         case Effect::AwaitDisconnect: {
             grace_deadline_ = last_poll_ + plan_.disconnect_grace;
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::DisconnectExpected;
-            emit(event);
+            emit(DisconnectExpected{});
             return;
         }
 
         case Effect::RequestReconnect: {
             grace_deadline_.reset();
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::ReconnectRequired;
-            event.reconnect_hint = plan_.reconnect_hint;
-            emit(event);
+            emit(ReconnectRequired{.hint = plan_.reconnect_hint});
             return;
         }
 
         case Effect::RequestConfirmation: {
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::ConfirmationRequired;
-            emit(event);
+            emit(ConfirmationRequired{});
             return;
         }
 
@@ -405,14 +394,7 @@ private:
         }
 
         upload_ = image_->upload(
-            *source_, options,
-            [this](UploadProgress progress) {
-                UpdateEvent event;
-                event.kind = UpdateEvent::Kind::Progress;
-                event.progress = progress;
-                emit(event);
-            },
-            upload_done());
+            *source_, options, [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
         // callback still reports why, on the next poll, so there is nothing to
@@ -454,10 +436,7 @@ private:
                 context_.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"})};
         }
 
-        UpdateEvent event;
-        event.kind = UpdateEvent::Kind::Finished;
-        event.result = &outcome;
-        emit(event);
+        emit(UpdateFinished{.result = std::move(outcome)});
 
         // Nothing may reach the application after `Finished`.
         on_event_ = {};

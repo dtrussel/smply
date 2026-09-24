@@ -809,15 +809,18 @@ struct UpdateReport {
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
 };
 
-struct UpdateEvent {
-    enum class Kind { StateChanged, Progress, DisconnectExpected,
-                      ReconnectRequired, ConfirmationRequired, Finished };
-    Kind kind{};
-    UpdateState from{}, to{};
-    UploadProgress progress{};
-    Duration reconnect_hint{};
-    const Result<UpdateReport>* result = nullptr;   // valid iff kind == Finished
-};
+// Exactly one of these per event. A variant, so a handler cannot read another
+// kind's field, and std::visit fails to compile when a kind is not handled.
+struct UpdateStateChanged   { UpdateState from{}, to{}; };
+struct DisconnectExpected   {};                    // the reset was accepted
+struct ReconnectRequired    { Duration hint{}; };  // UpdatePlan::reconnect_hint
+struct ConfirmationRequired {};                    // ADR-0014
+struct UpdateFinished       { Result<UpdateReport> result; };  // nothing follows
+using UpdateEvent = std::variant<UpdateStateChanged, UploadProgress, DisconnectExpected,
+                                 ReconnectRequired, ConfirmationRequired, UpdateFinished>;
+
+// Combines lambdas into one std::visit visitor.
+template<class... Handlers> struct overloaded : Handlers... { using Handlers::operator()...; };
 
 class FirmwareUpdater {
 public:
@@ -1158,25 +1161,17 @@ smply::UpdatePlan plan;                       // TestThenConfirm by default,
                                               // so ConfirmationRequired will arrive
 
 bool done = false;
-updater.start(source, plan, [&](const smply::UpdateEvent& ev) {
-    using K = smply::UpdateEvent::Kind;
-    switch (ev.kind) {
-    case K::Progress:
-        ui.set_progress(ev.progress.transferred, ev.progress.total);
-        break;
-    case K::StateChanged:
-        ui.set_status(smply::to_string(ev.to));
-        break;
-    case K::DisconnectExpected:
-        ui.set_status("device rebooting");
-        break;
-    case K::ReconnectRequired:
-        app.reconnect_async(ev.reconnect_hint, [&](auto& new_transport) {
+const auto on_event = smply::overloaded{
+    [&](const smply::UploadProgress& p) { ui.set_progress(p.transferred, p.total); },
+    [&](const smply::UpdateStateChanged& e) { ui.set_status(smply::to_string(e.to)); },
+    [&](const smply::DisconnectExpected&) { ui.set_status("device rebooting"); },
+    [&](const smply::ReconnectRequired& e) {
+        app.reconnect_async(e.hint, [&](auto& new_transport) {
             client.rebind_transport(new_transport);
             static_cast<void>(updater.resume_after_reconnect());
         });
-        break;
-    case K::ConfirmationRequired:
+    },
+    [&](const smply::ConfirmationRequired&) {
         // The device is running the new image, unconfirmed. This is the only
         // chance to decide it works; doing nothing leaves it to revert.
         if (app.self_test_passes()) {
@@ -1184,14 +1179,15 @@ updater.start(source, plan, [&](const smply::UpdateEvent& ev) {
         } else {
             updater.cancel();
         }
-        break;
-    case K::Finished:
+    },
+    [&](const smply::UpdateFinished& e) {
         done = true;
-        if (*ev.result) ui.done();
-        else            ui.error(smply::to_string(ev.result->error()));
-        break;
-    }
-});
+        if (e.result) ui.done();
+        else          ui.error(smply::to_string(e.result.error()));
+    },
+};
+updater.start(source, plan,
+              [&](const smply::UpdateEvent& ev) { std::visit(on_event, ev); });
 
 while (!done) {                                // the pump: one thread, no magic
     dispatcher.drain();                        // inbound bytes -> client

@@ -44,6 +44,7 @@
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <variant>
 
 namespace smply {
 
@@ -161,36 +162,71 @@ struct UpdateReport
     bool revert_pending = false;
 };
 
-/// What the updater tells the application.
-struct UpdateEvent
+/// The update moved from one state to another.
+struct UpdateStateChanged
 {
-    enum class Kind : std::uint8_t
-    {
-        StateChanged,
-        Progress,
-        /// The reset was accepted; the link is about to drop. Stop treating a
-        /// disconnection as an error.
-        DisconnectExpected,
-        /// Re-establish the link, `rebind_transport()`, then
-        /// `resume_after_reconnect()`.
-        ReconnectRequired,
-        /// The device is running the new image, unconfirmed. Validate it and
-        /// call `confirm()` -- or `cancel()` to let it revert (ADR-0014).
-        ConfirmationRequired,
-        Finished,
-    };
-
-    Kind kind{};
-    /// `StateChanged` only.
     UpdateState from{};
     UpdateState to{};
-    /// `Progress` only.
-    UploadProgress progress{};
-    /// `ReconnectRequired` only.
-    Duration reconnect_hint{};
-    /// `Finished` only; borrowed for the duration of the callback.
-    const Result<UpdateReport>* result = nullptr;
 };
+
+/// The reset was accepted and the link is about to drop. Stop treating a
+/// disconnection as an error.
+struct DisconnectExpected
+{};
+
+/// Re-establish the link, call `SmpClient::rebind_transport()`, then
+/// `FirmwareUpdater::resume_after_reconnect()`.
+struct ReconnectRequired
+{
+    /// How long to wait before the first attempt (`UpdatePlan::reconnect_hint`).
+    Duration hint{};
+};
+
+/// The device is running the new image, unconfirmed. Validate it and call
+/// `confirm()`, or `cancel()` to let it revert (ADR-0014).
+struct ConfirmationRequired
+{};
+
+/// The update is over. Nothing is emitted after this.
+struct UpdateFinished
+{
+    /// The report on success. On failure, the `Error` that ended the update;
+    /// `FirmwareUpdater::report()` still has the full report.
+    Result<UpdateReport> result;
+};
+
+/// What the updater tells the application: exactly one of these.
+///
+/// Upload progress arrives as `UploadProgress` itself. A `std::variant`, so a
+/// handler cannot read a field that belongs to another kind of event, and a
+/// `std::visit` over it fails to compile when a kind is not handled:
+/// \code
+///     updater.start(source, plan, [&](const UpdateEvent& event) {
+///         std::visit(smply::overloaded{
+///             [&](const UpdateStateChanged& e) { show(e.to); },
+///             [&](const UploadProgress& p) { show(p.transferred, p.total); },
+///             [&](const DisconnectExpected&) {},
+///             [&](const ReconnectRequired& e) { schedule_reconnect(e.hint); },
+///             [&](const ConfirmationRequired&) { validate_then_confirm(); },
+///             [&](const UpdateFinished& e) { done(e.result); },
+///         }, event);
+///     });
+/// \endcode
+using UpdateEvent = std::variant<UpdateStateChanged, UploadProgress, DisconnectExpected,
+                                 ReconnectRequired, ConfirmationRequired, UpdateFinished>;
+
+/// Combines lambdas into one visitor for `std::visit`, as in the `UpdateEvent`
+/// example above.
+template<class... Handlers>
+struct overloaded : Handlers...
+{
+    using Handlers::operator()...;
+};
+
+/// Deduction guide. C++20 deduces this by itself, but not every supported
+/// compiler implements that yet (ADR-0001 names the minimum versions).
+template<class... Handlers>
+overloaded(Handlers...) -> overloaded<Handlers...>;
 
 /// Invoked for every event, on the client context.
 using UpdateEventCallback = std::function<void(const UpdateEvent&)>;

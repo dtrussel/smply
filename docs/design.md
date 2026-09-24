@@ -820,16 +820,18 @@ performed a `REVERT` (PN §7).
 ### Application-facing events
 
 `FirmwareUpdater` never touches a connection. It communicates intent through a
-single event stream:
+single event stream. Each event is one alternative of the `UpdateEvent`
+variant, so a handler reads only the fields its kind has, and a `std::visit`
+that forgets a kind does not compile:
 
-| Event | Meaning | Application must |
-| ----- | ------- | ---------------- |
-| `Progress{sent, total}` | upload advanced | update UI |
+| Alternative | Meaning | Application must |
+| ----------- | ------- | ---------------- |
+| `UploadProgress{transferred, total}` | the device confirmed an advance | update UI |
 | `ConfirmationRequired` | the new image is running, unconfirmed | validate it, then `confirm()` — or `cancel()` and let it revert |
-| `StateChanged{from,to}` | any transition | update UI |
+| `UpdateStateChanged{from, to}` | any transition | update UI |
 | `DisconnectExpected` | reset accepted; the link is about to drop | stop treating a drop as an error |
-| `ReconnectRequired{hint_delay}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
-| `Finished{Result<UpdateReport>}` | terminal | release resources |
+| `ReconnectRequired{hint}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
+| `UpdateFinished{Result<UpdateReport>}` | terminal; nothing follows | release resources |
 
 ### Failure and recovery per state
 

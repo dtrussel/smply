@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 using smply::ConstBytes;
@@ -75,7 +76,7 @@ constexpr std::uint32_t kBodySize = 600;
 struct UpdateOutcome
 {
     std::vector<UpdateState> visited;
-    std::vector<UpdateEvent::Kind> kinds;
+    std::size_t events = 0;
     std::optional<UpdateReport> report;
     std::optional<ErrorCode> code;
     int finishes = 0;
@@ -89,34 +90,29 @@ struct UpdateOutcome
     [[nodiscard]] auto handler()
     {
         return [this](const UpdateEvent& event) {
-            kinds.push_back(event.kind);
-            switch (event.kind) {
-            case UpdateEvent::Kind::StateChanged:
-                visited.push_back(event.to);
-                break;
-            case UpdateEvent::Kind::Progress:
-                last_progress = event.progress.transferred;
-                break;
-            case UpdateEvent::Kind::DisconnectExpected:
-                ++disconnects;
-                break;
-            case UpdateEvent::Kind::ReconnectRequired:
-                ++reconnects;
-                break;
-            case UpdateEvent::Kind::ConfirmationRequired:
-                ++confirmations;
-                break;
-            case UpdateEvent::Kind::Finished:
-                ++finishes;
-                if (event.result->has_value()) {
-                    report = **event.result;
-                } else {
-                    // A failed update has no report *value*; the updater keeps
-                    // one, and a test reads it from there.
-                    code = (*event.result).error().code();
-                }
-                break;
-            }
+            ++events;
+            std::visit(smply::overloaded{
+                           [this](const smply::UpdateStateChanged& changed) {
+                               visited.push_back(changed.to);
+                           },
+                           [this](const smply::UploadProgress& progress) {
+                               last_progress = progress.transferred;
+                           },
+                           [this](const smply::DisconnectExpected&) { ++disconnects; },
+                           [this](const smply::ReconnectRequired&) { ++reconnects; },
+                           [this](const smply::ConfirmationRequired&) { ++confirmations; },
+                           [this](const smply::UpdateFinished& finished) {
+                               ++finishes;
+                               if (finished.result.has_value()) {
+                                   report = *finished.result;
+                               } else {
+                                   // A failed update has no report *value*; the
+                                   // updater keeps one, and a test reads it from there.
+                                   code = finished.result.error().code();
+                               }
+                           },
+                       },
+                       event);
         };
     }
 
@@ -258,7 +254,7 @@ TEST_CASE("a clean update runs upload, test, reset, verify and confirm", "[dfu][
 
     REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
     // Nothing is emitted from inside start(); the first event arrives on a poll.
-    CHECK(outcome.kinds.empty());
+    CHECK(outcome.events == 0);
 
     Application application;
     REQUIRE(application.run(fixture, {&reconnected}, outcome));

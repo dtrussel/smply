@@ -54,6 +54,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -285,42 +286,40 @@ int main(int argc, char** argv)
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
     const auto started = std::chrono::steady_clock::now();
 
-    const Result<void> begun = updater.start(*source, plan, [&](const UpdateEvent& event) {
-        switch (event.kind) {
-        case UpdateEvent::Kind::StateChanged:
+    // One handler per kind of event. std::visit refuses to compile if a kind
+    // is left out, which is the point of UpdateEvent being a variant.
+    const auto on_event = overloaded{
+        [&](const UpdateStateChanged& changed) {
             if (!options.quiet) {
-                std::cout << "  " << to_string(event.to) << '\n';
+                std::cout << "  " << to_string(changed.to) << '\n';
             }
-            break;
-        case UpdateEvent::Kind::Progress:
-            if (!options.quiet && event.progress.total != 0) {
-                std::cout << "\r  uploading " << event.progress.transferred << '/'
-                          << event.progress.total << " bytes" << std::flush;
-                if (event.progress.transferred == event.progress.total) {
+        },
+        [&](const UploadProgress& progress) {
+            if (!options.quiet && progress.total != 0) {
+                std::cout << "\r  uploading " << progress.transferred << '/' << progress.total
+                          << " bytes" << std::flush;
+                if (progress.transferred == progress.total) {
                     std::cout << '\n';
                 }
             }
-            break;
-        case UpdateEvent::Kind::DisconnectExpected:
+        },
+        [&](const DisconnectExpected&) {
             if (!options.quiet) {
                 std::cout << "  the device is about to reboot; a dropped link is expected\n";
             }
-            break;
-        case UpdateEvent::Kind::ReconnectRequired:
-            // Not done here. The handler runs inside poll(), and reconnecting
-            // is the application's own work -- so it is noted and done on the
-            // loop's next turn, where it reads as what it is.
-            pending.reconnect = true;
-            break;
-        case UpdateEvent::Kind::ConfirmationRequired:
-            pending.confirm = true;
-            break;
-        case UpdateEvent::Kind::Finished:
-            outcome = *event.result;
+        },
+        // Not done here. The handler runs inside poll(), and reconnecting is the
+        // application's own work -- so it is noted and done on the loop's next
+        // turn, where it reads as what it is.
+        [&](const ReconnectRequired&) { pending.reconnect = true; },
+        [&](const ConfirmationRequired&) { pending.confirm = true; },
+        [&](const UpdateFinished& finished) {
+            outcome = finished.result;
             pending.finished = true;
-            break;
-        }
-    });
+        },
+    };
+    const Result<void> begun = updater.start(
+        *source, plan, [&](const UpdateEvent& event) { std::visit(on_event, event); });
 
     if (!begun.has_value()) {
         std::cerr << "cli_dfu: " << to_string(begun.error()) << '\n';
