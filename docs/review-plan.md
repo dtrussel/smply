@@ -4,7 +4,7 @@ Written 2026-09-24, before any of it was carried out. The roadmap's "Current sta
 
 ## Context
 
-smply is a C++20 MCUmgr/SMP client library, version 0.1.0. Every phase P0–P20 is `Complete`. The code is small (about 7k lines under `include/`, `src/`, `transports/`, `support/` and `examples/`), but the documentation has grown to about 13k lines. Most of that is history nobody needs any more:
+smply is a C++20 MCUmgr/SMP client library, version 0.1.0. Every development phase is `Complete`. The code is small (about 7k lines under `include/`, `src/`, `transports/`, `support/` and `examples/`), but the documentation has grown to about 13k lines. Most of that is history nobody needs any more:
 - `docs/roadmap.md` is 3,298 lines. Nearly all of it is the outcome write-ups of each phase, plus many struck-out follow-up rows.
 - `docs/handoff.md` is 2,844 lines. About 82% of it is the session log.
 - The process these files serve (a phase roadmap whose Status lines `check_docs.py` R2/R6 enforce, a required session-log entry for every session) was built for development phase by phase. That is over.
@@ -51,16 +51,16 @@ Constraints from the repo: stay under about 1,000 lines of diff per commit. Arch
 
 **1d. Gates follow the new process** (`tools/check_docs.py`, `tools/verify_gates.sh`, `docs/quality-gates.md` §11 and §12):
 - R2: replace the phase Status/Remaining rule with a structural check of the backlog. At minimum, it checks that the open-question IDs cited anywhere exist in the roadmap.
-- R6: re-target from "planned Pn" to "planned" or "proposed" wording that points at a closed backlog item or open question, or remove it. It currently misses `api.md:474` ("proposed … P10").
+- R6: replace the "(planned, phase)" rule, which cannot work without phases, with a ban on development-phase IDs in living documents and, from 1f, in source comments. ADR bodies are exempt. It lands with 1e, once the documents are clean.
 - R3: add a check that every `ADR-*.md` file is listed in `decisions/README.md`. That is how the missing ADR-0017 entry went unnoticed.
-- Update the self-check cases that relied on old roadmap content: case 8 and case 11b, which relied on P1's Status.
+- Update the self-check cases that relied on old roadmap content: case 8 and case 11b, which relied on a phase's Status line.
 - Keep the exact tree line of case 11a in `architecture.md` untouched.
 
 **1e. Remove history from the living docs.** Keep each document's current-state reference; cut the phase stories.
 - Main targets:
   - `quality-gates.md`, about 25–30% history.
-  - `security.md` "What the P13 audit found": turn it into the current threat table.
-  - The api.md intro and "Shipped (P8…)" table.
+  - `security.md` "What the audit found": turn it into current state.
+  - The api.md intro and its per-phase "Shipped" table.
   - The WinRT stories in `design.md` §10.
   - `testing.md:561`, which is stale because `send_counters()` was kept.
   - `dependencies.md` stories.
@@ -70,7 +70,7 @@ Constraints from the repo: stay under about 1,000 lines of diff per commit. Arch
 
 **1f. Code comments.** About 150 `Pn` mentions across `src/`, `include/`, `tests/`, `transports/`, `examples/`, `tools/`, `.github/` and `cmake/`, for example `include/smply/limits.hpp:39` and `src/dfu/update_state_machine.cpp:209,254`. Rewrite each to state the current invariant and its reason.
 - Keep `A`, `S` and `T` IDs, because they are stable anchors into protocol-notes and security.
-- Fix the three references to "handoff.md 'Lifetime'" and the `roadmap P17x` references in `tests/hil/`, `hil.yml` and `nightly-fuzz.yml`.
+- Fix the three references to "handoff.md 'Lifetime'" and the roadmap phase references in `tests/hil/`, `hil.yml` and `nightly-fuzz.yml`.
 - Split into 1f-i (`src/`, `include/`, `transports/`, `support/`, `examples/`) and 1f-ii (`tests/`, `tools/`, CI) to keep the diffs small.
 
 ## Stage 2: architecture review
@@ -126,7 +126,7 @@ Simplification:
 - Add `actions/cache` for `_deps`.
 - `check_deps.py` and `sbom.py` both parse `dependencies.cmake`. Share the parser.
 - Rename `tests/consumer/` to `tests/interface_flags/` so it is not confused with `tests/consumption/`.
-- Remove the stale "P14" comment in `cmake/sanitizers.cmake`.
+- Remove the stale TSan comment in `cmake/sanitizers.cmake`.
 
 Gaps to fill:
 - Unit tests for `support/dfu_app/file_image_source.cpp`.

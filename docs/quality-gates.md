@@ -2,21 +2,18 @@
 
 Every gate below runs in CI and blocks merge unless marked *advisory*.
 
-**Status (as of P17c):** every gate below is wired and enforced. The one
-exception is by design: the `hil` row is *advisory*, and no self-hosted runner
-is registered, so the hardware suite has only ever run from the bench by hand.
-(This paragraph said "as of P13" and pointed at a *(P15)* marker that no longer
-exists anywhere in the file — the sort of drift R5 and R6 in §11 now catch
-mechanically.) Each live gate has been observed rejecting
-a deliberate violation — `tools/verify_gates.sh` reproduces that proof, and the
-`gate-self-check` CI job runs it on every push.
+**Every gate below is wired and enforced**, with one exception by design: the
+`hil` row is *advisory*, and no self-hosted runner is registered, so the
+hardware suite has only ever run from the bench by hand. Each live gate has been
+observed rejecting a deliberate violation. `tools/verify_gates.sh` reproduces
+that proof, and the `gate-self-check` CI job runs it on every push.
 
 **One job still proves less than its name suggests.** `windows-winrt` *compiles*
 the WinRT adapter and the example that drives it, and runs the adapter's
 link-and-call smoke test; a GitHub runner has no Bluetooth radio, so no CI job
 has ever put a byte of that code on the air. Read it as "it builds". The
-behavioural coverage is the hardware suite, which P17 ran from a bench — and
-which found seven things this job was never going to (protocol-notes §9,
+behavioural coverage is the hardware suite, run from a bench, which found
+seven things this job was never going to (protocol-notes §9,
 A18–A24).
 
 ## 1. Build matrix (required)
@@ -25,11 +22,11 @@ A18–A24).
 | --- | -- | -------- | -------- | ----- |
 | `linux-gcc` | ubuntu-latest | GCC 13 | C++20 | core + tests |
 | `linux-clang` | ubuntu-latest | Clang 18 | C++20 | core + tests |
-| `linux-gcc-release` | ubuntu-latest | GCC 13 | C++20 | **Release**, because that is what a consumer builds. Every other preset is Debug; until P15a nothing here had compiled above `-O0`, and the first Release build failed on an optimisation-only warning. |
+| `linux-gcc-release` | ubuntu-latest | GCC 13 | C++20 | **Release**, because that is what a consumer builds. Every other preset is Debug, and some warnings appear only when optimising. |
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
 | `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
-| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour was established on the bench across P17a-P17c and lives in `tests/hil/` and the evidence bundles it writes |
+| `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour is established on the bench, by `tests/hil/` and the evidence bundles it writes |
 | `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
@@ -37,11 +34,11 @@ A18–A24).
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
 | `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
-| `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI, and it grew the other two modes in P18a |
+| `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
-| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory* about findings; a scan that could not run **does** fail). Written in P18a; its scheduled firing is still unproven |
-| `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, nightly plus on demand; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand (roadmap P17b). Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
+| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory* about findings; a scan that could not run **does** fail). Its scheduled firing is still unproven |
+| `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, on demand only; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand. Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
 pins the versions above. Clang's sanitizer jobs need `libclang-rt-<v>-dev`
@@ -125,50 +122,43 @@ to minimise `sizeof` -- `Group` must be `uint16_t` because the SMP header
 carries 16 bits, so the check would fight every protocol enumeration for no
 benefit.
 
-### The two directories neither analyser sees
+### The three directories neither analyser sees
 
-`transports/winrt_ble/` (the adapter, P15b) and `examples/winrt_ble_dfu/` (the
-tool that drives it, P16) are excluded from clang-tidy **and** cppcheck in
-`tools/lint.sh`. Both gates run from a Linux build: those translation units are
-absent from the compile database, so clang-tidy would fall back to default
-arguments and fail on the first `<winrt/…>` include, and cppcheck can parse
-neither the projection headers nor the coroutines. This is the only code in the
-repository outside clang-tidy's reach, and it is worth saying plainly rather
-than letting a green `gates` job imply otherwise.
+`tools/lint.sh` excludes three directories from clang-tidy **and** cppcheck:
+* `transports/winrt_ble/`, the adapter;
+* `examples/winrt_ble_dfu/`, the tool that drives it;
+* `tests/hil/`, the hardware suite built on both.
+
+Both gates run from a Linux build, where those translation units are absent from
+the compile database. clang-tidy would fall back to default arguments and fail
+on the first `<winrt/…>` include, and cppcheck can parse neither the projection
+headers nor the coroutines. This is the only code in the repository outside
+clang-tidy's reach. It is said plainly so that a green `gates` job does not
+imply otherwise.
 
 What still covers it: **clang-format**, which sees every file
 `tools/sources.sh` lists, and **MSVC `/W4 /WX`** in the `windows-winrt` job.
 
 Each exclusion is an exact directory prefix, and `tools/verify_gates.sh` proves
-it: a portable decoy file whose *name* contains `winrt` is planted beside each
-excluded directory and must survive. A filter written as `grep -v winrt` would
-swallow both decoys and go on passing — the silent-skip shape this project has
-been bitten by six times.
+it. A portable decoy file whose *name* contains the excluded directory's name
+is planted beside each excluded directory and must still be analysed. A filter
+written as `grep -v winrt` would swallow the decoys and go on passing, silently
+skipping files.
 
-### The fuzz targets are analysed under an inferred command, and P20 found out
+### The fuzz targets are analysed under an inferred command
 
 `SMPLY_BUILD_FUZZERS` is on only in `linux-clang-fuzz`, and the `gates` job
-configures `linux-clang` — so `tests/fuzz/`'s translation units are **absent
-from the compile database clang-tidy is given**, exactly like the two consumer
-projects. Unlike those they are not excluded, so clang-tidy analysed them
-anyway, inferring each command from a neighbouring directory.
+configures `linux-clang`. So `tests/fuzz/`'s translation units are **absent
+from the compile database clang-tidy is given**, like the two consumer
+projects. Unlike those, they are not excluded, so clang-tidy analyses them
+anyway and infers each command from a neighbouring directory.
 
-That worked for six phases because the guessed command happened to carry every
-include root the seven targets needed. P20's `fuzz_serial_deframe` is the first
-to include a transport header, and it turned into a hard "file not found" —
-which is the useful failure, because the silent version was seven files being
-checked under flags that are not the flags they compile with.
-
-`tools/lint.sh` now passes the project's own include roots to clang-tidy with
-`--extra-arg`. For a TU that *has* a real command the duplicate `-I` is a
-no-op; what it deliberately does not do is supply a *system* include, so a
-genuinely missing one still fails. The alternative — pointing the gate at a
-second build directory — would have made it depend on a preset CI does not
-configure.
-
-**The general shape is this project's recurring one**: a check that is running
-is not the same as a check that is checking what you think. It sat one
-directory away from the `grep -v winrt` decoy that exists for the same reason.
+That inferred command need not carry the include roots a target needs.
+`tools/lint.sh` therefore passes the project's own include roots to clang-tidy
+with `--extra-arg`. For a translation unit that *has* a real command, the
+duplicate `-I` is a no-op. The script deliberately does not supply a *system*
+include, so a genuinely missing one still fails. Pointing the gate at a second
+build directory would have made it depend on a preset CI does not configure.
 
 Note that `.clang-tidy`'s `Checks:` value is a YAML *folded scalar*: a `#`
 inside it is not a comment, it becomes part of the check list. Rationale
@@ -198,13 +188,12 @@ parse the Catch2 suites: with no macros pinned, cppcheck explores Catch2's own
 option macros, and in the `CATCH_CONFIG_DISABLE;CATCH_CONFIG_PREFIX_ALL`
 combination `TEST_CASE` is undefined, so the file genuinely has no valid parse.
 No build uses that combination, and `-UCATCH_CONFIG_DISABLE
--UCATCH_CONFIG_PREFIX_ALL` removes exactly those configurations. Between them
-the two changes retired the blanket `syntaxError:tests/*` suppression this gate
-carried from P7 to P13. A full pass takes about three minutes, which is why
+-UCATCH_CONFIG_PREFIX_ALL` removes exactly those configurations, so no blanket
+suppression for `tests/` is needed. A full pass takes about three minutes, which is why
 `SMPLY_LINT_SKIP_CPPCHECK=1` exists: `tools/verify_gates.sh` sets it for its
 clang-tidy case, whose violation only the required half of the script has to
-reject. Nothing in CI sets it. What replaced it is narrower: dependency headers under
-`_deps/` are not reported on, for the same reason they are declared `SYSTEM` for
+reject. Nothing in CI sets it. Dependency headers under `_deps/` are not
+reported on, for the same reason they are declared `SYSTEM` for
 clang-tidy (§1).
 
 ## 4. Formatting (required)
@@ -223,152 +212,119 @@ logic without a test is a review blocker, not a CI blocker
 
 ## 6. Coverage (required, with judgement)
 
-Measured on `linux-gcc-coverage`, over `src/`, `include/smply/`,
-`transports/common/` and `transports/serial/` (tests, examples, `support/` and
-the *platform* adapters under `transports/` excluded).
+Coverage is measured on `linux-gcc-coverage`. It includes:
+* `src/`;
+* `include/smply/`;
+* `transports/common/`;
+* `transports/serial/`.
 
-The portable transport directories are in because they are library code with
-real tests — P15a's BLE framing, P20's serial framing — and leaving them out
-would mean new logic with a full suite that the gate cannot see. The platform
-adapters stay out: a WinRT translation unit cannot be compiled, let alone
-instrumented, on the coverage runner.
+It excludes tests, examples, `support/`, and the *platform* adapters under
+`transports/`.
 
-**The filter is a list of directories, so a new one is invisible until it is
-added.** `transports/serial/` needed a line in `tools/coverage.sh`; without it
-the module would have been measured by nobody while the whole-core percentage
-went *up*, because its tests would still run and its lines would still not
-count. That is the failure mode this section warns about one paragraph down,
-arriving from a different direction: **a gate that silently narrows reports a
-pass.**
+The portable transport directories are included because they are library code
+with real tests. The platform adapters are excluded because a WinRT translation
+unit cannot be compiled, let alone instrumented, on the coverage runner.
+
+**The filter is a list of directories, so a new directory is invisible until it
+is added** to `tools/coverage.sh`. Its tests would still run and its lines
+would still not count, so the whole-core percentage could even go *up*. A gate
+that silently narrows still reports a pass.
 
 **The metric is exactly what `tools/coverage.sh` reports**: gcovr with
-`--exclude-throw-branches`. Pinning this matters more than it sounds — on the
-same object files the branch figure moves by roughly 12 points depending on that
-one flag, because every potentially-throwing call contributes two branches a
-suite that raises no exceptions can never take. A threshold that does not name
-its tool and flags means whichever number CI happens to produce.
+`--exclude-throw-branches`. On the same object files the branch figure moves by
+about 12 points depending on that one flag, because every potentially-throwing
+call contributes two branches that a suite raising no exceptions can never
+take. A threshold that does not name its tool and flags means whichever number
+CI happens to produce.
 
-**Enforced from P13.** CI runs `tools/coverage.sh <build-dir> --enforce`, which
-fails the job below either whole-core threshold. `--enforce` also **refuses to
-run without gcovr** rather than falling back: the lcov and gcov paths measure
-branches differently, so enforcing against one of them would enforce a different
-threshold than the one named here. A gate that cannot fail is not a gate — this
-script spent P0 to P7 reporting nothing and exiting 0, and
-`tools/verify_gates.sh` now covers the reporter itself for exactly that reason
-(the `gate-self-check` job in §1).
+**CI enforces it** with `tools/coverage.sh <build-dir> --enforce`, which fails
+the job below either whole-core threshold. `--enforce` **refuses to run
+without gcovr** rather than falling back to lcov or gcov, which measure branches
+differently and so would enforce a different threshold. `tools/verify_gates.sh`
+checks that the reporter rejects, accepts and refuses as it should (the
+`gate-self-check` job in §1).
 
-The two questions that blocked enforcement are both settled:
+**Deliberate invariant guards carry exclusion markers.** `LCOV_EXCL_LINE`
+excludes only the line it sits on, so marking only the `if` would leave the
+guard's body counted. Guards are wrapped in `LCOV_EXCL_START` /
+`LCOV_EXCL_STOP` instead, except where the guard's `else` arm is the ordinary
+path and must stay counted. A marker on a comment line above the code is
+silently ignored.
 
-* `src/cbor/` was below its elevated gate from P6. P13 **raised it, on
-  evidence**: reading the uncovered-branch list rather than the number showed
-  21 of the 23 missing branches were reachable straight through the API — 13 of
-  them the same over-long-key guard repeated at every accessor. Tests for them
-  took the directory from 82 % to 97.7 %. Neither of the roadmap's two options
-  (raise it, or drop the row) had to be chosen against the other.
-* Deliberate invariant guards now carry exclusion markers. **`LCOV_EXCL_LINE`
-  excludes the line it sits on and nothing else** — marking only the `if` left
-  the guard's body in the denominator, which is most of what the exclusion was
-  for. The guards are wrapped in `LCOV_EXCL_START` / `LCOV_EXCL_STOP` instead,
-  except where the guard's `else` arm is the ordinary path and must stay
-  counted. A marker on a comment line above the code is silently ignored.
-
-| Gate | Threshold | Measured 2026-09-19 (P20) |
-| ---- | --------- | ------------------------ |
+| Gate | Threshold | Measured 2026-09-19 |
+| ---- | --------- | ------------------- |
 | Line coverage, whole core | **≥ 85 %** | 98.3 % ✓ |
 | Branch coverage, whole core | **≥ 75 %** | 88.0 % ✓ |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.1 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
-The four elevated figures are unchanged from P18b's re-measurement, which is
-worth one line rather than none: they were re-measured, not carried forward.
+**The elevated per-directory targets are measured, not enforced.** Only the two
+whole-core thresholds are enforced. gcovr has no per-directory threshold, and
+four separate invocations would turn one number into five that can disagree. A
+number recorded by hand decays: treat these as "true when last measured", and
+re-measure rather than quote them. A directory could fall below 90 % with CI
+green. The roadmap's backlog tracks this.
 
-**The elevated per-directory gates are not enforced by the script**, only the
-two whole-core thresholds are. gcovr has no per-directory threshold, and four
-separate invocations would turn one number into five that can disagree. They are
-measured and recorded here each phase instead, which is what has actually caught
-things — see below.
+**A new *consumer* can move the whole-core number without any regression.** A
+caller that instantiates `Result<T>` for new types grows the counted lines of
+`include/smply/detail/expected.hpp`, because an uninstantiated template counts
+on neither side of the ratio. Before treating a small move as lost coverage,
+read it against what was added.
 
-**Three of those four numbers had drifted, and P18b's audit is what noticed.**
-The row read `src/cbor/` 97.7 %, `upload_session.*` 95.5 % and `src/dfu/`
-92.3 % — measured in P13 and P14b and then carried forward unmeasured, through
-three phases in which P17 added code. Re-measured they are 94.6 %, 91.0 % and
-92.1 %: all still above the ≥ 90 % gate, so **nothing was broken and nobody
-would have been told if it had been**. That is precisely the P13 follow-up row
-which says a directory could fall below 90 % with CI green and only a person
-reading this section would notice; it is still open, and this is the first
-evidence that the mechanism it describes actually operates. A number recorded
-by hand is a number that decays — treat these as "true when last measured", and
-re-measure rather than quote them.
+The rest of `src/`, outside the elevated list (2026-09-19):
 
-**A new *consumer* moves the whole-core number, and it is not a regression.**
-P14b added an example and the figure moved from 98.4 / 87.5 to 98.1 / 87.2 with
-no library code changed and no test removed. The cause is entirely
-`include/smply/detail/expected.hpp`, which grew from 469 counted lines to 492:
-the example instantiates `Result<T>` for types no test ever used, and an
-uninstantiated template contributes nothing to either side of the ratio. Adding
-a caller therefore adds denominator. Read a move of this size against what was
-added before treating it as coverage lost.
+| Area | Line | Branch | Notes |
+| ---- | ---- | ------ | ----- |
+| `src/util/` | 100 % | 100 % | |
+| `src/image/` | 98.8 % | 93.2 % | |
+| `src/groups/image/` | 98.2 % | 89.6 % | |
+| `src/core.cpp` | 99.1 % | 98.5 % | |
+| `src/groups/os/` | 92.4 % | 80.7 % | The lowest in the tree. The gap is invariant guards, which carry markers, plus the `reject()` instantiations only those guards call. |
 
-Outside the elevated list: `src/util/` is at 100 % line and branch, `src/image/`
-is at 98.8 % line and 93.2 % branch,
-`src/groups/image/` at 98.2 % and 89.6 %, `src/core.cpp` at 99.1 % and 98.5 %,
-`src/groups/os/` at 92.4 % and 80.7 % — the lowest in the tree, and entirely
-invariant guards that carry markers plus the `reject()` instantiations only
-those guards call.
+### Reading the list, not the percentage
 
-### What reading the list has been worth
-
-Three phases running, the uncovered-branch *list* said something the percentage
-did not. This is the reason §6 says "with judgement" in its title.
-
-* **P10** was the first phase whose own acceptance criterion was one of the
-  elevated gates; `upload_session.*` cleared it.
-* **P11 added 48 component tests and moved these numbers not at all.** The
-  component suite exercises the same lines as the unit suite; what it adds is
-  evidence about *sequences* — that the commands smply issues, in the order it
-  issues them, are ones a server accepts, and that an image survives the round
-  trip byte for byte. Line and branch coverage cannot see that, so a flat number
-  is not a measure of what those tests are worth, in either direction.
-* **P12's gate was missed on the first measurement, at 81 %**, and the gap was
-  not where the percentage suggested. Almost all of it was one branch repeated:
-  the "event not legal in this state" fall-through, which a single spot-check
-  test had left unexercised in thirteen of the fourteen states. Looping that
-  test over every state took `src/dfu/` from 81 % to 90 % on its own.
-* **P13's `src/cbor/`**, above: 21 of 23 missing branches reachable from a test,
-  which is why the directory did not have to leave the elevated list.
+This is why the section's title says "with judgement". The uncovered-branch
+*list* has repeatedly said something the percentage did not:
+* **A gap was reachable code.** Most of the missing branches in `src/cbor/`
+  were reachable straight through the API. Many were the same over-long-key
+  guard repeated at every accessor. Tests for them raised the directory by
+  about 15 points.
+* **A gap was one branch repeated.** In `src/dfu/`, the "event not legal in
+  this state" fall-through had been exercised in only one state. Looping that
+  test over every state closed the gap on its own.
+* **A suite can be valuable without moving the numbers.** The component suite
+  exercises the same lines as the unit suite. What it adds is evidence about
+  *sequences*: that the commands smply issues, in the order it issues them, are
+  ones a server accepts. Line and branch coverage cannot see that.
 
 ### Traps
 
-**`gcovr` is not installed in the development container**, and without
-`--enforce` `coverage.sh` falls back to plain `gcov` — a different measurement,
-not comparable with the numbers above. `pip install gcovr` before quoting one.
+**Without `--enforce`, `coverage.sh` falls back to plain `gcov` when gcovr is
+missing.** That is a different measurement, not comparable with the numbers
+above. Run `pip install gcovr` before quoting a figure.
 
-**`--txt` takes the next argument as its output file.** Running gcovr by hand as
-`gcovr … --txt <build-dir>` fails with "Is a directory" — the same mistake that
-silently disabled `coverage.sh` from P0 to P7. Put the search path first, or
-omit `--txt` entirely: text is the default.
+**`--txt` takes the next argument as its output file.** Running gcovr by hand
+as `gcovr … --txt <build-dir>` fails with "Is a directory". Put the search path
+first, or omit `--txt`: text is the default.
 
 **A moved or renamed source leaves its `.gcno` behind**, and gcovr refuses to
-read the orphan rather than skipping it. Until P14b `coverage.sh` reported that
-as *below the thresholds*, which is a lie that costs an hour: it now
-distinguishes gcovr's threshold exit codes (2, 4, 6) from any other failure and
-says which happened. `rm -rf` the build directory after moving a source.
+read the orphan rather than skipping it. `coverage.sh` distinguishes gcovr's
+threshold exit codes (2, 4, 6) from any other failure and says which happened.
+`rm -rf` the build directory after moving a source.
 
 **Stale `.gcda` files survive a rebuild.** Building over an existing coverage
 build prints `libgcov profiling error: … overwriting an existing profile data
-with a different checksum` and then mixes counts from two versions of the code.
-Delete them (`find <build-dir> -name '*.gcda' -delete`) and re-run the tests
-before measuring; the warning scrolls past in build output and the number that
-follows looks perfectly ordinary.
+with a different checksum`, and then mixes counts from two versions of the
+code. Delete them with `find <build-dir> -name '*.gcda' -delete` and re-run the
+tests before measuring.
 
-The elevated per-directory gate is the point of the exercise: those four areas
-are pure decision logic over untrusted input, where a missed branch is a real
-untested protocol path. Coverage elsewhere (glue, formatting, accessors) is
-informational — **the percentage is not a goal, the branch table in
-[`testing.md`](testing.md) is.** Raising a threshold to force coverage of
-unreachable defensive code is explicitly not wanted; mark such code with an
-exclusion marker and a comment instead.
+**The elevated targets are the point.** Those four areas are pure decision logic
+over untrusted input, where a missed branch is a real untested protocol path.
+Coverage elsewhere (glue, formatting, accessors) is informational. **The
+percentage is not a goal. The branch table in [`testing.md`](testing.md) is.**
+Raising a threshold to force coverage of unreachable defensive code is not
+wanted. Mark such code with an exclusion marker and a comment instead.
 
 ## 7. Sanitizers (required)
 
@@ -385,7 +341,7 @@ exclusion marker and a comment instead.
 * **TSan** is not part of the *reasoning* about the core: it is single-threaded
   by contract ([ADR-0004](decisions/ADR-0004-threading-model.md)) and has no
   shared state. It exists for `Dispatcher`, the one concurrent component smply
-  ships, and the `linux-clang-tsan` job (P14a) runs the whole suite under it
+  ships, and the `linux-clang-tsan` job runs the whole suite under it
   anyway — it costs seconds, and a future component that quietly acquires a
   thread should fail there rather than in somebody's adapter.
 
@@ -428,8 +384,8 @@ what the repository carries is a decision for a person.
 * **A declaration of smply itself is skipped**, by exact name. Proving smply can
   be consumed by FetchContent means writing a `FetchContent_Declare(smply …)`
   for it (§13), and nothing is a third-party dependency of itself — the gate's
-  scope is third-party. P18a's first CI run failed on exactly this, because the
-  fixture's declaration is deliberately a `SOURCE_DIR` with no `GIT_TAG`. The
+  scope is third-party. The fixture's declaration is deliberately a
+  `SOURCE_DIR` with no `GIT_TAG`, so without the exemption it would fail. The
   exemption is an identity and not a prefix: a `FetchContent_Declare(smply_x …)`
   is an ordinary dependency, and `verify_gates.sh` plants one to prove it is
   still rejected — the same shape as §3's "directories, not the substring
@@ -441,10 +397,9 @@ what the repository carries is a decision for a person.
   job that already produces a Release install. `tools/sbom.py --check` runs in
   the `gates` job and **fails when a `FetchContent_Declare` has no licence
   entry or no PURL**. Licences are declared in `sbom.py`, never inferred.
-  The PURL half was added after OSV-Scanner read the first version of the
-  document, listed all three packages and reported **"found 0 packages"**: a
-  scanner matches advisories on a package *identifier*, not on a name, so an
-  SBOM without PURLs parses perfectly and is unusable by any consumer of it.
+  The PURL is required because a scanner matches advisories on a package
+  *identifier*, not a name. An SBOM without PURLs parses perfectly and reports
+  "found 0 packages" in any scanner that reads it.
   Each dependency carries `pkg:github/<owner>/<repo>@<commit>` — the commit,
   because that is what the build actually pins.
 * **OSV-Scanner** (`.github/workflows/osv.yml`) runs weekly, on
@@ -452,26 +407,19 @@ what the repository carries is a decision for a person.
   It is **advisory**: the result is a SARIF artefact, and acting on a finding
   is a decision — ADR-0011 says a dependency change needs one. It does not
   block a pull request, and it does not open an issue.
-  *Both of these were claimed in this section from P0 and neither existed until
-  P18 built them, and getting the scanner to actually scan took three runs.*
-  `osv.yml` is in its own `paths` filter so that a change to it tests itself,
-  and the first two attempts are worth recording because each failed in a way
-  that looked like success:
+  `osv.yml` is in its own `paths` filter, so a change to it tests itself. Two
+  ways it can fail while looking like success:
+  * **It scans nothing.** The action runs in a container that mounts only the
+    workspace, so the SBOM must be written inside the workspace.
+    `continue-on-error` would otherwise swallow the exit 127.
+  * **It finds 0 packages.** That is an SBOM without PURLs, as above.
 
-  1. **Scanned nothing, reported success.** The action runs in a container that
-     mounts only the workspace; the SBOM had been written to the runner's temp
-     directory, and `continue-on-error` swallowed the resulting exit 127.
-  2. **Read the SBOM, found 0 packages.** Fixed the path, and the scanner
-     listed all three packages by name and had nothing to look up — an SBOM
-     without a PURL or a CPE is a list of names. That is what added the PURL
-     requirement above.
-
-  The job now **fails when no SARIF was produced**, which is what caught the
-  second of those, and is the discipline `hci_capture.py` applies to a packet
-  capture: a listener that attaches and records nothing is not a capture.
+  The job **fails when no SARIF was produced**. This is the same discipline
+  `hci_capture.py` applies to a packet capture: a listener that attaches and
+  records nothing is not a capture.
 
   Two things are still unproven and should not be read as passing. The
-  **scheduled** firing — the first Monday is the evidence for that. And whether
+  **scheduled** firing, which has not yet been observed. And whether
   OSV has advisory **coverage** for two C libraries consumed from git as
   `pkg:github` PURLs: a clean report from a database with nothing to say about
   an ecosystem looks exactly like a clean report from one that checked. The
@@ -499,85 +447,80 @@ empty.
 
 ## 11. Documentation gate (required)
 
-`tools/check_docs.py` fails a PR when:
+`tools/check_docs.py` fails when any of the following rules is broken.
 
-* files under `include/smply/`, `src/smp/`, `src/dfu/` or `src/groups/` changed
-  and no file under `docs/` changed, unless the PR body carries
-  `Docs-Impact: none` with a one-line justification;
-* a roadmap phase is marked `Complete` while its "Remaining work" section is
-  non-empty;
-* an ADR is referenced from a doc but does not exist, or an ADR's `Status:` is
-  neither `Proposed`, `Accepted`, `Superseded by ADR-NNNN` nor `Deprecated`;
-* a public symbol in `include/smply/` has no `///` documentation comment
-  (namespace scope only; `detail` namespaces are exempt);
-* a path named in [`architecture.md`](architecture.md) §10's repository-layout
-  tree does not exist;
-* a `(planned, PN)` marker names a phase the roadmap already marks `Complete`.
+* **R1.** Files under `include/smply/`, `src/smp/`, `src/dfu/` or
+  `src/groups/` changed, but no file under `docs/` did. The PR body can waive
+  this with `Docs-Impact: none` and a one-line justification.
+* **R2.** The roadmap is not a backlog
+  ([ADR-0018](decisions/ADR-0018-maintenance-process.md)), in any of these ways:
+  * one of its required sections is missing;
+  * a row is struck through, when a done item should be deleted;
+  * a document cites an open question (`O<n>`) that the roadmap's table does
+    not define.
+* **R3.** An ADR is referenced but does not exist, an ADR's `Status:` is not
+  `Proposed`, `Accepted`, `Superseded by ADR-NNNN` or `Deprecated`, or an ADR
+  is missing from the index in `decisions/README.md`.
+* **R4.** A public symbol in `include/smply/` has no `///` documentation
+  comment. This covers namespace scope only; `detail` namespaces are exempt.
+* **R5.** A path named in the repository-layout tree of
+  [`architecture.md`](architecture.md) §10 does not exist.
+* **R6.** A living document names a development phase (`P<n>`). The library
+  was built in numbered phases, and that history is in git, not in the
+  documents (ADR-0018). ADR bodies are exempt, because they are immutable
+  records of their day.
 
-The first rule needs a diff base and a pull-request body. On a plain branch push
-or a local run neither exists, so that rule is skipped with a message and the
-other five still run — a branch push must never fail for a reason that cannot
-apply to it.
+R1 needs a diff base and a pull-request body. A plain branch push or a local run
+has neither, so R1 is skipped with a message and the other rules still run. A
+branch push must never fail for a reason that cannot apply to it.
 
-**The last two are P17c's**, and they exist because the drift they catch had
-gone unnoticed for four phases: three entries in §10 named files that were never
-written or had moved, in a section whose own opening line says "Keep this
-accurate", and two `(planned)` markers named phases that were long complete.
-Nothing checked either. Adding a check for a defect just fixed by hand is the
-same habit as committing a fuzz reproducer with its fix.
+**R5 is deliberately conservative and reports how much it skipped.** The tree
+is prose. An entry the rule cannot read as a path is skipped rather than
+guessed at: a brace expansion, a glob, or a phrase that is not a file name. The
+printed count is what would reveal a rule that had quietly narrowed to checking
+nothing. R5 reads every path-shaped token on an entry line, and on the
+continuation lines under it.
+* **An unresolvable token in first position is an error**, because that is what
+  the line is about.
+* **A later token is an error only if it has a file extension the tree uses.**
+  Otherwise the rule would trip over "run_hil.py supervises the case suite",
+  which is a sentence, not a listing.
 
-The layout rule is deliberately conservative, and **says how much it skipped**:
-the tree is prose, so an entry it cannot read as a single path — a brace
-expansion, a glob, prose that is not a file name — is skipped rather than
-guessed at, and the printed count is what would reveal a rule that had quietly
-narrowed to checking nothing. A silently inert gate is the failure mode this
-repository has hit most (§1's gate self-check exists for it), so the number is
-part of the output rather than a debug aid.
+`verify_gates.sh` plants a decoy for each case: an entry that does not exist,
+and a missing file named in second position.
 
-**P18 widened it, because the conservative version was narrower than anyone
-realised.** R5 read only the *first* token on a layout line — and most of §10's
-tree names several files per line, so `fake_transport.*  manual_clock.hpp
-message_builder.hpp` was one checked entry and two unread ones. Two of P18's
-audit findings were files listed in second position that do not exist, sitting
-under a gate that reported a pass. Worse, they were not counted as skipped
-either, so the number that exists to expose a narrowed rule could not see this
-narrowing. R5 now reads every path-shaped token on an entry line and on the
-continuation lines under it, which is why the count jumped from **44 checked to
-109**. Its one asymmetry is deliberate: an unresolvable token in first position
-is an error, because that is what the line is *about*, while a later token is
-an error only if it carries a file extension the tree uses — otherwise the rule
-would trip over "run_hil.py supervises the case suite", which is a sentence and
-not a listing. `verify_gates.sh` has a decoy for each half: one entry that does
-not exist, and one file name in second position that does not, and the second
-would pass under the old regex.
+**These rules catch the shapes of drift, not wrong claims.** No gate notices a
+document describing a fixed defect as if it were the design. That takes a
+person reading the document against the code.
 
 ## 12. Definition of Done
 
-A change — feature, phase, or fix — is done only when **all** hold:
+A change, whether a feature or a fix, is done only when **all** of these hold:
 
-1. Implementation is complete for the stated scope; anything deferred is written
-   down in the roadmap, not left implicit.
+1. Implementation is complete for the stated scope. Anything deferred is
+   written down in the roadmap's backlog, not left implicit.
 2. Tests exist and pass, **including error paths**, at the level
    [`testing.md`](testing.md) prescribes for that component.
 3. All required gates above are green.
 4. Every public symbol added or changed is documented in its header and in
    [`api.md`](api.md).
 5. [`architecture.md`](architecture.md) and [`design.md`](design.md) still
-   describe reality; anything they no longer describe correctly is updated in
+   describe reality. Anything they no longer describe correctly is updated in
    the same change.
 6. Any protocol behaviour discovered, disputed or worked around is recorded in
    [`protocol-notes.md`](protocol-notes.md).
-7. Significant design decisions have an ADR; a decision that contradicts an
-   existing ADR **supersedes** it explicitly (never silently).
-8. [`roadmap.md`](roadmap.md) status, completed/remaining work and discovered
-   follow-ups are current.
+7. Significant design decisions have an ADR. A decision that contradicts an
+   existing ADR **supersedes** it explicitly, never silently.
+8. [`roadmap.md`](roadmap.md) is current. Items this change finished are
+   deleted, and anything it found is added.
 9. No known contradiction between docs and code is left undocumented.
-10. A handoff note is appended to [`handoff.md`](handoff.md), and the repository
-    alone is sufficient for the next session — no reliance on chat history.
+10. The repository alone is enough for the next contributor, with no reliance
+    on chat history. A lesson that will bite again goes into
+    [`handoff.md`](handoff.md)'s standing caveats.
 
 ## 13. Out-of-tree consumption (required)
 
-*(P15a; the other two modes and the SBOM are P18's.)* `tools/check_install.sh`
+`tools/check_install.sh`
 builds smply in **Release**, installs it into a throwaway prefix, and then
 builds and **runs** a consumer **three ways**:
 
@@ -613,7 +556,7 @@ Every part of the arrangement is load-bearing:
   clone is CMake's problem; whether *this* tree can be consumed is ours.
 * **The `.in` check.** `include/smply/version.hpp.in` sits beside the public
   headers, and an unfiltered `install(DIRECTORY)` shipped it next to the
-  configured `version.hpp` until P18. The script fails if it reappears.
+  configured `version.hpp`. The script fails if it reappears.
 
 What the package contains, and why each excluded target is excluded, is
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md):

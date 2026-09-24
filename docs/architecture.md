@@ -40,11 +40,11 @@ smply is a **library**, not a service. It owns protocol state only.
 | # | Goal | How it is enforced |
 | - | ---- | ------------------ |
 | G1 | The core is genuinely platform independent | A CI job builds `smply::smply` + all unit tests on Linux/GCC, Linux/Clang and Windows/MSVC. A header-hygiene gate greps public headers for forbidden includes. |
-| G2 | Every protocol **path** is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` reach every protocol path. **Not every *defect*, and P17 proved it:** indefinite-length CBOR (A18), the whole-image hash latency on the final chunk (A19) and the send-admission race under load (A22) were each invisible to the entire simulated suite and appeared on the first or the twentieth run against a radio. What this goal buys is regression coverage and fast iteration, not discovery. |
+| G2 | Every protocol **path** is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` reach every protocol path. **It does not reach every *defect*.** Three were invisible to the entire simulated suite and appeared only on runs against a radio: indefinite-length CBOR (A18), the whole-image hash latency on the final chunk (A19), and the send-admission race under load (A22). What this goal buys is regression coverage and fast iteration, not discovery. |
 | G3 | Protocol layers are separable | SMP framing has no knowledge of groups; groups have no knowledge of DFU; nothing below `dfu/` knows what a firmware file is. |
 | G4 | Hostile device input cannot hurt the host | Every length is validated against a configured bound before allocation; fuzzers run over the parser and reassembler. |
 | G5 | New MCUmgr groups and transports are additive | A group is a leaf module depending only on `SmpClient` + the CBOR façade. A transport implements one interface. |
-| G6 | A fresh agent session can continue from the repo alone | Living docs + status-tracked roadmap + ADRs, enforced by a Definition-of-Done gate. |
+| G6 | A new contributor can continue from the repo alone | Living docs, a backlog roadmap and ADRs, enforced by the documentation gate and the Definition of Done (ADR-0013, ADR-0018). |
 
 Explicit non-goals: server-side SMP, MCUmgr groups other than 0 and 1,
 image signing/verification, BLE connection management, an async framework.
@@ -94,8 +94,8 @@ dependencies between peers, and no cycles.
                  └─────────────┘   └──────────────┘  └─────────────┘
 ```
 
-The third box is a gap rather than a plan. Since P20 the **protocol** half of a
-serial link ships -- `transports/serial/` frames and deframes MCUmgr's console
+The third box is a gap rather than a plan. The **protocol** half of a serial
+link ships -- `transports/serial/` frames and deframes MCUmgr's console
 encapsulation, portably and with a test suite -- but no adapter opens a port,
 so nobody has yet implemented `Transport` over one.
 
@@ -132,8 +132,7 @@ so nobody has yet implemented `Transport` over one.
 3. **New DFU policy** — `UpdatePlan` is data; the state machine is driven by it.
 4. **Alternate CBOR backend** — the seam is `cbor::Reader`/`Writer` itself.
    There is no separate backend file: the façade *is* the QCBOR binding
-   (`src/cbor/reader.cpp`, `writer.cpp`), which section 10 records as a P5
-   deviation. Replacing the backend means reimplementing those two against
+   (`src/cbor/reader.cpp`, `writer.cpp`), as section 10 records. Replacing the backend means reimplementing those two against
    another library behind the same interface.
 5. **Alternate async style** — the callback core is the substrate; a
    futures/coroutine wrapper is a thin, optional header.
@@ -272,8 +271,6 @@ Detail: [`security.md`](security.md).
   `src/`, so there is no level to misconfigure and nothing to leak. Diagnostics
   reach the application as `Error` values, and the one field carrying device
   text (`reason()`) is length-capped and documented as attacker-controlled.
-  This line claimed a logging policy until P18's audit; there was never a
-  logging subsystem for it to describe.
 
 ## 9. Configuration limits (defensive bounds)
 
@@ -285,7 +282,7 @@ smply will accept from a device or a file.
 | -------- | ------- | ------- | -------- |
 | `kMaxSmpPayload` | 8192 B | reject an oversized `length` before buffering | `SmpClientConfig` |
 | `kMaxAssemblyBuffer` | 16 KiB | cap partial-message buffering | `SmpClientConfig` |
-| `kMaxCborNesting` | 14 | bound decoder recursion; **must stay strictly below QCBOR's own limit of 15**, or QCBOR refuses first and the failure is not sticky (P13) | — |
+| `kMaxCborNesting` | 14 | bound decoder recursion; **must stay strictly below QCBOR's own limit of 15**, or QCBOR refuses first and the failure is not sticky | — |
 | `kMaxInFlight` | 1 | bound the pending-request table | `SmpClientConfig` |
 | `kMaxRetiredSeqs` | 64 | bound late-response suppression | `SmpClientConfig` |
 | `kDefaultTimeout` | 5 s | per request | `SmpClientConfig`, `UploadOptions` |
@@ -309,9 +306,9 @@ smply will accept from a device or a file.
 
 ## 10. Repository layout
 
-Entries marked **(planned)** do not exist yet and name the phase that creates
-them; everything else is present today. Keep this accurate — a layout that lists
-files which were never written costs the next session a search.
+Everything listed here is present today, and `check_docs.py` R5 fails on an
+entry that does not exist. Keep it accurate: a layout that lists files which
+were never written costs the next reader a search.
 
 ```
 smply/
@@ -342,7 +339,7 @@ smply/
 │   ├── smp/                    codec.cpp  assembler.{hpp,cpp}  client.cpp
 │   ├── cbor/                   cbor.hpp  reader.cpp  writer.cpp  mgmt_error.{hpp,cpp}
 │   │                           — reader/writer ARE the QCBOR backend; there is no
-│   │                             separate backend file (P5 deviation)
+│   │                             separate backend file
 │   ├── groups/os/              os_management.cpp
 │   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}
@@ -363,20 +360,20 @@ smply/
 │   │                           termios, CreateFile, a reader thread — is the
 │   │                           application's and is not here
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
-│                               Compiled by CI; exercised on the bench (P17): see its README
+│                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
 │   └── dfu_app/                what a DFU *application* needs and the library
 │                               deliberately does not ship: FileImageSource and
 │                               ReconnectPolicy. smply::dfu_app, used by both
-│                               examples and unit-tested (P16)
+│                               examples and unit-tested
 ├── examples/
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           the other files are the stub device it drives. Runs
 │   │                           in CI, --flaky-reconnect included
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
-│                               Compiled by CI; runs on the bench (P17a-P17c): see its README
+│                               Compiled by CI; runs on the bench: see its README
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
@@ -403,7 +400,7 @@ smply/
 ├── .github/workflows/          ci.yml (the 16-job gate)  nightly-fuzz.yml
 │                               osv.yml — weekly dependency scan, advisory
 │                               hil.yml — self-hosted, advisory, no runner
-│                               registered and no schedule (P18)
+│                               registered and no schedule
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
 │                               check_install.sh  sbom.py
@@ -429,14 +426,14 @@ a directory, not a fourth target, which is what keeps ADR-0016's list intact
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
 * Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
-  but nothing yet exercises it; O5 tracks whether a later phase exercises it or documents it
+  but nothing yet exercises it. O5 tracks whether to exercise it or document it
   as untested.
 * **Serial: the framing ships, the port does not.** `transports/serial/` is a
   complete, tested implementation of MCUmgr's console encapsulation in both
   directions, but nothing in this repository opens a tty, so no `Transport` is
   implemented over one and **no serial byte has been on a wire** — the evidence
   is agreement with a transcription of Zephyr's source, which is a weaker claim
-  than P17's bench runs (ADR-0017). Raw UART
+  than a bench run against a device (ADR-0017). Raw UART
   (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented either; it needs no
   framing, only a port.
 * The core does not manage connections; reconnection is the application's job.
@@ -447,7 +444,7 @@ a directory, not a fourth target, which is what keeps ADR-0016's list intact
 ## 12. Planned future extensions
 
 Ordered by expected value, none scheduled: a **serial port adapter** over the
-framing P20 shipped, and an example driving it · multi-image (`UploadOptions::image`
+framing in `transports/serial/`, and an example driving it · multi-image (`UploadOptions::image`
 is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·

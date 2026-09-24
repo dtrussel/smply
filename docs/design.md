@@ -38,7 +38,7 @@ groups and an open range; unknown groups round-trip unchanged.
 ## 2. Streaming reassembly (`src/smp/assembler.*`)
 
 ```cpp
-class MessageSink {                       // implemented by SmpClient (P6)
+class MessageSink {                       // implemented by SmpClient
 public:
     // payload is borrowed for the duration of this call only. Must not
     // re-enter the assembler.
@@ -211,8 +211,8 @@ Design points:
   silently reads the *parent map's* following entries as further array elements.
   That is not a hypothetical encoding — Zephyr's zcbor emits it unless
   `CONFIG_ZCBOR_CANONICAL` is set, and nothing in MCUmgr sets it, so it is what
-  a real device sends (PN §9 A18, found on the first hardware run in P17a;
-  `dependencies.md` has the minimal reproduction). `for_each_map_in_array`
+  a real device sends (PN §9 A18; `dependencies.md` has the minimal
+  reproduction). `for_each_map_in_array`
   therefore peeks, bounds each element's byte range with `QCBORDecode_Tell`
   around `QCBORDecode_VGetNextConsume`, and hands that range to a child
   `Reader` — which is why `Reader` keeps its own `input_` span. **Do not tidy it
@@ -228,14 +228,14 @@ Design points:
   The façade counts the levels it enters against `limits::kMaxCborNesting`, and
   QCBOR independently enforces its compile-time `QCBOR_MAX_ARRAY_NESTING` of
   15. `kMaxCborNesting` is **14**, strictly below QCBOR's, and the gap is
-  load-bearing rather than cautious. It was 16 until P13's limits audit, and
-  "deep input fails either way" was the reasoning that made that look fine — it
-  is not true. When QCBOR refuses first the refusal arrives through
+  load-bearing rather than cautious: "deep input fails either way" is not true.
+  When QCBOR refuses first the refusal arrives through
   `Reader::enter_map(key)`, whose QCBOR-error path is deliberately *not* sticky
-  so that it can double as a probe for the optional `err` map (below). So an
-  over-deep document made the reader stop descending with `status()` **clean**:
-  silently missing fields rather than a decode failure, and a caller following
-  the house rule of checking `status()` at the end saw nothing wrong. Fourteen
+  so that it can double as a probe for the optional `err` map (below). So with a
+  cap at or above QCBOR's, an over-deep document would make the reader stop
+  descending with `status()` **clean**: silently missing fields rather than a
+  decode failure, invisible to a caller following the house rule of checking
+  `status()` at the end. Fourteen
   and not fifteen, because reaching smply's cap needs a document one level
   deeper than the cap — equal is not enough. `limits.hpp` carries the same
   reasoning at the constant.
@@ -278,8 +278,8 @@ destructor detaches from the transport it holds, and `rebind_transport()`
 detaches from the one it replaces; a transport destroyed first leaves those
 calls dangling. Declaring the transport before the client is enough, and is what
 the tests do. The transport contract states the converse — a listener outliving
-its transport — but not this direction; see the P6 follow-up item in
-[`roadmap.md`](roadmap.md).
+its transport — but not this direction; the roadmap's backlog has an item for
+moving both obligations into the contract.
 
 The rule extends to callback captures. The destructor completes outstanding
 requests, so a callback runs *during* destruction and everything it refers to
@@ -565,7 +565,7 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 | protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
-| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every P17 update before the final chunk had its own deadline). |
+| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every hardware update before the final chunk had its own deadline). |
 | `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if over `max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. Also what a device that forgot the session answers, and what a **retransmitted final chunk** gets once the server has reset — where the first packet then completes the upload immediately via the already-present check (PN §6 rule 9a). |
 | the request was a first packet | adopt `rsp_off` whatever it is, and do **not** charge the no-progress budget: adopting the device's answer is the entire point of sending a first packet. |
 | `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
@@ -594,13 +594,13 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
   A first packet that is *also* the last chunk takes the first-chunk deadline;
   the erase dominates.
 
-  `final_chunk_timeout` exists because P17a found what happens without it, and
-  the failure is worth remembering because it did not look like one: the last
-  chunk timed out, the retransmission was answered `off == 0` (rule 9b — the
-  server had already reset the session), the re-sent first packet completed
+  `final_chunk_timeout` exists because of what happens without it, and the
+  failure is worth knowing because it does not look like one: the last chunk
+  times out, the retransmission was answered `off == 0` (rule 9b — the
+  server has already reset the session), the re-sent first packet completes
   immediately via the already-present check (rule 9a), and the **update
-  succeeded while reporting the transfer as skipped**. A green run hiding a
-  timeout. The companion fix is `UploadState::progressed`, which is why
+  succeeds while reporting the transfer as skipped**. A green run hiding a
+  timeout (PN §9 A19). The companion fix is `UploadState::progressed`, which is why
   `already_present` now means "this session moved nothing" rather than "the
   server answered on a first packet".
 
@@ -801,8 +801,7 @@ performed a `REVERT` (PN §7).
 * `UpdateMode::ConfirmImmediately` — the identical sequence, confirmed without
   asking ([ADR-0014](decisions/ADR-0014-confirmation-is-the-applications-call.md)).
   What an unattended updater wants. It is **not** a permanent swap up front:
-  P11 established that a confirm on any slot that is not the running one is
-  refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
+  a confirm on any slot that is not the running one is refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
   ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
 * `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
@@ -846,16 +845,16 @@ single event stream:
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
 failed in plus the underlying `Error`. (The restart and retry counts live inside
-the upload and were never plumbed out — a P12 deviation, still filed.)
+the upload and are not plumbed out; the roadmap's backlog has the item.)
 
 **`upload_skipped` has two sources, and both matter.** The updater's own
 pre-flight check skips a transfer when the slot table it just read already shows
 the target hash. The *server* runs the same check independently, on any first
 packet carrying a full `sha`, and can answer "complete" before any image data is
 written (§6, rule 9a) — which happens whenever `skip_if_already_present` is off,
-or when a reconnect makes the client resend a first packet. Until P14a the
-report only knew about the first, so the second was reported as a transfer of
-the whole image. It now takes `UploadResult::already_present` into account.
+or when a reconnect makes the client resend a first packet. The report takes
+both into account, the second through `UploadResult::already_present`, so
+neither is reported as a transfer of the whole image.
 
 ## 9. Transport contract
 
@@ -866,7 +865,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | -------- | ------ |
 | What is one outbound unit? | **Exactly one complete SMP message** (8-byte header + `length` payload bytes). Fragmenting it is the transport's job. |
 | Does `send()` block? | No. It returns once the message is accepted for transmission. |
-| Backpressure? | `send()` may return `ErrorCode::TransportBusy`, which is a **request to retry**, not a link failure. The core still does not queue: with `max_in_flight = 1` there is at most one message outstanding, and the request it belongs to fails. What P17b's bench falsified is the *inference* that a transport with a write in progress must therefore refuse — the device's answer can arrive before the local write's own completion runs, so the medium is free while a naive "a write is in progress" flag still says busy. Admitting a second message is the **transport's** decision and is transport-internal (§10); `TransportBusy` now means the medium is genuinely behind rather than merely mid-handover. |
+| Backpressure? | `send()` may return `ErrorCode::TransportBusy`, which is a **request to retry**, not a link failure. The core still does not queue: with `max_in_flight = 1` there is at most one message outstanding, and the request it belongs to fails. What the bench falsified is the *inference* that a transport with a write in progress must therefore refuse — the device's answer can arrive before the local write's own completion runs, so the medium is free while a naive "a write is in progress" flag still says busy. Admitting a second message is the **transport's** decision and is transport-internal (§10); `TransportBusy` now means the medium is genuinely behind rather than merely mid-handover. |
 | How is inbound data delivered? | `TransportListener::on_bytes(span)` with **arbitrary** chunk boundaries. The core reassembles (ADR-0006). |
 | Ordering? | The transport **must** preserve byte order. GATT and UART both do. |
 | Buffer lifetime? | Borrowed for the duration of the call, in both directions. A transport that defers a send must copy. |
@@ -988,9 +987,8 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   A writer run is not a message: the coroutine loops on
   `SendQueue::next_for_writer()` and exits only when the queue is empty
   (`transports/winrt_ble/winrt_ble_transport.cpp`), so one run may carry several
-  messages. This paragraph said "per message" until P17c; it was written before
-  the queue existed and was left behind by it, which is worth noticing because
-  the difference is exactly the invariant below.
+  messages. The difference between "per message" and "per run" is exactly the
+  invariant below.
 
   Two consequences follow, and they are easy to state the wrong way round.
   `TransportBusy` means **two messages are already outbound** — one being
@@ -1003,7 +1001,7 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 
 * **Send admission: one writer, one waiting message**
   (`transports/common/send_queue.hpp`). A single "a write is in progress" flag
-  is the obvious design and P17b's bench showed it is wrong. The flag can only
+  is the obvious design, and the bench showed it is wrong (PN §9, A22). The flag can only
   be cleared by the write's own completion, and the **device's answer can
   arrive first**: the response travels device → radio → OS → a pool thread →
   the client, while the local write's continuation waits for a thread of its
@@ -1071,7 +1069,7 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   and an instrumented build recorded discovery succeeding on the first attempt
   in 20 of 20 measured discoveries; forcing the condition proves the loop runs
   its six attempts and reports the right one of two messages, which is
-  reachability, not benefit (PN §9, A22). It rests on the P17b observation.
+  reachability, not benefit (PN §9, A22). It rests on one bench observation.
   After a *rapid*
   reconnect Windows answers with a service whose characteristic collection is
   **empty** for a second or two — its own service cache, even though every
@@ -1190,8 +1188,8 @@ two is the interesting part.
 `Ignored` exists because a Zephyr console is shared. With
 `CONFIG_SHELL_BACKEND_SERIAL` and `CONFIG_LOG_BACKEND_UART` the same stream
 carries prompts, command echo and log lines, interleaved with frames at
-arbitrary points — and that is the exact stream over which P17c could not get a
-third-party client to complete an upload. The server's own receiver ignores
+arbitrary points — and that is the exact stream over which a third-party client
+could not complete an upload on the bench (PN §9). The server's own receiver ignores
 such a line without touching its context, and so does this. An ignored line is
 never *decoded*, so nothing a device puts in one reaches the CRC, the length or
 the buffer.

@@ -3,20 +3,11 @@
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
 
-**Everything in this file is now shipped API** — `util/dispatcher.hpp` was the
-last proposal, and P14a shipped it. A shipped section must match its header
-exactly; if you change the header, change it here in the same commit
+Every section here describes a shipped header, and must match that header
+exactly. If you change a header, change its section here in the same commit
 ([ADR-0013](decisions/ADR-0013-living-documentation.md)).
 
-Worth remembering when the next proposal is written: **every one of them changed
-on contact with the code.** `util/dispatcher.hpp` was no exception — the sketch
-was three methods and a constructor, and what shipped needed a destructor, a
-`pending()`, deleted copies, and four paragraphs of behaviour the signatures
-could not show. Read a proposed signature as an intent, not a contract, and
-record the deviations in the roadmap.
-
-**Scope: `include/smply/`, plus the installed transport headers.** P18 changed
-where that line falls, so it is worth stating precisely
+**Scope: `include/smply/`, plus the installed transport headers**
 ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)):
 
 * `include/smply/` — what an **application** uses. Documented below, header by
@@ -32,18 +23,15 @@ where that line falls, so it is worth stating precisely
 * `support/` — `minicbor` and `dfu_app`, shared by the tests and the examples
   and part of neither. Not installed, not promised.
 
-| Header | Status |
+| Header | Target |
 | ------ | ------ |
-| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1; `limits.hpp` extended by every group phase since) |
-| `smp/header.hpp` | **Shipped** (P2, extended P6) |
-| `transport.hpp` | **Shipped** (P4) |
-| `smp_client.hpp` | **Shipped** (P6; `defer()` P7, `transport_max_message_size()` P10) |
-| `groups/os.hpp` | **Shipped** (P7) |
-| `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
-| `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
-| `dfu/firmware_updater.hpp` | Shipped — P12 |
-| `util/dispatcher.hpp` | **Shipped** (P14a) — separate target `smply::util` |
-| `transports/common/*.hpp` | **Shipped** (P15a, `send_queue.hpp` P17b) — separate target `smply::transport_common`, installed from P18 |
+| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | `smply::smply` |
+| `smp/header.hpp` · `transport.hpp` · `smp_client.hpp` | `smply::smply` |
+| `groups/os.hpp` · `groups/image.hpp` | `smply::smply` |
+| `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
+| `dfu/firmware_updater.hpp` | `smply::smply` |
+| `util/dispatcher.hpp` | `smply::util`, a separate target the core does not link |
+| `transports/common/*.hpp`, `transports/serial/*.hpp` | `smply::transport_common`, header-only |
 
 ---
 
@@ -471,9 +459,6 @@ public:
 
 ## `smply/groups/image.hpp`
 
-**Shipped (P8)** for state, set-state, erase and slot info. The upload types at
-the end of this section are still **proposed** and belong to P10.
-
 ```cpp
 namespace smply {
 
@@ -896,7 +881,7 @@ Four behaviours a caller has to know, none of which the signatures show:
 
 ## `transports/` — the adapter surface (target `smply::transport_common`)
 
-**Header-only, and installed from P18.** An adapter links
+**Header-only, and installed.** An adapter links
 `smply::transport_common` and writes `#include "common/ble_framing.hpp"` or
 `#include "serial/serial_framing.hpp"` — the same spelling in this tree and out
 of an install prefix, where the headers land under
@@ -978,7 +963,7 @@ public:
 whole design, and it is what a naive "a write is in progress" flag gets wrong:
 the device's answer can reach the client *before* the local write's own
 completion has been scheduled, and the flag then refuses the next message on a
-perfectly healthy link. P17b watched that kill an upload six cases into a bench
+perfectly healthy link. On the bench, that killed an upload partway through a
 run (PN §9 A22).
 
 * `offer()` answers `StartWriter` (no writer live — **the caller must start

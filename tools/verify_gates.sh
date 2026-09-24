@@ -30,6 +30,11 @@ echo
 # Copy the tree without build outputs or git metadata.
 mkdir -p "$WORK"
 tar -C "$REPO" --exclude=build --exclude=.git --exclude=_deps -cf - . | tar -C "$WORK" -xf -
+# check_docs.py R5 resolves layout entries against `git ls-files`, so the copy
+# needs an index. Without one, the documentation gate fails on the unmodified
+# tree, and every case below that expects it to fail passes without testing
+# anything. The expect_ok before the documentation cases guards that.
+git -C "$WORK" init -q && git -C "$WORK" add -A
 
 # Reuse the already-downloaded dependencies so this does not re-clone.
 DEPS_CACHE="$REPO/build/linux-clang/_deps"
@@ -226,28 +231,35 @@ expect_fail "the check_deps self-exemption is the exact project name, not a pref
     python3 tools/check_deps.py
 restore tests/consumption/fetchcontent/CMakeLists.txt
 
-# 8. Docs R2: a phase marked Complete that still lists remaining work.
-# Appends a synthetic phase rather than patching a real one: an earlier version
-# rewrote "P1 ... Status: Planned", which silently became a no-op the moment P1
-# was completed, leaving the gate untested while still reporting PASS.
-cat >> "$WORK/docs/roadmap.md" <<'ROADMAP'
+# 7b. The documentation gate passes on the unmodified tree. Every documentation
+# case below expects a failure, so without this a gate that failed on
+# everything would make them all pass.
+expect_ok "check_docs passes on the unmodified tree" python3 tools/check_docs.py
 
-<a id="p99"></a>
-## P99 — Synthetic phase used by tools/verify_gates.sh
-
-**Status: Complete**
-
-**Remaining in this phase.** Deliberately non-empty, so R2 must reject this.
-ROADMAP
-expect_fail "check_docs R2 rejects a Complete phase with remaining work" \
+# 8. Docs R2: the roadmap is a backlog.
+# Each violation is appended, not patched into real content, so no later edit
+# to the roadmap can turn a case into a no-op that still reports PASS.
+printf '\n| ~~A finished item, struck through instead of deleted~~ | - |\n' >> "$WORK/docs/roadmap.md"
+expect_fail "check_docs R2 rejects a struck-through roadmap row" \
     python3 tools/check_docs.py
 restore docs/roadmap.md
+
+printf '\nThis depends on open question O99.\n' >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R2 rejects a citation of an undefined open question" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
 
 # 9. Docs R3: reference to a non-existent ADR
 printf '\nSee [ADR-0099](decisions/ADR-0099-imaginary.md).\n' >> "$WORK/docs/architecture.md"
 expect_fail "check_docs R3 rejects a reference to a non-existent ADR" \
     python3 tools/check_docs.py
 restore docs/architecture.md
+
+# 9b. Docs R3: an ADR the index does not list.
+printf '# ADR-0999 -- Synthetic\n\n**Status:** Accepted\n' > "$WORK/docs/decisions/ADR-0999-synthetic.md"
+expect_fail "check_docs R3 rejects an ADR missing from the index" \
+    python3 tools/check_docs.py
+rm -f "$WORK/docs/decisions/ADR-0999-synthetic.md"
 
 # 10. Docs R3: invalid ADR status
 substitute "$WORK/docs/decisions/ADR-0001-cpp-standard.md" \
@@ -304,12 +316,9 @@ expect_fail "check_docs R5 reads past the first token on a layout line" \
     python3 tools/check_docs.py
 restore docs/architecture.md
 
-# 11b. Docs R6: a "(planned, PN)" marker naming a phase that is Complete.
-#
-# P1 is Complete and will stay Complete, so unlike the R2 fixture this one
-# cannot rot by a phase advancing past it.
-printf '\nA thing that does not exist (planned, P1).\n' >> "$WORK/docs/architecture.md"
-expect_fail "check_docs R6 rejects a (planned) marker for a Complete phase" \
+# 11b. Docs R6: a development-phase ID in a living document.
+printf '\nThis was added in P99.\n' >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R6 rejects a development-phase ID in a living document" \
     python3 tools/check_docs.py
 restore docs/architecture.md
 

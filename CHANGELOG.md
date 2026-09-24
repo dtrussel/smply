@@ -13,9 +13,9 @@ even the stable surface — that is what `0.x` means.
 [ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) is the
 full policy.
 
-This file starts at `0.1.0`. Entries before that release are grouped by the
-development phase that produced them, because that is how the work is recorded
-in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
+This file starts at `0.1.0`. The development history before that release is in
+git; commit `97f1647` is the last to carry the per-phase record in
+`docs/roadmap.md` and `docs/handoff.md`.
 
 ## [Unreleased]
 
@@ -44,7 +44,7 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
   `<prefix>/include/smply/transports`.
 - `SECURITY.md`, this changelog, and an SPDX 2.3 SBOM generator
   (`tools/sbom.py`), generated from the same pins the build uses and published
-  as a CI artefact. `quality-gates.md` §9 had promised an SBOM since P0.
+  as a CI artefact.
 - An advisory weekly **OSV-Scanner** workflow over the pinned dependency set,
   which §9 had also promised. It fails if the scan could not run, which is a
   different thing from finding nothing; its scheduled firing is unproven.

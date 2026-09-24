@@ -1,18 +1,19 @@
 # smply — instructions for coding agents
 
-**Before doing anything, read [`docs/handoff.md`](docs/handoff.md)** — its
-session protocol and its **§ Standing caveats**, which is the distilled version
-of everything earlier sessions learned the hard way. This file is only the
-short version.
+**Before doing anything, read [`docs/handoff.md`](docs/handoff.md)**: how to
+start and finish a piece of work, and its **§ Standing caveats**, the rules
+earlier work learned the hard way. This file is only the short version.
 
 ## The rules that matter
 
 1. **The repository is the authoritative project state.** Never rely on
    conversation history. If something is worth knowing next session, write it
    down.
-2. **Work the next incomplete phase in [`docs/roadmap.md`](docs/roadmap.md)**,
-   and stay inside its scope. Work found outside it goes into the roadmap's
-   "Discovered follow-up work".
+2. **Work what [`docs/roadmap.md`](docs/roadmap.md) says is in progress**, or a
+   backlog item whose time has come, and stay inside its scope. Work you find
+   outside it goes into the roadmap's backlog. Finished items are deleted, not
+   struck through. History lives in git, not in the docs
+   ([ADR-0018](docs/decisions/ADR-0018-maintenance-process.md)).
 3. **Documentation is part of the product.** A change that makes
    `architecture.md`, `design.md` or `api.md` inaccurate is not complete until
    they are updated *in the same change*
@@ -36,8 +37,8 @@ short version.
    [`architecture.md`](docs/architecture.md) §5). The only other mention of a
    thread under `src/` is the debug-only client-context assertion, compiled out
    in release.
-8. **Finish with the end-of-session checklist** in
-   [`docs/handoff.md`](docs/handoff.md), including a session-log entry.
+8. **Finish with the checklist** in [`docs/handoff.md`](docs/handoff.md). Put
+   the reasoning in the commit message. There is no session log.
 
 ## Layout
 
@@ -68,10 +69,12 @@ still work — run it if you touch anything under `tools/` or `cmake/`.
 
 Three ways this has gone wrong before, all cheap to avoid:
 
-* **Neither `cppcheck` nor `gcovr` is installed here, and both fail soft** —
-  `lint.sh` skips cppcheck silently, `coverage.sh` falls back to plain `gcov`
-  and reports a number that is not comparable. So a clean local run can still
-  fail CI. `apt-get install -y cppcheck && pip install gcovr` first.
+* **Neither `cppcheck` nor `gcovr` is installed here, and both fail soft.**
+  `lint.sh` skips cppcheck with only a note, and `coverage.sh` falls back to
+  plain `gcov` and reports a number that is not comparable. So a clean local
+  run can still fail CI. Run
+  `apt-get update && apt-get install -y cppcheck libclang-rt-18-dev && pip install gcovr`
+  first.
 * **A failed build leaves the old test binary in place**, so `ctest` then
   reports the *previous* suite passing. Check the build's exit status
   separately — never read "N tests passed" as proof anything was rebuilt.
