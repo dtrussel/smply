@@ -1259,6 +1259,61 @@ message spans as many frames as it needs, exactly as a BLE message spans GATT
 packets; reporting the frame size there would cap every upload chunk at 93
 bytes for no reason. It should be at most `kMaxSerialPacket`.
 
+### `serial_port/` — the reference serial port adapter (target `smply::serial_port`, **not installed**)
+
+The pieces of a `Transport` over a UART, a USB CDC ACM port or a
+pseudo-terminal, carrying the framing above: its configuration, its counters,
+and the byte-level halves that are the same on every platform. The transport
+class itself, `SerialPortTransport`, arrives with its POSIX implementation. It
+is a reference adapter like `winrt_ble`: built and
+tested in-tree, outside the stable surface of ADR-0016 clause 4, and not in
+the installed package
+([ADR-0020](decisions/ADR-0020-serial-port-reference-adapter.md)). The mechanics
+are in [`design.md`](design.md) §13.
+
+```cpp
+// serial_port/serial_port_config.hpp
+enum class FlowControl : std::uint8_t { None, RtsCts };
+inline constexpr std::size_t kDefaultSerialMessageSize = 256;
+inline constexpr std::size_t kMinSerialMessageSize     = 128;
+
+struct SerialPortConfig {
+    std::string   path;                          // "/dev/ttyACM0", "COM4"
+    std::uint32_t baud = 115200;                 // always 8N1
+    FlowControl   flow = FlowControl::None;
+    std::size_t   max_message_size = kDefaultSerialMessageSize;
+};
+[[nodiscard]] bool         is_supported_baud(std::uint32_t) noexcept;
+[[nodiscard]] Result<void> validate(const SerialPortConfig&);   // InvalidArgument
+
+struct SerialLinkCounters {
+    SerialCounters deframe;          // ignored, crc_failures, framing_errors, packets
+    std::uint64_t  dropped_lines = 0;
+    SendCounters   send;             // deferred, refused
+    std::uint64_t  bytes_read = 0, bytes_written = 0;
+};
+
+// serial_port/serial_link.hpp -- the byte-level halves, no port involved
+[[nodiscard]] std::vector<std::byte> frame_message(ConstBytes message);
+class SerialInbound {
+public:
+    explicit SerialInbound(std::size_t max_packet = limits::kMaxAssemblyBuffer) noexcept;
+    template <typename OnPacket> void feed(ConstBytes chunk, OnPacket&& on_packet);
+    void reset() noexcept;
+    [[nodiscard]] SerialCounters deframe_counters() const noexcept;
+    [[nodiscard]] std::uint64_t  dropped_lines() const noexcept;
+};
+
+```
+
+What a caller has to know:
+
+* **`max_message_size` is a whole SMP message, and 256 is deliberate.** Over
+  serial a device accepts at most `buf_size − 4` (protocol-notes §9, A25).
+  Raise it only for a device whose `buf_size` you know.
+* **`SerialInbound`'s counters are cumulative** and survive `reset()`: they
+  describe the link, not the packet in progress.
+
 ---
 
 ## Representative usage

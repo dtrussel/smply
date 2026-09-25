@@ -61,6 +61,12 @@ install(DIRECTORY serial DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply/transport
 
 # --- platform adapters -------------------------------------------------------
 #
+# The serial port adapter builds everywhere -- posix/ or win32/ behind one
+# header -- so it has no option of its own. It is a reference adapter and is
+# not installed (ADR-0020).
+add_subdirectory(serial_port)
+
+#
 # The option is validated in the top-level CMakeLists (it refuses a non-Windows
 # host there), so the windows-msvc job, which sets it OFF, is a real gate whether or not the
 # directory below is ever entered.

@@ -410,6 +410,10 @@ smply/
 │   │                           rather than a fourth one (ADR-0017). The port —
 │   │                           termios, CreateFile, a reader thread — is the
 │   │                           application's and is not here
+│   ├── serial_port/            smply::serial_port, the reference serial port adapter, NOT
+│   │                           installed (ADR-0020): serial_port_config.hpp  serial_link.hpp
+│   │                           — configuration, counters, and the byte-level halves both
+│   │                           platforms share; posix/ holds the termios side
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
