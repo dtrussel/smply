@@ -27,8 +27,10 @@ the full contract.
   §10. `WinRtBleTransport`'s absence below is a decision, not an omission: it
   is an example of implementing `Transport`, not a second `Transport` to
   program against.
-* `support/` — `minicbor` and `dfu_app`, shared by the tests and the examples
-  and part of neither. Not installed, not promised.
+* `support/` — `minicbor`, `dfu_app` and `dfu_package`, shared by the tests
+  and the examples and part of neither. Not installed, not promised.
+  `dfu_package`'s `read_package()` is described in
+  [`multi-image.md`](multi-image.md).
 
 | Header | Target |
 | ------ | ------ |

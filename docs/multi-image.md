@@ -97,6 +97,31 @@ smply bounds the wait with `UpdatePlan::apply_timeout` and polls every
 `UpdatePlan::apply_poll_interval`. Size the timeout for the slowest apply:
 a UART upload of the whole image to the second MCU, plus its reboot.
 
+## The package
+
+`support/dfu_package/` (`smply::dfu_package`, not installed) reads the package
+nRF Connect SDK's sysbuild writes, `dfu_application.zip`
+([`protocol-notes.md`](protocol-notes.md), S38), and returns one
+`PackageImage` per file, sorted by `image_index`, each a view into the archive
+ready for a `MemoryImageSource`. It checks the manifest instead of believing it:
+* `size` against the file;
+* `version_MCUBOOT` against the image's own MCUboot header;
+* each `image_index` given once. A direct-XIP build writes two files for one
+  image, which are alternatives rather than a set, and is refused.
+
+`image_index` is a string in these manifests (`"1"`), because
+`generate_zip.py` keeps every sysbuild value a string unless it starts with
+`0x`; a number is accepted too. A manifest with one file and no `image_index`
+reads as image 0.
+
+It also reports each image's dependency TLVs (`ImageDependency`: image and
+minimum version), so an application can show the compatibility rule the
+package carries. smply does not enforce them. The device's MCUboot does, at
+the one reset.
+
+Which images are `Device` images is the application's call, not the
+package's: nothing in the manifest says who commits an image.
+
 ## What is not supported
 
 * **Several devices in one update.** Each `FirmwareUpdater` updates one device.

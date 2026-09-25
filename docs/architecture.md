@@ -423,10 +423,14 @@ smply/
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
-│   └── dfu_app/                what a DFU *application* needs and the library
-│                               deliberately does not ship: FileImageSource and
-│                               ReconnectPolicy. smply::dfu_app, used by both
-│                               examples and unit-tested
+│   ├── dfu_app/                what a DFU *application* needs and the library
+│   │                           deliberately does not ship: FileImageSource and
+│   │                           ReconnectPolicy. smply::dfu_app, used by both
+│   │                           examples and unit-tested
+│   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
+│                               stored-zip lister, a bounded JSON reader and the
+│                               manifest cross-checks. smply::dfu_package, not
+│                               installed, unit-tested and fuzzed
 ├── examples/
 │   ├── stub_device/            stub_device.hpp  demo_image.hpp  device_link.hpp — the
 │   │                           pretend device both portable examples drive, behind a

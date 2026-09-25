@@ -365,7 +365,8 @@ true.
   `smply::asyncutil` (ADR-0019).
   `smply::dfu_app`, `smply::minicbor` and `smply::winrt_ble` are deliberately
   left out, and [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)
-  gives the reason for each. Adding a target to the package is a compatibility
+  gives the reason for each; `smply::dfu_package` too, for ADR-0021's reason
+  (the core stays free of file formats). Adding a target to the package is a compatibility
   promise.
 * **`EXPORT_NAME` is not optional on a target in the export set.**
   `install(EXPORT)` names an exported target `<namespace><target-name>`, and

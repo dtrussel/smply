@@ -270,6 +270,7 @@ silently ignored.
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (289/315) · branch 78.5 % (168/214). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
+| `support/dfu_package/` (support code: **not** in the whole-core figure; recorded 2026-09-25) | — | line 97.2 % (551/567) · branch 91.5 % (483/528). Among the misses: `kMaxPackageSize`, whose test would need a 64 MiB archive; a manifest over the JSON size bound inside a valid zip; and a few of the JSON reader's end-of-input arms. `fuzz_dfu_package` reaches what the table does not |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 **The elevated per-directory targets are measured, not enforced.** Only the two
@@ -604,8 +605,8 @@ What the package contains, and why each excluded target is excluded, is
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md):
 `smply::smply`, `smply::util`, `smply::transport_common` and
 `smply::asyncutil` ship;
-`smply::minicbor`, `smply::dfu_app`, `smply::winrt_ble` and the test doubles do
-not. The installed prefix does also contain QCBOR's headers and config package —
+`smply::minicbor`, `smply::dfu_app`, `smply::dfu_package` (ADR-0021),
+`smply::winrt_ble` and the test doubles do not. The installed prefix does also contain QCBOR's headers and config package —
 QCBOR's own install rules run alongside ours — which is a packaging fact, not an
 API leak: ADR-0007 keeps QCBOR out of `include/smply/` and §10 still enforces it.
 

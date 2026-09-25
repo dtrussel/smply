@@ -52,3 +52,29 @@ target_link_libraries(smply_dfu_app
 )
 
 target_compile_features(smply_dfu_app PUBLIC cxx_std_20)
+
+# --- smply::dfu_package -----------------------------------------------------
+#
+# Reads a multi-image DFU package: the stored zip and manifest.json that nRF
+# Connect SDK's sysbuild writes (ADR-0021). Support code, not the library, and
+# not installed: the core stays free of file formats, and a product with its own
+# container calls FirmwareUpdater::start() over its own image list. The zip and
+# JSON readers are hand-written and bounded, and fuzzed by fuzz_dfu_package,
+# rather than a new dependency for a manifest of a dozen keys.
+add_library(smply_dfu_package STATIC
+    dfu_package/dfu_package.cpp
+    dfu_package/json.cpp
+    dfu_package/stored_zip.cpp
+)
+add_library(smply::dfu_package ALIAS smply_dfu_package)
+
+target_include_directories(smply_dfu_package PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(smply_dfu_package
+    PUBLIC
+        smply::smply     # ConstBytes, Result, the MCUboot header
+    PRIVATE
+        smply_internal_options
+)
+
+target_compile_features(smply_dfu_package PUBLIC cxx_std_20)

@@ -13,6 +13,7 @@ set(SMPLY_FUZZ_TARGETS
     fuzz_assembler
     fuzz_cbor_image_state
     fuzz_cbor_upload_response
+    fuzz_dfu_package
     fuzz_header
     fuzz_mcuboot_header
     fuzz_serial_deframe
@@ -31,6 +32,8 @@ foreach(target IN LISTS SMPLY_FUZZ_TARGETS)
             # is what puts on the include path. The others do not need it and
             # linking a header-only INTERFACE target costs them nothing.
             smply::transport_common
+            # fuzz_dfu_package is over support/dfu_package/; the same holds.
+            smply::dfu_package
             smply_internal_options
     )
     target_link_options(${target} PRIVATE -fsanitize=fuzzer)
