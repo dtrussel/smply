@@ -13,23 +13,28 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/mcuboot_image.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <variant>
 #include <vector>
 
+using smply::CommitBy;
 using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageError;
+using smply::ImageTarget;
 using smply::MemoryImageSource;
 using smply::SmpClientConfig;
 using smply::UpdateEvent;
@@ -38,6 +43,7 @@ using smply::UpdatePlan;
 using smply::UpdateReport;
 using smply::UpdateState;
 using smply::Version;
+using smply::test::ApplyOutcome;
 using smply::test::FakeTransport;
 using smply::test::Fixture;
 using smply::test::make_firmware;
@@ -1164,4 +1170,294 @@ TEST_CASE("a default build refuses to confirm image 1, and the update says so",
     // Image 0 stayed confirmed: the confirm did not land on it instead.
     CHECK(fixture.simulator.swap_type(0) == SwapType::None);
     CHECK(fixture.simulator.swap_type(1) == SwapType::Revert);
+}
+
+// --- Several images in one update (ADR-0021) --------------------------------
+
+namespace {
+
+/// The coordinating-MCU product of docs/multi-image.md: image 0 is the host's
+/// application, committed by smply; image 1 is the second MCU's, committed by
+/// the device once it has applied it.
+///
+/// Declared before the fixture, like `UpdateOutcome`: the sources view these
+/// bytes and must outlive the update.
+struct AppAndRadio
+{
+    std::vector<std::byte> app_running = make_firmware(kBodySize, 1, 0, 0, 1);
+    std::vector<std::byte> app_update = make_firmware(kBodySize, 2, 0, 0, 2);
+    std::vector<std::byte> radio_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    std::vector<std::byte> radio_update = make_firmware(kBodySize, 6, 0, 0, 6);
+    MemoryImageSource app{ConstBytes{app_update}};
+    MemoryImageSource radio{ConstBytes{radio_update}};
+    std::array<ImageTarget, 2> targets{
+        ImageTarget{.image = 0, .source = &app, .commit = CommitBy::Client},
+        ImageTarget{.image = 1, .source = &radio, .commit = CommitBy::Device}};
+
+    /// Loads the running images, and makes image 1 device-committed.
+    void install(Fixture& fixture, ApplyOutcome outcome, unsigned reads) const
+    {
+        fixture.simulator.load_slot(0, app_running);
+        fixture.simulator.load_slot(2, radio_running);
+        fixture.simulator.device_commits(1, outcome, reads);
+    }
+};
+
+/// Plays the application, one turn at a time, until \p done.
+template<class Predicate>
+[[nodiscard]] bool drive_until(Application& application, Fixture& fixture,
+                               const std::vector<FakeTransport*>& spares, UpdateOutcome& outcome,
+                               Predicate done)
+{
+    for (int i = 0; i < 6000 && !done(); ++i) {
+        static_cast<void>(application.run(fixture, spares, outcome, 1));
+    }
+    return done();
+}
+
+[[nodiscard]] std::size_t resets(const Fixture& fixture)
+{
+    const std::vector<Command> all = commands(fixture);
+    return static_cast<std::size_t>(std::count(all.begin(), all.end(), kReset));
+}
+
+} // namespace
+
+TEST_CASE("two images, one reset, and image 0 confirmed only after the device applied image 1",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 3);
+
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, outcome.handler()).has_value());
+
+    // While waiting, the poll timer is what the application must wake for.
+    Application application;
+    REQUIRE(drive_until(application, fixture, {&reconnected}, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingDeviceApply;
+    }));
+    CHECK(fixture.updater.next_deadline().has_value());
+    CHECK(outcome.confirmations == 0);
+
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+    REQUIRE(outcome.report.has_value());
+    const UpdateReport& report = *outcome.report;
+    CHECK(report.final_state == UpdateState::Completed);
+    CHECK_FALSE(report.revert_pending);
+    CHECK(report.bytes_transferred == images.app_update.size() + images.radio_update.size());
+    REQUIRE(report.images.size() == 2);
+    CHECK(report.images[1].applied);
+    CHECK(report.images[1].commit == CommitBy::Device);
+
+    CHECK(resets(fixture) == 1);
+    CHECK(outcome.confirmations == 1);
+    // Both images run their update, both committed -- image 1 by the device,
+    // which a default build requires (A27).
+    CHECK(same_bytes(fixture.simulator.slot_content(0), images.app_update));
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+    CHECK(same_bytes(fixture.simulator.slot_content(2), images.radio_update));
+    CHECK(fixture.simulator.swap_type(1) == SwapType::None);
+}
+
+TEST_CASE("a failed device apply leaves image 0 unconfirmed", "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Failed, 2);
+
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.revert_pending);
+    REQUIRE(report.images.size() == 2);
+    CHECK_FALSE(report.images[1].applied);
+    CHECK(outcome.confirmations == 0);
+    // Image 0 is still on trial: the next reset takes it back.
+    CHECK(fixture.simulator.swap_type(0) == SwapType::Revert);
+    CHECK(same_bytes(fixture.simulator.slot_content(2), images.radio_running));
+}
+
+TEST_CASE("a device that never finishes applying times out", "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1'000'000);
+
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{2};
+    plan.apply_poll_interval = std::chrono::milliseconds{200};
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::Timeout);
+    CHECK(fixture.updater.report().revert_pending);
+    CHECK(outcome.confirmations == 0);
+    CHECK(fixture.simulator.swap_type(0) == SwapType::Revert);
+}
+
+TEST_CASE("an update resumed while the device applies waits, and does not reset again",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome first;
+    UpdateOutcome second;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 20);
+
+    // The first process gets as far as the wait, then goes away.
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, first.handler()).has_value());
+    Application application;
+    REQUIRE(drive_until(application, fixture, {&reconnected}, first,
+                        [&] { return first.reached(UpdateState::AwaitingDeviceApply); }));
+    fixture.updater.cancel();
+    REQUIRE(fixture.run_until([&] { return first.finished(); }));
+
+    // A second one picks it up from the slot table alone.
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, second.handler()).has_value());
+    Application again;
+    REQUIRE(again.run(fixture, {}, second));
+
+    REQUIRE(second.report.has_value());
+    CHECK(second.report->final_state == UpdateState::Completed);
+    CHECK(second.report->upload_skipped);
+    CHECK(second.reached(UpdateState::AwaitingDeviceApply));
+    CHECK_FALSE(second.reached(UpdateState::Resetting));
+    CHECK(resets(fixture) == 1);
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+    CHECK(fixture.simulator.swap_type(1) == SwapType::None);
+}
+
+TEST_CASE("an update resumed after the device applied goes to the confirmation window",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome first;
+    UpdateOutcome second;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1);
+
+    // The first process reaches the window and never answers it.
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, first.handler()).has_value());
+    Application undecided;
+    undecided.confirm = false;
+    REQUIRE(drive_until(undecided, fixture, {&reconnected}, first,
+                        [&] { return first.confirmations > 0; }));
+    fixture.updater.cancel();
+    REQUIRE(fixture.run_until([&] { return first.finished(); }));
+    CHECK(fixture.updater.report().revert_pending);
+
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, second.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {}, second));
+
+    REQUIRE(second.report.has_value());
+    CHECK(second.report->final_state == UpdateState::Completed);
+    CHECK(second.confirmations == 1);
+    CHECK_FALSE(second.reached(UpdateState::Resetting));
+    CHECK(resets(fixture) == 1);
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+}
+
+TEST_CASE("an image-1 upload interrupted after image 0 finished resumes on image 1",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport resumed_link;
+    FakeTransport rebooted_link;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1);
+
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, outcome.handler()).has_value());
+    // The second upload has started and is part-way through.
+    REQUIRE(fixture.run_until([&] {
+        return std::count(outcome.visited.begin(), outcome.visited.end(), UpdateState::Uploading) ==
+                   2 &&
+               outcome.last_progress > 0 && outcome.last_progress < images.radio_update.size();
+    }));
+    fixture.transport.disconnect();
+
+    Application application;
+    REQUIRE(application.run(fixture, {&resumed_link, &rebooted_link}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.reconnects == 2);
+    CHECK(resets(fixture) == 1);
+    CHECK(same_bytes(fixture.simulator.slot_content(0), images.app_update));
+    CHECK(same_bytes(fixture.simulator.slot_content(2), images.radio_update));
+}
+
+TEST_CASE("two client images are each confirmed by their own hash", "[dfu][update][multi]")
+{
+    // A device built to allow it (A27) lets smply commit image 1 too.
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    images.targets[1].commit = CommitBy::Client;
+    Fixture fixture{two_image_device(true), v2_client()};
+    fixture.simulator.load_slot(0, images.app_running);
+    fixture.simulator.load_slot(2, images.radio_running);
+
+    UpdatePlan plan;
+    plan.mode = UpdateMode::ConfirmImmediately;
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.reached(UpdateState::AwaitingDeviceApply));
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+    CHECK(fixture.simulator.swap_type(1) == SwapType::None);
+    CHECK(same_bytes(fixture.simulator.slot_content(2), images.radio_update));
+}
+
+TEST_CASE("an image list start() cannot honour is refused before anything is sent",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+
+    const auto refused = [&](std::span<const ImageTarget> targets, const UpdatePlan& plan) {
+        const auto started = fixture.updater.start(targets, plan, outcome.handler());
+        return !started.has_value() && started.error().code() == ErrorCode::InvalidArgument;
+    };
+
+    CHECK(refused({}, UpdatePlan{}));
+
+    std::array<ImageTarget, 2> no_source = images.targets;
+    no_source[1].source = nullptr;
+    CHECK(refused(no_source, UpdatePlan{}));
+
+    std::array<ImageTarget, 2> twice = images.targets;
+    twice[1].image = 0;
+    CHECK(refused(twice, UpdatePlan{}));
+
+    UpdatePlan with_sha;
+    const smply::Result<smply::Hash> sha = smply::sha256(images.app);
+    REQUIRE(sha.has_value());
+    with_sha.upload.sha = *sha;
+    CHECK(refused(images.targets, with_sha));
+
+    UpdatePlan no_interval;
+    no_interval.apply_poll_interval = smply::Duration::zero();
+    CHECK(refused(images.targets, no_interval));
+
+    CHECK(fixture.simulator.requests().empty());
+    CHECK(outcome.events == 0);
 }

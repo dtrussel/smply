@@ -43,6 +43,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -116,6 +117,16 @@ enum class CommitBy : std::uint8_t
     Device,
 };
 
+/// One image of a multi-image update.
+struct ImageTarget
+{
+    /// The image number on the device: 0 is the running application.
+    std::uint32_t image = 0;
+    /// The firmware file. Not owned; must outlive the update.
+    ImageSource* source = nullptr;
+    CommitBy commit = CommitBy::Client;
+};
+
 /// What to do, and how.
 struct UpdatePlan
 {
@@ -125,9 +136,11 @@ struct UpdatePlan
     /// are filled in by the updater when absent -- it computes the first from
     /// the source and learns the second from the device.
     ///
-    /// `upload.image` is also the image the rest of the update inspects, marks
-    /// and confirms: there is one image number for the whole update, not one
-    /// for the transfer and another for everything after it. The confirm names
+    /// For the single-image `start()`, `upload.image` is also the image the
+    /// rest of the update inspects, marks and confirms: there is one image
+    /// number for the whole update, not one for the transfer and another for
+    /// everything after it. The image-list `start()` replaces it with each
+    /// target's `image`. The confirm names
     /// the image by hash, because a hashless confirm reaches only the device's
     /// running image. Confirming image >= 1 is refused unless the device is
     /// built to allow it (docs/protocol-notes.md section 9, A27).
@@ -156,7 +169,7 @@ struct UpdatePlan
     Duration apply_timeout = std::chrono::minutes{5};
 
     /// How often to read the device's image state while waiting for it to
-    /// apply.
+    /// apply. Must be positive when any image is `CommitBy::Device`.
     Duration apply_poll_interval = std::chrono::seconds{2};
 };
 
@@ -314,6 +327,27 @@ public:
     ///         is emitted from inside this call; the first arrives on the next
     ///         `poll()`.
     [[nodiscard]] Result<void> start(ImageSource& source, const UpdatePlan& plan,
+                                     UpdateEventCallback on_event);
+
+    /// Begins an update of several images of one device, with one reset
+    /// (ADR-0021).
+    ///
+    /// Every image is uploaded and marked for test in the order given, then
+    /// the device is reset once. `Client` images must then be running their
+    /// target; `Device` images are waited for until the device reports them
+    /// applied (docs/multi-image.md). Only then are the `Client` images
+    /// confirmed -- after the confirmation window, as for a single image. If a
+    /// `Device` image is not applied, nothing is confirmed and the update
+    /// fails with `revert_pending`.
+    ///
+    /// Each target's `image` replaces `plan.upload.image`. The list is copied.
+    ///
+    /// \return `InvalidArgument` for an empty list, a null source, an image
+    ///         number given twice, a `plan.upload.sha` with more than one
+    ///         image (it describes one file), or a `Device` image with a
+    ///         non-positive `apply_poll_interval`; otherwise as the
+    ///         single-image `start()`.
+    [[nodiscard]] Result<void> start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
                                      UpdateEventCallback on_event);
 
     /// Approves the new image after `ConfirmationRequired`.

@@ -882,15 +882,14 @@ multi-image flow ([`multi-image.md`](multi-image.md)).
 
 ### Several images in one update
 
-The machine takes a list of targets, each an image number, a hash and who
-commits it ([ADR-0021](decisions/ADR-0021-multi-image-update.md)). It runs the
-diagram above once, with the staging part once per image: each image is
-planned, uploaded, verified and marked, in the order given, and
-`Context::current` says which. Then **one** reset, because MCUboot evaluates
-every image's dependency TLV at that one boot, and an image whose dependency is
-not yet staged is not booted (protocol-notes §6). The single-image `start()`
-is this with one `Client` target, `plan.upload.image`; an image-list
-`start()` is the next step.
+`start(std::span<const ImageTarget>, plan, callback)`
+([ADR-0021](decisions/ADR-0021-multi-image-update.md)) runs the diagram above
+once, with the staging part once per image: each image is planned, uploaded,
+verified and marked, in the order given, and `Context::current` says which.
+Then **one** reset, because MCUboot evaluates every image's dependency TLV at
+that one boot, and an image whose dependency is not yet staged is not booted
+(protocol-notes §6). The single-image `start()` is this with one `Client`
+target.
 
 After the reset, `VerifyingBooted` checks every `Client` image, then
 `AwaitingDeviceApply` waits for every `Device` image. The wait is a poll timer,

@@ -10,10 +10,12 @@
 #include "smply/mcuboot_image.hpp"
 #include "smply/result.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -107,7 +109,7 @@ public:
         : client_{&client}, image_{&image}, os_{&os}
     {}
 
-    [[nodiscard]] Result<void> start(ImageSource& source, const UpdatePlan& plan,
+    [[nodiscard]] Result<void> start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
                                      UpdateEventCallback on_event)
     {
         if (running_) {
@@ -116,21 +118,33 @@ public:
         if (!on_event) {
             return fail(ErrorCode::InvalidArgument, "updater: no event callback");
         }
+        if (Result<void> valid = validate(targets, plan); !valid.has_value()) {
+            return valid;
+        }
 
-        // The image-state hash of the file: what the device will report for the
-        // slot holding it, and therefore how every later step recognises it.
-        // Read before anything goes on the wire, so a file that is not an
-        // MCUboot image fails here rather than half way through an update.
-        const Result<ImageHash> target = read_target_hash(source);
-        if (!target.has_value()) {
-            return fail(target.error());
+        std::vector<dfu::Target> decided;
+        std::vector<ImageSource*> sources;
+        decided.reserve(targets.size());
+        sources.reserve(targets.size());
+        for (const ImageTarget& target : targets) {
+            // The image-state hash of the file: what the device will report
+            // for the slot holding it, and therefore how every later step
+            // recognises it. Read before anything goes on the wire, so a file
+            // that is not an MCUboot image fails here rather than half way
+            // through an update.
+            const Result<ImageHash> hash = read_target_hash(*target.source);
+            if (!hash.has_value()) {
+                return fail(hash.error());
+            }
+            decided.push_back(
+                dfu::Target{.image = target.image, .commit = target.commit, .hash = *hash});
+            sources.push_back(target.source);
         }
 
         plan_ = plan;
-        sources_ = {&source};
+        sources_ = std::move(sources);
         on_event_ = std::move(on_event);
-        // One image, committed by smply: the update this class has always run.
-        context_ = dfu::make_context({dfu::Target{.image = plan.upload.image, .hash = *target}});
+        context_ = dfu::make_context(std::move(decided));
         report_ = UpdateReport{};
         state_ = UpdateState::Idle;
         running_ = true;
@@ -237,6 +251,37 @@ public:
     }
 
 private:
+    /// The plan and targets `start()` refuses, before anything is read.
+    [[nodiscard]] static Result<void> validate(std::span<const ImageTarget> targets,
+                                               const UpdatePlan& plan)
+    {
+        if (targets.empty()) {
+            return fail(ErrorCode::InvalidArgument, "updater: no image to update");
+        }
+        bool device_commits = false;
+        for (std::size_t index = 0; index < targets.size(); ++index) {
+            const ImageTarget& target = targets[index];
+            if (target.source == nullptr) {
+                return fail(ErrorCode::InvalidArgument, "updater: image target without a source");
+            }
+            const auto same_image = [&target](const ImageTarget& other) {
+                return other.image == target.image;
+            };
+            if (std::ranges::any_of(targets.subspan(index + 1), same_image)) {
+                return fail(ErrorCode::InvalidArgument, "updater: an image is given twice");
+            }
+            device_commits = device_commits || target.commit == CommitBy::Device;
+        }
+        if (targets.size() > 1 && plan.upload.sha.has_value()) {
+            // It is the hash of one file, and there is more than one.
+            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several images");
+        }
+        if (device_commits && plan.apply_poll_interval <= Duration::zero()) {
+            return fail(ErrorCode::InvalidArgument, "updater: apply_poll_interval not positive");
+        }
+        return {};
+    }
+
     /// `AwaitingDeviceApply`: read the state again once the interval is up.
     ///
     /// The timeout is judged only when a poll falls due, never while a read is
@@ -572,7 +617,15 @@ FirmwareUpdater::~FirmwareUpdater()
 Result<void> FirmwareUpdater::start(ImageSource& source, const UpdatePlan& plan,
                                     UpdateEventCallback on_event)
 {
-    return impl_->start(source, plan, std::move(on_event));
+    // One image, committed by smply: the update this class always ran.
+    const ImageTarget target{.image = plan.upload.image, .source = &source};
+    return impl_->start(std::span{&target, 1}, plan, std::move(on_event));
+}
+
+Result<void> FirmwareUpdater::start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
+                                    UpdateEventCallback on_event)
+{
+    return impl_->start(targets, plan, std::move(on_event));
 }
 
 Result<void> FirmwareUpdater::confirm()

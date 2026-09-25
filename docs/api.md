@@ -821,11 +821,18 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 // (docs/multi-image.md), and never confirms it.
 enum class CommitBy : std::uint8_t { Client, Device };
 
+struct ImageTarget {                  // one image of a multi-image update
+    std::uint32_t image = 0;
+    ImageSource*  source = nullptr;   // not owned; outlives the update
+    CommitBy      commit = CommitBy::Client;
+};
+
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
-    // upload.image is the image the whole update works on: transferred,
-    // inspected, marked and confirmed (by hash). There is no second image
-    // number. Image >= 1 works; confirming it needs the device to allow it
+    // For the single-image start(), upload.image is the image the whole update
+    // works on: transferred, inspected, marked and confirmed (by hash). The
+    // image-list start() replaces it with each target's image. Image >= 1
+    // works; confirming it needs the device to allow it
     // (CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*, protocol-notes
     // A27), and an image the device lacks fails the first packet (NoFreeSlot).
     UploadOptions upload{};
@@ -836,7 +843,7 @@ struct UpdatePlan {
     // Hint passed to the application in ReconnectRequired.
     Duration      reconnect_hint   = std::chrono::seconds{3};
     // Device images: how long to wait after the reset for the device to apply
-    // them, and how often to read its state meanwhile.
+    // them, and how often to read its state meanwhile (must be positive).
     Duration      apply_timeout       = std::chrono::minutes{5};
     Duration      apply_poll_interval = std::chrono::seconds{2};
 };
@@ -889,6 +896,14 @@ public:
     // and outlive the client and both groups, all of which finish outstanding
     // work in their destructors.
     Result<void> start(ImageSource&, const UpdatePlan&, UpdateEventCallback);
+
+    // Several images of one device, one reset (ADR-0021): each is staged in
+    // order, the device is reset once, Client images are verified, Device
+    // images are waited for, and only then are the Client images confirmed,
+    // each by hash. InvalidArgument for an empty list, a null source, an image
+    // given twice, upload.sha with more than one image, or a Device image with
+    // a non-positive apply_poll_interval. The list is copied.
+    Result<void> start(std::span<const ImageTarget>, const UpdatePlan&, UpdateEventCallback);
 
     // Approves the running image after ConfirmationRequired. InvalidState
     // unless the update is in AwaitingConfirmation (ADR-0014).

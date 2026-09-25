@@ -348,7 +348,10 @@ the device contract (applied, still applying in either variant, failed); the
 timeout and a failed read while waiting; a revert of one `Client` image; a
 resume after the reset that stages nothing; each `Client` image confirmed in
 turn and all read back confirmed; `UploadOnly` over two images; and a context
-with no image to work on.
+with no image to work on. `test_firmware_update.cpp`'s `[multi]` cases drive
+the same against the two-image simulator, including a resume in the wait, a
+resume in the confirmation window, and an image-1 upload interrupted after
+image 0 finished -- each asserting there was exactly one reset.
 
 ### The example as a test (`examples/cli_dfu/`)
 
