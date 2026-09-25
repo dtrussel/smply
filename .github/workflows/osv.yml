@@ -42,7 +42,7 @@ jobs:
     name: OSV-Scanner over the pinned set
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The SBOM is the input: it carries the exact commit each dependency is
       # pinned to, which is what determines whether an advisory applies. Scanning
