@@ -118,6 +118,11 @@ site), which made clang-tidy unusable. `SMPLY_USE_SYSTEM_QCBOR=ON` forces `find_
 Nothing is vendored under `third_party/` unless an upstream becomes unavailable;
 if that happens it requires an ADR.
 
+Dependabot (`.github/dependabot.yml`) watches the GitHub Actions the workflows
+use, and nothing else. It cannot read a FetchContent declaration, and moving a
+library pin is a decision under ADR-0011, not a bot's pull request; the weekly
+OSV scan (`quality-gates.md` §9) is what raises a library's advisory.
+
 ## Licence of smply itself
 
 **Apache-2.0** (open question O1, resolved). Permissive,

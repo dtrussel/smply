@@ -176,6 +176,7 @@ modifies the working tree.
 * [`docs/handoff.md`](docs/handoff.md) — how to work on smply, and the standing
   caveats.
 * [`docs/decisions/`](docs/decisions/) — Architecture Decision Records.
+* [`CONTRIBUTING.md`](CONTRIBUTING.md) — how a change is made and checked.
 * [`CHANGELOG.md`](CHANGELOG.md) — what changed, and the versioning policy.
 * [`SECURITY.md`](SECURITY.md) — how to report a vulnerability, and what smply
   is and is not an authority on.
