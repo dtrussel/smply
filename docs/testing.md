@@ -22,15 +22,16 @@ protocol honest. The demo is the happy path; `--flaky-reconnect 3` refuses three
 reconnection attempts so the backoff in `smply::dfu_app::ReconnectPolicy` runs
 for real; and `cli_dfu_reconnect_gives_up` exhausts the policy, which is the
 only exercise anywhere of `FirmwareUpdater::reconnect_failed()` outside the
-component suite. That last one is a `WILL_FAIL` test — it has to fail *through*
+component suite. That last one passes only on the exact failure message
+(`PASS_REGULAR_EXPRESSION`), not on any non-zero exit: it has to fail *through*
 `reconnect_failed()` rather than by timing out, or it is green and meaningless.
 
 ## 2. Test doubles (`tests/support/`)
 
 ### `ManualClock`
-`Clock` implementation with `advance(Duration)`. **No test may call
-`std::chrono::steady_clock::now()`.** A CI grep enforces this in `tests/unit`
-and `tests/component`.
+`Clock` implementation with `advance(Duration)`. **No unit or component test
+may call `std::chrono::steady_clock::now()`.** Nothing enforces this yet; review
+does, and the roadmap's backlog has the gate.
 
 ### `FakeTransport`
 The workhorse (`tests/support/`). A `Transport` that records outbound messages
@@ -292,12 +293,25 @@ fails every read, one that always reads short — because `MemoryImageSource`
 cannot do either, and an error path no test can reach is indistinguishable from
 one that does not work.
 
+The shared reader under both parsers (`src/image/source_reader.hpp`,
+`test_source_reader.cpp`) is also tested directly: `read_exact` refuses a read
+past the end *before* asking the source, passes on a source's failure, and
+refuses a short read; the little-endian loads use bytes with the high bit set,
+so a load that sign-extends shows up as a wrong value.
+
+`support/dfu_app/`'s `FileImageSource`, the source every example reads firmware
+through (`test_file_image_source.cpp`): a missing or empty file is refused, reads
+are clamped at the end, end of file is zero bytes and later reads still work,
+and a file that shrinks after `open()` is a broken source. `support/` is outside
+the coverage filter ([`quality-gates.md`](quality-gates.md) §6), so these tests
+add proof, not a gate number.
+
 ### Update state machine (pure function)
 Every transition in [`design.md`](design.md) §8, and every row of its
 failure/recovery table, driven directly as `(state, event)` pairs — no client,
 no transport. Exhaustive switch coverage is checked by the branch-coverage gate.
 
-Shipped in P12 as `tests/unit/test_update_state_machine.cpp`. Beyond the happy
+`tests/unit/test_update_state_machine.cpp`. Beyond the happy
 path: the planner's four cases and their `UploadOnly` variants; a slot table
 with no active slot, and one whose slot reports no hash; `ImageAlreadyPending`
 recovered exactly once; `Busy` reset forced exactly once; a lost reset response
@@ -345,8 +359,8 @@ the air; and a many-fragment message reassembling byte for byte, which is what
 **Two `[hardware-golden]` cases** (`tests/unit/test_image_group.cpp`) pin the
 device's own bytes: an image-state and a slot-info response captured from the
 NUCLEO-WB55RG, indefinite-length exactly as the reference server emits them
-(§9 A18). They encode a rule worth stating, because the hand-built goldens of
-P5–P8 were all definite-length and hid A18 completely: **build every new
+(§9 A18). They encode a rule worth stating, because hand-built goldens are
+naturally definite-length and hid A18 completely: **build every new
 response golden in both CBOR encodings**, and where a real device response
 exists, pin that too.
 
@@ -354,7 +368,7 @@ Plus `LinkState`: `close()` idempotent, and callbacks refused from the moment it
 *begins* rather than when it ends — the rule adapters get wrong, because there
 are usually callbacks already in flight at that point.
 
-And `SendQueue` (15 cases, P17b), which is send admission as a value: one writer,
+And `SendQueue`, which is send admission as a value: one writer,
 one message allowed to wait, a third refused. The cases that earn their keep are
 the ones about the *claim* rather than the queue — that the writer keeps it while
 a message waits, that it is released only by finding nothing left, and therefore
@@ -370,8 +384,7 @@ writer starts on exactly one admission. That is bench territory
 
 The same argument as the section above, one transport over: every byte of
 MCUmgr's console framing is protocol rather than platform, so all of it is
-tested on every preset instead of on a bench that does not exist yet. 38 cases
-(P20), and the two that carry the most weight are the ones whose oracle is not
+tested on every preset instead of on a bench that does not exist yet. The two that carry the most weight are the ones whose oracle is not
 this repository.
 
 **Neither oracle is smply's code, and that is the whole design.** The CRC is
@@ -407,8 +420,8 @@ frame's worth has been accumulated; a body longer than its own header, in both
 the opening frame and a continuation; an orphan continuation; undecodable
 base64; a corrupted CRC costing one packet and not the stream. Plus the case
 this module exists for — **log lines and a shell prompt interleaved between the
-frames of one packet, and the packet still arrives**, which is the stream P17c
-could not get a third-party client to complete an upload over.
+frames of one packet, and the packet still arrives**, which is the stream over
+which a third-party client could not complete an upload on the bench.
 
 What none of it checks is a port. No CI job and no bench has put a serial byte
 on a wire, and `architecture.md` §11 says so rather than implying a working
@@ -417,7 +430,7 @@ transport.
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is
-something CTest can say. Two files:
+something CTest can say. Four files:
 
 **`test_simulator.cpp`** checks the double against the specification it claims
 to implement, driven with hand-built requests and **no smply client at all** --
@@ -427,10 +440,10 @@ each optional command present and absent.
 
 **`test_round_trip.cpp`** drives the real stack
 (`ImageManagement`/`OsManagement` → `SmpClient` → `FakeTransport` →
-`ServerSimulator`) under `ManualClock`. Shipped as of P11:
+`ServerSimulator`) under `ManualClock`. It covers:
 
 * **an upload reproduces the source image byte for byte, in both SMP
-  versions** -- the phase's acceptance criterion;
+  versions**;
 * progress advances monotonically and ends at the total;
 * image already in the target slot ⇒ complete on the first packet, no data
   sent (rule 9a);
@@ -450,7 +463,7 @@ each optional command present and absent.
   with `force`;
 * destroying `ImageManagement` mid-upload completes the callback exactly once.
 
-**`test_firmware_update.cpp`** (P12) drives the whole update into the
+**`test_firmware_update.cpp`** drives the whole update into the
 simulator, with a small `Application` helper playing the part the updater
 refuses to play: reconnecting after the reset, and deciding whether the new
 image is good. Shipped:
@@ -473,6 +486,21 @@ image is good. Shipped:
   before a single byte goes on the wire;
 * cancellation mid-update, destruction mid-update, and a callback that outlives
   the updater while the client is still alive.
+
+**`test_async.cpp`** drives `smply::asyncutil` (ADR-0019) against the same
+simulator. It covers:
+* a coroutine that reads, uploads and reads again, in order;
+* two uploads back to back from one coroutine. The second starts from inside the
+  first's completion callback, where the coroutine resumes, which is the chained
+  callback the adapter relies on being legal;
+* an error delivered to the coroutine rather than lost;
+* a `Task` destroyed while suspended: the operation still completes and nothing
+  resumes a freed frame, which the sanitizer presets check;
+* one task awaiting another; an exception rethrown by `result()`; and an
+  operation that completes inline, which must not suspend;
+* a worker thread blocking on `post_for_future()` while the test thread pumps,
+  under TSan in `linux-clang-tsan`; and a cleared dispatcher breaking the
+  promise instead of hanging.
 
 ## 5. Fuzzing (`tests/fuzz/`)
 
@@ -519,9 +547,7 @@ a device actually drives.
 build by hand (`tests/support/message_builder.hpp`,
 `tests/support/image_builder.hpp`, `support/minicbor/minicbor.hpp`) — so
 seeding was extraction, not invention — plus inputs the soak found worth
-keeping. *(That third path read `tests/support/test_cbor.hpp` until P18b's
-audit; it moved to `support/` and became `smply::minicbor` in P14b, and the
-sentence did not follow it.)*
+keeping.
 
 A crash reproducer is committed to the corpus **with its fix**. That is what
 makes the corpus a regression suite rather than a cache: the smoke job replays
@@ -539,10 +565,9 @@ Both copy the corpus out of the tree before running: libFuzzer writes what it
 discovers into the directory it is given, and what the committed corpus contains
 is a decision for a person, not for a CI run.
 
-P13's roadmap entry asked for a one-off soak of at least two hours per target.
-That was replaced, deliberately, by the local soak recorded in the roadmap plus
-the standing nightly job — a schedule outlives a measurement, and the same
-corpus that finds nothing today may find something tomorrow.
+There is deliberately no one-off soak target: the standing nightly job replaces
+it. A schedule outlives a measurement, and the same corpus that finds nothing
+today may find something tomorrow.
 
 ## 6. Hardware interoperability (`tests/hil/`)
 
@@ -558,7 +583,8 @@ and `transports/winrt_ble/winrt_ble_transport.hpp` (`tests/hil/support/rig.hpp`)
 That is not a leak in the seam — the rig has to *be* an application, and an
 application owns its reconnect policy and constructs its own adapter. It is
 worth stating exactly because one of those, the adapter's `send_counters()`, is
-undecided public API that P18 must keep or drop. The suite is
+a per-adapter diagnostic rather than part of the `Transport` contract. The suite
+is
 driven through `support/rig.*` — the example's pump loop made callable one
 operation at a time (connect, read state, upload, resume, drop the link, run a
 whole update, reconnect on a policy). Every case reads the bench from the
@@ -656,11 +682,15 @@ was never attempted.
 
 The advisory `hil.yml` workflow is committed and **not commissioned**: no
 self-hosted runner exists yet, so the suite has only run from the bench by hand.
-That is recorded in the roadmap as the one item P17 leaves open.
+Commissioning it is in the roadmap's acceptance gaps.
 
 ## 7. Determinism rules
 
 * No wall-clock time in unit or component tests (`ManualClock` only).
-* No sleeps, no threads, no network, no filesystem outside `tests/data/`.
+* No sleeps and no network. Threads only where a test exists to exercise them:
+  `test_dispatcher.cpp` and the future adapter in `test_async.cpp`, both run
+  under TSan.
+* No filesystem, except a uniquely named temporary file that the test itself
+  removes (`test_file_image_source.cpp`).
 * Randomised tests use a fixed seed printed on failure and reproducible from it.
 * Tests assert on structured values, never on formatted error strings.

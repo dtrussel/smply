@@ -29,8 +29,8 @@ mkdir -p "$WORK"
 echo "=== out-of-tree consumption check ==="
 echo "work: $WORK"
 
-# Release, because that is what a consumer builds -- and because until P15a
-# nothing in this project had ever been compiled at -O2 or above.
+# Release, because that is what a consumer builds, and because some warnings
+# fire only at -O2 or above.
 cmake -S "$REPO" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DSMPLY_BUILD_TESTS=OFF \

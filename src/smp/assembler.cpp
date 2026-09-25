@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <cstddef>
 
-namespace smply {
+namespace smply::smp {
 namespace {
 
 /// Initial reservation. Enough for a typical SMP message so steady-state
@@ -141,4 +141,4 @@ Result<void> MessageAssembler::feed(ConstBytes input, MessageSink& sink)
     }
 }
 
-} // namespace smply
+} // namespace smply::smp

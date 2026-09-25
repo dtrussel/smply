@@ -39,20 +39,21 @@ if(SMPLY_BUILD_TESTS)
     set_tests_properties(cli_dfu_demo PROPERTIES TIMEOUT 60)
 
     # The two below are why --flaky-reconnect exists. A real BLE reconnect after
-    # a reboot needs retry, backoff and a point at which it gives up; before
-    # P16 nothing in this repository exercised any of them, because this example
-    # reconnects instantly to a stub in its own process and
-    # FirmwareUpdater::reconnect_failed() was reached only by the component
+    # a reboot needs retry, backoff and a point at which it gives up. This
+    # example otherwise reconnects instantly to a stub in its own process, and
+    # FirmwareUpdater::reconnect_failed() would be reached only by the component
     # suite. These make both paths run on every push.
     add_test(NAME cli_dfu_flaky_reconnect COMMAND cli_dfu --quiet --flaky-reconnect 3)
     set_tests_properties(cli_dfu_flaky_reconnect PROPERTIES TIMEOUT 60)
 
     # Refuses more attempts than the policy allows, so the policy is exhausted
     # and the update must fail cleanly -- not hang, which is the failure mode a
-    # give-up path exists to prevent.
+    # give-up path exists to prevent. It must fail *for that reason*: matching
+    # the give-up message, rather than WILL_FAIL's "any non-zero exit", keeps a
+    # failure anywhere else (a short read, a crash) from passing as this one.
     add_test(NAME cli_dfu_reconnect_gives_up COMMAND cli_dfu --quiet --flaky-reconnect 99)
     set_tests_properties(cli_dfu_reconnect_gives_up PROPERTIES
-        WILL_FAIL TRUE
+        PASS_REGULAR_EXPRESSION "update failed: disconnected \\(at cli_dfu: could not reconnect\\)"
         TIMEOUT 60
     )
 endif()

@@ -13,7 +13,7 @@
 /// smply ships only `MemoryImageSource`, deliberately: `ImageSource` is two
 /// virtual functions, and putting a file-backed one in the library would drag
 /// file I/O, path handling and error mapping across three platforms into a core
-/// that otherwise does no I/O at all (open question O4, resolved in P9). This is
+/// that otherwise does no I/O at all (open question O4, resolved). This is
 /// the dozen lines that resolution said an application would write, written out
 /// so nobody has to take it on faith.
 ///

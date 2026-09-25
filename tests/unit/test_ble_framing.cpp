@@ -3,9 +3,9 @@
 // The portable half of the BLE transport: fragment sizing, the fragment walk,
 // and the close-state bookkeeping.
 //
-// This is P15's "testable without a radio" logic, and it is tested here rather
-// than under transports/winrt_ble/ because none of it is Windows-specific. The
-// WinRT adapter (P15b) cannot be built or run on this machine at all, so
+// This is the adapter logic that is testable without a radio, and it is tested
+// here rather than under transports/winrt_ble/ because none of it is
+// Windows-specific. The WinRT adapter cannot be built or run on Linux at all, so
 // whatever it can be made to rest on is worth resting on it: an off-by-one in
 // fragment sizing would otherwise be discoverable only with a device in hand.
 
@@ -317,7 +317,7 @@ TEST_CASE("the SMP UUIDs match their specification spelling", "[ble][uuid]")
     // protocol-notes section 8: service 8D53DC1D-1DB7-4CD3-868B-8A527460AA84,
     // characteristic DA2E7828-FBCE-4E01-AE9E-261174997C48. Getting either wrong
     // yields a device that is found but never answers -- and, without this,
-    // would not be discoverable until there is a radio in front of it (P17).
+    // would not be discoverable until there is a radio in front of it.
     const std::vector<std::uint8_t> service = parse_uuid(smply::transport::kSmpServiceUuidString);
     REQUIRE(service.size() == 16);
     CHECK(std::equal(service.begin(), service.end(), smply::transport::kSmpServiceUuid.begin()));

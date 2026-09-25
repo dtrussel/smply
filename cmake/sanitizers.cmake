@@ -3,8 +3,8 @@
 # Sanitizer and coverage instrumentation, applied via the same PRIVATE
 # INTERFACE target as the warnings so consumers are unaffected.
 #
-# TSan is deliberately absent: the core is single-threaded by contract
-# (ADR-0004). It is introduced in P14 for the Dispatcher only.
+# TSan is supported for the Dispatcher, the one concurrent component
+# (smply::util); the core is single-threaded by contract (ADR-0004).
 
 set(SMPLY_SANITIZER "" CACHE STRING
     "Sanitizer to enable for smply's own targets: '' or 'address,undefined'")

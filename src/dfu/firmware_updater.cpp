@@ -120,7 +120,7 @@ public:
         // MCUboot image fails here rather than half way through an update.
         const Result<ImageHash> target = read_target_hash(source);
         if (!target.has_value()) {
-            return unexpected<Error>{target.error()};
+            return fail(target.error());
         }
 
         plan_ = plan;
@@ -271,11 +271,7 @@ private:
         const UpdateState previous = state_;
         state_ = next;
 
-        UpdateEvent event;
-        event.kind = UpdateEvent::Kind::StateChanged;
-        event.from = previous;
-        event.to = next;
-        emit(event);
+        emit(UpdateStateChanged{.from = previous, .to = next});
     }
 
     void apply(Effect effect)
@@ -321,21 +317,10 @@ private:
             image_->resume(upload_, upload_done());
             return;
 
-        case Effect::MarkForTest: {
-            SetStateRequest request;
-            request.hash = context_.target;
-            request.confirm = false;
-            static_cast<void>(image_->set_state(
-                request, guarded<ImageState>([](Impl& self, const Result<ImageState>& result) {
-                    if (!result.has_value()) {
-                        self.dispatch(failure(result.error()));
-                        return;
-                    }
-                    self.context_.device = *result;
-                    self.dispatch(plain(Event::Kind::MarkedForTest));
-                })));
+        case Effect::MarkForTest:
+            set_state(SetStateRequest{.hash = context_.target, .confirm = false},
+                      Event::Kind::MarkedForTest);
             return;
-        }
 
         case Effect::Reset:
         case Effect::ForceReset: {
@@ -354,42 +339,26 @@ private:
 
         case Effect::AwaitDisconnect: {
             grace_deadline_ = last_poll_ + plan_.disconnect_grace;
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::DisconnectExpected;
-            emit(event);
+            emit(DisconnectExpected{});
             return;
         }
 
         case Effect::RequestReconnect: {
             grace_deadline_.reset();
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::ReconnectRequired;
-            event.reconnect_hint = plan_.reconnect_hint;
-            emit(event);
+            emit(ReconnectRequired{.hint = plan_.reconnect_hint});
             return;
         }
 
         case Effect::RequestConfirmation: {
-            UpdateEvent event;
-            event.kind = UpdateEvent::Kind::ConfirmationRequired;
-            emit(event);
+            emit(ConfirmationRequired{});
             return;
         }
 
-        case Effect::Confirm: {
-            SetStateRequest request;
-            request.confirm = true; // No hash: the running image is the target.
-            static_cast<void>(image_->set_state(
-                request, guarded<ImageState>([](Impl& self, const Result<ImageState>& result) {
-                    if (!result.has_value()) {
-                        self.dispatch(failure(result.error()));
-                        return;
-                    }
-                    self.context_.device = *result;
-                    self.dispatch(plain(Event::Kind::Confirmed));
-                })));
+        case Effect::Confirm:
+            // No hash: the running image is the target.
+            set_state(SetStateRequest{.hash = std::nullopt, .confirm = true},
+                      Event::Kind::Confirmed);
             return;
-        }
 
         case Effect::Finish:
             finish();
@@ -397,23 +366,32 @@ private:
         }
     }
 
+    /// Marks the target for test, or confirms the running image: one command,
+    /// with a different request and a different event on success. Either way
+    /// the answer is the refreshed slot table, which the machine decides on.
+    void set_state(const SetStateRequest& request, Event::Kind on_success)
+    {
+        static_cast<void>(image_->set_state(
+            request,
+            guarded<ImageState>([on_success](Impl& self, const Result<ImageState>& result) {
+                if (!result.has_value()) {
+                    self.dispatch(failure(result.error()));
+                    return;
+                }
+                self.context_.device = *result;
+                self.dispatch(plain(on_success));
+            })));
+    }
+
     void start_upload()
     {
         UploadOptions options = plan_.upload;
-        options.image = plan_.image;
         if (!options.server_buf_size.has_value() && context_.buf_size != 0) {
             options.server_buf_size = context_.buf_size;
         }
 
         upload_ = image_->upload(
-            *source_, options,
-            [this](UploadProgress progress) {
-                UpdateEvent event;
-                event.kind = UpdateEvent::Kind::Progress;
-                event.progress = progress;
-                emit(event);
-            },
-            upload_done());
+            *source_, options, [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
         // callback still reports why, on the next poll, so there is nothing to
@@ -440,25 +418,18 @@ private:
         running_ = false;
         grace_deadline_.reset();
 
+        report_ = context_.report;
         report_.final_state = state_;
-        report_.bytes_transferred = context_.bytes_transferred;
-        report_.upload_skipped = context_.upload_skipped;
         report_.target_hash = context_.target;
         report_.final_device_state = context_.device;
-        report_.cause = context_.cause;
-        report_.rolled_back = context_.rolled_back;
-        report_.revert_pending = context_.revert_pending;
 
         Result<UpdateReport> outcome = report_;
         if (state_ != UpdateState::Completed) {
-            outcome = unexpected<Error>{
-                context_.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"})};
+            outcome = fail(
+                context_.report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"}));
         }
 
-        UpdateEvent event;
-        event.kind = UpdateEvent::Kind::Finished;
-        event.result = &outcome;
-        emit(event);
+        emit(UpdateFinished{.result = std::move(outcome)});
 
         // Nothing may reach the application after `Finished`.
         on_event_ = {};
@@ -492,7 +463,7 @@ private:
         std::array<std::byte, kMcubootHeaderSize> head{};
         const Result<std::size_t> read = source.read(0, MutBytes{head});
         if (!read.has_value()) {
-            return unexpected<Error>{read.error()};
+            return fail(read.error());
         }
         if (*read != head.size()) {
             return fail(ErrorCode::InvalidArgument, "updater: source shorter than an image header");
@@ -500,12 +471,12 @@ private:
 
         const Result<McubootImageInfo> info = parse_mcuboot_header(ConstBytes{head});
         if (!info.has_value()) {
-            return unexpected<Error>{info.error()};
+            return fail(info.error());
         }
 
         const Result<std::optional<ImageHash>> found = find_image_tlv_hash(source, *info);
         if (!found.has_value()) {
-            return unexpected<Error>{found.error()};
+            return fail(found.error());
         }
         // Bound once: the engaged state is then visible where the value is
         // read, to a reader and to static analysis alike.

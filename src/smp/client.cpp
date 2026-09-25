@@ -36,13 +36,13 @@ struct Pending
 
 } // namespace
 
-class SmpClient::Impl final : public MessageSink
+class SmpClient::Impl final : public smp::MessageSink
 {
 public:
     Impl(Transport& transport, const Clock& clock, SmpClientConfig config)
         : transport_{&transport}, clock_{&clock}, config_{config},
-          assembler_{AssemblerLimits{.max_payload = config.max_smp_payload,
-                                     .max_buffer = config.max_assembly_bytes}}
+          assembler_{smp::AssemblerLimits{.max_payload = config.max_smp_payload,
+                                          .max_buffer = config.max_assembly_bytes}}
     {
         pending_.resize(std::max<std::size_t>(1, config_.max_in_flight));
         send_buffer_.resize(kHeaderSize + static_cast<std::size_t>(config_.max_smp_payload));
@@ -175,7 +175,7 @@ public:
                 continue; // a callback already completed it
             }
             ++stats_.timeouts;
-            complete(*entry, fail(Error{ErrorCode::Timeout, "smp client: no response"}));
+            complete(*entry, fail(ErrorCode::Timeout, "smp client: no response"));
         }
 
         // A callback may have queued more work.
@@ -490,7 +490,7 @@ private:
     Transport* transport_;
     const Clock* clock_;
     SmpClientConfig config_;
-    MessageAssembler assembler_;
+    smp::MessageAssembler assembler_;
 
     std::vector<Pending> pending_;
     std::vector<std::byte> send_buffer_;

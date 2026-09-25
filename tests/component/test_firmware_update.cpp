@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 using smply::ConstBytes;
@@ -75,7 +76,7 @@ constexpr std::uint32_t kBodySize = 600;
 struct UpdateOutcome
 {
     std::vector<UpdateState> visited;
-    std::vector<UpdateEvent::Kind> kinds;
+    std::size_t events = 0;
     std::optional<UpdateReport> report;
     std::optional<ErrorCode> code;
     int finishes = 0;
@@ -89,34 +90,29 @@ struct UpdateOutcome
     [[nodiscard]] auto handler()
     {
         return [this](const UpdateEvent& event) {
-            kinds.push_back(event.kind);
-            switch (event.kind) {
-            case UpdateEvent::Kind::StateChanged:
-                visited.push_back(event.to);
-                break;
-            case UpdateEvent::Kind::Progress:
-                last_progress = event.progress.transferred;
-                break;
-            case UpdateEvent::Kind::DisconnectExpected:
-                ++disconnects;
-                break;
-            case UpdateEvent::Kind::ReconnectRequired:
-                ++reconnects;
-                break;
-            case UpdateEvent::Kind::ConfirmationRequired:
-                ++confirmations;
-                break;
-            case UpdateEvent::Kind::Finished:
-                ++finishes;
-                if (event.result->has_value()) {
-                    report = **event.result;
-                } else {
-                    // A failed update has no report *value*; the updater keeps
-                    // one, and a test reads it from there.
-                    code = (*event.result).error().code();
-                }
-                break;
-            }
+            ++events;
+            std::visit(smply::overloaded{
+                           [this](const smply::UpdateStateChanged& changed) {
+                               visited.push_back(changed.to);
+                           },
+                           [this](const smply::UploadProgress& progress) {
+                               last_progress = progress.transferred;
+                           },
+                           [this](const smply::DisconnectExpected&) { ++disconnects; },
+                           [this](const smply::ReconnectRequired&) { ++reconnects; },
+                           [this](const smply::ConfirmationRequired&) { ++confirmations; },
+                           [this](const smply::UpdateFinished& finished) {
+                               ++finishes;
+                               if (finished.result.has_value()) {
+                                   report = *finished.result;
+                               } else {
+                                   // A failed update has no report *value*; the
+                                   // updater keeps one, and a test reads it from there.
+                                   code = finished.result.error().code();
+                               }
+                           },
+                       },
+                       event);
         };
     }
 
@@ -258,7 +254,7 @@ TEST_CASE("a clean update runs upload, test, reset, verify and confirm", "[dfu][
 
     REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
     // Nothing is emitted from inside start(); the first event arrives on a poll.
-    CHECK(outcome.kinds.empty());
+    CHECK(outcome.events == 0);
 
     Application application;
     REQUIRE(application.run(fixture, {&reconnected}, outcome));
@@ -364,7 +360,7 @@ TEST_CASE("an image already in the secondary slot is not uploaded again", "[dfu]
 
 TEST_CASE("the server's own already-present check is reported as a skip too", "[dfu][update]")
 {
-    // The case P12 got wrong and P13 re-filed. With the pre-flight check turned
+    // An easy case to get wrong. With the pre-flight check turned
     // off the updater has no idea the device already holds the image, so it
     // starts an upload -- and the *server* ends it on the first packet with its
     // own check (rule 9a). The device wrote nothing, so a report claiming a
@@ -502,7 +498,7 @@ TEST_CASE("a lost reset response is not a failure", "[dfu][update]")
 
 TEST_CASE("a device that reverts is reported as a rollback", "[dfu][update]")
 {
-    // The rule P11 exists to protect: a trial boot reports the running image as
+    // The rule the flags exist to protect: a trial boot reports the running image as
     // active-but-unconfirmed, so a revert cannot be recognised from a flag
     // alone. Here the device resets a second time before reconnecting, which is
     // MCUboot undoing the swap.
@@ -848,9 +844,9 @@ TEST_CASE("a lost mark-for-test is recovered over SMP v1", "[dfu][update]")
     // which is smply's default. So the refusal arrives as a flat `rc = 6` with
     // no group at all, and `image_error()` on it is `nullopt`.
     //
-    // Before P19 this update failed here. It is the shape a real device
-    // produces, and the whole simulated suite was blind to it because the only
-    // test of the recovery injected the group-scoped shape by hand.
+    // A recovery that branched on the group-scoped code alone would fail
+    // here. It is the shape a real device produces, and a test that injects
+    // only the group-scoped shape by hand is blind to it.
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
     const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
 

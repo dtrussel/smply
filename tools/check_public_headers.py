@@ -6,7 +6,16 @@ Public headers under include/smply/ must:
 
   1. not include any third-party or platform header;
   2. not mention forbidden tokens (WinRT, Windows, QCBOR, Catch2);
-  3. be self-contained -- each compiles on its own with no other include.
+  3. be self-contained -- each compiles on its own with no other include;
+  4. include only public headers of a lower layer (PUBLIC_LAYERS).
+
+And the implementation must keep the same shape:
+
+  5. a directory under src/ includes only the internal directories and the
+     public layers it is allowed (SOURCE_DEPENDENCIES).
+
+Rules 4 and 5 are architecture.md section 3's dependency diagram, in code:
+dependencies point downward only, with no cycles.
 
 Usage:
     tools/check_public_headers.py [--build-dir DIR] [--cxx COMPILER]
@@ -46,6 +55,143 @@ FORBIDDEN_TOKENS = [
     (re.compile(r"\bHRESULT\b|\bLPCWSTR\b|\bDWORD\b"), "Windows type"),
     (re.compile(r"#\s*ifdef\s+_WIN32|#\s*if\s+defined\s*\(\s*_WIN32"), "_WIN32 conditional"),
 ]
+
+
+# Rule 4. Each public header's layer. A header may include headers of a lower
+# layer only, except that the core headers (layer 0) may include each other.
+# A header missing from this table is an error, so a new one is placed
+# deliberately rather than by accident.
+PUBLIC_LAYERS: dict[str, int] = {
+    "bytes": 0, "clock": 0, "group": 0, "error": 0, "result": 0, "limits": 0,
+    "detail/expected": 0, "version": 0,
+    "smp/header": 1, "transport": 1, "image_source": 1, "groups/image_upload": 1,
+    "mcuboot_image": 2,
+    "smp_client": 3,
+    "groups/os": 4, "groups/image": 4,
+    "dfu/firmware_updater": 5,
+    # smply::util and smply::asyncutil are separate targets the core never
+    # links (SEPARATE_TARGET_HEADERS below). They build on the core types.
+    "util/dispatcher": 1,
+    "async/task": 1,
+    "async/future": 2,
+}
+
+# Headers of the targets libsmply never links. Nothing outside this set may
+# include them -- no core header, and no file under src/ except the one that
+# implements the header. Otherwise a header-only target would compile its way
+# into the core without anything failing to link.
+SEPARATE_TARGET_HEADERS = {"util/dispatcher", "async/task", "async/future"}
+
+# Rule 5. For each directory under src/ ("" is src/ itself): the internal
+# directories it may include, and the highest public layer it may include.
+# Its own public header is always allowed, whatever its layer.
+SOURCE_DEPENDENCIES: dict[str, tuple[set[str], int]] = {
+    "": (set(), 0),
+    "detail": ({"detail"}, 0),
+    "cbor": ({"cbor"}, 0),
+    "smp": ({"smp", "cbor", "detail"}, 3),
+    "image": ({"image", "detail"}, 2),
+    "groups": ({"groups", "cbor"}, 3),
+    "groups/os": ({"groups/os", "groups", "cbor", "detail"}, 4),
+    "groups/image": ({"groups/image", "groups", "cbor", "detail"}, 4),
+    "dfu": ({"dfu"}, 5),
+    "util": ({"util"}, 0),
+}
+OWN_PUBLIC_HEADER = {"dfu": "dfu/firmware_updater", "util": "util/dispatcher",
+                     "groups/os": "groups/os", "groups/image": "groups/image"}
+
+QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
+
+
+def _quoted_includes(path: Path) -> list[tuple[int, str]]:
+    found = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        match = QUOTED_INCLUDE.match(line)
+        if match:
+            found.append((lineno, match.group(1)))
+    return found
+
+
+def _public_name(include: str) -> str | None:
+    """'smply/groups/image.hpp' -> 'groups/image'; None if not a public header."""
+    if include.startswith("smply/") and include.endswith(".hpp"):
+        return include[len("smply/"):-len(".hpp")]
+    return None
+
+
+def _header_name(header: Path) -> str:
+    """include/smply/groups/image.hpp -> 'groups/image'.
+
+    Relative to the *last* `smply` directory, so that a generated header under
+    <build>/generated/smply/ is named the same way as one under include/smply/,
+    and a checkout that is itself called smply does not confuse it.
+    """
+    parts = header.parts
+    last = len(parts) - 1 - parts[::-1].index("smply")
+    return "/".join(parts[last + 1:])[:-len(".hpp")]
+
+
+def check_public_layers(headers: list[Path]) -> list[str]:
+    """Rule 4."""
+    errors: list[str] = []
+    for header in headers:
+        name = _header_name(header)
+        if name not in PUBLIC_LAYERS:
+            errors.append(f"{header}: has no layer in PUBLIC_LAYERS; place it deliberately")
+            continue
+        layer = PUBLIC_LAYERS[name]
+        for lineno, include in _quoted_includes(header):
+            target = _public_name(include)
+            if target is None:
+                continue
+            if target not in PUBLIC_LAYERS:
+                errors.append(f"{header}:{lineno}: includes {include}, which has no layer")
+            elif target in SEPARATE_TARGET_HEADERS and name not in SEPARATE_TARGET_HEADERS:
+                errors.append(
+                    f"{header}:{lineno}: includes {include}, a header of a separate target "
+                    "the core never links (docs/architecture.md section 5)")
+            elif PUBLIC_LAYERS[target] > layer or (PUBLIC_LAYERS[target] == layer and layer != 0):
+                errors.append(
+                    f"{header}:{lineno}: layer-{layer} header includes {include} "
+                    f"(layer {PUBLIC_LAYERS[target]}); dependencies must point downward "
+                    "(docs/architecture.md section 3)")
+    return errors
+
+
+def check_source_dependencies() -> list[str]:
+    """Rule 5."""
+    errors: list[str] = []
+    src = REPO / "src"
+    for path in sorted(list(src.rglob("*.cpp")) + list(src.rglob("*.hpp"))):
+        directory = path.parent.relative_to(src).as_posix()
+        directory = "" if directory == "." else directory
+        if directory not in SOURCE_DEPENDENCIES:
+            errors.append(f"{path}: src/{directory} has no entry in SOURCE_DEPENDENCIES")
+            continue
+        allowed_dirs, ceiling = SOURCE_DEPENDENCIES[directory]
+        for lineno, include in _quoted_includes(path):
+            public = _public_name(include)
+            if public is not None:
+                if public == OWN_PUBLIC_HEADER.get(directory):
+                    continue
+                if public in SEPARATE_TARGET_HEADERS:
+                    errors.append(
+                        f"{path}:{lineno}: src/{directory} includes {include}, a header of a "
+                        "separate target libsmply never links (docs/architecture.md section 5)")
+                    continue
+                layer = PUBLIC_LAYERS.get(public)
+                if layer is None or layer > ceiling:
+                    errors.append(
+                        f"{path}:{lineno}: src/{directory} includes {include}, above its "
+                        f"public-layer ceiling of {ceiling} (docs/architecture.md section 3)")
+                continue
+            target_dir = include.rsplit("/", 1)[0] if "/" in include else ""
+            if target_dir not in allowed_dirs:
+                errors.append(
+                    f"{path}:{lineno}: src/{directory} includes {include}; it may use only "
+                    f"{sorted(allowed_dirs) or 'no internal directory'} "
+                    "(docs/architecture.md section 3)")
+    return errors
 
 
 def public_headers(build_dir: Path | None) -> list[Path]:
@@ -136,6 +282,8 @@ def main() -> int:
         return 1
 
     errors = scan_text(headers + templates)
+    errors += check_public_layers(headers)
+    errors += check_source_dependencies()
     errors += check_self_contained(headers, args.cxx, build_dir)
 
     if errors:

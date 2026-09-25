@@ -27,6 +27,8 @@ import re
 import sys
 from pathlib import Path
 
+from cmake_deps import DECLARE_RE, strip_comments
+
 REPO = Path(__file__).resolve().parent.parent
 INVENTORY = REPO / "docs" / "dependencies.md"
 
@@ -35,29 +37,8 @@ INVENTORY = REPO / "docs" / "dependencies.md"
 # inventoried like any other. tools/verify_gates.sh plants one to prove it.
 PROJECT_NAME = "smply"
 
-DECLARE_RE = re.compile(r"FetchContent_Declare\s*\(\s*([A-Za-z0-9_.-]+)", re.M)
 GIT_TAG_RE = re.compile(r"GIT_TAG\s+(\S+)")
 FULL_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
-
-
-def strip_comments(text: str) -> str:
-    """Removes CMake comments, preserving line numbering.
-
-    A comment that merely mentions FetchContent_Declare(...) -- documentation
-    does this legitimately -- must not be mistaken for a declaration.
-    """
-    out = []
-    for line in text.splitlines():
-        in_string = False
-        cut = len(line)
-        for i, ch in enumerate(line):
-            if ch == '"' and (i == 0 or line[i - 1] != "\\"):
-                in_string = not in_string
-            elif ch == "#" and not in_string:
-                cut = i
-                break
-        out.append(line[:cut])
-    return "\n".join(out)
 
 
 def cmake_files() -> list[Path]:

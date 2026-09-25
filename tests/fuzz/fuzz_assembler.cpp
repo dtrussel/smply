@@ -26,7 +26,7 @@ namespace {
 
 /// Counts messages and holds nothing, so the assembler's own buffering is the
 /// only thing this target measures.
-class CountingSink final : public smply::MessageSink
+class CountingSink final : public smply::smp::MessageSink
 {
 public:
     void on_message(const smply::Header& header, smply::ConstBytes payload) override
@@ -58,7 +58,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     const std::size_t fragment = static_cast<std::size_t>(data[0]) + 1;
     const smply::ConstBytes stream = smply::fuzz::view(data + 1, size - 1);
 
-    smply::MessageAssembler assembler;
+    smply::smp::MessageAssembler assembler;
     CountingSink sink;
 
     for (std::size_t offset = 0; offset < stream.size();) {

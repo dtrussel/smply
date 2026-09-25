@@ -608,7 +608,7 @@ TEST_CASE("a two-slot state response decodes field by field", "[image][state]")
 TEST_CASE("a real device's state response decodes", "[image][state][hardware-golden]")
 {
     // Captured byte for byte from a NUCLEO-WB55RG running Zephyr 4.4.99's
-    // smp_svr (P17, 2026-09-08; tests/hil/README.md has the build). Two things
+    // smp_svr (2026-09-08; tests/hil/README.md has the build). Two things
     // the hand-built goldens above do not show: every container is
     // indefinite-length (0xBF/0x9F ... 0xFF), because zcbor only emits definite
     // lengths under CONFIG_ZCBOR_CANONICAL, which the sample does not set; and
@@ -1107,7 +1107,7 @@ TEST_CASE("a state response with no callback is simply dropped", "[image][state]
 
 TEST_CASE("every truncation of a state response is handled", "[image][state][hostile]")
 {
-    // The prefix sweep P5 applies to the reader, at the group level: no prefix
+    // The prefix sweep test_cbor.cpp applies to the reader, at the group level: no prefix
     // of a valid response may crash or be mistaken for a good one.
     const auto full = golden_state_response();
 
@@ -1340,7 +1340,7 @@ TEST_CASE("a slot-info response decodes its nested arrays", "[image][slotinfo]")
 
 TEST_CASE("a real device's slot-info response decodes", "[image][slotinfo][hardware-golden]")
 {
-    // Captured from the NUCLEO-WB55RG peer (P17). Three indefinite-length
+    // Captured from the NUCLEO-WB55RG peer. Three indefinite-length
     // containers close back to back at the end -- five 0xFF in a row -- which
     // is the encoding that trips QCBOR's ExitMap(); the sizes are the board's
     // 408 KiB and 412 KiB slots, and slot 1 carries upload_image_id 0 because

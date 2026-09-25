@@ -364,7 +364,7 @@ TEST_CASE("make_message keeps the length field consistent with the payload", "[s
 TEST_CASE("make_raw_message leaves the declared length alone", "[smp][support]")
 {
     // This is how hostile input is expressed: a device claiming far more than
-    // it sends. The bounds that reject it arrive with the reassembler in P3.
+    // it sends. The bounds that reject it are the reassembler's.
     const Header header{.op = Operation::WriteResponse,
                         .version = Version::V1,
                         .flags = 0,

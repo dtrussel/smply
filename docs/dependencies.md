@@ -10,7 +10,7 @@ declared dependency is missing from this table
 
 | Name | Purpose | Licence | Maintenance | In public API? | Replaceable? |
 | ---- | ------- | ------- | ----------- | -------------- | ------------ |
-| **QCBOR** `v1.6.1` (`930708bb86481e88879eb1d87fd4d664f1d69503`) | CBOR encode/decode | BSD-3-Clause | Actively maintained (Laurence Lundblade); used in IETF/IoT stacks | **No** — hidden behind `smply::cbor::Reader/Writer` | Yes — `src/cbor/reader.cpp` and `writer.cpp` are the only files that name it (they *are* the backend; there is no separate `backend_qcbor.*`, and P18's audit corrected this row and ADR-0007, which both said there was). TinyCBOR or zcbor could replace it behind the same façade. See [ADR-0007](decisions/ADR-0007-cbor-library.md). |
+| **QCBOR** `v1.6.1` (`930708bb86481e88879eb1d87fd4d664f1d69503`) | CBOR encode/decode | BSD-3-Clause | Actively maintained (Laurence Lundblade); used in IETF/IoT stacks | **No** — hidden behind `smply::cbor::Reader/Writer` | Yes — `src/cbor/reader.cpp` and `writer.cpp` are the only files that name it (they *are* the backend; there is no separate `backend_qcbor.*`). TinyCBOR or zcbor could replace it behind the same façade. See [ADR-0007](decisions/ADR-0007-cbor-library.md). |
 | **SHA-256** (`src/image/sha256.{hpp,cpp}`) | SHA-256 for the MCUmgr upload `sha` field | Apache-2.0 — **smply's own code**, not a third-party component | ~150 lines of FIPS 180-4, written for this project rather than depending on a crypto library; correctness pinned by the NIST vectors in `tests/unit/test_sha256.cpp` | No | Trivially — swap for a platform API if one is ever preferred. See [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md). |
 
 That is the complete runtime footprint: **one third-party library**, plus one
@@ -21,7 +21,7 @@ The SHA-256 row is listed here even though it is not a dependency, because the
 question "where does smply get its crypto?" has to have an answer in this file.
 Being first-party rather than vendored is deliberate: it keeps every source file
 under the project's own SPDX identifier and keeps `NOTICE` free of an
-attribution entry for 150 lines of a published standard. P9 recorded the change;
+attribution entry for 150 lines of a published standard.
 [ADR-0009](decisions/ADR-0009-mcuboot-boundary.md)'s decision — no crypto
 library dependency — is unaffected.
 
@@ -44,7 +44,7 @@ Windows application. The same rule applies to reference implementations: no code
 is copied from GPL or otherwise incompatible MCUmgr clients — they are consulted
 for behavioural comparison only ([`protocol-notes.md`](protocol-notes.md) §1).
 
-## Hardware bench only (P17; never linked or shipped)
+## Hardware bench only (never linked or shipped)
 
 [ADR-0015](decisions/ADR-0015-hardware-evidence.md) records this boundary: none
 of these is a dependency of `libsmply` or of anything it installs, and none of
@@ -70,8 +70,8 @@ run reproducible are in `tests/hil/firmware/` and `tests/hil/README.md`.
 
 ### A defect in QCBOR, worked around rather than pinned past
 
-P17a found that QCBOR (the pinned 1.6.1 **and** `master` at `65fd7cb4`,
-2026-09-04) mishandles two consecutive indefinite-length breaks when a map is
+QCBOR (the pinned 1.6.1 **and** `master` at `65fd7cb4`, 2026-09-04)
+mishandles two consecutive indefinite-length breaks when a map is
 left with `QCBORDecode_ExitMap()`: the enclosing array's break is consumed
 along with the map's, after which the walk either fails with `BAD_BREAK` or
 silently reads the parent map's next entries as array elements. Zephyr's zcbor
@@ -80,7 +80,7 @@ fixes it, `cbor::Reader::for_each_map_in_array` no longer enters and exits
 elements in place; it peeks, skips with `QCBORDecode_VGetNextConsume()` and
 decodes each element from its own byte range in a child reader
 (`src/cbor/reader.cpp`). The pin is unchanged and ADR-0007 stands. Reporting it
-upstream is filed as follow-up work.
+upstream is in the roadmap's backlog.
 
 ## Platform (adapter targets only)
 
@@ -89,8 +89,8 @@ upstream is filed as follow-up work.
 | **C++/WinRT** (Windows SDK) | BLE GATT | Microsoft Windows SDK licence | `smply::winrt_ble`, `examples/winrt_ble_dfu` only |
 | **Threads** (`Threads::Threads`, i.e. pthreads on Linux) | `std::mutex` in `Dispatcher` | part of the platform's C library | `smply::util` only |
 
-Never linked by `smply::smply`; enforced for WinRT by the `core-without-winrt`
-CI job, and for Threads by the fact that `smply::util` is a separate target the
+Never linked by `smply::smply`; enforced for WinRT by the `windows-msvc`
+CI job, which builds everything else with WinRT off, and for Threads by the fact that `smply::util` is a separate target the
 core does not link (`architecture.md` §5).
 
 Neither is a `FetchContent` dependency, so neither is covered by
@@ -106,10 +106,10 @@ copy is used when present. `tools/check_deps.py` fails the build if a declared
 dependency is missing from this file **or** is pinned to anything other than a
 full 40-character commit hash — a tag can be moved, a hash cannot.
 
-QCBOR's pin was exercised for the first time in P5 and its spiffy-decode API
-behaved as [ADR-0007](decisions/ADR-0007-cbor-library.md) assumed: map-key
-getters, a sticky error, and a distinguishable "label not found" that makes
-absent-versus-malformed separable. No fallback to TinyCBOR was needed.
+QCBOR's spiffy-decode API behaves as
+[ADR-0007](decisions/ADR-0007-cbor-library.md) assumed: map-key getters, a
+sticky error, and a distinguishable "label not found" that makes
+absent-versus-malformed separable.
 
 Each declaration also passes `SYSTEM`, so dependency headers are system includes.
 Without it, findings from inside Catch2's and QCBOR's headers are reported
@@ -118,9 +118,14 @@ site), which made clang-tidy unusable. `SMPLY_USE_SYSTEM_QCBOR=ON` forces `find_
 Nothing is vendored under `third_party/` unless an upstream becomes unavailable;
 if that happens it requires an ADR.
 
+Dependabot (`.github/dependabot.yml`) watches the GitHub Actions the workflows
+use, and nothing else. It cannot read a FetchContent declaration, and moving a
+library pin is a decision under ADR-0011, not a bot's pull request; the weekly
+OSV scan (`quality-gates.md` §9) is what raises a library's advisory.
+
 ## Licence of smply itself
 
-**Apache-2.0** (decided in P0, resolving roadmap open question O1). Permissive,
+**Apache-2.0** (open question O1, resolved). Permissive,
 compatible with linking into proprietary Windows applications and with every
 licence above, and it carries an explicit patent grant — worth having for a
 protocol implementation. See `LICENSE` and `NOTICE`.

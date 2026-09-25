@@ -27,7 +27,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace smply {
+namespace smply::smp {
 
 /// Receives each complete message the assembler recovers.
 class MessageSink
@@ -119,6 +119,6 @@ private:
     bool feeding_ = false;
 };
 
-} // namespace smply
+} // namespace smply::smp
 
 #endif // SMPLY_SRC_SMP_ASSEMBLER_HPP

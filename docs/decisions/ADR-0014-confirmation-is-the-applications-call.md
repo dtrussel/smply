@@ -1,6 +1,8 @@
 # ADR-0014 — Confirmation is the application's call
 
-**Status:** Accepted (2026-09-06)
+**Status:** Accepted (2026-09-06). Since 0.2.0 the event this ADR calls
+`UpdateEvent::Kind::ConfirmationRequired` is the `ConfirmationRequired`
+alternative of the `UpdateEvent` variant; the decision is unchanged.
 
 ## Context
 

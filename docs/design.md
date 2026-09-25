@@ -5,7 +5,7 @@ wire facts referenced as *(PN §x)* live in [`protocol-notes.md`](protocol-notes
 
 ---
 
-## 1. SMP codec (`src/smp/codec.*`)
+## 1. SMP codec (`include/smply/smp/header.hpp`, `src/smp/codec.cpp`)
 
 Pure functions over an 8-byte header. No allocation, no state.
 
@@ -17,7 +17,8 @@ struct Header {
 };
 
 std::array<std::byte, 8> encode(const Header&) noexcept;
-Result<Header>           decode(std::span<const std::byte, 8>) noexcept;
+Result<Header>           decode_header(std::span<const std::byte, 8>) noexcept;
+Result<Header>           decode_header(ConstBytes) noexcept;  // too short => MalformedMessage
 ```
 
 Encoding: byte0 = `(res=0 << 5) | (version << 3) | op`, all multi-byte fields
@@ -38,7 +39,9 @@ groups and an open range; unknown groups round-trip unchanged.
 ## 2. Streaming reassembly (`src/smp/assembler.*`)
 
 ```cpp
-class MessageSink {                       // implemented by SmpClient (P6)
+namespace smply::smp {                    // internal: not in include/smply/
+
+class MessageSink {                       // implemented by SmpClient
 public:
     // payload is borrowed for the duration of this call only. Must not
     // re-enter the assembler.
@@ -59,6 +62,8 @@ public:
     std::size_t  peak_buffered() const noexcept;         // high-water mark
     std::size_t  capacity() const noexcept;              // for bound assertions
 };
+
+} // namespace smply::smp
 ```
 
 Algorithm, driven purely by the header length (PN §2). It has two paths, and
@@ -211,8 +216,8 @@ Design points:
   silently reads the *parent map's* following entries as further array elements.
   That is not a hypothetical encoding — Zephyr's zcbor emits it unless
   `CONFIG_ZCBOR_CANONICAL` is set, and nothing in MCUmgr sets it, so it is what
-  a real device sends (PN §9 A18, found on the first hardware run in P17a;
-  `dependencies.md` has the minimal reproduction). `for_each_map_in_array`
+  a real device sends (PN §9 A18; `dependencies.md` has the minimal
+  reproduction). `for_each_map_in_array`
   therefore peeks, bounds each element's byte range with `QCBORDecode_Tell`
   around `QCBORDecode_VGetNextConsume`, and hands that range to a child
   `Reader` — which is why `Reader` keeps its own `input_` span. **Do not tidy it
@@ -228,14 +233,14 @@ Design points:
   The façade counts the levels it enters against `limits::kMaxCborNesting`, and
   QCBOR independently enforces its compile-time `QCBOR_MAX_ARRAY_NESTING` of
   15. `kMaxCborNesting` is **14**, strictly below QCBOR's, and the gap is
-  load-bearing rather than cautious. It was 16 until P13's limits audit, and
-  "deep input fails either way" was the reasoning that made that look fine — it
-  is not true. When QCBOR refuses first the refusal arrives through
+  load-bearing rather than cautious: "deep input fails either way" is not true.
+  When QCBOR refuses first the refusal arrives through
   `Reader::enter_map(key)`, whose QCBOR-error path is deliberately *not* sticky
-  so that it can double as a probe for the optional `err` map (below). So an
-  over-deep document made the reader stop descending with `status()` **clean**:
-  silently missing fields rather than a decode failure, and a caller following
-  the house rule of checking `status()` at the end saw nothing wrong. Fourteen
+  so that it can double as a probe for the optional `err` map (below). So with a
+  cap at or above QCBOR's, an over-deep document would make the reader stop
+  descending with `status()` **clean**: silently missing fields rather than a
+  decode failure, invisible to a caller following the house rule of checking
+  `status()` at the end. Fourteen
   and not fifteen, because reaching smply's cap needs a document one level
   deeper than the cap — equal is not enough. `limits.hpp` carries the same
   reasoning at the constant.
@@ -278,8 +283,8 @@ destructor detaches from the transport it holds, and `rebind_transport()`
 detaches from the one it replaces; a transport destroyed first leaves those
 calls dangling. Declaring the transport before the client is enough, and is what
 the tests do. The transport contract states the converse — a listener outliving
-its transport — but not this direction; see the P6 follow-up item in
-[`roadmap.md`](roadmap.md).
+its transport — but not this direction; the roadmap's backlog has an item for
+moving both obligations into the contract.
 
 The rule extends to callback captures. The destructor completes outstanding
 requests, so a callback runs *during* destruction and everything it refers to
@@ -420,7 +425,7 @@ class ImageManagement {                    // src/groups/image/
     RequestHandle get_slot_info(Callback<SlotInfo>);
     UploadHandle upload(ImageSource&, const UploadOptions&,   // see §6
                         std::function<void(UploadProgress)>, Callback<UploadResult>);
-    void         resume(const UploadHandle&, Callback<UploadResult>);
+    UploadHandle resume(const UploadHandle&, Callback<UploadResult>);  // invalid if refused
     void         cancel(const UploadHandle&) noexcept;
 };
 ```
@@ -447,6 +452,14 @@ exists for the one legitimate crossing: comparing a hash read out of a file's
 TLVs against what a device reports.
 
 ### Four rules every group follows
+
+A group command is always the same five steps: encode a request, build a
+`RequestSpec`, send it, and on the answer either pass the failure on or decode
+the payload. `src/groups/common.hpp` holds those steps once (`groups::send()`,
+`reject()`, and `complete()`, which opens the response map), so a new group
+is its command enumeration, its encoders, and decoders that read fields from an
+open map. The rules below are what those encoders and
+decoders must still get right themselves.
 
 1. **Requests encode into a stack buffer**, sized from the constant that bounds
    the input rather than from what the caller passed. Nothing in the CBOR façade
@@ -490,9 +503,13 @@ absent image code as normal rather than as a malformed reply.
 ## 6. Upload state machine (`src/groups/image/upload_session.*`)
 
 The most intricate part of the library, and deliberately a **pure function** so
-it can be exhaustively unit-tested with no client, transport or clock:
+it can be exhaustively unit-tested with no client, transport or clock. Like
+every internal type it lives in a namespace named after its component,
+`smply::upload` (`architecture.md` §3):
 
 ```cpp
+namespace smply::upload {
+
 struct UploadState {
     std::uint64_t confirmed_off = 0;   // server-acknowledged offset (authoritative)
     std::uint64_t in_flight_off = 0;   // what the outstanding request asked for,
@@ -501,16 +518,22 @@ struct UploadState {
     std::uint32_t consecutive_no_progress = 0;
     std::uint32_t restarts = 0;
     std::uint32_t retries  = 0;
+    bool          progressed = false;           // the server acknowledged a byte this session
     bool          first_packet_pending = true;  // next request must be a full first packet
     Phase         phase = Phase::Idle;
 };
 
 enum class Action { SendChunk, Complete, Fail };
-struct Step { Action action; UploadRequest request; Error error; std::optional<bool> match; };
+struct Step {
+    Action action; UploadRequest request; Error error; std::optional<bool> match;
+    bool completed_on_first_packet = false;  // Complete only: the server's already-present check
+};
 
 Step plan_next  (const UploadState&, const UploadConfig&);          // what to send
 void record_sent(UploadState&, const UploadRequest&);               // what went out
 Step on_response(UploadState&, const UploadResponse&, const UploadConfig&);
+
+} // namespace smply::upload
 ```
 
 **A restart is not its own action.** It is "set `first_packet_pending`, zero
@@ -526,12 +549,17 @@ retransmission possible.
 ### Chunk sizing
 
 ```
-budget      = min(server_buf_size (OS params, PN §5) or default 256,
-                  transport.max_message_size() when it has an opinion,
-                  limits::kUploadChunkMax)
-overhead    = 8 (SMP header) + cbor_overhead_first_packet(len, sha, image, upgrade)
-chunk_size  = clamp(budget - overhead, 32, limits::kUploadChunkMax)
+budget      = min(server_buf_size (OS params, PN §5) or kDefaultSmpMessageBudget (256),
+                  transport.max_message_size() when it is not 0)
+overhead    = 8 (SMP header) + first_packet_overhead(len, sha, image, upgrade)
+chunk_size  = min(budget - overhead, configured_max)   // configured_max defaults to kUploadChunkMax
+fail with MessageTooLarge if budget <= overhead or chunk_size < 32
 ```
+
+`compute_chunk_size()` in `src/groups/image/upload_session.cpp` is the whole
+rule. The three limits are separate inputs (`ChunkBudget`), each ignored when it
+has no opinion, and nothing is clamped *up*: a chunk under 32 bytes is an
+error, not a rounding.
 
 **`server_buf_size` is supplied by the caller**, in `UploadOptions`, not fetched
 by the image group. It belongs to the OS group, and `SmpError::NotSupported`
@@ -539,7 +567,7 @@ from that command is a normal answer to fall back from (A8) rather than an
 upload failure — keeping the fallback in one place is worth more than saving the
 caller a line. A present-but-zero value is ignored like an absent one.
 
-`cbor_overhead_first_packet` is computed exactly, by encoding a probe map with
+`first_packet_overhead` is computed exactly, by encoding a probe map with
 the real `len`/`sha`/`image` values and a zero-length `data` bstr, then adding
 the bstr header for `chunk_size`. Using the *first-packet* overhead for every
 chunk wastes a handful of bytes on subsequent chunks and guarantees the first
@@ -562,10 +590,10 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 
 | Condition | Action |
 | --------- | ------ |
-| protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
+| protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request at once. There is no backoff, because nothing here owns a clock (see below). |
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
-| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every P17 update before the final chunk had its own deadline). |
+| `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every hardware update before the final chunk had its own deadline). |
 | `rsp_off == 0 && image_size > 0` | server restarted the session. `restarts++`; if over `max_restarts` ⇒ `Fail(UpdateFailed)`. Else set `confirmed_off = 0`, `first_packet_pending = true`, `SendChunk`. Also what a device that forgot the session answers, and what a **retransmitted final chunk** gets once the server has reset — where the first packet then completes the upload immediately via the already-present check (PN §6 rule 9a). |
 | the request was a first packet | adopt `rsp_off` whatever it is, and do **not** charge the no-progress budget: adopting the device's answer is the entire point of sending a first packet. |
 | `rsp_off > confirmed_off` | normal progress (may be **more** than we sent — accept it). `confirmed_off = rsp_off`; `consecutive_no_progress = 0`; `SendChunk`. |
@@ -594,13 +622,13 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
   A first packet that is *also* the last chunk takes the first-chunk deadline;
   the erase dominates.
 
-  `final_chunk_timeout` exists because P17a found what happens without it, and
-  the failure is worth remembering because it did not look like one: the last
-  chunk timed out, the retransmission was answered `off == 0` (rule 9b — the
-  server had already reset the session), the re-sent first packet completed
+  `final_chunk_timeout` exists because of what happens without it, and the
+  failure is worth knowing because it does not look like one: the last chunk
+  times out, the retransmission was answered `off == 0` (rule 9b — the
+  server has already reset the session), the re-sent first packet completes
   immediately via the already-present check (rule 9a), and the **update
-  succeeded while reporting the transfer as skipped**. A green run hiding a
-  timeout. The companion fix is `UploadState::progressed`, which is why
+  succeeds while reporting the transfer as skipped**. A green run hiding a
+  timeout (PN §9 A19). The companion fix is `UploadState::progressed`, which is why
   `already_present` now means "this session moved nothing" rather than "the
   server answered on a first packet".
 
@@ -688,8 +716,9 @@ confused.
 What smply **does**: validate the magic `0x96F3B83D` and header size, read the
 version for reporting and for pre-flight comparison against the device, compute
 the file's SHA-256 (streaming, 4 KiB at a time, no full-file buffering), and —
-optionally — scan the TLV area for `IMAGE_TLV_SHA256` so the uploaded file can
-be correlated with a device slot entry without trusting the device's word.
+optionally — scan the TLV area for its image hash (`IMAGE_TLV_SHA256`, `SHA384`
+or `SHA512`) so the uploaded file can be correlated with a device slot entry
+without trusting the device's word.
 
 What smply **does not** do: verify signatures, decrypt, evaluate dependency
 TLVs, or reimplement any swap logic.
@@ -728,28 +757,28 @@ callbacks).
                           │ Idle │
                           └───┬──┘  start()
                               ▼
-                    ┌──────────────────┐
-                    │ QueryingParams   │  OS mcumgr-params (optional; ENOTSUP ok)
-                    └───────┬──────────┘
+                    ┌────────────────────┐
+                    │ QueryingParameters │  OS mcumgr-params (optional; ENOTSUP ok)
+                    └───────┬────────────┘
                             ▼
                     ┌──────────────────┐
                     │ InspectingImages │  IMG get-state  → learn active/pending/slots
                     └───────┬──────────┘
                             ▼
-                    ┌──────────────────┐   already-running target image
-                    │ Planning         ├──────────────────────────────► Completed
-                    └───────┬──────────┘   already-uploaded ─► VerifyingUpload
+                    ┌──────────────────┐   (four cases, below the diagram)
+                    │ Planning         ├──► Completed / AwaitingConfirmation /
+                    └───────┬──────────┘    Confirming / Resetting / MarkingForTest
                             ▼
                     ┌──────────────────┐◄── resume_after_reconnect()
               ┌────►│ Uploading        │
               │     └───────┬──────────┘
               │  disconnect │ byte-complete
               │     ┌───────▼──────────┐
-              │     │ VerifyingUpload  │  IMG get-state → secondary slot hash present?
+              │     │ VerifyingUpload  │  IMG get-state → target hash in any slot?
               │     └───────┬──────────┘
               │             ▼
-              │     ┌──────────────────┐  IMG set-state{hash, confirm=false}
-              │     │ MarkingForTest   │  (or confirm=true in ConfirmImmediately mode)
+              │     ┌──────────────────┐  IMG set-state{hash, confirm=false},
+              │     │ MarkingForTest   │  in every mode
               │     └───────┬──────────┘
               │             ▼
               │     ┌──────────────────┐  OS reset
@@ -777,14 +806,28 @@ callbacks).
                     │ Confirming       │
                     └───────┬──────────┘
                             ▼
-                    ┌──────────────────┐  IMG get-state → confirmed == true
-                    │ VerifyingConfirm │
-                    └───────┬──────────┘
+                    ┌────────────────────┐  IMG get-state → confirmed == true
+                    │ VerifyingConfirmed │
+                    └───────┬────────────┘
                             ▼
                     ┌──────────────────┐        ┌──────────┐     ┌───────────┐
                     │ Completed        │        │ Failed   │     │ Cancelled │
                     └──────────────────┘        └──────────┘     └───────────┘
 ```
+
+**`Planning` decides from the slot table alone**
+(`plan_from_state()` in `update_state_machine.cpp`), in this order. The first
+two cases exist because a restarted application may resume an update a
+previous process left part-way:
+
+1. **The target is already running.** Confirmed, or `UploadOnly`: `Completed`.
+   Unconfirmed: a trial boot is in progress, so the confirmation window opens
+   (`AwaitingConfirmation`, or `Confirming` under `ConfirmImmediately`).
+2. **Another slot holds it, already marked pending:** `Resetting`
+   (`Completed` under `UploadOnly`).
+3. **Another slot holds it, unmarked**, and `skip_if_already_present` is set:
+   `MarkingForTest` (`Completed` under `UploadOnly`).
+4. Otherwise: `Uploading`.
 
 `Failed` and `Cancelled` are reachable from every non-terminal state.
 `RolledBack` is a distinguished `Failed` reason detected in `VerifyingBooted`
@@ -801,32 +844,34 @@ performed a `REVERT` (PN §7).
 * `UpdateMode::ConfirmImmediately` — the identical sequence, confirmed without
   asking ([ADR-0014](decisions/ADR-0014-confirmation-is-the-applications-call.md)).
   What an unattended updater wants. It is **not** a permanent swap up front:
-  P11 established that a confirm on any slot that is not the running one is
-  refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
+  a confirm on any slot that is not the running one is refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
   ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
-* `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
-  decides when to activate.
+* `UpdateMode::UploadOnly` — stops when the transfer completes, going straight
+  from `Uploading` to `Completed` without `VerifyingUpload`; the application
+  decides when to verify and activate.
 
 ### Application-facing events
 
 `FirmwareUpdater` never touches a connection. It communicates intent through a
-single event stream:
+single event stream. Each event is one alternative of the `UpdateEvent`
+variant, so a handler reads only the fields its kind has, and a `std::visit`
+that forgets a kind does not compile:
 
-| Event | Meaning | Application must |
-| ----- | ------- | ---------------- |
-| `Progress{sent, total}` | upload advanced | update UI |
+| Alternative | Meaning | Application must |
+| ----------- | ------- | ---------------- |
+| `UploadProgress{transferred, total}` | the device confirmed an advance | update UI |
 | `ConfirmationRequired` | the new image is running, unconfirmed | validate it, then `confirm()` — or `cancel()` and let it revert |
-| `StateChanged{from,to}` | any transition | update UI |
+| `UpdateStateChanged{from, to}` | any transition | update UI |
 | `DisconnectExpected` | reset accepted; the link is about to drop | stop treating a drop as an error |
-| `ReconnectRequired{hint_delay}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
-| `Finished{Result<UpdateReport>}` | terminal | release resources |
+| `ReconnectRequired{hint}` | reconnect now | re-establish the link, `rebind_transport()`, then `resume_after_reconnect()` |
+| `UpdateFinished{Result<UpdateReport>}` | terminal; nothing follows | release resources |
 
 ### Failure and recovery per state
 
 | State | Failure | Recovery |
 | ----- | ------- | -------- |
-| `QueryingParams` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
+| `QueryingParameters` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
 | `InspectingImages` | any error | fatal; nothing has been changed on the device |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
@@ -834,7 +879,7 @@ single event stream:
 | `VerifyingUpload` | target hash absent from any slot | fatal `ImageMismatch` — the device did not store what we sent |
 | `MarkingForTest` | `IMAGE_ALREADY_PENDING`, **or a group-less `EBADSTATE`** | re-read state **once**; the planner then sees our own image already marked and steps straight to `Resetting`, or re-marks it if the refusal was not ours after all. The second shape is not a second rule: a v1 server that translates group codes sends `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` all as a flat `EBADSTATE` (PN §9 A16, A24), so without it the recovery cannot fire at all on the commonest configuration. Deliberately not extended to `EUNKNOWN`, which the same table gives to every flash failure |
 | `MarkingForTest` | `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` | fatal, with a clear diagnostic |
-| `Resetting` | `EBUSY` | one retry with `force = 1` (PN §5) |
+| `Resetting` | `EBUSY` | one retry with `ResetOptions::force = true`, sent as a CBOR boolean (PN §5) |
 | `Resetting` | no response but the link drops, or the request times out | **treated as success** (PN §9 A3): the device may reset before its answer goes out, and the verify after the reboot is the real check |
 | `AwaitingDisconnect` | grace timeout with the link still up | proceed to `AwaitingReconnect` anyway; the verify step is the real check |
 | `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
@@ -846,16 +891,16 @@ single event stream:
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
 failed in plus the underlying `Error`. (The restart and retry counts live inside
-the upload and were never plumbed out — a P12 deviation, still filed.)
+the upload and are not plumbed out; the roadmap's backlog has the item.)
 
 **`upload_skipped` has two sources, and both matter.** The updater's own
 pre-flight check skips a transfer when the slot table it just read already shows
 the target hash. The *server* runs the same check independently, on any first
 packet carrying a full `sha`, and can answer "complete" before any image data is
 written (§6, rule 9a) — which happens whenever `skip_if_already_present` is off,
-or when a reconnect makes the client resend a first packet. Until P14a the
-report only knew about the first, so the second was reported as a transfer of
-the whole image. It now takes `UploadResult::already_present` into account.
+or when a reconnect makes the client resend a first packet. The report takes
+both into account, the second through `UploadResult::already_present`, so
+neither is reported as a transfer of the whole image.
 
 ## 9. Transport contract
 
@@ -866,7 +911,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | -------- | ------ |
 | What is one outbound unit? | **Exactly one complete SMP message** (8-byte header + `length` payload bytes). Fragmenting it is the transport's job. |
 | Does `send()` block? | No. It returns once the message is accepted for transmission. |
-| Backpressure? | `send()` may return `ErrorCode::TransportBusy`, which is a **request to retry**, not a link failure. The core still does not queue: with `max_in_flight = 1` there is at most one message outstanding, and the request it belongs to fails. What P17b's bench falsified is the *inference* that a transport with a write in progress must therefore refuse — the device's answer can arrive before the local write's own completion runs, so the medium is free while a naive "a write is in progress" flag still says busy. Admitting a second message is the **transport's** decision and is transport-internal (§10); `TransportBusy` now means the medium is genuinely behind rather than merely mid-handover. |
+| Backpressure? | `send()` may return `ErrorCode::TransportBusy`, which is a **request to retry**, not a link failure. The core still does not queue: with `max_in_flight = 1` there is at most one message outstanding, and the request it belongs to fails. What the bench falsified is the *inference* that a transport with a write in progress must therefore refuse — the device's answer can arrive before the local write's own completion runs, so the medium is free while a naive "a write is in progress" flag still says busy. Admitting a second message is the **transport's** decision and is transport-internal (§10); `TransportBusy` now means the medium is genuinely behind rather than merely mid-handover. |
 | How is inbound data delivered? | `TransportListener::on_bytes(span)` with **arbitrary** chunk boundaries. The core reassembles (ADR-0006). |
 | Ordering? | The transport **must** preserve byte order. GATT and UART both do. |
 | Buffer lifetime? | Borrowed for the duration of the call, in both directions. A transport that defers a send must copy. |
@@ -875,7 +920,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | Who outlives whom? | **The transport outlives every client bound to it.** `~SmpClient` and `rebind_transport()` both detach by calling `set_listener(nullptr)`, so a transport destroyed first leaves those calls dangling. |
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
 | Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
-| Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "unknown"; the core then uses its configured default. |
+| Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "no opinion", and that limit is simply skipped; only the device's buffer size falls back to a default (`kDefaultSmpMessageBudget`, §6). |
 
 ### The adapter's marshalling obligation, and `smply::Dispatcher`
 
@@ -988,9 +1033,8 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   A writer run is not a message: the coroutine loops on
   `SendQueue::next_for_writer()` and exits only when the queue is empty
   (`transports/winrt_ble/winrt_ble_transport.cpp`), so one run may carry several
-  messages. This paragraph said "per message" until P17c; it was written before
-  the queue existed and was left behind by it, which is worth noticing because
-  the difference is exactly the invariant below.
+  messages. The difference between "per message" and "per run" is exactly the
+  invariant below.
 
   Two consequences follow, and they are easy to state the wrong way round.
   `TransportBusy` means **two messages are already outbound** — one being
@@ -1003,7 +1047,7 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 
 * **Send admission: one writer, one waiting message**
   (`transports/common/send_queue.hpp`). A single "a write is in progress" flag
-  is the obvious design and P17b's bench showed it is wrong. The flag can only
+  is the obvious design, and the bench showed it is wrong (PN §9, A22). The flag can only
   be cleared by the write's own completion, and the **device's answer can
   arrive first**: the response travels device → radio → OS → a pool thread →
   the client, while the local write's continuation waits for a thread of its
@@ -1071,7 +1115,7 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
   and an instrumented build recorded discovery succeeding on the first attempt
   in 20 of 20 measured discoveries; forcing the condition proves the loop runs
   its six attempts and reports the right one of two messages, which is
-  reachability, not benefit (PN §9, A22). It rests on the P17b observation.
+  reachability, not benefit (PN §9, A22). It rests on one bench observation.
   After a *rapid*
   reconnect Windows answers with a service whose characteristic collection is
   **empty** for a second or two — its own service cache, even though every
@@ -1190,8 +1234,8 @@ two is the interesting part.
 `Ignored` exists because a Zephyr console is shared. With
 `CONFIG_SHELL_BACKEND_SERIAL` and `CONFIG_LOG_BACKEND_UART` the same stream
 carries prompts, command echo and log lines, interleaved with frames at
-arbitrary points — and that is the exact stream over which P17c could not get a
-third-party client to complete an upload. The server's own receiver ignores
+arbitrary points — and that is the exact stream over which a third-party client
+could not complete an upload on the bench (PN §9). The server's own receiver ignores
 such a line without touching its context, and so does this. An ignored line is
 never *decoded*, so nothing a device puts in one reaches the CRC, the length or
 the buffer.

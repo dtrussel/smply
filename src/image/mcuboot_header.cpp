@@ -32,7 +32,7 @@ constexpr std::uint32_t kFlagEncrypted = 0x00000004U | 0x00000008U;
 Result<McubootImageInfo> parse_mcuboot_header(ConstBytes first_32_bytes)
 {
     if (first_32_bytes.size() < kMcubootHeaderSize) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: header shorter than 32 bytes"});
+        return fail(ErrorCode::InvalidArgument, "image: header shorter than 32 bytes");
     }
 
     const std::uint32_t magic = image::load_le32(first_32_bytes, kOffsetMagic);
@@ -41,14 +41,13 @@ Result<McubootImageInfo> parse_mcuboot_header(ConstBytes first_32_bytes)
             // A real MCUboot image, just from a toolchain older than anything
             // this protocol supports. Worth saying so: it is a different
             // problem from having picked the wrong file.
-            return fail(
-                Error{ErrorCode::InvalidArgument, "image: MCUboot v1 image format, too old"});
+            return fail(ErrorCode::InvalidArgument, "image: MCUboot v1 image format, too old");
         }
         // Overwhelmingly the commonest user error: the unsigned build output
         // rather than the signed one. The device makes exactly this check on
         // the first chunk (docs/protocol-notes.md section 6, rule 3).
-        return fail(Error{ErrorCode::InvalidArgument,
-                          "image: not an MCUboot image (wrong magic; unsigned binary?)"});
+        return fail(ErrorCode::InvalidArgument,
+                    "image: not an MCUboot image (wrong magic; unsigned binary?)");
     }
 
     McubootImageInfo info;
@@ -67,14 +66,14 @@ Result<McubootImageInfo> parse_mcuboot_header(ConstBytes first_32_bytes)
     if (info.header_size < kMcubootHeaderSize) {
         // The header cannot be smaller than itself, and the body offset is
         // computed from this value.
-        return fail(Error{ErrorCode::InvalidArgument, "image: header size below 32 bytes"});
+        return fail(ErrorCode::InvalidArgument, "image: header size below 32 bytes");
     }
     // Both are 32-bit fields, so the sum is computed in 64 bits and cannot
     // wrap before it is compared.
     const std::uint64_t through_body =
         static_cast<std::uint64_t>(info.header_size) + static_cast<std::uint64_t>(info.image_size);
     if (through_body > limits::kMaxImageSize) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: declared size implausibly large"});
+        return fail(ErrorCode::InvalidArgument, "image: declared size implausibly large");
     }
 
     return info;

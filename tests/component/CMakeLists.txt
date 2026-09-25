@@ -9,6 +9,7 @@
 # statement CTest can make.
 
 add_executable(smply_component_tests
+    test_async.cpp
     test_firmware_update.cpp
     test_round_trip.cpp
     test_simulator.cpp
@@ -18,6 +19,7 @@ target_link_libraries(smply_component_tests
     PRIVATE
         smply::smply_internal
         smply::test_support
+        smply::asyncutil
         smply_internal_options
         Catch2::Catch2WithMain
 )

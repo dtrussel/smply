@@ -40,11 +40,11 @@ smply is a **library**, not a service. It owns protocol state only.
 | # | Goal | How it is enforced |
 | - | ---- | ------------------ |
 | G1 | The core is genuinely platform independent | A CI job builds `smply::smply` + all unit tests on Linux/GCC, Linux/Clang and Windows/MSVC. A header-hygiene gate greps public headers for forbidden includes. |
-| G2 | Every protocol **path** is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` reach every protocol path. **Not every *defect*, and P17 proved it:** indefinite-length CBOR (A18), the whole-image hash latency on the final chunk (A19) and the send-admission race under load (A22) were each invisible to the entire simulated suite and appeared on the first or the twentieth run against a radio. What this goal buys is regression coverage and fast iteration, not discovery. |
+| G2 | Every protocol **path** is testable without hardware | Sans-IO core: transport, clock and randomness are injected. `FakeTransport` + `ManualClock` reach every protocol path. **It does not reach every *defect*.** Three were invisible to the entire simulated suite and appeared only on runs against a radio: indefinite-length CBOR (A18), the whole-image hash latency on the final chunk (A19), and the send-admission race under load (A22). What this goal buys is regression coverage and fast iteration, not discovery. |
 | G3 | Protocol layers are separable | SMP framing has no knowledge of groups; groups have no knowledge of DFU; nothing below `dfu/` knows what a firmware file is. |
 | G4 | Hostile device input cannot hurt the host | Every length is validated against a configured bound before allocation; fuzzers run over the parser and reassembler. |
 | G5 | New MCUmgr groups and transports are additive | A group is a leaf module depending only on `SmpClient` + the CBOR façade. A transport implements one interface. |
-| G6 | A fresh agent session can continue from the repo alone | Living docs + status-tracked roadmap + ADRs, enforced by a Definition-of-Done gate. |
+| G6 | A new contributor can continue from the repo alone | Living docs, a backlog roadmap and ADRs, enforced by the documentation gate and the Definition of Done (ADR-0013, ADR-0018). |
 
 Explicit non-goals: server-side SMP, MCUmgr groups other than 0 and 1,
 image signing/verification, BLE connection management, an async framework.
@@ -52,7 +52,9 @@ image signing/verification, BLE connection management, an async framework.
 ## 3. Components and dependency direction
 
 Dependencies point **downward only**. There are no upward or lateral
-dependencies between peers, and no cycles.
+dependencies between peers, and no cycles. `tools/check_public_headers.py`
+enforces this, for the public headers and for the directories under `src/`
+([`quality-gates.md`](quality-gates.md) §10).
 
 ```
                      ┌───────────────────────────────┐
@@ -66,13 +68,14 @@ dependencies between peers, and no cycles.
      │ ImageManagement    │ │ OsManagement    │ │ ImageFile          │
      │ (groups/image/)    │ │ (groups/os/)    │ │ (image/)           │
      │  + UploadSession   │ │                 │ │ MCUboot hdr + TLV, │
-     └─────────┬──────────┘ └────────┬────────┘ │ SHA-256            │
+     └─────────┬──────────┘ └────────┬────────┘ │ SHA-256, ImageHash,│
+               │                     │          │ ImageVersion       │
                │                     │          └────────────────────┘
-               └──────────┬──────────┘                (no deps)
+               └──────────┬──────────┘            (core types only)
                           ▼
               ┌───────────────────────────┐
               │ SmpClient      (smp/)     │  request lifecycle: seq alloc,
-              │  PendingRequestTable      │  correlation, timeouts,
+              │  pending-request table    │  correlation, timeouts,
               │  MessageAssembler         │  cancellation, reassembly
               └───────────┬───────────────┘
                           │
@@ -83,7 +86,7 @@ dependencies between peers, and no cycles.
    │ (smp/)     │  │ (cbor/)    │   │ (interface) │ │ Result,    │
    │ Header,    │  │ Reader/    │   │             │ │ Error,     │
    │ encode/    │  │ Writer     │   │             │ │ Clock,     │
-   │ decode     │  │  ▲ QCBOR   │   │             │ │ Buffer     │
+   │ decode     │  │  ▲ QCBOR   │   │             │ │ bytes      │
    └────────────┘  └────────────┘   └──────┬──────┘ └────────────┘
                                            │ implemented by
                           ┌────────────────┼────────────────┐
@@ -94,8 +97,14 @@ dependencies between peers, and no cycles.
                  └─────────────┘   └──────────────┘  └─────────────┘
 ```
 
-The third box is a gap rather than a plan. Since P20 the **protocol** half of a
-serial link ships -- `transports/serial/` frames and deframes MCUmgr's console
+**ImageManagement also depends on ImageFile**, an edge the drawing leaves out
+to stay legible. It computes the upload `sha` with `sha256()`, and the two
+values a device reports about an image, `ImageHash` and `ImageVersion`, are
+MCUboot's and are declared in `smply/mcuboot_image.hpp`. The reverse never
+holds: parsing a firmware file needs nothing above the core types.
+
+The third box is a gap rather than a plan. The **protocol** half of a serial
+link ships -- `transports/serial/` frames and deframes MCUmgr's console
 encapsulation, portably and with a test suite -- but no adapter opens a port,
 so nobody has yet implemented `Transport` over one.
 
@@ -110,7 +119,7 @@ so nobody has yet implemented `Transport` over one.
 | **SmpClient** (`src/smp/client.*`) | sequence allocation, pending-request table, per-request deadlines, cancellation, retired-seq set, dispatch of decoded responses, transport binding | firmware, images, files |
 | **OsManagement** (`src/groups/os/`) | reset, mcumgr params, echo | DFU policy |
 | **ImageManagement** (`src/groups/image/`) | image state get/set, upload request/response encoding, the upload state machine, erase, slot info | files on disk, reconnection |
-| **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply | SMP, CBOR, transports |
+| **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply, the `ImageHash` and `ImageVersion` values | SMP, CBOR, transports, the image group |
 | **FirmwareUpdater** (`src/dfu/`) | the update state machine, reset/disconnect/reconnect protocol with the application, progress reporting | GATT, WinRT, threads, sockets |
 | **Transport** (interface) | delivering one whole SMP message outbound; delivering inbound bytes; reporting link errors | SMP semantics, sequence numbers |
 
@@ -123,6 +132,15 @@ so nobody has yet implemented `Transport` over one.
   `src/` to the include path — production consumers cannot.
 * **Adapters**: `transports/` and `examples/` are separate CMake targets,
   never linked into the core.
+* **Namespaces follow the same line.** The public API is in `smply` (plus
+  `smply::limits` for the constants). An internal type is in a namespace named
+  after its component: `smply::smp` (the assembler), `smply::cbor`,
+  `smply::groups` (the plumbing every management group shares, and the
+  groups' response decoders),
+  `smply::upload` (the upload state machine and its driver), `smply::image`
+  (SHA-256 and the source reader), `smply::dfu` (the update state machine) and
+  `smply::detail`. A function defined in `src/` that implements a public
+  declaration stays in `smply`, like its declaration.
 
 ### Extension points
 
@@ -132,8 +150,7 @@ so nobody has yet implemented `Transport` over one.
 3. **New DFU policy** — `UpdatePlan` is data; the state machine is driven by it.
 4. **Alternate CBOR backend** — the seam is `cbor::Reader`/`Writer` itself.
    There is no separate backend file: the façade *is* the QCBOR binding
-   (`src/cbor/reader.cpp`, `writer.cpp`), which section 10 records as a P5
-   deviation. Replacing the backend means reimplementing those two against
+   (`src/cbor/reader.cpp`, `writer.cpp`), as section 10 records. Replacing the backend means reimplementing those two against
    another library behind the same interface.
 5. **Alternate async style** — the callback core is the substrate; a
    futures/coroutine wrapper is a thin, optional header.
@@ -150,8 +167,12 @@ individually testable. See [`testing.md`](testing.md).
 **Sans-IO + explicit completion callbacks + an application-driven pump.**
 Decision and alternatives: [ADR-0003](decisions/ADR-0003-async-model.md).
 
-* Every operation takes a completion callback and returns a
-  `RequestHandle` (cancellation token).
+* Every operation takes a completion callback and returns a token to cancel
+  it with. A single request (every group command, and `SmpClient::request()`)
+  returns a `RequestHandle`. An upload, which is many requests, returns an
+  `UploadHandle`. `FirmwareUpdater` runs one update at a time: `start()`
+  returns `Result<void>` for arguments it rejects outright, and everything
+  after that arrives through its event callback.
 * The core performs no I/O and starts no threads. It writes to the transport
   when the application calls into it, and it makes progress on timeouts only
   when the application calls `SmpClient::poll(now)`.
@@ -165,9 +186,19 @@ Supported by construction: timeouts, cancellation, transport disconnection,
 late responses, unexpected sequence IDs, bounded retries, and progress
 reporting.
 
-Optional, non-core convenience headers (opt-in, `smply::asyncutil` target):
-`future_adapter.hpp` (callback → `std::future`) and `coro_adapter.hpp`
-(callback → C++20 awaitable). Neither is used by the core.
+Futures and coroutines are wrappers over this model, not a second model
+([ADR-0019](decisions/ADR-0019-async-adapters.md)). The header-only target
+`smply::asyncutil` provides both, and the core does not link it:
+
+* **`smply/async/task.hpp`: C++20 coroutines, on the pump thread.**
+  `async::await_result<T>()` makes any `Callback<T>` operation awaitable, and
+  `async::Task<T>` is a minimal coroutine type to write the sequence in. The
+  coroutine resumes inside the completion callback, which is exactly where a
+  callback chain would continue, so the threading rules below are unchanged.
+* **`smply/async/future.hpp`: `std::future`, for another thread.**
+  `async::post_for_future<T>()` starts the operation on the pump thread
+  through a `Dispatcher` and returns a future. **Blocking on it from the pump
+  thread deadlocks**, because only the pump thread can complete it.
 
 ## 5. Threading model
 
@@ -186,7 +217,9 @@ Decision: [ADR-0004](decisions/ADR-0004-threading-model.md).
   utility target, `smply::util`, so adapters do not each reinvent the
   marshalling. **Nothing in `libsmply` links it** — the separation is a build
   rule, not a convention, so a change that made the core depend on it fails to
-  build. Adapters and examples opt in.
+  build. Adapters and examples opt in. The same holds for `smply::asyncutil`
+  (section 4). Because it is header-only, a build rule could not catch a core
+  file including it, so `check_public_headers.py` rejects that instead.
 * No hidden threads anywhere in the core. The one mention of a thread inside
   `libsmply` is `SMPLY_ASSERT_CLIENT_THREAD()`, which captures the constructing
   thread's id in `SmpClient` and asserts that later calls come from it. It is
@@ -243,11 +276,21 @@ logs. **Strings are never the machine-readable representation.**
 `Cancelled`, `TransportError`, `TransportBusy`, `Disconnected`,
 `ImageMismatch`, `UpdateFailed`, `Internal`.
 
-Propagation: transport/codec errors surface as the `Result` of the affected
-request; a link loss fails **all** pending requests with `Disconnected`; the
-DFU state machine translates a failed step into a terminal `UpdateFailed`
-carrying the underlying `Error` as its cause. Errors are never silently
-swallowed and never converted to strings inside the library.
+Propagation: transport and codec errors surface as the `Result` of the
+affected request, and a link loss fails **all** pending requests with
+`Disconnected`. When an update fails, `UpdateReport::cause` carries the
+`Error` that ended it, unchanged. A step that failed on a timeout reports
+`Timeout`, and a device refusal reports `ProtocolError` with the device's own
+`MgmtError`. Two codes are the updater's own verdicts, used where nothing
+below it failed:
+* `ImageMismatch`: after the upload, no slot reports the file's image hash.
+* `UpdateFailed`: the device did not end up running the new image confirmed.
+  It reverted, booted something else, reports no active slot, or did not
+  report the image as confirmed after a confirm. The upload also uses it when
+  it stops making progress.
+
+Errors are never silently swallowed and never converted to strings inside the
+library.
 
 ## 8. Security and trust boundaries
 
@@ -272,8 +315,6 @@ Detail: [`security.md`](security.md).
   `src/`, so there is no level to misconfigure and nothing to leak. Diagnostics
   reach the application as `Error` values, and the one field carrying device
   text (`reason()`) is length-capped and documented as attacker-controlled.
-  This line claimed a logging policy until P18's audit; there was never a
-  logging subsystem for it to describe.
 
 ## 9. Configuration limits (defensive bounds)
 
@@ -285,7 +326,7 @@ smply will accept from a device or a file.
 | -------- | ------- | ------- | -------- |
 | `kMaxSmpPayload` | 8192 B | reject an oversized `length` before buffering | `SmpClientConfig` |
 | `kMaxAssemblyBuffer` | 16 KiB | cap partial-message buffering | `SmpClientConfig` |
-| `kMaxCborNesting` | 14 | bound decoder recursion; **must stay strictly below QCBOR's own limit of 15**, or QCBOR refuses first and the failure is not sticky (P13) | — |
+| `kMaxCborNesting` | 14 | bound decoder recursion; **must stay strictly below QCBOR's own limit of 15**, or QCBOR refuses first and the failure is not sticky | — |
 | `kMaxInFlight` | 1 | bound the pending-request table | `SmpClientConfig` |
 | `kMaxRetiredSeqs` | 64 | bound late-response suppression | `SmpClientConfig` |
 | `kDefaultTimeout` | 5 s | per request | `SmpClientConfig`, `UploadOptions` |
@@ -309,9 +350,9 @@ smply will accept from a device or a file.
 
 ## 10. Repository layout
 
-Entries marked **(planned)** do not exist yet and name the phase that creates
-them; everything else is present today. Keep this accurate — a layout that lists
-files which were never written costs the next session a search.
+Everything listed here is present today, and `check_docs.py` R5 fails on an
+entry that does not exist. Keep it accurate: a layout that lists files which
+were never written costs the next reader a search.
 
 ```
 smply/
@@ -328,29 +369,36 @@ smply/
 │   ├── smp_client.hpp          SmpClient, SmpClientConfig, RequestHandle, RawResponse
 │   ├── smp/header.hpp          Operation, Version, Header, codec, response_to()
 │   ├── groups/os.hpp           OsManagement, McumgrParameters, ResetOptions
-│   ├── groups/image.hpp        ImageManagement, ImageState, ImageHash, ImageError,
-│   │                           UploadOptions, UploadHandle, SetStateRequest
+│   ├── groups/image.hpp        ImageManagement, ImageState, ImageError,
+│   │                           SetStateRequest, SlotInfo
+│   ├── groups/image_upload.hpp UploadOptions, UploadProgress, UploadResult,
+│   │                           UploadHandle, ProgressCallback
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
-│   ├── mcuboot_image.hpp       McubootImageInfo, parse_mcuboot_header, sha256,
-│   │                           find_image_tlv_hash
+│   ├── mcuboot_image.hpp       ImageHash, ImageVersion, McubootImageInfo,
+│   │                           parse_mcuboot_header, sha256, find_image_tlv_hash
 │   ├── dfu/firmware_updater.hpp    FirmwareUpdater, UpdatePlan, UpdateMode,
 │   │                           UpdateReport, UpdateEvent
-│   └── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
+│   ├── util/dispatcher.hpp     thread-marshalling helper for adapters (target smply::util)
+│   └── async/                  task.hpp  future.hpp — coroutine and future adapters
+│                               (header-only target smply::asyncutil, ADR-0019)
 ├── src/
 │   ├── core.cpp                system_clock, group_name, to_string
 │   ├── version.cpp
 │   ├── smp/                    codec.cpp  assembler.{hpp,cpp}  client.cpp
 │   ├── cbor/                   cbor.hpp  reader.cpp  writer.cpp  mgmt_error.{hpp,cpp}
 │   │                           — reader/writer ARE the QCBOR backend; there is no
-│   │                             separate backend file (P5 deviation)
+│   │                             separate backend file
+│   ├── groups/                 common.hpp — what every group shares: send(), reject(),
+│   │                           the decode plumbing (namespace smply::groups)
 │   ├── groups/os/              os_management.cpp
-│   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
+│   ├── groups/image/           image_management.cpp  decode.{hpp,cpp}  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
-│   │                           sha256.{hpp,cpp}  source_reader.hpp
+│   │                           sha256.{hpp,cpp}  source_reader.hpp  image_values.cpp
 │   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
-│   └── detail/client_thread.hpp    debug-only client-context assertion
+│   └── detail/                 client_thread.hpp — debug-only client-context assertion;
+│                               narrow.hpp — narrow_cast and checked_narrow
 ├── transports/
 │   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp
 │   │                           send_queue.hpp — portable, header-only
@@ -363,20 +411,20 @@ smply/
 │   │                           termios, CreateFile, a reader thread — is the
 │   │                           application's and is not here
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
-│                               Compiled by CI; exercised on the bench (P17): see its README
+│                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
 │   └── dfu_app/                what a DFU *application* needs and the library
 │                               deliberately does not ship: FileImageSource and
 │                               ReconnectPolicy. smply::dfu_app, used by both
-│                               examples and unit-tested (P16)
+│                               examples and unit-tested
 ├── examples/
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           the other files are the stub device it drives. Runs
 │   │                           in CI, --flaky-reconnect included
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
-│                               Compiled by CI; runs on the bench (P17a-P17c): see its README
+│                               Compiled by CI; runs on the bench: see its README
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
@@ -384,10 +432,10 @@ smply/
 │   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
-│   │                           test_firmware_update.cpp
+│   │                           test_firmware_update.cpp  test_async.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
-│   ├── consumer/               consumer_check.cpp — the flag-leak gate: links
+│   ├── interface_flags/        interface_flags_check.cpp — the flag-leak gate: links
 │   │                           smply::smply with -Wall only and must build clean
 │   ├── consumption/            smoke.cpp plus one project per mode —
 │   │                           find_package/ add_subdirectory/ fetchcontent/ —
@@ -400,13 +448,14 @@ smply/
 │                               scripts); tools/ are the bench instruments and the
 │                               capture/decode helpers; README.md is the bench itself.
 │                               Never a PR gate
-├── .github/workflows/          ci.yml (the 16-job gate)  nightly-fuzz.yml
+├── .github/                    pull_request_template.md  dependabot.yml (Actions only)
+├── .github/workflows/          ci.yml (the 15-job gate)  nightly-fuzz.yml
 │                               osv.yml — weekly dependency scan, advisory
 │                               hil.yml — self-hosted, advisory, no runner
-│                               registered and no schedule (P18)
+│                               registered and no schedule
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
-│                               check_install.sh  sbom.py
+│                               check_install.sh  sbom.py  cmake_deps.py (their shared parser)
 │                               verify_gates.sh  cppcheck-suppressions.txt
 └── docs/                       this documentation set + decisions/
 ```
@@ -415,11 +464,11 @@ CMake is fully target-based: no `include_directories()`, no global
 `add_compile_options()`. Warnings and sanitizers are applied via
 `smply_internal_options` — an `INTERFACE` target linked `PRIVATE` by smply's own
 targets, so consumers never inherit them. Install/export produces
-`smply::smply`, `smply::util` and `smply::transport_common` via
+`smply::smply`, `smply::util`, `smply::transport_common` and `smply::asyncutil` via
 `smplyConfig.cmake`; which targets ship and why each other one does not is
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md). Both
 `transports/common/` and `transports/serial/` ship under that third target —
-a directory, not a fourth target, which is what keeps ADR-0016's list intact
+a directory rather than a target of its own, which keeps ADR-0016's list intact
 ([ADR-0017](decisions/ADR-0017-serial-framing-placement.md)).
 
 ## 11. Known limitations
@@ -429,14 +478,14 @@ a directory, not a fourth target, which is what keeps ADR-0016's list intact
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
 * Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
-  but nothing yet exercises it; O5 tracks whether a later phase exercises it or documents it
+  but nothing yet exercises it. O5 tracks whether to exercise it or document it
   as untested.
 * **Serial: the framing ships, the port does not.** `transports/serial/` is a
   complete, tested implementation of MCUmgr's console encapsulation in both
   directions, but nothing in this repository opens a tty, so no `Transport` is
   implemented over one and **no serial byte has been on a wire** — the evidence
   is agreement with a transcription of Zephyr's source, which is a weaker claim
-  than P17's bench runs (ADR-0017). Raw UART
+  than a bench run against a device (ADR-0017). Raw UART
   (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented either; it needs no
   framing, only a port.
 * The core does not manage connections; reconnection is the application's job.
@@ -447,7 +496,7 @@ a directory, not a fourth target, which is what keeps ADR-0016's list intact
 ## 12. Planned future extensions
 
 Ordered by expected value, none scheduled: a **serial port adapter** over the
-framing P20 shipped, and an example driving it · multi-image (`UploadOptions::image`
+framing in `transports/serial/`, and an example driving it · multi-image (`UploadOptions::image`
 is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·

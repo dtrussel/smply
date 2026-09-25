@@ -8,7 +8,7 @@
 /// ADR-0004 makes wrong-thread use *undefined behaviour* rather than a
 /// detectable error, and lists this as the mitigation: "debug builds assert on
 /// the owning thread id via a `SMPLY_ASSERT_CLIENT_THREAD()` check compiled out
-/// in release". Until P14 the macro existed only in that sentence.
+/// in release". This file is that check.
 ///
 /// **This is the only place in the core that mentions a thread**, and it does so
 /// only when `NDEBUG` is undefined. In a release build `ClientThreadGuard` is an

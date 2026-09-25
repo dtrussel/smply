@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Keeps the GitHub Actions the workflows use current.
+#
+# Only Actions. The C++ dependencies are FetchContent declarations pinned to a
+# commit hash (ADR-0011, docs/dependencies.md): Dependabot cannot read those,
+# and a dependency change is a decision that needs a person, not a bot.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

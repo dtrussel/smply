@@ -14,9 +14,9 @@
 ///   reassembly (ADR-0006);
 /// * **inbound**, the driver thread does not touch the client. It posts a
 ///   closure to a `smply::Dispatcher`, and the pump thread drains it, so
-///   `on_bytes()` arrives on the client context as ADR-0004 requires. Since
-///   P14a, getting that wrong trips `SMPLY_ASSERT_CLIENT_THREAD()` in a debug
-///   build rather than corrupting the assembler quietly.
+///   `on_bytes()` arrives on the client context as ADR-0004 requires. Getting
+///   that wrong trips `SMPLY_ASSERT_CLIENT_THREAD()` in a debug build rather
+///   than corrupting the assembler quietly.
 ///
 /// **A dropped link stays dropped**, like a real one: after `close()` or a
 /// device-side disconnect this object delivers nothing further, and reconnecting

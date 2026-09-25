@@ -70,7 +70,7 @@ constexpr std::chrono::seconds kCloseWriteGrace{5};
 /// Windows answers a *rapid* reconnect with a service whose characteristic
 /// collection is **empty** -- its own service cache, stale for a second or two,
 /// even though every query here asks for `Uncached` (protocol-notes section 9,
-/// A22, seen on a NUCLEO-WB55RG in P17b). Concluding "no SMP characteristic"
+/// A22, seen on a NUCLEO-WB55RG). Concluding "no SMP characteristic"
 /// from that fails a reconnect which would have succeeded a moment later, and on
 /// this platform that is a reconnect a real DFU tool depends on.
 ///
@@ -79,7 +79,7 @@ constexpr std::chrono::seconds kCloseWriteGrace{5};
 /// blocking and the HIL per-case deadline is 600 s, so the cost is affordable.
 /// These are file-local rather than `WinRtBleConfig` fields deliberately: how
 /// long Windows' GATT cache stays stale is not a policy an application can
-/// choose informedly, and a config field would be public API P18 must keep.
+/// choose informedly, and a config field would be public API to keep.
 constexpr int kDiscoveryAttempts = 6;
 constexpr std::chrono::milliseconds kDiscoveryRetryDelay{400};
 

@@ -5,13 +5,12 @@
 # code" shared by the formatting and lint gates -- never touches _deps/ or
 # build/.
 #
-# Directories that do not exist yet (transports/, added in a later roadmap
-# phase) are skipped rather than treated as an error.
+# A listed directory that does not exist is skipped rather than treated as an
+# error.
 #
 # ADD NEW TOP-LEVEL SOURCE DIRECTORIES HERE. A directory missing from this list
 # is not an error and produces no warning -- the format and lint gates simply
-# never see it, and go on passing. support/ was added in P14b for exactly that
-# reason.
+# never see it, and go on passing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

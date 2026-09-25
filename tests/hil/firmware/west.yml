@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# The P17 peer's west manifest: Zephyr pinned by commit, importing only the
+# The bench peer's west manifest: Zephyr pinned by commit, importing only the
 # modules the NUCLEO-WB55RG build of smp_svr needs. Copy this into a separate
 # west workspace (tests/hil/README.md); never put .west inside this repository.
 manifest:

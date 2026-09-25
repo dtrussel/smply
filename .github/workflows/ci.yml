@@ -7,7 +7,7 @@
 # Read windows-winrt for exactly what it is: a GitHub runner has no Bluetooth
 # radio, so that job COMPILES the WinRT adapter and links a smoke executable
 # against it. It never puts a byte on the air. Green means "it builds", not
-# "it works"; the behavioural coverage arrives with the hardware suite (P17).
+# "it works"; the behavioural coverage is the hardware suite (tests/hil/).
 #
 # The nightly soak lives in its own workflow (nightly-fuzz.yml) because it is
 # scheduled and advisory, not part of this required run.
@@ -33,17 +33,17 @@ jobs:
         include:
           - { os: ubuntu-latest,  preset: linux-gcc }
           - { os: ubuntu-latest,  preset: linux-clang }
-          # Release, because that is what a consumer builds. Nothing in this
-          # project compiled above -O0 until P15a, and the first attempt did
-          # not: an optimisation-only warning had never had the chance to fire.
+          # Release, because that is what a consumer builds, and because some
+          # warnings fire only under optimisation.
           - { os: ubuntu-latest,  preset: linux-gcc-release }
           - { os: ubuntu-latest,  preset: linux-gcc-fallback-expected }
           # Builds the same tests against std::expected. Without this the
           # standard backing is never exercised, because std::expected does not
           # exist under the C++20 baseline (ADR-0002).
           - { os: ubuntu-latest,  preset: linux-gcc-cxx23-std-expected }
+          # Also the API-discipline gate: its preset sets SMPLY_BUILD_WINRT=OFF,
+          # so the core and its tests must build with no WinRT anywhere.
           - { os: windows-latest, preset: windows-msvc }
-          - { os: windows-latest, preset: core-without-winrt }
           # Compiles smply::winrt_ble and runs its link-and-call smoke test.
           # See the note at the top of this file for what it does not prove.
           - { os: windows-latest, preset: windows-winrt }
@@ -131,6 +131,20 @@ jobs:
           sudo apt-get install -y ninja-build clang libclang-rt-18-dev
       - run: cmake --preset linux-clang-fuzz
       - run: cmake --build --preset linux-clang-fuzz
+      # The nightly soak lists its targets by hand, so a new target is easy to
+      # leave out of it. This job globs, so it is the one that notices.
+      - name: Every fuzz target is in the nightly soak
+        run: |
+          set -euo pipefail
+          missing=0
+          for target in build/linux-clang-fuzz/tests/fuzz/fuzz_*; do
+            name=$(basename "$target")
+            if ! grep -qE "^\s*- ${name}\s*$" .github/workflows/nightly-fuzz.yml; then
+              echo "::error::$name is not in nightly-fuzz.yml's matrix"
+              missing=1
+            fi
+          done
+          exit $missing
       # 20 000 iterations per target over its committed seed corpus
       # (docs/quality-gates.md section 8). This is a regression gate, not a
       # search: a crash here means a previously fixed input came back, or a
@@ -182,7 +196,7 @@ jobs:
       - name: Consume smply from outside the tree, three ways
         run: tools/check_install.sh "${{ runner.temp }}/install-check"
 
-      # The SBOM quality-gates.md section 9 has promised since P0. Generated
+      # The SBOM quality-gates.md section 9 describes. Generated
       # from the same pins the build uses, so it cannot describe a different
       # dependency set than the one that was just installed.
       - name: Generate the SBOM
@@ -208,11 +222,15 @@ jobs:
       # (docs/quality-gates.md section 6). It also refuses to run without
       # gcovr, so a missing tool can no longer look like a pass.
       - run: tools/coverage.sh build/linux-gcc-coverage --enforce
+      # coverage.sh writes both. `error`, not `ignore`: an artifact that is
+      # silently empty is how this upload once matched nothing unnoticed.
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: build/linux-gcc-coverage/coverage*.info
-          if-no-files-found: ignore
+          path: |
+            build/linux-gcc-coverage/coverage.xml
+            build/linux-gcc-coverage/coverage-html/
+          if-no-files-found: error
 
   gates:
     name: gates (format, tidy, api, deps, docs)
@@ -261,7 +279,9 @@ jobs:
       - name: Install tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang clang-format clang-tidy
+          # gcovr, because the coverage-reporter cases need it and CI=true
+          # turns a skipped case into a failure (tools/verify_gates.sh).
+          sudo apt-get install -y ninja-build clang clang-format clang-tidy gcovr
       # Populates build/linux-clang/_deps so the scratch copy does not re-clone.
       - name: Warm the dependency cache
         run: cmake --preset linux-clang

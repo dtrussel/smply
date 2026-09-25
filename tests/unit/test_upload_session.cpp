@@ -28,20 +28,20 @@ using smply::Group;
 using smply::Hash;
 using smply::MgmtError;
 using smply::SmpError;
-using smply::image::Action;
-using smply::image::ChunkBudget;
-using smply::image::compute_chunk_size;
-using smply::image::first_packet_overhead;
-using smply::image::FirstPacketFields;
-using smply::image::on_response;
-using smply::image::Phase;
-using smply::image::plan_next;
-using smply::image::record_sent;
-using smply::image::Step;
-using smply::image::UploadConfig;
-using smply::image::UploadRequest;
-using smply::image::UploadResponse;
-using smply::image::UploadState;
+using smply::upload::Action;
+using smply::upload::ChunkBudget;
+using smply::upload::compute_chunk_size;
+using smply::upload::first_packet_overhead;
+using smply::upload::FirstPacketFields;
+using smply::upload::on_response;
+using smply::upload::Phase;
+using smply::upload::plan_next;
+using smply::upload::record_sent;
+using smply::upload::Step;
+using smply::upload::UploadConfig;
+using smply::upload::UploadRequest;
+using smply::upload::UploadResponse;
+using smply::upload::UploadState;
 
 namespace Catch {
 template<>
@@ -342,7 +342,7 @@ TEST_CASE("a transfer that finishes normally is not reported as already present"
 
 TEST_CASE("a retransmitted final chunk is not reported as already present", "[upload][session]")
 {
-    // Rules 9b then 9a, as every update on the P17 bench played them out before
+    // Rules 9b then 9a, as every update on the bench played them out before
     // the final chunk had its own deadline: the response to the last chunk is
     // late, the retransmission is answered `off == 0` because the server has
     // already completed and reset its session, the client re-sends a first

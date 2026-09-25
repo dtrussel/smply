@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate an SPDX 2.3 SBOM for smply, and check it stays honest.
 
-`quality-gates.md` section 9 has promised an SBOM since P0 and nothing produced
-one until P18; this is that promise made true rather than deleted.
+This is the SBOM `quality-gates.md` section 9 describes.
 
 The inventory is read from the same two places the dependency gate reads, so an
 SBOM cannot disagree with the build:
@@ -33,6 +32,8 @@ import pathlib
 import re
 import sys
 
+from cmake_deps import declared_names
+
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
 # Licence and origin per dependency, keyed by the FetchContent_Declare name,
@@ -57,13 +58,12 @@ LICENCES = {
     },
 }
 
-DECLARE = re.compile(r"FetchContent_Declare\(\s*([A-Za-z0-9_]+)", re.MULTILINE)
 PROJECT_VERSION = re.compile(r"project\(\s*smply\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)")
 
 
 def declared_dependencies(text: str) -> list[str]:
     """Every FetchContent_Declare name in dependencies.cmake, in order."""
-    return [name for name in DECLARE.findall(text)]
+    return declared_names(text)
 
 
 def pin_for(text: str, name: str) -> tuple[str | None, str | None]:

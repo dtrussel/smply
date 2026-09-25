@@ -22,7 +22,7 @@
 #include <functional>
 #include <memory>
 
-namespace smply::image {
+namespace smply::upload {
 
 /// Enough for the largest chunk plus the largest first-packet envelope.
 ///
@@ -128,6 +128,6 @@ private:
     std::shared_ptr<int> life_ = std::make_shared<int>(0);
 };
 
-} // namespace smply::image
+} // namespace smply::upload
 
 #endif // SMPLY_SRC_GROUPS_IMAGE_UPLOAD_DRIVER_HPP

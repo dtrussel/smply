@@ -9,8 +9,8 @@
 // from the **named constant**, so the test's meaning changes when the constant
 // does. A limit that is documented and not enforced fails here.
 //
-// P13's audit found two: see "an oversized echo request" and the note on
-// kMaxRetiredSeqs.
+// An audit of the limits found two such gaps: see "an oversized echo request"
+// and the note on kMaxRetiredSeqs.
 
 #include "cbor/cbor.hpp"
 #include "smp/assembler.hpp"
@@ -110,7 +110,7 @@ struct Fixture
 };
 
 /// A do-nothing sink, for feeding the assembler.
-class NullSink final : public smply::MessageSink
+class NullSink final : public smply::smp::MessageSink
 {
 public:
     void on_message(const Header& /*header*/, ConstBytes /*payload*/) override
@@ -136,7 +136,7 @@ TEST_CASE("kMaxSmpPayload bounds a declared message length", "[limits]")
     // The length field is the first number a device controls, and it is checked
     // before a single byte is buffered on its behalf.
     NullSink sink;
-    smply::MessageAssembler assembler;
+    smply::smp::MessageAssembler assembler;
 
     const Header oversized{.op = Operation::ReadResponse,
                            .version = Version::V1,
@@ -158,7 +158,7 @@ TEST_CASE("kMaxAssemblyBuffer bounds what a partial message may hold", "[limits]
     // A device that sends a large header and then goes quiet must not be able
     // to make the client hold memory indefinitely.
     NullSink sink;
-    smply::MessageAssembler assembler;
+    smply::smp::MessageAssembler assembler;
 
     const Header header{.op = Operation::ReadResponse,
                         .version = Version::V1,
@@ -355,9 +355,9 @@ TEST_CASE("kMaxImages bounds the slot table a device can report", "[limits]")
 
 TEST_CASE("an image list exactly at kMaxImages is accepted", "[limits]")
 {
-    // The boundary in the other direction. P8 found a real off-by-one here: the
-    // cap was tested before entering an element, so a list of exactly the
-    // maximum was rejected.
+    // The boundary in the other direction, and the site of a real off-by-one:
+    // testing the cap before entering an element rejects a list of exactly the
+    // maximum.
     std::optional<ImageState> state; // before the fixture; see kMaxInFlight
     Fixture fixture;
     smply::ImageManagement image{fixture.client};
@@ -518,7 +518,7 @@ TEST_CASE("kMaxImageSize bounds both numbers that can claim a size", "[limits]")
     // supplied by the application, not by a device or a file, and it streams in
     // fixed-size chunks so a large one costs time rather than memory. The bound
     // is defensive against untrusted numbers, and there is no untrusted number
-    // here. P13's audit checked this rather than assuming it.
+    // here. This case checks that rather than assuming it.
 }
 
 TEST_CASE("kMaxImageTlvs bounds a trailer scan", "[limits]")
@@ -635,7 +635,7 @@ TEST_CASE("kFinalChunkTimeout is longer than the default", "[limits]")
 {
     // A device with the image check enabled hashes the whole image out of flash
     // before answering the last chunk (protocol-notes section 9, A19): 5.3 s
-    // for 134 KiB on the P17 bench, against a 5 s default. A final-chunk
+    // for 134 KiB on the bench, against a 5 s default. A final-chunk
     // deadline no longer than the default would time out every real update and
     // hide it behind a retransmission that happens to succeed.
     STATIC_REQUIRE(limits::kFinalChunkTimeout > limits::kDefaultTimeout);

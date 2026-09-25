@@ -3,27 +3,25 @@
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
 
-**Everything in this file is now shipped API** — `util/dispatcher.hpp` was the
-last proposal, and P14a shipped it. A shipped section must match its header
-exactly; if you change the header, change it here in the same commit
+Every section here describes a shipped header, and must match that header. If
+you change a header, change its section here in the same commit
 ([ADR-0013](decisions/ADR-0013-living-documentation.md)).
 
-Worth remembering when the next proposal is written: **every one of them changed
-on contact with the code.** `util/dispatcher.hpp` was no exception — the sketch
-was three methods and a constructor, and what shipped needed a destructor, a
-`pending()`, deleted copies, and four paragraphs of behaviour the signatures
-could not show. Read a proposed signature as an intent, not a contract, and
-record the deviations in the roadmap.
+**The declarations below are abridged.** They show each type's members and each
+function's parameters, return type and `noexcept`. What they leave to the
+header: `[[nodiscard]]`, which is on every function returning a `Result`, a
+handle or a value; deleted copy and move operations; and defaulted
+`operator==`. The header is the exact declaration and its `///` comments are
+the full contract.
 
-**Scope: `include/smply/`, plus the installed transport headers.** P18 changed
-where that line falls, so it is worth stating precisely
+**Scope: `include/smply/`, plus the installed transport headers**
 ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)):
 
 * `include/smply/` — what an **application** uses. Documented below, header by
   header.
-* `transports/common/` — what an **adapter author** uses. Now part of the
-  installed package, therefore part of the promised surface, and documented
-  below in its own section.
+* `transports/common/` and `transports/serial/` — what an **adapter author**
+  uses. Part of the installed package, therefore part of the promised surface,
+  and documented below in their own section.
 * `transports/winrt_ble/` — the reference adapter. **Not** installed, not
   promised, and documented at its declarations plus [`design.md`](design.md)
   §10. `WinRtBleTransport`'s absence below is a decision, not an omission: it
@@ -32,18 +30,16 @@ where that line falls, so it is worth stating precisely
 * `support/` — `minicbor` and `dfu_app`, shared by the tests and the examples
   and part of neither. Not installed, not promised.
 
-| Header | Status |
+| Header | Target |
 | ------ | ------ |
-| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | **Shipped** (P1; `limits.hpp` extended by every group phase since) |
-| `smp/header.hpp` | **Shipped** (P2, extended P6) |
-| `transport.hpp` | **Shipped** (P4) |
-| `smp_client.hpp` | **Shipped** (P6; `defer()` P7, `transport_max_message_size()` P10) |
-| `groups/os.hpp` | **Shipped** (P7) |
-| `groups/image.hpp` | **Shipped** (P8: state, erase, slot info; P10: upload) |
-| `image_source.hpp` · `mcuboot_image.hpp` | **Shipped** (P9) |
-| `dfu/firmware_updater.hpp` | Shipped — P12 |
-| `util/dispatcher.hpp` | **Shipped** (P14a) — separate target `smply::util` |
-| `transports/common/*.hpp` | **Shipped** (P15a, `send_queue.hpp` P17b) — separate target `smply::transport_common`, installed from P18 |
+| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` · `version.hpp` | `smply::smply` |
+| `smp/header.hpp` · `transport.hpp` · `smp_client.hpp` | `smply::smply` |
+| `groups/os.hpp` · `groups/image.hpp` · `groups/image_upload.hpp` | `smply::smply` |
+| `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
+| `dfu/firmware_updater.hpp` | `smply::smply` |
+| `util/dispatcher.hpp` | `smply::util`, a separate target the core does not link |
+| `async/task.hpp` · `async/future.hpp` | `smply::asyncutil`, header-only; a separate target the core does not link (ADR-0019) |
+| `transports/common/*.hpp`, `transports/serial/*.hpp` | `smply::transport_common`, header-only |
 
 ---
 
@@ -219,6 +215,29 @@ are grouped here so the whole defensive surface can be reviewed at once.
 
 These are defaults: `SmpClientConfig` and `UploadOptions` override the ones that
 belong to an instance. The rest are hard bounds on what smply will accept.
+
+## `smply/version.hpp`
+
+Generated at configure time from `project(VERSION)` in `CMakeLists.txt`, and
+installed with the package.
+
+```cpp
+#define SMPLY_VERSION_MAJOR  /* e.g. 0 */
+#define SMPLY_VERSION_MINOR  /* e.g. 2 */
+#define SMPLY_VERSION_PATCH  /* e.g. 0 */
+#define SMPLY_VERSION_STRING /* e.g. "0.2.0" */
+
+namespace smply {
+// The version of the library this program is linked against. Comparing it
+// with SMPLY_VERSION_STRING detects a header/library mismatch at run time.
+const char* version() noexcept;   // static storage duration
+}
+```
+
+The macros are the version the program was *compiled* against, for `#if`
+checks; `version()` is the one it *runs* against. The versioning policy is
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) and
+[`CHANGELOG.md`](../CHANGELOG.md).
 
 ## `smply/smp/header.hpp`
 
@@ -471,36 +490,11 @@ public:
 
 ## `smply/groups/image.hpp`
 
-**Shipped (P8)** for state, set-state, erase and slot info. The upload types at
-the end of this section are still **proposed** and belong to P10.
-
 ```cpp
 namespace smply {
 
-// A hash as the DEVICE reports it: MCUboot's IMAGE_TLV_SHA over header + body.
-// IMAGE_SHA_LEN is 32, or 64 for a SHA-512 bootloader, so the length is carried
-// rather than assumed (protocol-notes §6). Distinct from `Hash`, which is the
-// 32-byte upload `sha` over the whole file -- different types so the two cannot
-// be swapped by accident (protocol-notes §7).
-class ImageHash {
-public:
-    ImageHash() = default;                              // empty
-    static Result<ImageHash> from(ConstBytes);          // rejects empty or > 64
-    static ImageHash        from(const Hash&);          // the 32-byte case
-    ConstBytes  bytes() const noexcept;
-    std::size_t size()  const noexcept;
-    bool        empty() const noexcept;
-    friend bool operator==(const ImageHash&, const ImageHash&) noexcept;
-};
-
-struct ImageVersion {
-    std::uint8_t major{}, minor{}; std::uint16_t revision{}; std::uint32_t build{};
-    // Accepts "1.2.3", the device's "1.2.3.4" and imgtool's "1.2.3+4".
-    // Fails with InvalidArgument -- including on the "<???>" a device sends
-    // when it cannot format a version at all.
-    static Result<ImageVersion> parse(std::string_view);
-    std::string to_string() const;   // the device's form: "1.2.3" or "1.2.3.4"
-};
+// ImageHash and ImageVersion are declared in smply/mcuboot_image.hpp, which
+// this header includes; see that section.
 
 struct ImageSlot {
     std::uint32_t image = 0;          // absent in the response => 0 (A9)
@@ -595,8 +589,14 @@ the wrong type, is `ErrorCode::CborDecode`; an absent optional field never is.
 
 ### Upload
 
+The upload's values are in `smply/groups/image_upload.hpp`, which
+`groups/image.hpp` includes. Code that only builds options or reads results
+does not need the SMP client.
+
 ```cpp
 namespace smply {
+
+// --- smply/groups/image_upload.hpp ---
 
 struct UploadOptions {
     std::uint32_t image = 0;
@@ -644,6 +644,11 @@ public:
     explicit operator bool() const noexcept;
 };
 
+// Fires on every advance the device confirms, on the client context.
+using ProgressCallback = std::function<void(UploadProgress)>;
+
+// --- smply/groups/image.hpp ---
+
 class ImageManagement {                     // upload half; see above for the rest
 public:
     // `source` and this ImageManagement must both outlive the upload -- the
@@ -657,15 +662,17 @@ public:
     // when this object is destroyed. A second upload while one runs is refused
     // with InvalidState.
     UploadHandle upload(ImageSource&, const UploadOptions&,
-                        std::function<void(UploadProgress)> on_progress,
-                        Callback<UploadResult> on_done);
+                        ProgressCallback on_progress, Callback<UploadResult> on_done);
 
     // A dropped link completes the upload with Disconnected but KEEPS the
     // session. Once the application has rebound the transport, this re-sends
     // the first packet with the same sha and continues from whatever offset the
-    // device reports (§6 rule 6). InvalidState for a stale handle or a session
-    // that ended any other way.
-    void resume(const UploadHandle&, Callback<UploadResult> on_done);
+    // device reports (§6 rule 6). Same contract as upload(): returns the handle
+    // when the upload resumes and an invalid one when it cannot (a stale handle,
+    // or a session that ended any other way), and on_done -- the callback for
+    // THIS attempt -- fires exactly once, with InvalidState on refusal. The
+    // callback given to upload() already fired, with Disconnected.
+    UploadHandle resume(const UploadHandle&, Callback<UploadResult> on_done);
 
     void          cancel(const UploadHandle&) noexcept;   // Cancelled on next poll()
     std::uint64_t transferred(const UploadHandle&) const noexcept;
@@ -718,7 +725,8 @@ public:
 
 ## `smply/mcuboot_image.hpp`
 
-The three narrow exceptions to treating the image as opaque
+The two values a device reports about an image, and the three narrow exceptions
+to treating the image as opaque
 ([ADR-0009](decisions/ADR-0009-mcuboot-boundary.md)). smply does **not** verify
 signatures, decrypt, evaluate dependency TLVs or reimplement swap logic — **a
 successful smply update is not an authenticity statement**
@@ -726,6 +734,31 @@ successful smply update is not an authenticity statement**
 
 ```cpp
 namespace smply {
+
+// A hash as the DEVICE reports it: MCUboot's IMAGE_TLV_SHA over header + body.
+// IMAGE_SHA_LEN is 32, or 64 for a SHA-512 bootloader, so the length is carried
+// rather than assumed (protocol-notes §6). Distinct from `Hash`, which is the
+// 32-byte upload `sha` over the whole file -- different types so the two cannot
+// be swapped by accident (protocol-notes §7).
+class ImageHash {
+public:
+    ImageHash() = default;                              // empty
+    static Result<ImageHash> from(ConstBytes) noexcept; // rejects empty or > 64
+    static ImageHash        from(const Hash&) noexcept; // the 32-byte case
+    ConstBytes  bytes() const noexcept;
+    std::size_t size()  const noexcept;
+    bool        empty() const noexcept;
+    friend bool operator==(const ImageHash&, const ImageHash&) noexcept;
+};
+
+struct ImageVersion {
+    std::uint8_t major{}, minor{}; std::uint16_t revision{}; std::uint32_t build{};
+    // Accepts "1.2.3", the device's "1.2.3.4" and imgtool's "1.2.3+4".
+    // Fails with InvalidArgument -- including on the "<???>" a device sends
+    // when it cannot format a version at all.
+    static Result<ImageVersion> parse(std::string_view);
+    std::string to_string() const;   // the device's form: "1.2.3" or "1.2.3.4"
+};
 
 inline constexpr std::uint32_t kMcubootImageMagic   = 0x96F3B83D;
 inline constexpr std::uint32_t kMcubootImageMagicV1 = 0x96F3B83C;  // too old to use
@@ -736,7 +769,7 @@ struct McubootImageInfo {
     std::uint32_t image_size  = 0;         // ih_img_size, excludes the header
     std::uint32_t protected_tlv_size = 0;  // includes that area's own 4-byte header
     std::uint32_t flags = 0;               // verbatim; unknown bits are kept
-    ImageVersion  version;                 // from groups/image.hpp
+    ImageVersion  version;                 // ih_ver
     bool          encrypted = false;       // IMAGE_F_ENCRYPTED_AES128|AES256
 };
 
@@ -772,9 +805,9 @@ namespace smply {
 
 // TestThenConfirm stops after the trial boot and asks; ConfirmImmediately
 // runs the same sequence and confirms without asking (ADR-0014).
-enum class UpdateMode { TestThenConfirm, ConfirmImmediately, UploadOnly };
+enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, UploadOnly };
 
-enum class UpdateState {
+enum class UpdateState : std::uint8_t {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
     AwaitingReconnect, VerifyingBooted, AwaitingConfirmation, Confirming,
@@ -785,7 +818,8 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
-    std::uint32_t image = 0;
+    // upload.image is the image the whole update works on: transferred,
+    // inspected, marked and confirmed. There is no second image number.
     UploadOptions upload{};
     // Skip the upload when the device already holds this image (by TLV hash).
     bool          skip_if_already_present = true;
@@ -806,19 +840,27 @@ struct UpdateReport {
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
 };
 
-struct UpdateEvent {
-    enum class Kind { StateChanged, Progress, DisconnectExpected,
-                      ReconnectRequired, ConfirmationRequired, Finished };
-    Kind kind{};
-    UpdateState from{}, to{};
-    UploadProgress progress{};
-    Duration reconnect_hint{};
-    const Result<UpdateReport>* result = nullptr;   // valid iff kind == Finished
-};
+// Exactly one of these per event. A variant, so a handler cannot read another
+// kind's field, and std::visit fails to compile when a kind is not handled.
+struct UpdateStateChanged   { UpdateState from{}, to{}; };
+struct DisconnectExpected   {};                    // the reset was accepted
+struct ReconnectRequired    { Duration hint{}; };  // UpdatePlan::reconnect_hint
+struct ConfirmationRequired {};                    // ADR-0014
+struct UpdateFinished       { Result<UpdateReport> result; };  // nothing follows
+using UpdateEvent = std::variant<UpdateStateChanged, UploadProgress, DisconnectExpected,
+                                 ReconnectRequired, ConfirmationRequired, UpdateFinished>;
 
-class FirmwareUpdater {
+// Combines lambdas into one std::visit visitor.
+template<class... Handlers> struct overloaded : Handlers... { using Handlers::operator()...; };
+template<class... Handlers> overloaded(Handlers...) -> overloaded<Handlers...>;
+
+// Invoked for every event, on the client context.
+using UpdateEventCallback = std::function<void(const UpdateEvent&)>;
+
+class FirmwareUpdater {       // non-copyable, non-movable: callbacks capture it
 public:
-    FirmwareUpdater(SmpClient&, ImageManagement&, OsManagement&);
+    FirmwareUpdater(SmpClient&, ImageManagement&, OsManagement&) noexcept;
+    ~FirmwareUpdater();       // completes a running update with Cancelled
 
     // `source`, and whatever the callback captures, must outlive the update --
     // and outlive the client and both groups, all of which finish outstanding
@@ -894,9 +936,86 @@ Four behaviours a caller has to know, none of which the signatures show:
 
 ---
 
+## `smply/async/task.hpp`, `smply/async/future.hpp` — coroutines and futures (target `smply::asyncutil`)
+
+**Header-only, installed, and not used by the core**
+([ADR-0019](decisions/ADR-0019-async-adapters.md)). Both headers wrap the one
+thing every smply operation has in common, its `Callback<T>`. Neither changes
+the threading model: an operation is still started and completed on the pump
+thread, and the application still pumps.
+
+```cpp
+namespace smply::async {
+
+// --- task.hpp: for code ON the pump thread ---
+
+// co_await yields the Result<T> the operation's callback receives. `start` is
+// called once, when the coroutine awaits, with the callback to hand over:
+//   co_await await_result<ImageState>([&](auto done) { images.get_state(std::move(done)); });
+// The coroutine resumes INSIDE that callback -- where a callback chain would
+// continue -- so it may start the next operation at once.
+template<class T, class Start>
+ResultAwaitable<T, std::decay_t<Start>> await_result(Start&& start);
+
+// What await_result returns: an awaitable that holds `start` until the
+// coroutine suspends, then calls it. Its state is shared with the callback, so
+// a Task destroyed while suspended drops a late result instead of resuming a
+// freed frame. Not constructed directly.
+template<class T, class Start> class ResultAwaitable;
+
+// A coroutine that starts eagerly and stays suspended at its end, so the result
+// outlives the body. Move-only; destroying it destroys the coroutine, and an
+// operation it was awaiting still completes with its result dropped. Awaitable
+// from another Task.
+template<class T = void>
+class Task {
+public:
+    bool done() const noexcept;
+    T    result();          // precondition done(); rethrows what escaped the body
+};
+
+// --- future.hpp: for code on ANOTHER thread ---
+
+// Posts `start` through the dispatcher the pump drains, so the operation begins
+// on the pump thread, and returns a future for its Result<T>. NEVER get() it on
+// the pump thread: only that thread can complete it. A dispatcher cleared or
+// destroyed before the work runs breaks the promise; get() then throws
+// std::future_error.
+template<class T, class Start>
+std::future<Result<T>> post_for_future(Dispatcher& dispatcher, Start start);
+
+} // namespace smply::async
+```
+
+A whole update step by step, read as the sequence it is. `FirmwareUpdater` is
+still the component that knows the order; this shows the adapters, not a
+replacement for it:
+
+```cpp
+smply::async::Task<void> read_then_upload(smply::ImageManagement& images,
+                                          smply::ImageSource& firmware)
+{
+    using smply::async::await_result;
+    const auto before = co_await await_result<smply::ImageState>(
+        [&](auto done) { images.get_state(std::move(done)); });
+    if (!before) co_return;
+
+    const auto uploaded = co_await await_result<smply::UploadResult>([&](auto done) {
+        static_cast<void>(images.upload(firmware, {}, {}, std::move(done)));
+    });
+    // ... inspect `uploaded`, then mark for test, reset, and so on.
+}
+
+smply::async::Task<void> task = read_then_upload(images, firmware);
+while (!task.done()) {                     // the same pump as always
+    dispatcher.drain();
+    client.poll(std::chrono::steady_clock::now());
+}
+```
+
 ## `transports/` — the adapter surface (target `smply::transport_common`)
 
-**Header-only, and installed from P18.** An adapter links
+**Header-only, and installed.** An adapter links
 `smply::transport_common` and writes `#include "common/ble_framing.hpp"` or
 `#include "serial/serial_framing.hpp"` — the same spelling in this tree and out
 of an install prefix, where the headers land under
@@ -907,9 +1026,9 @@ Two directories, one target. `common/` is what every adapter or every BLE
 adapter needs; `serial/` is MCUmgr's console framing. They ship together
 because a directory is not a compatibility promise the way a target is:
 [ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) names the
-package's three targets and says "and nothing else", and
+package's targets and says "and nothing else", and
 [ADR-0017](decisions/ADR-0017-serial-framing-placement.md) is why `serial/`
-joined one rather than becoming a fourth.
+joined one rather than becoming a new one.
 
 Why any of it is in the package at all, given that the point of `Transport`
 (ADR-0005) is that anyone can implement it: because none of it is a
@@ -920,7 +1039,9 @@ serial framing is a protocol an adapter cannot skip and cannot guess. An
 adapter author who cannot get them from the package re-derives all three,
 including the bug.
 
-Everything here is in `namespace smply::transport`.
+The public surface is in `namespace smply::transport`. `serial/base64.hpp` is
+installed because `serial_framing.hpp` includes it, but it is
+`smply::transport::detail` and not part of the promise.
 
 ### `common/ble_framing.hpp` — one SMP message into GATT writes
 
@@ -955,7 +1076,7 @@ public:
 ### `common/send_queue.hpp` — admission for one background writer
 
 ```cpp
-enum class Admission { StartWriter, Queued, Busy };
+enum class Admission : std::uint8_t { StartWriter, Queued, Busy };
 
 struct SendCounters {
     std::uint64_t deferred = 0;   // Queued admissions
@@ -978,7 +1099,7 @@ public:
 whole design, and it is what a naive "a write is in progress" flag gets wrong:
 the device's answer can reach the client *before* the local write's own
 completion has been scheduled, and the flag then refuses the next message on a
-perfectly healthy link. P17b watched that kill an upload six cases into a bench
+perfectly healthy link. On the bench, that killed an upload partway through a
 run (PN §9 A22).
 
 * `offer()` answers `StartWriter` (no writer live — **the caller must start
@@ -999,7 +1120,7 @@ run (PN §9 A22).
 ### `common/link_state.hpp` — the three-phase shutdown
 
 ```cpp
-enum class LinkPhase { Open, Closing, Closed };
+enum class LinkPhase : std::uint8_t { Open, Closing, Closed };
 
 class LinkState {
 public:
@@ -1063,9 +1184,16 @@ see [`design.md`](design.md) §12 for the loop an adapter writes around it and
 inline constexpr std::array<std::byte, 2> kPacketMarker;    // 0x06 0x09
 inline constexpr std::array<std::byte, 2> kFragmentMarker;  // 0x04 0x14
 inline constexpr std::size_t kMaxFrame          = 127;  // marker + base64 + '\n'
+inline constexpr std::size_t kMarkerSize        = 2;    // not base64-encoded
+inline constexpr std::size_t kTerminatorSize    = 1;    // the '\n'
 inline constexpr std::size_t kMaxBase64PerFrame = 124;  // characters, NOT bytes
 inline constexpr std::size_t kMaxRawPerFrame    = 93;   // bytes
 inline constexpr std::size_t kMaxSerialPacket   = 65533; // what the length field holds
+
+// How one frame splits, mirroring mcumgr_serial_tx_pkt(): the CRC is never
+// split across frames. Shared by next_frame() and count() so they cannot drift.
+struct FramePlan { std::size_t triplets = 0; bool carries_crc = false; };
+constexpr FramePlan plan_frame(std::size_t packet_size, std::size_t offset, bool first) noexcept;
 
 class SerialFramer {                       // outbound: one message -> frames
 public:
@@ -1084,7 +1212,9 @@ public:
     [[nodiscard]] std::size_t buffered() const noexcept;
 };
 
-struct SerialCounters { std::uint64_t ignored, crc_failures, framing_errors, packets; };
+struct SerialCounters {    // every field starts at 0
+    std::uint64_t ignored = 0, crc_failures = 0, framing_errors = 0, packets = 0;
+};
 
 class SerialDeframer {                     // inbound: lines -> SMP packets
 public:
@@ -1131,15 +1261,13 @@ bytes for no reason. It should be at most `kMaxSerialPacket`.
 
 ---
 
----
-
 ## Representative usage
 
-**All of this is now runnable.** `examples/cli_dfu/main.cpp` is the sketch below
-as a working program — the same pump, against a stub device on another thread,
-with the reconnect and the confirmation actually handled rather than elided. It
-runs on every push as the `cli_dfu_demo` test. Where the two differ, the example
-is the one that compiles.
+**All of this is runnable.** `examples/cli_dfu/main.cpp` is the sketch below as
+a working program — the same pump, against a stub device on another thread,
+with the reconnect and the confirmation handled rather than elided. It runs on
+every push as the `cli_dfu_demo` test. Where the two differ, the example is the
+one that compiles.
 
 ### Portable: one update, application-driven pump
 
@@ -1154,58 +1282,53 @@ smply::MemoryImageSource source{firmware_bytes};
 smply::UpdatePlan plan;                       // TestThenConfirm by default,
                                               // so ConfirmationRequired will arrive
 
-bool done = false;
-updater.start(source, plan, [&](const smply::UpdateEvent& ev) {
-    using K = smply::UpdateEvent::Kind;
-    switch (ev.kind) {
-    case K::Progress:
-        ui.set_progress(ev.progress.transferred, ev.progress.total);
-        break;
-    case K::StateChanged:
-        ui.set_status(smply::to_string(ev.to));
-        break;
-    case K::DisconnectExpected:
-        ui.set_status("device rebooting");
-        break;
-    case K::ReconnectRequired:
-        app.reconnect_async(ev.reconnect_hint, [&](auto& new_transport) {
-            client.rebind_transport(new_transport);
-            static_cast<void>(updater.resume_after_reconnect());
-        });
-        break;
-    case K::ConfirmationRequired:
-        // The device is running the new image, unconfirmed. This is the only
-        // chance to decide it works; doing nothing leaves it to revert.
-        if (app.self_test_passes()) {
-            static_cast<void>(updater.confirm());
-        } else {
-            updater.cancel();
-        }
-        break;
-    case K::Finished:
-        done = true;
-        if (*ev.result) ui.done();
-        else            ui.error(smply::to_string(ev.result->error()));
-        break;
-    }
-});
+// The handler runs inside poll(). It records what was asked; the loop acts on
+// it, because reconnecting and self-testing are the application's own work.
+struct { bool reconnect = false, confirm = false, done = false; } pending;
+const auto on_event = smply::overloaded{
+    [&](const smply::UploadProgress& p) { ui.set_progress(p.transferred, p.total); },
+    [&](const smply::UpdateStateChanged& e) { ui.set_status(smply::to_string(e.to)); },
+    [&](const smply::DisconnectExpected&) { ui.set_status("device rebooting"); },
+    [&](const smply::ReconnectRequired&) { pending.reconnect = true; },
+    [&](const smply::ConfirmationRequired&) { pending.confirm = true; },
+    [&](const smply::UpdateFinished& e) {
+        pending.done = true;
+        if (e.result) ui.done();
+        else          ui.error(smply::to_string(e.result.error()));
+    },
+};
+if (const auto begun = updater.start(source, plan,
+        [&](const smply::UpdateEvent& ev) { std::visit(on_event, ev); }); !begun) {
+    return ui.error(smply::to_string(begun.error()));
+}
 
-while (!done) {                                // the pump: one thread, no magic
+while (!pending.done) {                        // the pump: one thread, no magic
     dispatcher.drain();                        // inbound bytes -> client
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     client.poll(now);
     updater.poll(now);
-    app.wait_until(client.next_deadline());
+
+    if (std::exchange(pending.reconnect, false)) {
+        if (auto* link = app.reconnect()) {    // a real reconnect retries with backoff
+            client.rebind_transport(*link);
+            static_cast<void>(updater.resume_after_reconnect());
+        } else {
+            updater.reconnect_failed(smply::Error{smply::ErrorCode::Disconnected, "gave up"});
+        }
+    }
+    if (std::exchange(pending.confirm, false)) {
+        // The device is running the new image, unconfirmed. This is the only
+        // chance to decide it works; doing nothing leaves it to revert.
+        if (app.self_test_passes()) static_cast<void>(updater.confirm());
+        else                        updater.cancel();
+    }
+
+    // Sleep until the EARLIER deadline, woken early by Dispatcher's wake
+    // callback. The client's alone would sleep through the updater's
+    // reconnect grace timer.
+    app.wait_until(earliest(client.next_deadline(), updater.next_deadline()));
 }
 ```
-
-Two things the sketch leaves out and the example does not. **`wait_until` waits on
-the earlier of `client.next_deadline()` and `updater.next_deadline()`**, woken
-early by `Dispatcher`'s wake callback — waiting on the client's alone would sleep
-through the updater's reconnect grace timer. And **the handler above does not
-reconnect or confirm inline**: it records what was asked and the loop acts on its
-next turn, because both are the application's own work and neither belongs inside
-a callback that is running inside `poll()`.
 
 ### Low-level: a single request
 

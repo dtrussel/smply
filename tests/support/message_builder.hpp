@@ -3,8 +3,7 @@
 #define SMPLY_TESTS_MESSAGE_BUILDER_HPP
 
 /// \file
-/// Builders for raw SMP messages, used to feed decoders and (from P3) the
-/// reassembler.
+/// Builders for raw SMP messages, used to feed decoders and the reassembler.
 ///
 /// Two flavours deliberately: `make_message` builds a well-formed message and
 /// keeps the length field consistent with the payload, while `make_raw_message`

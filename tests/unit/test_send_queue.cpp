@@ -3,15 +3,15 @@
 // Send admission for a transport with one background writer.
 //
 // This is the bookkeeping behind the spurious `TransportBusy` that hardware
-// found in P17b (protocol-notes section 9, A22): a boolean "a write is in
-// progress" refuses the next message during the window between the device
-// answering and the local write's continuation running. `SendQueue` lets one
-// message wait instead, so the handover stops being a refusal.
+// found (protocol-notes section 9, A22): a boolean "a write is in progress"
+// refuses the next message during the window between the device answering and
+// the local write's continuation running. `SendQueue` lets one message wait
+// instead, so the handover stops being a refusal.
 //
-// It lives here rather than under transports/winrt_ble/ for the reason P15a
-// established: none of it is Windows-specific, the adapter cannot be built or
-// run on a Linux machine at all, and this directory — unlike the adapter — is
-// seen by clang-tidy, cppcheck and the coverage filter. What no test here can
+// It lives here rather than under transports/winrt_ble/ because none of it is
+// Windows-specific, the adapter cannot be built or run on a Linux machine at
+// all, and this directory — unlike the adapter — is seen by clang-tidy,
+// cppcheck and the coverage filter. What no test here can
 // check is the adapter's *use* of the type; the header says which three rules
 // those are.
 

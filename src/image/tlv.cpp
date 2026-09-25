@@ -48,7 +48,7 @@ constexpr std::array<HashTlv, 3> kHashTlvs{HashTlv{0x10, 32},  // IMAGE_TLV_SHA2
 
 [[nodiscard]] unexpected<Error> malformed(const char* what) noexcept
 {
-    return fail(Error{ErrorCode::MalformedMessage, what});
+    return fail(ErrorCode::MalformedMessage, what);
 }
 
 /// One `image_tlv_info`: a magic and the total size of the area it introduces.

@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# smply::winrt_ble -- the reference Transport, over C++/WinRT GATT (P15b).
+# smply::winrt_ble -- the reference Transport, over C++/WinRT GATT.
 #
-# Windows-only, and guarded by SMPLY_BUILD_WINRT so that the core-without-winrt
-# job stays meaningful. Nothing here is part of libsmply: an adapter consumes
-# smply::smply like any other consumer (architecture.md section 2).
+# Windows-only, and guarded by SMPLY_BUILD_WINRT so that the windows-msvc job,
+# which sets it OFF, proves the core builds without it. Nothing here is part of
+# libsmply: an adapter consumes smply::smply like any other consumer
+# (architecture.md section 2).
 #
-# NOT INSTALLED, decided in P18 and recorded in ADR-0016: this is a *reference*
+# NOT INSTALLED, as ADR-0016 records: this is a *reference*
 # adapter, shipped as source to read and copy rather than as a package member.
 # It is the one target neither clang-tidy nor cppcheck sees (tools/lint.sh), so
 # a SemVer promise about its surface would rest on MSVC /W4 alone. What a
 # third-party adapter actually needs from the package is smply::smply,
 # smply::util and smply::transport_common -- all three of which are installed,
-# and all three of which this file links. An in-tree consumer -- P16's example
-# -- links this target directly.
+# and all three of which this file links. An in-tree consumer -- the
+# winrt_ble_dfu example -- links this target directly.
 
 add_library(smply_winrt_ble STATIC winrt_ble_transport.cpp)
 add_library(smply::winrt_ble ALIAS smply_winrt_ble)
@@ -28,7 +29,7 @@ target_link_libraries(smply_winrt_ble
         smply::transport_common
     PRIVATE
         # $<BUILD_INTERFACE:> for the same reason the core does it: these flags
-        # must never reach a consumer or an export set (P15a).
+        # must never reach a consumer or an export set.
         $<BUILD_INTERFACE:smply_internal_options>
         WindowsApp.lib         # the C++/WinRT runtime
 )

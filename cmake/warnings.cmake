@@ -47,8 +47,7 @@ else()
 
     # -Wnull-dereference is NOT in that list, and its absence is deliberate.
     #
-    # It only fires under optimisation, and P15a's first Release build -- the
-    # first this project has ever done -- showed why that matters: with GCC 13
+    # It only fires under optimisation, which is why it matters: with GCC 13
     # at -O3 it reports "potential null pointer dereference" inside libstdc++'s
     # basic_string copy constructor, inlined through smply::Error's implicit
     # copy. The pointer is std::string's own `_M_dataplus._M_p`; no pointer of

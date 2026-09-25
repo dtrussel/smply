@@ -7,22 +7,20 @@ Enforces that documentation stays a first-class product artefact:
   R1  code changes under include/smply, src/smp, src/dfu or src/groups must be
       accompanied by a docs/ change, unless the PR body carries
       'Docs-Impact: none' with a justification;
-  R2  a roadmap phase marked Complete must have an empty "Remaining work";
-  R3  every ADR referenced from a doc exists, and every ADR has a valid Status;
+  R2  the roadmap is a backlog: its required sections exist, it carries no
+      struck-through rows (done items are deleted, not struck), and every
+      open-question ID (O<n>) a document cites is defined in its table;
+  R3  every ADR referenced from a doc exists, every ADR has a valid Status, and
+      every ADR is listed in the index, docs/decisions/README.md;
   R4  every public symbol declared in include/smply/ has a /// doc comment;
   R5  every path in architecture.md's repository-layout tree exists;
-  R6  no "(planned, P<n>)" marker names a phase the roadmap marks Complete.
+  R6  no development-phase ID (P<n>) in a living document or a source file --
+      the history is in git (ADR-0018). ADR bodies are exempt: they are
+      immutable records.
 
 R1 needs a diff base and, for the escape hatch, a pull-request body. Outside a
 PR (a plain branch push, or a local run) neither exists; R1 is then skipped
 with a message rather than failing. R2-R6 always run.
-
-R5 and R6 exist because P17c found three wrong entries in a layout section whose
-own opening line says "Keep this accurate", and two `(planned)` markers naming
-phases that had been Complete for four phases. Nothing checked either, so the
-drift was invisible until someone read the file against the tree. Adding a check
-for a defect just fixed by hand is this repository's habit, not a new idea: it is
-what committing a fuzz reproducer alongside its fix does.
 
 Usage:
     tools/check_docs.py [--base REF] [--verbose]
@@ -127,6 +125,13 @@ def rule_1_docs_accompany_code(base: str | None, verbose: bool) -> list[str]:
     ]
 
 
+ROADMAP_SECTIONS = ("## Current state", "## Open questions", "## Backlog")
+
+# An open-question ID as the documents cite it. The look-behind keeps compiler
+# flags (-O2) and identifiers (IO3) out.
+QUESTION_ID = re.compile(r"(?<![\w-])(O\d+)\b")
+
+
 def rule_2_roadmap_consistency() -> list[str]:
     roadmap = DOCS / "roadmap.md"
     if not roadmap.is_file():
@@ -134,37 +139,50 @@ def rule_2_roadmap_consistency() -> list[str]:
 
     errors: list[str] = []
     text = roadmap.read_text(encoding="utf-8")
+    lines = text.splitlines()
 
-    # Phase sections start with '## P<n> — <title>' and carry a status line.
-    #
-    # The trailing letter matters: P14 was split into P14a and P14b, and a
-    # pattern of P\d+ alone does not merely miss them -- it fails to match the
-    # heading at all, so both sections are silently skipped and R2 stops
-    # checking them while still reporting a pass. That is the same failure mode
-    # as the P1 fixture that rotted in verify_gates.sh.
-    sections = re.split(r"^##\s+(P\d+[a-z]?)\s*[—-]\s*", text, flags=re.M)
-    # sections = [preamble, id, body, id, body, ...]
-    for i in range(1, len(sections) - 1, 2):
-        phase_id, body = sections[i], sections[i + 1]
-        status = re.search(r"\*\*Status:\s*([A-Za-z ]+?)\*\*", body)
-        if not status:
-            errors.append(f"roadmap phase {phase_id} has no '**Status: ...**' line")
+    for heading in ROADMAP_SECTIONS:
+        if heading not in lines:
+            errors.append(f"docs/roadmap.md has no '{heading}' section")
+
+    # A finished item is deleted, not struck through (ADR-0018). Struck rows
+    # are how the old roadmap grew to thousands of lines.
+    for number, line in enumerate(lines, 1):
+        if line.startswith("|") and "~~" in line:
+            errors.append(f"docs/roadmap.md:{number} strikes a row through; delete it instead")
+
+    # The open-questions table defines the IDs. It runs from its heading to the
+    # next '## ' heading.
+    defined: set[str] = set()
+    in_questions = False
+    for line in lines:
+        if line.startswith("## "):
+            in_questions = line == "## Open questions"
             continue
-        if status.group(1).strip() != "Complete":
-            continue
-        remaining = re.search(
-            r"\*\*Remaining(?: in this phase)?\.?\*\*\s*(.*?)(?=\n\*\*|\n##|\Z)",
-            body,
-            re.S,
-        )
-        if remaining:
-            content = remaining.group(1).strip()
-            if content and content.lower() not in {"none.", "none", "n/a", "n/a."}:
-                errors.append(
-                    f"roadmap phase {phase_id} is marked Complete but still lists "
-                    f"remaining work: {content.splitlines()[0][:80]!r}"
-                )
+        row = re.match(r"^\|\s*(O\d+)\s*\|", line)
+        if in_questions and row:
+            defined.add(row.group(1))
+    if not defined:
+        errors.append("docs/roadmap.md defines no open questions (no '| O<n> |' rows)")
+        return errors
+
+    for path in _living_documents(include_adrs=True):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in QUESTION_ID.finditer(line):
+                if match.group(1) not in defined:
+                    errors.append(
+                        f"{path.relative_to(REPO).as_posix()}:{number} cites open question "
+                        f"{match.group(1)}, which docs/roadmap.md does not define")
     return errors
+
+
+def _living_documents(include_adrs: bool) -> list[Path]:
+    """Every Markdown document under docs/, plus the top-level ones."""
+    docs = [p for p in sorted(DOCS.rglob("*.md"))
+            if include_adrs or not p.name.startswith("ADR-")]
+    docs += [p for p in (REPO / "README.md", REPO / "CHANGELOG.md", REPO / "SECURITY.md",
+                         REPO / "CLAUDE.md") if p.is_file()]
+    return docs
 
 
 def rule_3_adrs() -> list[str]:
@@ -187,6 +205,14 @@ def rule_3_adrs() -> list[str]:
             errors.append(
                 f"{adr.relative_to(REPO)}: superseded by {superseded.group(1)}, which does not exist"
             )
+
+    # Every ADR must be listed in the index. The index is how a reader finds a
+    # decision, and ADR-0017 went unlisted for a release with nothing noticing.
+    index = DECISIONS / "README.md"
+    listed = set(re.findall(r"\((ADR-\d{4})-[^)]*\.md\)", index.read_text(encoding="utf-8"))) \
+        if index.is_file() else set()
+    for adr_id in sorted(existing_ids - listed):
+        errors.append(f"docs/decisions/README.md does not list {adr_id}")
 
     # Every ADR-NNNN referenced anywhere in docs/ must exist.
     for doc in sorted(DOCS.rglob("*.md")):
@@ -276,33 +302,16 @@ def rule_4_public_symbols_documented() -> list[str]:
     return errors
 
 
-def _phase_status() -> dict[str, str]:
-    """Phase id to Status, from the roadmap. Shared by R2's reader and R6."""
-    roadmap = DOCS / "roadmap.md"
-    if not roadmap.is_file():
-        return {}
-    text = roadmap.read_text(encoding="utf-8")
-    sections = re.split(r"^##\s+(P\d+[a-z]?)\s*[—-]\s*", text, flags=re.M)
-    out: dict[str, str] = {}
-    for i in range(1, len(sections) - 1, 2):
-        status = re.search(r"\*\*Status:\s*([A-Za-z ]+?)\*\*", sections[i + 1])
-        if status:
-            out[sections[i]] = status.group(1).strip()
-    return out
-
-
 # A layout-tree line: box-drawing glyphs, then everything after them.
 #
-# **Everything**, not the first token. It captured only the first token until
-# P18, which meant that on a line like
+# **Everything**, not the first token. On a line like
 #
 #     ├── tests/support/    fake_transport.*  manual_clock.hpp  message_builder.hpp
 #
-# only `tests/support/` was ever looked at -- and most of section 10's tree
-# names several files per line. Two of P18's audit findings were files listed
-# in second position that do not exist, sitting under a gate reporting a pass.
-# Worse, they were not counted as skipped either, so the skip count that exists
-# to expose a narrowed rule could not see this one.
+# a first-token rule looks only at `tests/support/` -- and most of section 10's
+# tree names several files per line. Files listed in second position would go
+# unchecked, and uncounted as skipped too, so the skip count that exists to
+# expose a narrowed rule could not see it.
 LAYOUT_LINE = re.compile(r"^[│|\s]*(?:├──|└──|\|--|`--)\s*(.*)$")
 
 # A continuation line: the glyph column, then prose that continues the entry
@@ -380,7 +389,7 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
 
     It prints how many entries it skipped. That number is the point: a rule that
     silently narrows to nothing still reports a pass, which is exactly how
-    `verify_gates.sh`'s R2 fixture rotted (roadmap.md, P1 follow-up). A reader
+    a self-check fixture can rot. A reader
     who sees "checked 3, skipped 60" knows the rule has stopped working; a
     reader who sees "OK" does not.
     """
@@ -462,38 +471,41 @@ def rule_5_layout_tree_exists(verbose: bool = False) -> list[str]:
     return errors
 
 
-def rule_6_no_stale_planned_markers() -> list[str]:
-    """A "(planned, P<n>)" marker may not name a phase that is Complete.
+# A development-phase ID: a capital P, one or two digits, an optional letter.
+# The library was built in numbered phases and the living documents used to be
+# written in terms of them; they now describe the present, and the history is
+# in git (ADR-0018).
+PHASE_ID = re.compile(r"\bP\d{1,2}[a-z]?\b")
 
-    The marker means "this does not exist yet, and P<n> creates it". Once P<n>
-    is Complete the marker is either a lie about the tree or a phase that did
-    not do what it said, and both are worth a failing gate. It would have fired
-    the moment P10 and P12 closed, which is when the two it now catches became
-    wrong.
-    """
-    status = _phase_status()
-    if not status:
-        return ["docs/roadmap.md could not be read, so R6 cannot run"]
 
+# Where R6 also looks, beyond the documents: code comments, build files, CI and
+# tools. A comment explains the code as it is; how it got that way is in git.
+SOURCE_ROOTS = ("include/", "src/", "transports/", "support/", "examples/", "tests/",
+                "tools/", "cmake/", ".github/", "CMakeLists.txt", "CMakePresets.json")
+SOURCE_EXCLUDED = ("tests/fuzz/corpus/",)  # fuzzer inputs are data, not prose
+
+
+def _source_files() -> list[Path]:
+    files: list[Path] = []
+    for name in git("ls-files").splitlines():
+        if name.startswith(SOURCE_ROOTS) and not name.startswith(SOURCE_EXCLUDED):
+            files.append(REPO / name)
+    return files
+
+
+def rule_6_no_phase_ids() -> list[str]:
     errors: list[str] = []
-    # Both spellings the documents actually use: "(planned, P12)" and
-    # "**planned (P10)**". Bounded to a short window after the word, so a
-    # sentence that merely mentions a phase some way after "planned" is not
-    # swept in -- the marker is a terse annotation, not prose.
-    pattern = re.compile(r"\bplanned\b[^\n]{0,24}?\b(P\d+[a-z]?)\b", re.I)
-    for path in sorted(DOCS.rglob("*.md")):
-        # The roadmap's own phase log records what was planned at the time and
-        # is a historical record, not a claim about the tree today.
-        if path.name == "roadmap.md":
-            continue
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for match in pattern.finditer(line):
-                phase = match.group(1)
-                if status.get(phase) == "Complete":
-                    errors.append(
-                        f"{path.relative_to(REPO).as_posix()}:{number} still marks "
-                        f"something '(planned, {phase})' although {phase} is Complete: "
-                        f"{line.strip()[:70]}")
+    for path in _living_documents(include_adrs=False) + _source_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue  # binary, or deleted in the working tree
+        for number, line in enumerate(text.splitlines(), 1):
+            match = PHASE_ID.search(line)
+            if match:
+                errors.append(
+                    f"{path.relative_to(REPO).as_posix()}:{number} names development phase "
+                    f"{match.group(0)}; describe the present and leave the history to git")
     return errors
 
 
@@ -505,11 +517,11 @@ def main() -> int:
 
     all_errors: list[tuple[str, list[str]]] = [
         ("R1 docs accompany code", rule_1_docs_accompany_code(resolve_base(args.base), args.verbose)),
-        ("R2 roadmap consistency", rule_2_roadmap_consistency()),
+        ("R2 roadmap is a backlog", rule_2_roadmap_consistency()),
         ("R3 ADR integrity", rule_3_adrs()),
         ("R4 public symbols documented", rule_4_public_symbols_documented()),
         ("R5 layout tree exists", rule_5_layout_tree_exists(args.verbose)),
-        ("R6 no stale (planned) markers", rule_6_no_stale_planned_markers()),
+        ("R6 no development-phase IDs", rule_6_no_phase_ids()),
     ]
 
     failed = False

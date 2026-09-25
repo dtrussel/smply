@@ -1,14 +1,11 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# P17 hardware interoperability (`tests/hil/`)
+# Hardware interoperability (`tests/hil/`)
 
-**Status: bring-up in progress.** Nothing here is part of the PR gate, and
-`SMPLY_BUILD_HIL` stays `OFF` in every normal build. The sections below are kept
-true as the phase advances; the roadmap's P17 entries say what each phase
-established. Thirteen unattended cases pass back-to-back (P17b) and the
-cross-check below compares smply against a third-party client on the same
-device (P17c) -- but no self-hosted runner is registered, so all of it runs from
-this bench, by hand.
+Nothing here is part of the PR gate, and `SMPLY_BUILD_HIL` stays `OFF` in every
+normal build. Thirteen unattended cases pass back-to-back, and the cross-check
+below compares smply against a third-party client on the same device. No
+self-hosted runner is registered, so all of it runs from this bench, by hand.
 
 ## The bench
 
@@ -126,10 +123,10 @@ unavailable*, never as a pass or a fail. CPU2 is not touched.
   still fail with `WinError -2147023673` on a connect that races the peer coming
   back; that is the instrument, not smply.
 
-## Manual acceptance came first (P17a, 2026-09-08)
+## Manual acceptance came first (2026-09-08)
 
-P16's acceptance criterion — `winrt_ble_dfu` completing an update against a real
-device — was discharged before any case was automated:
+The example's acceptance criterion — `winrt_ble_dfu` completing an update
+against a real device — was met before any case was automated:
 
 ```powershell
 python tests/hil/tools/uart_log.py --port COM4 --out dfu.uart.log --seconds 100   # alongside
@@ -140,7 +137,7 @@ mcumgr-client.exe -d COM4 list                                                  
 Five runs completed in both directions (exit 0, `Completed`, about 26 s each);
 the UART oracle showed the expected version and hash `confirmed` and `active`
 after each. The defects the first runs exposed, the measurements, and what they
-changed are in the roadmap's P17a outcome and `protocol-notes.md` §9 (A18, A19).
+changed are in `protocol-notes.md` §9 (A18, A19).
 The peer's identity address is `80:E1:26:00:65:E2`; it advertises the SMP
 service UUID and puts the name in the scan response, as protocol-notes §8 says.
 
@@ -150,7 +147,7 @@ device is unreachable for about 6.3 s after a swap reset, roughly 5 s of it
 MCUboot copying the image, so any deadline around a reboot must allow for that
 and for larger images taking longer.
 
-## Running the cases (P17b)
+## Running the cases
 
 ```powershell
 cmake --preset windows-hil          # from an MSVC developer shell
@@ -186,7 +183,7 @@ A run that fails part way can leave the board **not advertising**. The next
 run's per-group baseline flash recovers it; to recover by hand, run
 `firmware/flash_baseline.py --evidence <out>/evidence`.
 
-## Cross-checking against another client (P17c)
+## Cross-checking against another client
 
 ```powershell
 python tests/hil/crosscheck.py --evidence <out>/evidence --address 80:E1:26:00:65:E2 `
@@ -246,7 +243,7 @@ negotiates the link type without elevation — it just delivers nothing. So "the
 socket connected" and "tshark started" are both true in the failing case, and
 only the packet count discriminates.
 
-### What P17c established about getting a capture at all
+### What is established about getting a capture at all
 
 **No capture was obtained.** What follows is the route that remains untried at
 its last step, and the three things that were ruled out, so the next attempt

@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.25)
 # C is required in addition to CXX: QCBOR is a C project and fails to
 # configure as a subproject otherwise.
 project(smply
-    VERSION     0.1.0
+    VERSION     0.2.0
     DESCRIPTION "Transport-agnostic C++ client library for Zephyr MCUmgr/SMP"
     HOMEPAGE_URL "https://github.com/dtrussel/smply"
     LANGUAGES   CXX C
@@ -21,9 +21,10 @@ option(SMPLY_BUILD_TESTS    "Build smply's tests"            ${PROJECT_IS_TOP_LE
 option(SMPLY_BUILD_EXAMPLES "Build smply's examples"         ${PROJECT_IS_TOP_LEVEL})
 option(SMPLY_BUILD_FUZZERS  "Build libFuzzer targets"        OFF)
 option(SMPLY_BUILD_WINRT    "Build the WinRT BLE transport (Windows only)" OFF)
-option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests (P17)" OFF)
+option(SMPLY_BUILD_HIL      "Build hardware-in-the-loop tests" OFF)
 option(SMPLY_USE_SYSTEM_QCBOR "Use find_package(qcbor) instead of FetchContent" OFF)
-# P1 introduces the expected<> fallback; the option exists now so CI can pin it.
+# Forces smply's own expected<> even where std::expected exists, so CI can test
+# both backings (ADR-0002).
 option(SMPLY_FORCE_FALLBACK_EXPECTED
        "Use smply's expected<> even when std::expected is available" OFF)
 
@@ -79,11 +80,13 @@ target_sources(smply
         src/core.cpp
         src/dfu/firmware_updater.cpp
         src/dfu/update_state_machine.cpp
+        src/groups/image/decode.cpp
         src/groups/image/image_management.cpp
         src/groups/image/upload_driver.cpp
         src/groups/image/upload_session.cpp
         src/groups/os/os_management.cpp
         src/image/image_source.cpp
+        src/image/image_values.cpp
         src/image/mcuboot_header.cpp
         src/image/sha256.cpp
         src/image/tlv.cpp
@@ -161,6 +164,18 @@ set_target_properties(smply_util PROPERTIES
 find_package(Threads REQUIRED)
 target_link_libraries(smply_util PUBLIC Threads::Threads)
 
+# --- smply::asyncutil: coroutine and future adapters (ADR-0019) --------------
+#
+# Header-only, and separate from the core for the same reason as smply::util:
+# libsmply never links it, and check_public_headers.py rejects any core header
+# or src/ file that includes one of its headers. The future adapter posts
+# through a Dispatcher, hence smply::util.
+add_library(smply_asyncutil INTERFACE)
+add_library(smply::asyncutil ALIAS smply_asyncutil)
+target_link_libraries(smply_asyncutil INTERFACE smply::smply smply::util)
+target_compile_features(smply_asyncutil INTERFACE cxx_std_20)
+set_target_properties(smply_asyncutil PROPERTIES EXPORT_NAME asyncutil)
+
 # Internal access for tests only. Not installed, not for consumers.
 add_library(smply_internal INTERFACE)
 add_library(smply::smply_internal ALIAS smply_internal)
@@ -212,7 +227,7 @@ endif()
 
 # Portable helpers for transport adapters. Built everywhere, tested on Linux --
 # the arithmetic a BLE adapter needs is not Windows-specific, and putting it
-# here is what lets it be verified without a radio (P15a).
+# here is what lets it be verified without a radio.
 add_subdirectory(transports)
 
 # Shared by the tests and the examples; part of neither, and never linked into
@@ -230,7 +245,7 @@ if(SMPLY_BUILD_TESTS)
     add_subdirectory(tests/support)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/component)
-    add_subdirectory(tests/consumer)
+    add_subdirectory(tests/interface_flags)
     if(SMPLY_BUILD_FUZZERS)
         add_subdirectory(tests/fuzz)
     endif()
@@ -264,7 +279,7 @@ endif()
 # the comment there for why a late include only looks like it works.
 include(CMakePackageConfigHelpers)
 
-install(TARGETS smply smply_util
+install(TARGETS smply smply_util smply_asyncutil
     EXPORT smplyTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

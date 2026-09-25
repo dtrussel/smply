@@ -2,10 +2,10 @@
 //
 // The MCUboot TLV scanner over an arbitrary file.
 //
-// The strongest candidate in the library for fuzzing, and P9 said so at the
-// time: it walks a trailer using offsets and lengths the *file* supplies, in
-// two areas whose sizes must agree with a third number in the header. Every
-// bound it applies is one this target can attack.
+// The strongest candidate in the library for fuzzing: it walks a trailer using
+// offsets and lengths the *file* supplies, in two areas whose sizes must agree
+// with a third number in the header. Every bound it applies is one this target
+// can attack.
 //
 // Two properties beyond "no crash": the scan must terminate -- every advance is
 // at least a four-byte entry header, and `kMaxImageTlvs` caps the work -- and a

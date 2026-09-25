@@ -14,7 +14,8 @@
 /// documented long one, and interprets no `rc`.
 ///
 /// **Two different SHA-256 values live in this protocol and must not be
-/// confused** (docs/protocol-notes.md section 7). The one here is `ImageHash`:
+/// confused** (docs/protocol-notes.md section 7). The one here is `ImageHash`
+/// (declared in `smply/mcuboot_image.hpp`):
 /// MCUboot's `IMAGE_TLV_SHA256` over the image header and body, computed by
 /// imgtool at signing time and reported by the device. The *other* is the
 /// upload `sha`, taken over the whole file, which smply computes itself and
@@ -30,8 +31,10 @@
 #include "smply/bytes.hpp"
 #include "smply/clock.hpp"
 #include "smply/error.hpp"
+#include "smply/groups/image_upload.hpp"
 #include "smply/image_source.hpp"
 #include "smply/limits.hpp"
+#include "smply/mcuboot_image.hpp"
 #include "smply/result.hpp"
 #include "smply/smp_client.hpp"
 
@@ -47,98 +50,6 @@
 #include <vector>
 
 namespace smply {
-
-/// A hash as the *device* reports it for an image slot.
-///
-/// This is MCUboot's image-hash TLV over the header and body -- not the hash of
-/// the uploaded file (docs/protocol-notes.md section 7). Its length is
-/// `IMAGE_SHA_LEN` on the device: 32 bytes for the usual SHA-256 build and 64
-/// for a bootloader built with `CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512`, so the
-/// length is carried rather than assumed.
-///
-/// Fixed capacity: the value is bounded by `limits::kMaxImageHashLength` before
-/// it is stored, so a device cannot size an allocation.
-class ImageHash
-{
-public:
-    /// An empty hash. Present so the type is a regular value; a decoded hash is
-    /// always non-empty, because an absent field decodes to `std::nullopt`.
-    ImageHash() = default;
-
-    /// Copies \p bytes, rejecting anything empty or longer than
-    /// `limits::kMaxImageHashLength`.
-    [[nodiscard]] static Result<ImageHash> from(ConstBytes bytes) noexcept;
-
-    /// \overload The 32-byte SHA-256 case, which cannot fail.
-    ///
-    /// The conversion is deliberately explicit and one-way: it exists so a hash
-    /// read out of a firmware file's TLVs can be compared against what a device
-    /// reports, not so the upload `sha` can be passed as an image hash.
-    [[nodiscard]] static ImageHash from(const Hash& hash) noexcept;
-
-    /// The bytes, borrowed for as long as this object lives.
-    [[nodiscard]] ConstBytes bytes() const noexcept
-    {
-        return ConstBytes{data_.data(), size_};
-    }
-
-    /// Length in bytes. Zero only for a default-constructed value.
-    [[nodiscard]] std::size_t size() const noexcept
-    {
-        return size_;
-    }
-
-    /// True for a default-constructed value.
-    [[nodiscard]] bool empty() const noexcept
-    {
-        return size_ == 0;
-    }
-
-    /// Compares length and contents. Hashes of different lengths are never
-    /// equal, even if one is a prefix of the other.
-    [[nodiscard]] friend bool operator==(const ImageHash& lhs, const ImageHash& rhs) noexcept
-    {
-        return lhs.size_ == rhs.size_ &&
-               std::equal(lhs.data_.begin(),
-                          lhs.data_.begin() + static_cast<std::ptrdiff_t>(lhs.size_),
-                          rhs.data_.begin());
-    }
-
-private:
-    std::array<std::byte, limits::kMaxImageHashLength> data_{};
-    std::size_t size_ = 0;
-};
-
-/// An MCUboot image version, `major.minor.revision` plus a build number.
-struct ImageVersion
-{
-    std::uint8_t major = 0;     ///< `ih_ver.iv_major`.
-    std::uint8_t minor = 0;     ///< `ih_ver.iv_minor`.
-    std::uint16_t revision = 0; ///< `ih_ver.iv_revision`.
-    std::uint32_t build = 0;    ///< `ih_ver.iv_build_num`; 0 means unset.
-
-    /// Parses a version string, or fails with `ErrorCode::InvalidArgument`.
-    ///
-    /// Accepts `"major.minor.revision"`, the device's own
-    /// `"major.minor.revision.build"` and imgtool's `"major.minor.revision+build"`.
-    /// Zephyr formats the dotted form and appends the build number only when it
-    /// is non-zero (docs/protocol-notes.md section 6), so the dotted form is
-    /// what a response actually carries; the `+` form is accepted because it is
-    /// what a person types.
-    ///
-    /// A device may report `"<???>"` when it cannot format the version at all,
-    /// which fails here like any other unparseable string. That is why
-    /// `ImageSlot::version` keeps the raw text and parsing is a separate,
-    /// fallible step.
-    [[nodiscard]] static Result<ImageVersion> parse(std::string_view text);
-
-    /// Renders the device's form: `"1.2.3"`, or `"1.2.3.4"` when `build` is
-    /// non-zero. Round-trips through `parse()`.
-    [[nodiscard]] std::string to_string() const;
-
-    [[nodiscard]] friend constexpr bool operator==(const ImageVersion&,
-                                                   const ImageVersion&) noexcept = default;
-};
 
 /// One slot of one image, as reported by the state command.
 ///
@@ -342,137 +253,6 @@ enum class ImageError : std::uint16_t
 /// not treat a missing image code as a malformed response.
 [[nodiscard]] std::optional<ImageError> image_error(const Error& error) noexcept;
 
-/// What to ask for when uploading an image.
-struct UploadOptions
-{
-    /// Which image to write. Zephyr supports two today; 0 is the usual one.
-    std::uint32_t image = 0;
-
-    /// Ask the server to refuse a version that is not newer than the running
-    /// one.
-    ///
-    /// Off by default: whether the comparison includes the build number is a
-    /// Kconfig option, so the same image can be accepted by one device and
-    /// refused by another (docs/protocol-notes.md section 9, A11).
-    bool upgrade_only = false;
-
-    /// SHA-256 of the whole file, as `sha256(ImageSource&)` computes it.
-    ///
-    /// Computed from the source when absent, which costs one extra pass. It is
-    /// worth sending: the full 32-byte value is what lets the device resume an
-    /// interrupted upload, skip an image it already holds, and verify what it
-    /// flashed. Omitting it disables all three.
-    std::optional<Hash> sha;
-
-    /// Payload bytes per chunk. Zero negotiates one from the budget below.
-    ///
-    /// An explicit value above `limits::kUploadChunkMax` or below
-    /// `limits::kUploadChunkMin` is rejected with `ErrorCode::InvalidArgument`.
-    std::uint32_t chunk_size = 0;
-
-    /// The device's SMP buffer size, from `OsManagement::mcumgr_parameters()`.
-    ///
-    /// The caller fetches it, because it belongs to the OS group and because
-    /// `SmpError::NotSupported` from that command is a normal answer to fall
-    /// back from, not an upload failure (A8). Absent means
-    /// `limits::kDefaultSmpMessageBudget`.
-    std::optional<std::uint32_t> server_buf_size;
-
-    std::uint32_t max_chunk_retries = limits::kMaxChunkRetries;
-    std::uint32_t max_restarts = limits::kMaxUploadRestarts;
-    std::uint32_t max_no_progress = limits::kMaxNoProgress;
-
-    /// Deadline for the first chunk, which may trigger an implicit slot erase
-    /// of unbounded duration (A7).
-    Duration first_chunk_timeout = limits::kFirstChunkTimeout;
-    /// Deadline for the final chunk, which a device with the image check
-    /// enabled answers only after hashing the whole image out of flash (A19).
-    /// Proportional to the image size; see `limits::kFinalChunkTimeout`.
-    Duration final_chunk_timeout = limits::kFinalChunkTimeout;
-    /// Deadline for every other chunk.
-    Duration chunk_timeout = limits::kDefaultTimeout;
-};
-
-/// How far an upload has got.
-///
-/// `transferred` is the offset the **device** has acknowledged, never what was
-/// put on the wire, so it cannot overstate what was stored.
-struct UploadProgress
-{
-    std::uint64_t transferred = 0;
-    std::uint64_t total = 0;
-};
-
-/// What an upload achieved.
-struct UploadResult
-{
-    std::uint64_t transferred = 0;
-
-    /// The device already held this image: it answered a **first** packet with
-    /// the image complete **before this session had transferred anything**
-    /// (docs/protocol-notes.md section 6, rule 9a).
-    ///
-    /// The server runs that check itself, on any request at offset zero
-    /// carrying a full `sha`, and it is the reason an upload can finish in one
-    /// round trip. Without this flag a caller cannot tell that from a transfer
-    /// that happened to be one chunk long -- `transferred` reads as the whole
-    /// image either way, because the device acknowledged the whole image.
-    ///
-    /// The second clause matters on a real link. When the response to the
-    /// final chunk is lost or late, the retransmitted chunk is answered
-    /// `off == 0` (rule 9b) and the session restarts with a first packet, which
-    /// the server then completes by that same check -- because it now holds
-    /// the image *this session sent*. That is a transfer, not a skip; P17 saw
-    /// it on every update against a device whose final-chunk work exceeded the
-    /// old deadline. A session that made progress therefore never reports it,
-    /// whichever packet finished it.
-    bool already_present = false;
-    /// The device's own verdict on the flashed bytes, when it has one.
-    ///
-    /// Absent on a device built without the image check, which is not a failure
-    /// (docs/protocol-notes.md section 9, A6) -- a `false` never reaches here,
-    /// because it fails the upload with `ErrorCode::ImageMismatch`.
-    std::optional<bool> match;
-};
-
-/// Identifies one upload.
-///
-/// Generation-tagged, like `RequestHandle`: once an upload finishes the handle
-/// is inert forever, so acting through a stale one is a no-op rather than an
-/// attack on whatever upload started since.
-///
-/// It carries no pointer to its `ImageManagement`, which is why the operations
-/// on it are methods there rather than here -- a handle that outlived its group
-/// would otherwise be a dangling pointer instead of an inert value.
-class UploadHandle
-{
-public:
-    UploadHandle() = default;
-
-    /// False for a default-constructed handle, and for one whose `upload()`
-    /// could not start.
-    [[nodiscard]] bool valid() const noexcept
-    {
-        return generation_ != 0;
-    }
-
-    explicit operator bool() const noexcept
-    {
-        return valid();
-    }
-
-    [[nodiscard]] friend constexpr bool operator==(const UploadHandle&,
-                                                   const UploadHandle&) noexcept = default;
-
-private:
-    friend class ImageManagement;
-
-    explicit UploadHandle(std::uint64_t generation) noexcept : generation_{generation} {}
-
-    /// Zero means "never referred to an upload".
-    std::uint64_t generation_ = 0;
-};
-
 /// Image state, set-state, erase and slot info.
 ///
 /// The one-shot commands hold no state: destroying this object does not cancel
@@ -556,8 +336,7 @@ public:
     /// for a chunk. The reason still reaches \p on_done on the next `poll()`,
     /// as it does for `SmpClient::request()`.
     UploadHandle upload(ImageSource& source, const UploadOptions& options,
-                        std::function<void(UploadProgress)> on_progress,
-                        Callback<UploadResult> on_done);
+                        ProgressCallback on_progress, Callback<UploadResult> on_done);
 
     /// Restarts a disconnected upload on the current transport.
     ///
@@ -569,10 +348,16 @@ public:
     /// session it answers zero and the upload restarts, bounded by
     /// `UploadOptions::max_restarts`.
     ///
-    /// \p on_done is the callback given to `upload()`; it fires again for this
-    /// attempt. A stale handle, or a session that ended any other way, is
-    /// rejected with `ErrorCode::InvalidState`.
-    void resume(const UploadHandle& handle, Callback<UploadResult> on_done);
+    /// The same contract as `upload()`, for the resumed attempt: \p on_done
+    /// fires exactly once, and the progress callback given to `upload()` keeps
+    /// reporting. The callback given to `upload()` has already fired, with
+    /// `Disconnected`, and does not fire again.
+    ///
+    /// \return \p handle when the upload resumes, or an invalid handle when it
+    ///         cannot: a stale handle, or a session that ended any other way
+    ///         than by a disconnect. The reason, `ErrorCode::InvalidState`,
+    ///         still reaches \p on_done on the next `poll()`.
+    UploadHandle resume(const UploadHandle& handle, Callback<UploadResult> on_done);
 
     /// Abandons an upload. Its callback receives `Cancelled` on the next
     /// `poll()`; a stale or invalid handle is a no-op.

@@ -104,18 +104,11 @@
     {
       "name": "windows-msvc",
       "inherits": "base",
-      "displayName": "Windows / MSVC",
+      "displayName": "Windows / MSVC, core and tests without WinRT (API-discipline gate)",
       "generator": "Ninja",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "cl",
-        "CMAKE_CXX_COMPILER": "cl"
-      }
-    },
-    {
-      "name": "core-without-winrt",
-      "inherits": "windows-msvc",
-      "displayName": "Windows / MSVC, WinRT explicitly off (API-discipline gate)",
-      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl",
         "SMPLY_BUILD_WINRT": "OFF"
       }
     },
@@ -182,10 +175,6 @@
       "configurePreset": "windows-msvc"
     },
     {
-      "name": "core-without-winrt",
-      "configurePreset": "core-without-winrt"
-    },
-    {
       "name": "windows-winrt",
       "configurePreset": "windows-winrt"
     },
@@ -196,102 +185,76 @@
   ],
   "testPresets": [
     {
-      "name": "linux-gcc",
-      "configurePreset": "linux-gcc",
+      "name": "test-base",
+      "hidden": true,
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "linux-gcc",
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc"
     },
     {
       "name": "linux-clang",
-      "configurePreset": "linux-clang",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-clang"
     },
     {
       "name": "linux-clang-asan-ubsan",
-      "configurePreset": "linux-clang-asan-ubsan",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-clang-asan-ubsan"
     },
     {
       "name": "linux-gcc-release",
-      "configurePreset": "linux-gcc-release",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc-release"
     },
     {
       "name": "linux-clang-tsan",
-      "configurePreset": "linux-clang-tsan",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-clang-tsan"
     },
     {
       "name": "linux-clang-fuzz",
-      "configurePreset": "linux-clang-fuzz",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-clang-fuzz"
     },
     {
       "name": "linux-gcc-asan-ubsan",
-      "configurePreset": "linux-gcc-asan-ubsan",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc-asan-ubsan"
     },
     {
       "name": "linux-gcc-coverage",
-      "configurePreset": "linux-gcc-coverage",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc-coverage"
     },
     {
       "name": "linux-gcc-fallback-expected",
-      "configurePreset": "linux-gcc-fallback-expected",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc-fallback-expected"
     },
     {
       "name": "linux-gcc-cxx23-std-expected",
-      "configurePreset": "linux-gcc-cxx23-std-expected",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "linux-gcc-cxx23-std-expected"
     },
     {
       "name": "windows-msvc",
-      "configurePreset": "windows-msvc",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "core-without-winrt",
-      "configurePreset": "core-without-winrt",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "windows-msvc"
     },
     {
       "name": "windows-winrt",
-      "configurePreset": "windows-winrt",
-      "output": {
-        "outputOnFailure": true
-      }
+      "inherits": "test-base",
+      "configurePreset": "windows-winrt"
     },
     {
       "name": "windows-hil",
+      "inherits": "test-base",
       "configurePreset": "windows-hil",
-      "output": {
-        "outputOnFailure": true
-      },
       "filter": {
         "include": {
           "label": "hil"

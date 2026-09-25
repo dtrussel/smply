@@ -26,7 +26,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace smply::image {
+namespace smply::upload {
 
 /// Everything about one upload that does not change while it runs.
 struct UploadConfig
@@ -193,6 +193,6 @@ void record_sent(UploadState& state, const UploadRequest& request);
 [[nodiscard]] Step on_response(UploadState& state, const UploadResponse& response,
                                const UploadConfig& config);
 
-} // namespace smply::image
+} // namespace smply::upload
 
 #endif // SMPLY_SRC_GROUPS_IMAGE_UPLOAD_SESSION_HPP

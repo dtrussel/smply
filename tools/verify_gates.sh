@@ -4,9 +4,8 @@
 # Proves that every quality gate actually FAILS when it should.
 #
 # A gate that never fires is worse than no gate: it produces a green tick that
-# means nothing. P0's acceptance criterion is that each gate has been observed
-# rejecting a deliberate violation, and this script is how that is demonstrated
-# and re-demonstrated.
+# means nothing. Each gate must have been observed rejecting a deliberate
+# violation, and this script is how that is demonstrated and re-demonstrated.
 #
 # It operates entirely on a throwaway copy of the tree in a temporary
 # directory. THE WORKING TREE IS NEVER MODIFIED.
@@ -30,6 +29,11 @@ echo
 # Copy the tree without build outputs or git metadata.
 mkdir -p "$WORK"
 tar -C "$REPO" --exclude=build --exclude=.git --exclude=_deps -cf - . | tar -C "$WORK" -xf -
+# check_docs.py R5 resolves layout entries against `git ls-files`, so the copy
+# needs an index. Without one, the documentation gate fails on the unmodified
+# tree, and every case below that expects it to fail passes without testing
+# anything. The expect_ok before the documentation cases guards that.
+git -C "$WORK" init -q && git -C "$WORK" add -A
 
 # Reuse the already-downloaded dependencies so this does not re-clone.
 DEPS_CACHE="$REPO/build/linux-clang/_deps"
@@ -70,6 +74,33 @@ expect_fail() {
     fi
 }
 
+# expect_fail_matching <description> <pattern> <command...>
+# expect_fail, and the gate's output must also match <pattern> (grep -E). For a
+# gate that checks several rules: a violation of one rule must not pass the
+# case by tripping a different one.
+expect_fail_matching() {
+    local description="$1"
+    local pattern="$2"
+    shift 2
+    local output
+    output="$(cd "$WORK" && "$@" 2>&1)"
+    local status=$?
+    if [[ $status -ne 0 ]] && grep -qE "$pattern" <<<"$output"; then
+        printf '  PASS  %s\n' "$description"
+        printf '        (gate said: %s)\n' "$(grep -E "$pattern" <<<"$output" | head -1 | sed 's/^ *//' | cut -c1-100)"
+        PASS=$((PASS + 1))
+    else
+        printf '  FAIL  %s\n' "$description"
+        if [[ $status -ne 0 ]]; then
+            printf '        The gate failed, but not for this reason: %s\n' \
+                "$(echo "$output" | grep -viE '^\s*$' | head -3 | tail -1 | cut -c1-100)"
+        else
+            printf '        The gate did NOT reject the violation. It is not protecting anything.\n'
+        fi
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # expect_ok <description> <command...>
 # The mirror of expect_fail. A gate that rejects everything protects nothing
 # either -- it just gets disabled. Used where a violation and its absence are
@@ -91,6 +122,16 @@ expect_ok() {
     fi
 }
 
+# skip <description>
+# A case whose tool is missing. Locally that is a SKIP; in CI (CI=true, which
+# GitHub Actions sets) it is a failure, because a gate CI never proves is a gate
+# nobody has seen fire.
+SKIPPED=0
+skip() {
+    printf '  SKIP  %s\n' "$1"
+    SKIPPED=$((SKIPPED + 1))
+}
+
 restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$WORK" -xf -; }
 
 # substitute <file> <sed-expression>
@@ -99,9 +140,9 @@ restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$
 # A fixture that injects its violation by rewriting real source rots the moment
 # that source is reworded: sed matches nothing, the scratch tree stays valid, the
 # gate has nothing to reject, and the case reports PASS while testing nothing.
-# It has happened twice -- P1's roadmap fixture, and P15a's, when
+# It has happened twice -- a roadmap fixture, and the flag-leak fixture when
 # smply_internal_options gained a $<BUILD_INTERFACE:> wrapper. A silent no-op is
-# the one failure this script must never have, so it is now loud.
+# the one failure this script must never have, so it is loud.
 substitute() {
     local file="$1"
     local expression="$2"
@@ -167,7 +208,7 @@ STUB
 chmod +x "$WORK/tidy-stub"
 expect_ok "the WinRT lint exclusions are directories, not the substring 'winrt'" \
     bash -c 'expected=$(tools/sources.sh | grep -E "\.(cpp|cc)$" \
-                        | grep -Ev "^tests/consumer/|^tests/consumption/" \
+                        | grep -Ev "^tests/interface_flags/|^tests/consumption/" \
                         | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/|^tests/hil/" | wc -l)
              actual=$(env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build 2>&1 \
                         | grep -oE "over [0-9]+ TUs" | grep -oE "[0-9]+")
@@ -186,10 +227,38 @@ printf 'inline std::string broken() { return {}; }\n' >> "$WORK/include/smply/ve
 sed -i 's|@PROJECT_VERSION_MAJOR@|0|; s|@PROJECT_VERSION_MINOR@|1|; s|@PROJECT_VERSION_PATCH@|0|; s|"@PROJECT_VERSION@"|"0.1.0"|' \
     "$WORK/include/smply/version.hpp.in"
 cp "$WORK/include/smply/version.hpp.in" "$WORK/include/smply/selfcontain_probe.hpp"
-expect_fail "check_public_headers rejects a header that is not self-contained" \
+# The probe is a new header with no layer, which rule 4 also rejects. Match the
+# self-containment message, or this case would pass on the layer rule alone.
+expect_fail_matching "check_public_headers rejects a header that is not self-contained" \
+    "not self-contained" \
     python3 tools/check_public_headers.py --build-dir "$WORK/build"
 rm -f "$WORK/include/smply/selfcontain_probe.hpp"
 restore include/smply/version.hpp.in
+
+# 5b. Layering: a public header including a higher layer. This is exactly the
+# cycle the image-file header once had with the image group.
+substitute "$WORK/include/smply/mcuboot_image.hpp" \
+    's|#include "smply/bytes.hpp"|#include "smply/bytes.hpp"\n#include "smply/groups/image.hpp"|'
+expect_fail_matching "check_public_headers rejects an upward include between public headers" \
+    "dependencies must point downward" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore include/smply/mcuboot_image.hpp
+
+# 5c. Layering: a src/ directory reaching into one it may not use.
+printf '#include "cbor/cbor.hpp"\n' >> "$WORK/src/image/tlv.cpp"
+expect_fail_matching "check_public_headers rejects a forbidden dependency between src/ directories" \
+    "src/image includes cbor/cbor.hpp" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore src/image/tlv.cpp
+
+# 5d. Layering: a core header reaching into a separate target. smply::asyncutil
+# is header-only, so nothing would fail to link; only the gate stops it.
+substitute "$WORK/include/smply/groups/os.hpp" \
+    's|#include "smply/clock.hpp"|#include "smply/clock.hpp"\n#include "smply/async/task.hpp"|'
+expect_fail_matching "check_public_headers rejects a core header including a separate target" \
+    "a header of a separate target" \
+    python3 tools/check_public_headers.py --build-dir "$WORK/build"
+restore include/smply/groups/os.hpp
 
 # 6. Dependency inventory: undeclared dependency
 cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'
@@ -226,28 +295,35 @@ expect_fail "the check_deps self-exemption is the exact project name, not a pref
     python3 tools/check_deps.py
 restore tests/consumption/fetchcontent/CMakeLists.txt
 
-# 8. Docs R2: a phase marked Complete that still lists remaining work.
-# Appends a synthetic phase rather than patching a real one: an earlier version
-# rewrote "P1 ... Status: Planned", which silently became a no-op the moment P1
-# was completed, leaving the gate untested while still reporting PASS.
-cat >> "$WORK/docs/roadmap.md" <<'ROADMAP'
+# 7b. The documentation gate passes on the unmodified tree. Every documentation
+# case below expects a failure, so without this a gate that failed on
+# everything would make them all pass.
+expect_ok "check_docs passes on the unmodified tree" python3 tools/check_docs.py
 
-<a id="p99"></a>
-## P99 — Synthetic phase used by tools/verify_gates.sh
-
-**Status: Complete**
-
-**Remaining in this phase.** Deliberately non-empty, so R2 must reject this.
-ROADMAP
-expect_fail "check_docs R2 rejects a Complete phase with remaining work" \
+# 8. Docs R2: the roadmap is a backlog.
+# Each violation is appended, not patched into real content, so no later edit
+# to the roadmap can turn a case into a no-op that still reports PASS.
+printf '\n| ~~A finished item, struck through instead of deleted~~ | - |\n' >> "$WORK/docs/roadmap.md"
+expect_fail "check_docs R2 rejects a struck-through roadmap row" \
     python3 tools/check_docs.py
 restore docs/roadmap.md
+
+printf '\nThis depends on open question O99.\n' >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R2 rejects a citation of an undefined open question" \
+    python3 tools/check_docs.py
+restore docs/architecture.md
 
 # 9. Docs R3: reference to a non-existent ADR
 printf '\nSee [ADR-0099](decisions/ADR-0099-imaginary.md).\n' >> "$WORK/docs/architecture.md"
 expect_fail "check_docs R3 rejects a reference to a non-existent ADR" \
     python3 tools/check_docs.py
 restore docs/architecture.md
+
+# 9b. Docs R3: an ADR the index does not list.
+printf '# ADR-0999 -- Synthetic\n\n**Status:** Accepted\n' > "$WORK/docs/decisions/ADR-0999-synthetic.md"
+expect_fail "check_docs R3 rejects an ADR missing from the index" \
+    python3 tools/check_docs.py
+rm -f "$WORK/docs/decisions/ADR-0999-synthetic.md"
 
 # 10. Docs R3: invalid ADR status
 substitute "$WORK/docs/decisions/ADR-0001-cpp-standard.md" \
@@ -287,11 +363,10 @@ restore docs/architecture.md
 
 # 11a-bis. Docs R5: a file named in SECOND position on a layout line.
 #
-# The distinct case, and the reason it exists. R5 read only the first token on
-# an entry line until P18, so every file listed beside another -- most of the
-# tree -- went unchecked *and* uncounted, and two entries naming files that do
-# not exist sat under a passing gate for four phases. 11a above would still
-# pass with that defect restored; this one would not.
+# The distinct case, and the reason it exists. A rule that read only the first
+# token on an entry line would leave every file listed beside another -- most
+# of the tree -- unchecked *and* uncounted. 11a above would still pass with
+# that defect; this one would not.
 python3 - "$WORK/docs/architecture.md" <<'PY2'
 import sys, pathlib
 p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
@@ -304,20 +379,22 @@ expect_fail "check_docs R5 reads past the first token on a layout line" \
     python3 tools/check_docs.py
 restore docs/architecture.md
 
-# 11b. Docs R6: a "(planned, PN)" marker naming a phase that is Complete.
-#
-# P1 is Complete and will stay Complete, so unlike the R2 fixture this one
-# cannot rot by a phase advancing past it.
-printf '\nA thing that does not exist (planned, P1).\n' >> "$WORK/docs/architecture.md"
-expect_fail "check_docs R6 rejects a (planned) marker for a Complete phase" \
+# 11b. Docs R6: a development-phase ID in a living document.
+printf '\nThis was added in P%s.\n' 99 >> "$WORK/docs/architecture.md"
+expect_fail "check_docs R6 rejects a development-phase ID in a living document" \
     python3 tools/check_docs.py
 restore docs/architecture.md
 
+printf '// Added in P%s.\n' 99 >> "$WORK/src/version.cpp"
+expect_fail "check_docs R6 rejects a development-phase ID in a source comment" \
+    python3 tools/check_docs.py
+restore src/version.cpp
+
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error
-# message, the compile of tests/consumer is the ground truth behind it.
+# message, the compile of tests/interface_flags is the ground truth behind it.
 # The real line links it PRIVATE *and* wraps it in $<BUILD_INTERFACE:> so the
-# install export is possible (P15a). The violation drops both.
+# install export is possible. The violation drops both.
 substitute "$WORK/CMakeLists.txt" \
     's|target_link_libraries(smply PRIVATE .*smply_internal_options.*)|target_link_libraries(smply PUBLIC smply_internal_options)|'
 
@@ -326,21 +403,20 @@ expect_fail "the configure-time guard rejects strict flags leaking to consumers"
 
 # Now with the configure-time guard removed, so the compile is the only thing
 # standing between a leak and a silent regression.
-sed -i '/^get_target_property(_smply_iface_libs/,/^endif()$/d' "$WORK/tests/consumer/CMakeLists.txt"
+sed -i '/^get_target_property(_smply_iface_libs/,/^endif()$/d' "$WORK/tests/interface_flags/CMakeLists.txt"
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 expect_fail "the consumer target fails to compile when it inherits strict flags" \
-    cmake --build "$WORK/build" --target smply_consumer_check
+    cmake --build "$WORK/build" --target smply_interface_flags_check
 
 restore CMakeLists.txt
-restore tests/consumer/CMakeLists.txt
+restore tests/interface_flags/CMakeLists.txt
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 
 
 # 17. The SBOM inventory.
 #
-# quality-gates.md section 9 promised an SBOM from P0 and nothing produced one
-# until P18, so the interesting failure is not a malformed document -- it is an
-# SBOM that silently omits a component, which reads as a clean bill of health.
+# The interesting failure is not a malformed document -- it is an SBOM that
+# silently omits a component, which reads as a clean bill of health.
 # tools/sbom.py --check exists for exactly that, and this proves it fires.
 cat >> "$WORK/cmake/dependencies.cmake" <<'EOF'
 
@@ -354,7 +430,7 @@ restore cmake/dependencies.cmake
 
 # 18. The export.
 #
-# The P15a defect this guards against: install(EXPORT) names an exported target
+# The defect this guards against: install(EXPORT) names an exported target
 # <namespace><target-name>, so a target without EXPORT_NAME ships under a name
 # no consumer says, while everything in this repository still builds -- the
 # in-tree ALIAS resolves. It configured, built and installed perfectly and
@@ -391,15 +467,14 @@ if command -v ninja > /dev/null 2>&1; then
     restore transports/CMakeLists.txt
     rm -rf "$EXPORTPROBE" "$WORK/export-prefix" "$WORK/build-export-consumer"
 else
-    printf '  SKIP  the export (needs ninja)\n'
+    skip 'the export (needs ninja)'
 fi
 
 # 14, 15 and 16. The coverage reporter.
 #
-# This is the gate with the worst history in the project: from P0 to P7 it
-# passed a directory in the position gcovr reads as an output filename, printed
-# nothing, and exited 0 -- so CI reported a coverage gate that had never
-# measured anything. Every other check in this script proves a *checker*
+# This gate has the worst failure mode in the project: passing a directory in
+# the position gcovr reads as an output filename prints nothing and exits 0, so
+# CI reports a coverage gate that has never measured anything. Every other check in this script proves a *checker*
 # rejects a violation; none of them covered the reporter, which is exactly how
 # that survived seven phases.
 #
@@ -466,21 +541,51 @@ PROBE
         # that does not mean the same thing. Only gcovr is hidden -- env -i
         # would drop the compiler too, and the check would pass for the wrong
         # reason.
-        GCOVR_DIR="$(dirname "$(command -v gcovr)")"
-        NO_GCOVR_PATH="$(echo "$PATH" | tr ':' '\n' | grep -vxF "$GCOVR_DIR" | paste -sd:)"
-        expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
-            env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
+        #
+        # Every directory holding a gcovr is shadowed, not dropped from PATH: an
+        # apt-installed gcovr lives in /usr/bin, which also holds bash and the
+        # compiler, and /bin is often a symlink to it, so dropping one entry
+        # leaves gcovr reachable through the other. Each PATH entry with a
+        # gcovr in it is replaced by a copy of that directory without it, and
+        # the case is refused outright if gcovr can still be found.
+        NO_GCOVR_PATH=""
+        IFS=: read -r -a path_entries <<< "$PATH"
+        for entry in "${path_entries[@]}"; do
+            if [[ -x "$entry/gcovr" ]]; then
+                real="$(cd "$entry" && pwd -P)"
+                shadow="$SCRATCH/no-gcovr$(echo "$real" | tr '/' '_')"
+                if [[ ! -d "$shadow" ]]; then
+                    mkdir -p "$shadow"
+                    for tool in "$real"/*; do
+                        [[ "$(basename "$tool")" == gcovr ]] || ln -sf "$tool" "$shadow/"
+                    done
+                fi
+                entry="$shadow"
+            fi
+            NO_GCOVR_PATH="${NO_GCOVR_PATH:+$NO_GCOVR_PATH:}$entry"
+        done
+        if env PATH="$NO_GCOVR_PATH" bash -c 'command -v gcovr' > /dev/null; then
+            printf '  FAIL  coverage.sh without gcovr: gcovr is still on the PATH\n'
+            FAIL=$((FAIL + 1))
+        else
+            expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
+                env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
+        fi
     else
-        printf '  SKIP  coverage reporter (the --coverage probe did not build)\n'
+        skip 'coverage reporter (the --coverage probe did not build)'
         tail -5 "$SCRATCH/covprobe-build.log"
     fi
 
     rm -f "$WORK/src/coverage_probe.cpp"
     rm -rf "$COVPROBE"
 else
-    printf '  SKIP  coverage reporter (needs gcovr and g++; pip install gcovr)\n'
+    skip 'coverage reporter (needs gcovr and g++; pip install gcovr)'
 fi
 
 echo
-echo "=== $PASS gate(s) verified, $FAIL not protecting anything ==="
+echo "=== $PASS gate(s) verified, $FAIL not protecting anything, $SKIPPED skipped ==="
 [[ $FAIL -eq 0 ]] || exit 1
+if [[ $SKIPPED -gt 0 && "${CI:-}" == "true" ]]; then
+    echo "error: CI=true and $SKIPPED case(s) skipped -- install the missing tools" >&2
+    exit 1
+fi

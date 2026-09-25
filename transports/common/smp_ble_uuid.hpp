@@ -6,7 +6,7 @@
 /// The two UUIDs that identify SMP over Bluetooth LE, as bytes.
 ///
 /// **This header exists so that a mistyped UUID is a test failure rather than a
-/// device that never answers.** The WinRT adapter (P15b) cannot be compiled, let
+/// device that never answers.** The WinRT adapter cannot be compiled, let
 /// alone run, on the machine most of this library is developed on, so anything
 /// it can be made to rest on that *is* portable is worth putting here: a 128-bit
 /// UUID is sixteen bytes, and sixteen bytes are the same on every platform.

@@ -21,9 +21,8 @@
 
 namespace smply::test {
 
-// The codec moved out of tests/support/ in P14b, so the name no longer
-// resolves by being a nested namespace. Aliased rather than renamed at the
-// call sites: this file uses it a hundred times and none of them changed.
+// The codec lives in support/, outside this namespace. Aliased for brevity:
+// this file uses it a hundred times.
 namespace tcbor = smply::minicbor;
 
 namespace {

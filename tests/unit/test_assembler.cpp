@@ -13,16 +13,16 @@
 #include <random>
 #include <vector>
 
-using smply::AssemblerLimits;
 using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::Group;
 using smply::Header;
 using smply::kHeaderSize;
-using smply::MessageAssembler;
-using smply::MessageSink;
 using smply::Operation;
 using smply::Version;
+using smply::smp::AssemblerLimits;
+using smply::smp::MessageAssembler;
+using smply::smp::MessageSink;
 using smply::test::filler;
 using smply::test::make_message;
 using smply::test::make_raw_message;

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""P17c cross-check: the same update by smply and by smpmgr, oracled over UART.
+"""Cross-check: the same update by smply and by smpmgr, oracled over UART.
 
 Each *arm* starts from an identical freshly flashed baseline (image A) and
 installs image B the test-then-confirm way. Device state is read through the
@@ -47,7 +47,7 @@ and confirms as **two separate invocations**, and `S1` is read in between.
 Tier B being unavailable **never** turns a Tier A pass into a failure, and never
 the other way round. In an unelevated shell with no BTVS running, the correct
 outcome of this script is **exit 2** with Tier B unavailable on both BLE arms --
-and that does *not* discharge P17c's acceptance, which needs a run with a
+and that does *not* complete the cross-check, which needs a run with a
 non-empty capture.
 
   python tests/hil/crosscheck.py --evidence build/hil-peer-out/evidence \
@@ -164,7 +164,7 @@ class ClientFailed(RuntimeError):
 
 # How long to wait after a baseline reflash before touching the device.
 #
-# Raised from 3 s in P17c after a real failure: with Microsoft's verbose
+# Raised from 3 s after a real failure: with Microsoft's verbose
 # Bluetooth tracing running, `winrt_ble_dfu` failed in 0.1 s with "no device at
 # that address" -- `FromBluetoothAddressAsync` returning null because the peer
 # was not yet in Windows' device cache. The board re-advertises about 1.2 s
@@ -335,7 +335,7 @@ def smpmgr_confirm(ctx) -> None:
 
 
 def mcumgr_install(ctx) -> None:
-    # Kept, and **not** in the default client set: P17c could not get a 134 KiB
+    # Kept, and **not** in the default client set: the bench could not get a 134 KiB
     # upload through this transport in any configuration (protocol-notes.md
     # section 9, "the UART arm is an oracle, not a third client"). Selecting it
     # explicitly is how a future bench revision -- logs off USART1, or the raw

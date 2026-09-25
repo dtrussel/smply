@@ -13,14 +13,35 @@ even the stable surface — that is what `0.x` means.
 [ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) is the
 full policy.
 
-This file starts at `0.1.0`. Entries before that release are grouped by the
-development phase that produced them, because that is how the work is recorded
-in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
+This file starts at `0.1.0`. The development history before that release is in
+git; commit `97f1647` is the last to carry the per-phase record in
+`docs/roadmap.md` and `docs/handoff.md`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
+A quality release. A structured review, from the architecture down to the
+tests and CI, found and fixed what had drifted: a header cycle, internals in
+the public namespace, an update event whose fields depended on its kind, docs
+that no longer described the code, and CI gates that could pass without having
+checked anything. It adds the coroutine and future adapters `architecture.md`
+had long promised, and the serial console framing. **It breaks the API in the
+places listed under "Changed"**, which is what `0.x` allows (ADR-0016).
+
 ### Added
 
+- **`smply::asyncutil`: coroutines and futures over the callbacks**
+  ([ADR-0019](docs/decisions/ADR-0019-async-adapters.md)). This is a
+  header-only, installed target that the core does not link.
+  - `smply/async/task.hpp`: `async::await_result<T>()` makes any `Callback<T>`
+    operation awaitable, and `async::Task<T>` is a minimal eager coroutine type,
+    so a sequence of commands reads as straight-line code on the pump thread.
+  - `smply/async/future.hpp`: `async::post_for_future<T>()` starts an
+    operation on the pump thread through a `Dispatcher` and returns a
+    `std::future` for a caller on another thread.
+  - `architecture.md` had promised this target, under this name, for a long
+    time. It now exists.
 - **MCUmgr's serial (console) framing, in `transports/serial/`.** A device with
   no radio now has a protocol implementation waiting for a port:
   `SerialFramer` turns one SMP message into console frames, `LineSplitter`
@@ -44,7 +65,7 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
   `<prefix>/include/smply/transports`.
 - `SECURITY.md`, this changelog, and an SPDX 2.3 SBOM generator
   (`tools/sbom.py`), generated from the same pins the build uses and published
-  as a CI artefact. `quality-gates.md` §9 had promised an SBOM since P0.
+  as a CI artefact.
 - An advisory weekly **OSV-Scanner** workflow over the pinned dependency set,
   which §9 had also promised. It fails if the scan could not run, which is a
   different thing from finding nothing; its scheduled firing is unproven.
@@ -73,6 +94,38 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
 
 ### Changed
 
+- **Breaking: `UpdateEvent` is a `std::variant`** of `UpdateStateChanged`,
+  `UploadProgress`, `DisconnectExpected`, `ReconnectRequired`,
+  `ConfirmationRequired` and `UpdateFinished`, replacing a struct with a `Kind`
+  enum. In the struct, most fields were meaningful for one kind only, and
+  `Finished` handed out a raw pointer valid only during the callback.
+  `UpdateFinished` now holds its `Result<UpdateReport>` by value, and
+  `ReconnectRequired::hint` replaces `reconnect_hint`. A `std::visit` over the
+  event fails to compile when a kind is not handled. `smply::overloaded`
+  combines lambdas into one visitor, and both examples show the idiom.
+- **The upload's values move to `smply/groups/image_upload.hpp`**:
+  `UploadOptions`, `UploadProgress`, `UploadResult`, `UploadHandle`, and a new
+  `ProgressCallback` alias for the progress callback `upload()` takes.
+  `groups/image.hpp` includes the new header, so no source changes.
+- **`ImageManagement::resume()` returns an `UploadHandle`**, like `upload()`:
+  the same handle when the upload resumes, and an invalid one when it is
+  refused. Its callback is documented as what it always was, the callback for
+  the resumed attempt, firing exactly once. The old comment said the callback
+  given to `upload()` "fires again", which it never did.
+- **Breaking: `UpdatePlan::image` is removed.** The plan carried the image
+  number twice, in `UpdatePlan::image` and in `UpdatePlan::upload.image`, and
+  the updater silently overwrote the second with the first. `upload.image` is
+  now the one image number for the whole update: the image transferred,
+  inspected after the reboot, marked and confirmed. Set `plan.upload.image`
+  where you set `plan.image`.
+- **`ImageHash` and `ImageVersion` are declared in `smply/mcuboot_image.hpp`**,
+  no longer in `smply/groups/image.hpp`. The two headers depended on each other:
+  the image group computes the upload `sha` with `sha256()`, and the MCUboot
+  header used the image group's value types. The include now runs one way only,
+  image group to image file. `groups/image.hpp` includes `mcuboot_image.hpp`, so
+  code that includes the group header sees both types unchanged. **Breaking**
+  only for code that reached the image group through `mcuboot_image.hpp`: it
+  must now include `smply/groups/image.hpp` itself.
 - **`protocol-notes.md` §8's UART subsection is rewritten from the server's own
   code** rather than from the transport specification, correcting two things
   that would each have produced a client no device accepts: "124" is a count of
@@ -89,6 +142,20 @@ in [`docs/roadmap.md`](docs/roadmap.md), which remains the detailed history.
   (`SMPLY_BUILD_FUZZERS` is on only in the fuzz preset), so clang-tidy had been
   *inferring* their command from a neighbouring directory — which happened to
   work until a fuzz target included a transport header.
+- **The process is simpler**
+  ([ADR-0018](docs/decisions/ADR-0018-maintenance-process.md)). The roadmap
+  is a backlog, not a phase record, and there is no session log; the
+  reasoning behind a change is in its commit message. `CONTRIBUTING.md`, a
+  pull-request template and Dependabot (GitHub Actions only) are new.
+- **CI no longer passes quietly when a tool is missing.** Under `CI=true`,
+  `tools/lint.sh` fails without cppcheck and `tools/verify_gates.sh` fails on
+  any skipped case. The coverage job uploads a real report (`coverage.xml`,
+  `coverage-html/`); before this, the upload matched nothing. The nightly fuzz
+  soak runs all eight targets, and the smoke job fails if one is left out.
+- **Build presets:** `core-without-winrt` is removed; it configured exactly what
+  `windows-msvc` does, and `windows-msvc` now sets `SMPLY_BUILD_WINRT=OFF`
+  explicitly. The flag-leak check moved from `tests/consumer/` to
+  `tests/interface_flags/`.
 - `.github/workflows/hil.yml` no longer carries a nightly `schedule:`. No
   self-hosted runner is registered, so it was queueing a 90-minute timeout
   every night against nothing. `workflow_dispatch` remains, and the file
@@ -135,5 +202,6 @@ indefinite-length, and that the final upload chunk is answered only after the
 device has hashed the whole image, which is why `UploadOptions` carries a
 separate `final_chunk_timeout`.
 
-[Unreleased]: https://github.com/dtrussel/smply/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dtrussel/smply/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dtrussel/smply/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dtrussel/smply/releases/tag/v0.1.0

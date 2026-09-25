@@ -36,14 +36,14 @@ inline constexpr std::size_t kMaxAssemblyBuffer = std::size_t{16} * 1024;
 /// **Must be strictly below QCBOR's own `QCBOR_MAX_ARRAY_NESTING`, which is
 /// 15**, so that this bound is the one that binds.
 ///
-/// It was 16 until P13's limits audit, which made it the *documented* bound
-/// while QCBOR's was the *effective* one -- and the difference was not
-/// academic. A document nested deeper than QCBOR allows makes the reader stop
-/// descending while its `status()` stays **clean**, because the QCBOR-error
-/// path in `enter_map(key)` is deliberately non-sticky so it can double as a
-/// probe for an optional map. A hostile document therefore turned into silently
-/// missing fields rather than a decode failure, and a caller following the
-/// house rule of "check `status()` at the end" would have seen nothing wrong.
+/// At or above QCBOR's cap, this would be the *documented* bound while QCBOR's
+/// was the *effective* one -- and the difference is not academic. A document
+/// nested deeper than QCBOR allows makes the reader stop descending while its
+/// `status()` stays **clean**, because the QCBOR-error path in `enter_map(key)`
+/// is deliberately non-sticky so it can double as a probe for an optional map.
+/// A hostile document would turn into silently missing fields rather than a
+/// decode failure, and a caller following the house rule of "check `status()`
+/// at the end" would see nothing wrong.
 ///
 /// Fourteen, not fifteen: equal is not enough. Reaching smply's cap needs a
 /// document one level deeper than the cap, and at fifteen that document is one
@@ -102,7 +102,7 @@ inline constexpr Duration kFirstChunkTimeout = std::chrono::seconds{30};
 /// Deadline for the final upload chunk, which a device built with
 /// `CONFIG_IMG_ENABLE_IMAGE_CHECK` answers only after hashing the whole image
 /// out of flash (docs/protocol-notes.md section 9, A19). Measured at about
-/// 25 KiB/s on an STM32WB55 in P17 -- 5.0 to 5.6 s across runs for a 134 160
+/// 25 KiB/s on an STM32WB55 -- 5.0 to 5.6 s across runs for a 134 160
 /// byte image -- so the 5 s
 /// default timed out on every update and forced a retransmission.
 inline constexpr Duration kFinalChunkTimeout = std::chrono::seconds{30};

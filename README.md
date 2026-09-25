@@ -17,63 +17,48 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Phases P0–P20 complete — the library is done, it has met a real device, and
-it is packaged: it does what it exists to do, its untrusted-input surface is
-fuzzed, adapter authors have the marshalling helper the threading model
-assumes, the BLE helpers a correct adapter needs and the serial framing a
-non-radio device needs, and there is a runnable example that performs a whole
-update.**
-SMP framing and streaming reassembly, a bounded CBOR façade, request
-correlation with timeouts and cancellation, the OS and image management groups,
-MCUboot image parsing with SHA-256, the image upload state machine, and
-`FirmwareUpdater`: the whole update, including the reset and the reconnect.
-Eight libFuzzer targets over every decoder that reads bytes it did not write,
-with the coverage thresholds and a fuzz smoke run now blocking. And
-`smply::Dispatcher`: the thread-marshalling helper every transport adapter
-needs, shipped as a separate target the core does not link. And
-`examples/cli_dfu/`, which drives a whole update — upload, reset, reconnect,
-trial boot, confirmation — against a stub device on another thread, and runs on
-every push.
-And `smply::winrt_ble`, the reference Bluetooth LE adapter, with
-`examples/winrt_ble_dfu/` — a console tool that installs firmware over BLE.
-And, for the many Zephyr devices with no radio at all, **MCUmgr's serial
-console framing** — markers, base64, length and CRC, both directions,
-portable and tested. That is the protocol half only: opening the port is still
-the application's, and nothing in this repository has yet put a serial byte on
-a wire.
-707 tests, 16 CI jobs green plus a nightly fuzz soak and a weekly dependency
-scan, and an installed package that
-three separate out-of-tree projects consume on every push — by `find_package`,
-by `add_subdirectory` and by `FetchContent`. Fourteen more cases run on
-hardware, on a bench, by hand.
+**Version 0.2.0.** The library does what it exists to do:
+* SMP framing and streaming reassembly;
+* a bounded CBOR façade;
+* request correlation with timeouts and cancellation;
+* the OS and image management groups;
+* MCUboot image parsing with SHA-256;
+* the image upload state machine;
+* `FirmwareUpdater`, which drives the whole update: upload, reset, reconnect,
+  trial boot and confirmation.
 
-**The Windows side has now run against a real device** (roadmap P17a): the
-WinRT adapter and `winrt_ble_dfu` completed updates in both directions against a
-NUCLEO-WB55RG running Zephyr's `smp_svr`, with the device's state confirmed over
-a UART path smply does not touch. CI still cannot exercise a radio — a GitHub
-runner has none — so what CI proves about that code is that it builds; what the
-bench proved is in [`docs/roadmap.md`](docs/roadmap.md) and the two READMEs,
-[`transports/winrt_ble/README.md`](transports/winrt_ble/README.md) and
-[`examples/winrt_ble_dfu/README.md`](examples/winrt_ble_dfu/README.md). The
-first hardware run found three defects, none in the adapter: a real device's
-CBOR is indefinite-length, its final upload chunk takes longer than 5 s to
-answer, and the report misread the retransmission that hid.
+Around the core library:
+* **For application code:** `smply::asyncutil`, C++20 coroutines and
+  `std::future` over the callbacks, for code that would rather read as a
+  sequence.
+* **For adapter authors:** `smply::Dispatcher` (a thread-marshalling helper
+  the core does not link), portable BLE helpers, and MCUmgr's serial console
+  framing.
+* **Examples:** `examples/cli_dfu/` runs a whole update against a stub device
+  on every push. `smply::winrt_ble` with `examples/winrt_ble_dfu/` installs
+  firmware over Bluetooth LE on Windows.
+* **Verification:** every decoder that reads untrusted bytes is fuzzed. An
+  installed package is consumed on every push by three separate out-of-tree
+  projects, by `find_package`, `add_subdirectory` and `FetchContent`.
 
-**The hardware suite runs unattended** (P17b): fourteen cases over the public
-API in thirteen groups, twelve of which need nobody present, a supervisor that
-reflashes the board between groups and reports pass / fail / **unavailable**
-per case, and a cross-check that installs the same
-image with smply and with a third-party client and compares what the device
-reports afterwards through a UART path neither of them touches (P17c). None of
-it is in the pull-request gate, and no self-hosted runner is registered yet, so
-it runs from the bench by hand.
+**What CI proves, and what a bench proved.** CI builds and tests everything on
+Linux and Windows, but a CI runner has no radio. So for the WinRT adapter, CI
+proves only that it builds. The adapter and `winrt_ble_dfu` have completed
+updates in both directions against a NUCLEO-WB55RG running Zephyr's `smp_svr`,
+from a hardware bench run by hand (`tests/hil/`). Those runs found three
+defects that no simulated test could:
+* a real device's CBOR is indefinite-length;
+* its final upload chunk takes more than 5 s to answer;
+* the report misread the retransmission that hid.
 
-What is deliberately not done: **the 1.0 declaration**. P18 built and proved
-the package, wrote the versioning policy and left the version at `0.1.0`, so
-that promising compatibility stays a decision somebody makes rather than a
-side-effect of the packaging being finished
-([ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md)). See
-[`docs/roadmap.md`](docs/roadmap.md) for the phase-by-phase history.
+([`docs/protocol-notes.md`](docs/protocol-notes.md) §9.) The serial framing is
+tested against a transcription of Zephyr's source, but has not yet been used
+against a device.
+
+**Deliberately not done: the 1.0 declaration.** Promising compatibility is a
+decision somebody makes, not a side-effect of the packaging being finished
+([ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md)).
+Current work and open questions are in [`docs/roadmap.md`](docs/roadmap.md).
 
 A whole update, with the application owning the pump and the connection:
 
@@ -126,8 +111,8 @@ whole update against a stub device running on a second thread — upload, mark f
 test, reset, reconnect, trial boot, confirm. `--image PATH` installs a real
 firmware file instead; `--mode` picks one of the three `UpdateMode`s.
 
-`examples/cli_dfu/main.cpp` is the file to read: the other four are the stub
-device it drives.
+`examples/cli_dfu/main.cpp` is the file to read: the other six are the stub
+device it drives, the loopback link to it, and the demo image.
 
 ### Consuming it
 
@@ -136,9 +121,10 @@ find_package(smply REQUIRED)
 target_link_libraries(my_app PRIVATE smply::smply)
 ```
 
-The package installs three targets: `smply::smply`, `smply::util` (the
-thread-marshalling helper an adapter needs) and `smply::transport_common` (the
-portable BLE framing, send admission and serial framing an adapter needs). `add_subdirectory`
+The package installs four targets: `smply::smply`, `smply::util` (the
+thread-marshalling helper an adapter needs), `smply::transport_common` (the
+portable BLE framing, send admission and serial framing an adapter needs) and
+`smply::asyncutil` (C++20 coroutines and `std::future` over the callbacks). `add_subdirectory`
 and `FetchContent` work too, and `tools/check_install.sh` builds and runs a
 consumer all three ways on every push.
 [ADR-0016](docs/decisions/ADR-0016-installed-package-and-versioning.md) says
@@ -165,7 +151,7 @@ modifies the working tree.
 
 | If you are…                        | Read                                       |
 | ---------------------------------- | ------------------------------------------ |
-| a coding agent picking up the work | [`docs/handoff.md`](docs/handoff.md) → [`docs/roadmap.md`](docs/roadmap.md) |
+| picking up work on smply           | [`docs/handoff.md`](docs/handoff.md) → [`docs/roadmap.md`](docs/roadmap.md) |
 | reviewing the design               | [`docs/architecture.md`](docs/architecture.md) |
 | implementing a protocol detail     | [`docs/protocol-notes.md`](docs/protocol-notes.md) |
 | looking for the API                | [`docs/api.md`](docs/api.md)               |
@@ -188,9 +174,12 @@ modifies the working tree.
 * [`docs/security.md`](docs/security.md) — threat model and trust boundaries.
 * [`docs/dependencies.md`](docs/dependencies.md) — dependency inventory and
   licensing.
-* [`docs/roadmap.md`](docs/roadmap.md) — phased, status-tracked execution plan.
-* [`docs/handoff.md`](docs/handoff.md) — agent session handoff protocol and log.
+* [`docs/roadmap.md`](docs/roadmap.md) — work in progress, open questions and
+  the backlog.
+* [`docs/handoff.md`](docs/handoff.md) — how to work on smply, and the standing
+  caveats.
 * [`docs/decisions/`](docs/decisions/) — Architecture Decision Records.
+* [`CONTRIBUTING.md`](CONTRIBUTING.md) — how a change is made and checked.
 * [`CHANGELOG.md`](CHANGELOG.md) — what changed, and the versioning policy.
 * [`SECURITY.md`](SECURITY.md) — how to report a vulnerability, and what smply
   is and is not an authority on.

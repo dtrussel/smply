@@ -456,8 +456,8 @@ TEST_CASE("indefinite-length maps and arrays decode like definite ones", "[cbor]
     // 0xBF/0x9F open a map/array of unstated size and 0xFF closes it (RFC 8949
     // section 3.2.2). This is what Zephyr's zcbor emits unless
     // CONFIG_ZCBOR_CANONICAL is set, and the default smp_svr build does not set
-    // it -- so a real device answers every request this way. Found in P17 on
-    // the first image-state read against hardware (protocol-notes section 9).
+    // it -- so a real device answers every request this way. Found on the
+    // first image-state read against hardware (protocol-notes section 9, A18).
     const auto encoded = bytes_of({
         0xBF,                                                                   // map(indefinite)
         0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73,                               // "images"
@@ -633,8 +633,8 @@ TEST_CASE("an array of exactly the cap is accepted", "[cbor]")
     // The boundary the cap has to get right: three elements with a cap of
     // three is legal. Testing the cap before entering an element rejects the
     // last legal one, because the end of the array is never looked for --
-    // which is how P8 found this: a response holding exactly limits::kMaxImages
-    // entries failed to decode.
+    // which is how this was found: a response holding exactly
+    // limits::kMaxImages entries failed to decode.
     std::vector<std::byte> encoded =
         bytes_of({0xA1, 0x66, 0x69, 0x6D, 0x61, 0x67, 0x65, 0x73, 0x83});
     for (int i = 0; i < 3; ++i) {
@@ -716,9 +716,9 @@ TEST_CASE("text and byte views point into the caller's buffer", "[cbor]")
 // ---------------------------------------------------------------------------
 // Bounds and sticky state
 //
-// Everything below was uncovered until P13, and the uncovered *list* is what
-// said so: 21 of the 23 missing branches in src/cbor/ were the guards these
-// cases exercise. The percentage said "write more tests"; the list said which.
+// The uncovered-branch *list* is what asked for these: most of the missing
+// branches in src/cbor/ were the guards these cases exercise. The percentage
+// said "write more tests"; the list said which.
 
 TEST_CASE("a key longer than the label buffer is refused by every getter", "[cbor][limits]")
 {

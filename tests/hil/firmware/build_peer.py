@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Build the pinned P17 peer for the NUCLEO-WB55RG. Never flashes, never tests.
+"""Build the pinned bench peer for the NUCLEO-WB55RG. Never flashes, never tests.
 
 Two complete `west build --sysbuild` runs of the unmodified smp_svr sample, one
 per signed version, so that BOTH images are signed by Zephyr's own signing

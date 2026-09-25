@@ -93,7 +93,7 @@ Result<void> Reader::enter_map(std::string_view key) noexcept
         // Distinguishing "absent" from "present but not a map" here would need
         // a peek; callers that care check for the key first.
         QCBORDecode_GetAndResetError(&context_);
-        return fail(Error{ErrorCode::CborDecode, "cbor reader: no such map"});
+        return fail(ErrorCode::CborDecode, "cbor reader: no such map");
     }
     ++depth_;
     return {};
@@ -232,7 +232,7 @@ Reader::for_each_map_in_array(std::string_view key, std::size_t max_elements,
     // the walk either fails with QCBOR_ERR_BAD_BREAK or, worse, silently reads
     // the *parent map's* following entries as further array elements. Zephyr's
     // zcbor emits exactly that encoding unless CONFIG_ZCBOR_CANONICAL is set,
-    // which the reference server does not (protocol-notes section 9, P17).
+    // which the reference server does not (protocol-notes section 9, A18).
     // Peeking, skipping with VGetNextConsume() and re-reading the sub-span is
     // unaffected; tests/unit/test_cbor.cpp pins both shapes.
     Result<void> outcome{};

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// P4's acceptance criterion is that the double can express every scenario the
-// later phases need, so there is one test per scenario even where it is nearly
-// trivial. Anything not expressible here becomes a blocker in P6 through P12,
-// when there is far more code in flight and far less attention to spare.
+// The double must express every scenario the client, the groups and the
+// updater need, so there is one test per scenario even where it is nearly
+// trivial. Anything not expressible here becomes a blocker for them.
 
 #include "fake_transport.hpp"
 
@@ -476,7 +475,7 @@ TEST_CASE("on_bytes_calls counts deliveries actually made", "[fake-transport]")
 
 TEST_CASE("FakeTransport satisfies the Transport interface", "[fake-transport]")
 {
-    // Used through the base class everywhere from P6 onwards.
+    // Used through the base class everywhere above the transport.
     Fixture fixture;
     smply::Transport& transport = fixture.transport;
 
@@ -488,17 +487,17 @@ TEST_CASE("FakeTransport satisfies the Transport interface", "[fake-transport]")
 
 // ---------------------------------------------------------------------------
 // Composition with the reassembler. The transport and the assembler are the two
-// halves of the inbound path, and every phase from P6 onwards depends on them
+// halves of the inbound path, and everything above them depends on their
 // fitting together, so prove it here rather than discovering it later.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("transport fragmentation is invisible once reassembled", "[fake-transport][assembler]")
 {
     /// Bridges the transport's listener interface to the assembler's sink.
-    class Bridge final : public TransportListener, public smply::MessageSink
+    class Bridge final : public TransportListener, public smply::smp::MessageSink
     {
     public:
-        smply::MessageAssembler assembler;
+        smply::smp::MessageAssembler assembler;
         std::vector<Header> headers;
         std::vector<std::vector<std::byte>> payloads;
         std::vector<Error> errors;

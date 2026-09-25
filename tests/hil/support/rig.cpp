@@ -9,6 +9,7 @@
 #include <sstream>
 #include <thread>
 #include <utility>
+#include <variant>
 
 namespace smply::hil {
 
@@ -419,32 +420,28 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "hil: no result");
     const auto t0 = timeline_.elapsed_ms();
 
-    const Result<void> begun = updater_->start(source, plan, [&](const UpdateEvent& event) {
-        switch (event.kind) {
-        case UpdateEvent::Kind::StateChanged:
-            states_.push_back(event.to);
-            timeline_.note(std::string{"update: "} + std::string{to_string(event.to)});
-            break;
-        case UpdateEvent::Kind::Progress:
+    const auto on_event = smply::overloaded{
+        [&](const smply::UpdateStateChanged& changed) {
+            states_.push_back(changed.to);
+            timeline_.note(std::string{"update: "} + std::string{to_string(changed.to)});
+        },
+        [&](const smply::UploadProgress& progress) {
             if (hooks.on_progress) {
-                hooks.on_progress(event.progress);
+                hooks.on_progress(progress);
             }
-            break;
-        case UpdateEvent::Kind::DisconnectExpected:
+        },
+        [&](const smply::DisconnectExpected&) {
             timeline_.note("update: the device is about to reboot");
-            break;
-        case UpdateEvent::Kind::ReconnectRequired:
-            pending.reconnect = true;
-            break;
-        case UpdateEvent::Kind::ConfirmationRequired:
-            pending.confirm = true;
-            break;
-        case UpdateEvent::Kind::Finished:
-            outcome = *event.result;
+        },
+        [&](const smply::ReconnectRequired&) { pending.reconnect = true; },
+        [&](const smply::ConfirmationRequired&) { pending.confirm = true; },
+        [&](const smply::UpdateFinished& finished) {
+            outcome = finished.result;
             pending.finished = true;
-            break;
-        }
-    });
+        },
+    };
+    const Result<void> begun = updater_->start(
+        source, plan, [&](const smply::UpdateEvent& event) { std::visit(on_event, event); });
     if (!begun.has_value()) {
         return fail(begun.error());
     }
