@@ -165,8 +165,13 @@ elif command -v cppcheck >/dev/null 2>&1; then
              --quiet \
              "${cppcheck_excludes[@]}" \
              include src support transports tests || status=1
+elif [[ "${CI:-}" == "true" ]]; then
+    # In CI a missing cppcheck is a broken install step, not a convenience: a
+    # note here would turn half of this gate off without turning anything red.
+    echo "error: cppcheck not installed, and CI=true -- the gate would be half off" >&2
+    status=1
 else
-    echo "note: cppcheck not installed -- skipping (CI runs it; see docs/quality-gates.md)"
+    echo "note: cppcheck not installed -- skipping (CI requires it; see docs/quality-gates.md)"
 fi
 
 exit $status

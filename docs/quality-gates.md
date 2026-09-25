@@ -6,7 +6,9 @@ Every gate below runs in CI and blocks merge unless marked *advisory*.
 `hil` row is *advisory*, and no self-hosted runner is registered, so the
 hardware suite has only ever run from the bench by hand. Each live gate has been
 observed rejecting a deliberate violation. `tools/verify_gates.sh` reproduces
-that proof, and the `gate-self-check` CI job runs it on every push.
+that proof, and the `gate-self-check` CI job runs it on every push. Locally a
+case whose tool is missing prints SKIP; under `CI=true`, which GitHub Actions
+sets, any SKIP fails the script, so CI cannot report a gate it never exercised.
 
 **One job still proves less than its name suggests.** `windows-winrt` *compiles*
 the WinRT adapter and the example that drives it, and runs the adapter's
@@ -192,7 +194,8 @@ No build uses that combination, and `-UCATCH_CONFIG_DISABLE
 suppression for `tests/` is needed. A full pass takes about three minutes, which is why
 `SMPLY_LINT_SKIP_CPPCHECK=1` exists: `tools/verify_gates.sh` sets it for its
 clang-tidy case, whose violation only the required half of the script has to
-reject. Nothing in CI sets it. Dependency headers under `_deps/` are not
+reject. Nothing in CI sets it, and under `CI=true` a missing cppcheck is an
+error rather than a note. Dependency headers under `_deps/` are not
 reported on, for the same reason they are declared `SYSTEM` for
 clang-tidy (§1).
 
@@ -243,6 +246,11 @@ without gcovr** rather than falling back to lcov or gcov, which measure branches
 differently and so would enforce a different threshold. `tools/verify_gates.sh`
 checks that the reporter rejects, accepts and refuses as it should (the
 `gate-self-check` job in §1).
+
+**The report is kept.** gcovr also writes `coverage.xml` (Cobertura) and
+`coverage-html/` into the build directory, and the `coverage` job uploads both
+as the `coverage-report` artifact. The upload uses `if-no-files-found: error`,
+so a report that was never written fails the job.
 
 **Deliberate invariant guards carry exclusion markers.** `LCOV_EXCL_LINE`
 excludes only the line it sits on, so marking only the `if` would leave the
@@ -375,7 +383,9 @@ come back, or a change has broken a property one of the targets asserts.
 
 The search is the scheduled `nightly-fuzz-soak` workflow, 30 minutes per target,
 which is advisory — it uploads the grown corpus and any reproducer, and opens
-one issue per target on a find. Any crash reproducer is committed to
+one issue per target on a find. Its matrix names the targets by hand, so the
+smoke job checks that every target it built appears there; a new target that
+was left out of the soak fails the smoke job. Any crash reproducer is committed to
 `tests/fuzz/corpus/<target>/` **alongside its fix**, which is what moves it from
 the advisory job into the blocking one.
 

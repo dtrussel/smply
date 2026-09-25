@@ -69,10 +69,11 @@ still work — run it if you touch anything under `tools/` or `cmake/`.
 
 Three ways this has gone wrong before, all cheap to avoid:
 
-* **Neither `cppcheck` nor `gcovr` is installed here, and both fail soft.**
-  `lint.sh` skips cppcheck with only a note, and `coverage.sh` falls back to
-  plain `gcov` and reports a number that is not comparable. So a clean local
-  run can still fail CI. Run
+* **Neither `cppcheck` nor `gcovr` is installed here, and both fail soft
+  locally.** `lint.sh` skips cppcheck with only a note, `coverage.sh` falls
+  back to plain `gcov` and reports a number that is not comparable, and
+  `verify_gates.sh` prints SKIP. CI (`CI=true`) turns each of those into a
+  failure, so a clean local run can still fail CI. Run
   `apt-get update && apt-get install -y cppcheck libclang-rt-18-dev && pip install gcovr`
   first.
 * **A failed build leaves the old test binary in place**, so `ctest` then

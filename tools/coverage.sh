@@ -51,6 +51,10 @@ if command -v gcovr >/dev/null 2>&1; then
     # that option's output file, and a directory there makes it fail --
     # silently, without --enforce, because this script then exits 0 by design,
     # so CI would stay green while producing no report at all.
+    #
+    # The Cobertura XML and the HTML pages are what CI uploads as the job's
+    # artifact; the text summary is what a person reads in the log.
+    mkdir -p "$BUILD_DIR/coverage-html"
     gcovr --root "$REPO" \
           "$BUILD_DIR" \
           --filter "$REPO/src/" --filter "$REPO/include/smply/" \
@@ -59,6 +63,8 @@ if command -v gcovr >/dev/null 2>&1; then
           --exclude '.*/_deps/.*' \
           --exclude-throw-branches \
           --print-summary --txt \
+          --cobertura "$BUILD_DIR/coverage.xml" \
+          --html-details "$BUILD_DIR/coverage-html/index.html" \
           --fail-under-line "$( [[ $ENFORCE -eq 1 ]] && echo "$LINE_MIN" || echo 0 )" \
           --fail-under-branch "$( [[ $ENFORCE -eq 1 ]] && echo "$BRANCH_MIN" || echo 0 )"
     GCOVR_STATUS=$?

@@ -122,6 +122,16 @@ expect_ok() {
     fi
 }
 
+# skip <description>
+# A case whose tool is missing. Locally that is a SKIP; in CI (CI=true, which
+# GitHub Actions sets) it is a failure, because a gate CI never proves is a gate
+# nobody has seen fire.
+SKIPPED=0
+skip() {
+    printf '  SKIP  %s\n' "$1"
+    SKIPPED=$((SKIPPED + 1))
+}
+
 restore() { tar -C "$REPO" --exclude=build --exclude=.git -cf - "$1" | tar -C "$WORK" -xf -; }
 
 # substitute <file> <sed-expression>
@@ -457,7 +467,7 @@ if command -v ninja > /dev/null 2>&1; then
     restore transports/CMakeLists.txt
     rm -rf "$EXPORTPROBE" "$WORK/export-prefix" "$WORK/build-export-consumer"
 else
-    printf '  SKIP  the export (needs ninja)\n'
+    skip 'the export (needs ninja)'
 fi
 
 # 14, 15 and 16. The coverage reporter.
@@ -536,16 +546,20 @@ PROBE
         expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
             env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
     else
-        printf '  SKIP  coverage reporter (the --coverage probe did not build)\n'
+        skip 'coverage reporter (the --coverage probe did not build)'
         tail -5 "$SCRATCH/covprobe-build.log"
     fi
 
     rm -f "$WORK/src/coverage_probe.cpp"
     rm -rf "$COVPROBE"
 else
-    printf '  SKIP  coverage reporter (needs gcovr and g++; pip install gcovr)\n'
+    skip 'coverage reporter (needs gcovr and g++; pip install gcovr)'
 fi
 
 echo
-echo "=== $PASS gate(s) verified, $FAIL not protecting anything ==="
+echo "=== $PASS gate(s) verified, $FAIL not protecting anything, $SKIPPED skipped ==="
 [[ $FAIL -eq 0 ]] || exit 1
+if [[ $SKIPPED -gt 0 && "${CI:-}" == "true" ]]; then
+    echo "error: CI=true and $SKIPPED case(s) skipped -- install the missing tools" >&2
+    exit 1
+fi

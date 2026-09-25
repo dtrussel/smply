@@ -130,6 +130,20 @@ jobs:
           sudo apt-get install -y ninja-build clang libclang-rt-18-dev
       - run: cmake --preset linux-clang-fuzz
       - run: cmake --build --preset linux-clang-fuzz
+      # The nightly soak lists its targets by hand, so a new target is easy to
+      # leave out of it. This job globs, so it is the one that notices.
+      - name: Every fuzz target is in the nightly soak
+        run: |
+          set -euo pipefail
+          missing=0
+          for target in build/linux-clang-fuzz/tests/fuzz/fuzz_*; do
+            name=$(basename "$target")
+            if ! grep -qE "^\s*- ${name}\s*$" .github/workflows/nightly-fuzz.yml; then
+              echo "::error::$name is not in nightly-fuzz.yml's matrix"
+              missing=1
+            fi
+          done
+          exit $missing
       # 20 000 iterations per target over its committed seed corpus
       # (docs/quality-gates.md section 8). This is a regression gate, not a
       # search: a crash here means a previously fixed input came back, or a
@@ -207,11 +221,15 @@ jobs:
       # (docs/quality-gates.md section 6). It also refuses to run without
       # gcovr, so a missing tool can no longer look like a pass.
       - run: tools/coverage.sh build/linux-gcc-coverage --enforce
+      # coverage.sh writes both. `error`, not `ignore`: an artifact that is
+      # silently empty is how this upload once matched nothing unnoticed.
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: build/linux-gcc-coverage/coverage*.info
-          if-no-files-found: ignore
+          path: |
+            build/linux-gcc-coverage/coverage.xml
+            build/linux-gcc-coverage/coverage-html/
+          if-no-files-found: error
 
   gates:
     name: gates (format, tidy, api, deps, docs)
@@ -260,7 +278,9 @@ jobs:
       - name: Install tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build clang clang-format clang-tidy
+          # gcovr, because the coverage-reporter cases need it and CI=true
+          # turns a skipped case into a failure (tools/verify_gates.sh).
+          sudo apt-get install -y ninja-build clang clang-format clang-tidy gcovr
       # Populates build/linux-clang/_deps so the scratch copy does not re-clone.
       - name: Warm the dependency cache
         run: cmake --preset linux-clang

@@ -349,8 +349,9 @@ true.
 
 * **Install `cppcheck`, `gcovr` and `libclang-rt-18-dev` first**, after an
   `apt-get update`. Without them, `tools/lint.sh` skips cppcheck with only a
-  note, and `tools/coverage.sh` falls back to plain `gcov`, whose branch figure
-  is not comparable. A stale package index makes "not installable" claims look
+  note, `tools/coverage.sh` falls back to plain `gcov`, whose branch figure
+  is not comparable, and `tools/verify_gates.sh` skips cases. All three are
+  errors under `CI=true`; run with `CI=true` locally to see what CI will. A stale package index makes "not installable" claims look
   true, so run `apt-get update` before believing one.
 * **Coverage means exactly what `tools/coverage.sh` reports**: gcovr with
   `--exclude-throw-branches`. Under a different flag the same objects move by

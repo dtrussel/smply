@@ -43,6 +43,7 @@ jobs:
           - fuzz_cbor_upload_response
           - fuzz_header
           - fuzz_mcuboot_header
+          - fuzz_serial_deframe
           - fuzz_smp_client_rx
           - fuzz_tlv_scan
     steps:
