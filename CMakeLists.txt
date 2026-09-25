@@ -245,6 +245,12 @@ if(SMPLY_BUILD_TESTS)
     add_subdirectory(tests/support)
     add_subdirectory(tests/unit)
     add_subdirectory(tests/component)
+    # The serial port adapter over a real tty: a real thread and real, bounded
+    # waits, which is why it is not in the unit or component suites. POSIX
+    # only for now: the Win32 half of the adapter is not built yet.
+    if(NOT WIN32)
+        add_subdirectory(tests/serial_port)
+    endif()
     add_subdirectory(tests/interface_flags)
     if(SMPLY_BUILD_FUZZERS)
         add_subdirectory(tests/fuzz)

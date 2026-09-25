@@ -1264,8 +1264,8 @@ bytes for no reason. It should be at most `kMaxSerialPacket`.
 The pieces of a `Transport` over a UART, a USB CDC ACM port or a
 pseudo-terminal, carrying the framing above: its configuration, its counters,
 and the byte-level halves that are the same on every platform. The transport
-class itself, `SerialPortTransport`, arrives with its POSIX implementation. It
-is a reference adapter like `winrt_ble`: built and
+is `SerialPortTransport`, implemented over POSIX `termios`. It is a reference
+adapter like `winrt_ble`: built and
 tested in-tree, outside the stable surface of ADR-0016 clause 4, and not in
 the installed package
 ([ADR-0020](decisions/ADR-0020-serial-port-reference-adapter.md)). The mechanics
@@ -1304,6 +1304,20 @@ public:
     [[nodiscard]] std::uint64_t  dropped_lines() const noexcept;
 };
 
+// serial_port/serial_port_transport.hpp
+class SerialPortTransport final : public Transport {
+public:
+    [[nodiscard]] static Result<std::unique_ptr<SerialPortTransport>>
+    open(const SerialPortConfig&, Dispatcher& inbound);
+    ~SerialPortTransport() override;                  // calls close()
+
+    [[nodiscard]] Result<void> send(ConstBytes) override;
+    [[nodiscard]] std::size_t  max_message_size() const noexcept override;
+    void set_listener(TransportListener*) noexcept override;
+    void close() noexcept override;
+
+    [[nodiscard]] SerialLinkCounters counters() const;  // any thread
+};
 ```
 
 What a caller has to know:
@@ -1313,6 +1327,20 @@ What a caller has to know:
   Raise it only for a device whose `buf_size` you know.
 * **`SerialInbound`'s counters are cumulative** and survive `reset()`: they
   describe the link, not the packet in progress.
+* **`open()` is also how to reconnect.** It answers `Disconnected` for a port
+  that does not exist (yet), which is what a USB port looks like mid-reset, so
+  a reconnect loop retries exactly that. It answers `InvalidArgument` for a
+  path that is not a serial port and `TransportError` for one another process
+  holds, and retrying helps with neither.
+* **Every failure ends the link** with one `on_disconnected()`. There is no
+  `on_transport_error()` from this adapter.
+* **After a reset**, a USB CDC port reports a disconnect and a hardware UART
+  reports nothing. Set `UpdatePlan::disconnect_grace` to a few seconds for a
+  UART, and reopen by path on `ReconnectRequired` in both cases
+  ([`design.md`](design.md) §13).
+* **One I/O thread per open port**, owned by the transport. Inbound bytes reach
+  the listener only through the `Dispatcher`, which must be drained.
+  `close()` joins the thread and never touches the `Dispatcher`.
 
 ---
 

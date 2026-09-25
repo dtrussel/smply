@@ -1177,11 +1177,12 @@ receiver when `common/ble_framing.hpp` deliberately has none, is
 [`protocol-notes.md`](protocol-notes.md) §8, read out of Zephyr's
 `serial_util.c`.
 
-**This is not a transport.** Nothing here opens a port. An application supplies
-the file descriptor, the `termios`/`CreateFile` setup, the reader thread and
-the `smply::Dispatcher` that marshals inbound bytes onto the client context
-(§9), and implements `Transport` over them. What it does not have to supply is
-the protocol.
+**This is not a transport.** Nothing here opens a port. The reference adapter
+that does is §13 (`transports/serial_port/`). An application that writes its
+own supplies the file descriptor, the `termios`/`CreateFile` setup, the reader
+thread and the `smply::Dispatcher` that marshals inbound bytes onto the client
+context (§9), and implements `Transport` over them. What it does not have to
+supply is the protocol.
 
 ### The three pieces
 
@@ -1297,8 +1298,135 @@ uploads at a chunk size the protocol never asked for.
 
 ### Open
 
-Whether a device reset drops a serial link is unsettled — a hardware UART stays
-open across one, a USB CDC port disappears and returns. `FirmwareUpdater`'s
-`AwaitingDisconnect` / `AwaitingReconnect` states and
-`UpdatePlan::disconnect_grace` assume a link that drops. Roadmap **O7**; it
-cannot be decided without a port adapter.
+Whether a device reset drops a serial link is only half settled. The port
+adapter (§13) is designed for both answers: a USB CDC port that disappears and
+returns, and a hardware UART that stays open. Neither has been measured on a
+device. Roadmap **O7**.
+
+## 13. Serial port adapter (`transports/serial_port/`)
+
+*A reference adapter, like §10's, and not installed
+([ADR-0020](decisions/ADR-0020-serial-port-reference-adapter.md)). §12 is the
+protocol it carries; this section is the port.*
+
+`SerialPortTransport` implements `Transport` over anything that looks like a
+tty: a hardware UART, a USB CDC ACM port, a pseudo-terminal. One header,
+`serial_port_transport.hpp`, names no OS type. `posix/` implements it with
+`termios` and `poll()`, and it runs in CI against a pseudo-terminal
+(`tests/serial_port/`). A Win32 implementation behind the same header, with
+`CreateFile` and overlapped I/O, is the next step. It mirrors the POSIX file
+section for section.
+
+### Configuration
+
+| Field | Default | Checked by `validate()` |
+| ----- | ------- | ----------------------- |
+| `path` | — | not empty |
+| `baud` | 115200 | one of the standard rates (`is_supported_baud()`); a platform without the constant refuses it at `open()` |
+| `flow` | `None` | `RtsCts` is the only other choice; there is no XON/XOFF |
+| `max_message_size` | 256 | within `[kMinSerialMessageSize, kMaxSerialPacket]` = `[128, 65533]` |
+
+The line is always 8N1. `open()` also puts the port in raw mode and discards
+anything already buffered, so a stale half-frame from before the open cannot
+be read as the start of the first response. On POSIX it asks for exclusive
+use (`TIOCEXCL`, best effort). On Windows the handle is opened unshared.
+
+**Why 256.** It is the Zephyr default of `CONFIG_MCUMGR_TRANSPORT_UART_MTU`
+and `..._SHELL_MTU`. It is also below the largest message a default device
+accepts *over serial*, which is `buf_size − 4`: the device decodes the serial
+length prefix and CRC into the same netbuf as the message (protocol-notes
+§9, A25). The upload sizes its chunks from `min(buf_size, max_message_size())`,
+so this cap is what keeps a default device from silently dropping a
+full-sized chunk. Raise it only for a device whose `buf_size` is known.
+
+### One I/O thread
+
+```
+  client context                         I/O thread (one per open port)
+  ──────────────                         ──────────────────────────────
+  send(msg) ── frame_message() ─► SendQueue ─► wake ─► poll()/Wait…()
+                                                        │   write frames
+                                                        │   read bytes
+                                                        ▼
+                                            SerialInbound: LineSplitter
+                                                         → SerialDeframer
+                                                        │ packet (copied)
+  Dispatcher::drain() ◄──── post([state, bytes]) ◄──────┘
+    └─ may_deliver()? → listener->on_bytes(bytes)
+```
+
+* **Outbound.** `send()` frames the whole message on the client context
+  (`frame_message()`, i.e. `SerialFramer`), which is also the copy the
+  borrowed-buffer rule requires. The framed bytes are offered to
+  `SendQueue`: one message is written while at most one more waits, and a
+  third is `TransportBusy`, exactly as in §10. The thread writes non-blocking
+  and waits for the port to drain when it is full.
+* **Inbound.** The thread reads whatever arrived and feeds `SerialInbound`
+  (a `LineSplitter` feeding a `SerialDeframer`, `serial_link.hpp`). Each
+  complete packet is **copied** into a closure posted to the application's
+  `Dispatcher`. The closure holds a strong reference to the adapter's state
+  and asks `LinkState::may_deliver()` before touching the listener, so a
+  packet that arrives just before `close()` is dropped rather than delivered
+  to a client that has detached.
+* **One thread, not two.** A reader and a writer would each need a join and an
+  order between them. Here a single wake-up handle (a self-pipe on POSIX, an
+  auto-reset event on Windows) carries both "a message is waiting" and "stop".
+
+### Failure, shutdown and the reset (O7)
+
+Every failure the thread sees ends the link: a read or write error, end of
+file, or a hang-up. It posts one closure that closes the link and then calls
+`on_disconnected()`, so "no callback after `on_disconnected()`" holds by
+construction. There is no `on_transport_error()` path. A port that cannot be
+read will not start working on the next `poll()`, and a message abandoned
+part-way cannot be resumed.
+
+| Seen | Reported as |
+| ---- | ----------- |
+| `open()`: no such port (`ENOENT`, `ENODEV`, `ENXIO`; `ERROR_FILE_NOT_FOUND`) | `Disconnected`, so a reconnect loop retries it |
+| `open()`: not a tty (`ENOTTY`; `GetCommState` refused) | `InvalidArgument` |
+| `open()`: held by another process, or refused (`EBUSY`, `EACCES`; `ERROR_ACCESS_DENIED`) | `TransportError` |
+| I/O: end of file, `EIO`, `POLLHUP` (a USB port gone, a pty master closed) | `on_disconnected(Disconnected)` |
+| I/O: any other error | `on_disconnected(TransportError)` |
+
+`close()` is the only teardown path, and it is synchronous and idempotent:
+1. `LinkState::begin_close()` (a second call stops here);
+2. stop accepting;
+3. wake the thread;
+4. join it;
+5. discard any waiting message;
+6. close the port.
+
+It never drains or clears the `Dispatcher`, which belongs to the application
+(handoff.md). The destructor calls it.
+
+**A device reset.** The adapter reports what the medium says, and assumes
+nothing else.
+* A USB CDC ACM port vanishes, the read fails, and `FirmwareUpdater` leaves
+  `AwaitingDisconnect` at once.
+* A hardware UART stays open, so nothing is reported, and the updater leaves
+  `AwaitingDisconnect` when `UpdatePlan::disconnect_grace` expires (§8,
+  "grace timeout with the link still up"). A serial application should set
+  that grace to a few seconds.
+
+Either way, on `ReconnectRequired` the application opens a **new** transport
+by path, retrying while `open()` answers `Disconnected`, and rebinds. Naming
+the port by a stable path (`/dev/serial/by-id/…`) covers a CDC port that
+returns under a different `ttyACMn`. None of it has been **measured** on
+hardware; roadmap O7 stays open for that.
+
+### Counters
+
+`counters()` returns a `SerialLinkCounters` snapshot, taken under the
+adapter's mutex and readable from any thread, even after `close()`. A serial
+link fails *quietly*: frames lost to a shared console look exactly like a
+switched-off device. The counters tell those apart.
+
+| Field | Healthy link | Worth a look |
+| ----- | ------------ | ------------ |
+| `deframe.packets` | rises with every response | flat while requests time out |
+| `deframe.ignored` | non-zero on a console with a shell or logs | — |
+| `dropped_lines` | non-zero with a log backend | rising while `packets` is flat |
+| `deframe.crc_failures`, `deframe.framing_errors` | zero | anything else |
+| `send.deferred` / `send.refused` | small / zero | `refused` rising: the port is not draining |
+| `bytes_read`, `bytes_written` | — | `bytes_read` zero: the device is not talking at all |

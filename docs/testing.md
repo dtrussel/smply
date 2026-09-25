@@ -14,6 +14,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
 | The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **three** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, and `cli_dfu_reconnect_gives_up` |
+| The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
 
@@ -426,6 +427,31 @@ which a third-party client could not complete an upload on the bench.
 What none of it checks is a port. No CI job and no bench has put a serial byte
 on a wire, and `architecture.md` §11 says so rather than implying a working
 transport.
+
+### The serial port adapter (`transports/serial_port/`, `tests/serial_port/`)
+
+Its pure parts are in the unit suite (`test_serial_port_config.cpp`):
+* configuration bounds, the baud table and the errno mapping;
+* `frame_message()` against `SerialFramer`;
+* `SerialInbound` over arbitrary read boundaries, console noise, over-long
+  lines, CRC failures and `reset()`.
+
+`tests/serial_port/test_serial_port.cpp` puts the adapter on the slave end of a
+pseudo-terminal and plays the device on the master end:
+* frames written and deframed both ways;
+* noise ignored and counted, and an over-long line dropped and counted;
+* a hang-up delivering exactly one `on_disconnected()`;
+* `close()` idempotent, and silent even for a packet already queued in the
+  `Dispatcher`;
+* `TransportBusy` from a pty nobody reads, with `close()` still returning;
+* `open()` refusing a missing path (`Disconnected`), a non-tty
+  (`InvalidArgument`) and a bad configuration.
+
+**Assert only what the queue guarantees.** A message admitted by
+`StartWriter` waits in `SendQueue` until the I/O thread takes it. So a third
+offer can be refused before any offer was ever deferred, and
+`send.deferred >= 1` is *not* implied by `TransportBusy`. An early version
+asserted it, and failed in 15 of 50 runs.
 
 ## 4. Component tests (`tests/component/`)
 

@@ -20,7 +20,13 @@ add_library(smply_serial_port STATIC serial_port_config.cpp)
 add_library(smply::serial_port ALIAS smply_serial_port)
 
 if(NOT WIN32)
-    target_sources(smply_serial_port PRIVATE posix/posix_detail.cpp)
+    target_sources(smply_serial_port PRIVATE
+        posix/posix_detail.cpp
+        posix/serial_port_posix.cpp
+    )
+    # The adapter's own I/O thread (ADR-0020); the core still starts none.
+    find_package(Threads REQUIRED)
+    target_link_libraries(smply_serial_port PRIVATE Threads::Threads)
 endif()
 
 # transport_common is INTERFACE and carries both smply::smply and the

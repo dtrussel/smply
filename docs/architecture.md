@@ -103,10 +103,11 @@ values a device reports about an image, `ImageHash` and `ImageVersion`, are
 MCUboot's and are declared in `smply/mcuboot_image.hpp`. The reverse never
 holds: parsing a firmware file needs nothing above the core types.
 
-The third box is a gap rather than a plan. The **protocol** half of a serial
-link ships -- `transports/serial/` frames and deframes MCUmgr's console
-encapsulation, portably and with a test suite -- but no adapter opens a port,
-so nobody has yet implemented `Transport` over one.
+The third box is half filled. The **protocol** half of a serial link ships in
+`transports/serial/`, which frames and deframes MCUmgr's console encapsulation,
+portably and with a test suite. The **port** half is `transports/serial_port/`,
+a reference adapter that is not installed (ADR-0020). It has run over a
+pseudo-terminal in CI and never against a device. UDP is not implemented.
 
 ### Responsibilities
 
@@ -411,9 +412,11 @@ smply/
 │   │                           termios, CreateFile, a reader thread — is the
 │   │                           application's and is not here
 │   ├── serial_port/            smply::serial_port, the reference serial port adapter, NOT
-│   │                           installed (ADR-0020): serial_port_config.hpp  serial_link.hpp
-│   │                           — configuration, counters, and the byte-level halves both
-│   │                           platforms share; posix/ holds the termios side
+│   │                           installed (ADR-0020): serial_port_transport.hpp — the
+│   │                           Transport, with one I/O thread of its own;
+│   │                           serial_port_config.hpp  serial_link.hpp — configuration,
+│   │                           counters, and the byte-level halves both platforms share;
+│   │                           posix/ — termios and poll()
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
@@ -435,6 +438,8 @@ smply/
 │   │                           server_simulator.*
 │   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
+│   ├── serial_port/            test_serial_port.cpp — the serial adapter on a pseudo-terminal:
+│   │                           a real tty and a real thread, so its own executable
 │   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
 │   │                           test_firmware_update.cpp  test_async.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
@@ -484,14 +489,17 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 * Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
   but nothing yet exercises it. O5 tracks whether to exercise it or document it
   as untested.
-* **Serial: the framing ships, the port does not.** `transports/serial/` is a
-  complete, tested implementation of MCUmgr's console encapsulation in both
-  directions, but nothing in this repository opens a tty, so no `Transport` is
-  implemented over one and **no serial byte has been on a wire** — the evidence
-  is agreement with a transcription of Zephyr's source, which is a weaker claim
-  than a bench run against a device (ADR-0017). Raw UART
-  (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented either; it needs no
-  framing, only a port.
+* **Serial: a reference adapter exists, and has not met a device.**
+  `transports/serial/` implements MCUmgr's console encapsulation in both
+  directions. `transports/serial_port/` opens a port (POSIX `termios`) and
+  implements `Transport` over it. It runs in CI against a pseudo-terminal
+  only, so **no serial byte has been on a wire to a real device**. The framing's
+  evidence is still agreement with a transcription of Zephyr's source (ADR-0017,
+  ADR-0020). Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented;
+  it needs no framing, only a port.
+* **Over serial, `buf_size` overstates the device's limit by four bytes**
+  (protocol-notes A25). The adapter's 256-byte default cap keeps a default
+  device safe; the general fix is on the roadmap.
 * The core does not manage connections; reconnection is the application's job.
   A dropped link completes the upload with `Disconnected` and keeps the session,
   so `ImageManagement::resume()` can continue it once the application has
