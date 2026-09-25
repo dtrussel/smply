@@ -351,8 +351,16 @@ true.
   `apt-get update`. Without them, `tools/lint.sh` skips cppcheck with only a
   note, `tools/coverage.sh` falls back to plain `gcov`, whose branch figure
   is not comparable, and `tools/verify_gates.sh` skips cases. All three are
-  errors under `CI=true`; run with `CI=true` locally to see what CI will. A stale package index makes "not installable" claims look
-  true, so run `apt-get update` before believing one.
+  errors under `CI=true`; run with `CI=true` locally to see what CI will. A
+  stale package index makes "not installable" claims look true, so run
+  `apt-get update` before believing one.
+* **To hide a tool, shadow its directory; never drop it from `PATH`.** An
+  apt-installed tool lives in `/usr/bin`, beside bash and the compilers, and
+  `/bin` is a symlink to it, so removing one `PATH` entry leaves the tool
+  reachable through the other, and a "fails without X" check passes for the
+  wrong reason. `verify_gates.sh`'s no-gcovr case replaces each entry that
+  holds gcovr with a directory of symlinks to everything else, and refuses to
+  run if gcovr is still found.
 * **Coverage means exactly what `tools/coverage.sh` reports**: gcovr with
   `--exclude-throw-branches`. Under a different flag the same objects move by
   about 12 points. CI runs it with `--enforce`, which fails below 85 % line or
