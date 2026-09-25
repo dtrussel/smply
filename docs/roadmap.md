@@ -82,7 +82,6 @@ doing. Items the quality review will close are marked *(review)*.
 | **The client-context assertion covers `SmpClient` only.** Using `ImageManagement` from a second thread without reaching the client (for example, by reading `transferred()`) does not trip it. Closing that needs the groups to use pimpl. | when the groups are next reworked |
 | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics. An adapter branching on it is a bug; a blocking `wait_and_drain()` may be the better offer. | when an adapter asks |
 | `ImageState` has no `operator==`. | when a test wants it |
-| `image::narrow<To>()` lives in `src/image/` and a checked `narrow` lives in `image_management.cpp`. *(review, Stage 4)* | — |
 
 ### Protocol and images
 

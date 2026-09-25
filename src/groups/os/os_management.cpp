@@ -3,12 +3,12 @@
 #include "smply/groups/os.hpp"
 
 #include "cbor/cbor.hpp"
+#include "detail/narrow.hpp"
 #include "groups/common.hpp"
 #include "smply/error.hpp"
 
 #include <array>
 #include <cstddef>
-#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -61,12 +61,12 @@ constexpr const char* kBufferTooSmall = "os: request buffer too small";
     if (!buf_size.has_value() || !buf_count.has_value()) {
         return fail(Error{ErrorCode::CborDecode, "os: parameters incomplete"});
     }
-    if (*buf_size > std::numeric_limits<std::uint32_t>::max() ||
-        *buf_count > std::numeric_limits<std::uint32_t>::max()) {
+    const std::optional<std::uint32_t> size = detail::checked_narrow<std::uint32_t>(*buf_size);
+    const std::optional<std::uint32_t> count = detail::checked_narrow<std::uint32_t>(*buf_count);
+    if (!size.has_value() || !count.has_value()) {
         return fail(Error{ErrorCode::CborDecode, "os: parameters out of range"});
     }
-    return McumgrParameters{.buf_size = static_cast<std::uint32_t>(*buf_size),
-                            .buf_count = static_cast<std::uint32_t>(*buf_count)};
+    return McumgrParameters{.buf_size = *size, .buf_count = *count};
 }
 
 /// Decodes an echo response.

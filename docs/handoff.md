@@ -273,8 +273,10 @@ true.
   Clang and MSVC each reject things the others accept:
   * **GCC only:** `-Wuseless-cast` rejects a `static_cast` between
     `std::uint64_t` and `std::size_t`. They are the same type on a 64-bit host
-    and a real narrowing on a 32-bit one. `image::narrow<To>()` in
-    `src/image/source_reader.hpp` is the way round it.
+    and a real narrowing on a 32-bit one. `detail::narrow_cast<To>()` in
+    `src/detail/narrow.hpp` is the way round it, for a value already bounded.
+    A number nobody has bounded yet, such as one a device sent, goes through
+    `detail::checked_narrow<To>()` instead.
   * **Clang only:** `std::vector<std::pair<std::string, T>>` inside `T` is
     undefined, because a `std::pair` of an incomplete type is. GCC compiles it.
     `std::vector<T>` inside `T` is specifically allowed.

@@ -21,19 +21,6 @@
 
 namespace smply::image {
 
-/// Narrows a value already known to fit into the destination type.
-///
-/// Written as a template on purpose. On a 64-bit host `std::uint64_t` and
-/// `std::size_t` are the same type, and GCC's `-Wuseless-cast` rejects a direct
-/// `static_cast` between them; on a 32-bit host the narrowing is real and must
-/// not be left implicit. A dependent conversion satisfies both, and says at the
-/// call site that the value was checked first.
-template<class To, class From>
-[[nodiscard]] constexpr To narrow(From value) noexcept
-{
-    return static_cast<To>(value);
-}
-
 /// Reads exactly `out.size()` bytes, or fails.
 ///
 /// A source that returns fewer bytes anywhere but at the end of the image has

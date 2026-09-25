@@ -396,7 +396,8 @@ smply/
 │   │                           sha256.{hpp,cpp}  source_reader.hpp  image_values.cpp
 │   ├── dfu/                    update_state_machine.*  firmware_updater.cpp
 │   ├── util/                   dispatcher.cpp — built as smply::util, NOT into libsmply
-│   └── detail/client_thread.hpp    debug-only client-context assertion
+│   └── detail/                 client_thread.hpp — debug-only client-context assertion;
+│                               narrow.hpp — narrow_cast and checked_narrow
 ├── transports/
 │   ├── common/                 ble_framing.hpp  link_state.hpp  smp_ble_uuid.hpp
 │   │                           send_queue.hpp — portable, header-only

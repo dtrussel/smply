@@ -2,6 +2,7 @@
 
 #include "smply/image_source.hpp"
 
+#include "detail/narrow.hpp"
 #include "image/sha256.hpp"
 #include "image/source_reader.hpp"
 #include "smply/error.hpp"
@@ -37,9 +38,9 @@ Result<std::size_t> MemoryImageSource::read(std::uint64_t offset, MutBytes out)
         // failure -- the caller decides whether it expected more.
         return std::size_t{0};
     }
-    const auto available = image::narrow<std::size_t>(bytes_.size() - offset);
+    const auto available = detail::narrow_cast<std::size_t>(bytes_.size() - offset);
     const std::size_t wanted = std::min(available, out.size());
-    const ConstBytes from = bytes_.subspan(image::narrow<std::size_t>(offset), wanted);
+    const ConstBytes from = bytes_.subspan(detail::narrow_cast<std::size_t>(offset), wanted);
     std::copy(from.begin(), from.end(), out.begin());
     return wanted;
 }
@@ -53,7 +54,7 @@ Result<Hash> sha256(ImageSource& source)
     for (std::uint64_t offset = 0; offset < total;) {
         const auto remaining = total - offset;
         const std::size_t wanted =
-            remaining < buffer.size() ? image::narrow<std::size_t>(remaining) : buffer.size();
+            remaining < buffer.size() ? detail::narrow_cast<std::size_t>(remaining) : buffer.size();
 
         const auto read = source.read(offset, MutBytes{buffer.data(), wanted});
         if (!read.has_value()) {

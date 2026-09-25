@@ -12,6 +12,7 @@ add_executable(smply_unit_tests
     test_image_source.cpp
     test_limits.cpp
     test_mcuboot_header.cpp
+    test_narrow.cpp
     test_mgmt_error.cpp
     test_os_group.cpp
     test_reconnect_policy.cpp

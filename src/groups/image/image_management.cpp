@@ -3,6 +3,7 @@
 #include "smply/groups/image.hpp"
 
 #include "cbor/cbor.hpp"
+#include "detail/narrow.hpp"
 #include "groups/common.hpp"
 #include "groups/image/upload_driver.hpp"
 #include "groups/image/upload_session.hpp"
@@ -14,7 +15,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -58,16 +58,18 @@ constexpr const char* kBufferTooSmall = "image: request buffer too small";
 constexpr std::uint32_t kMaxSlotNumber =
     static_cast<std::uint32_t>(limits::kMaxImages * limits::kMaxSlotsPerImage);
 
-/// Narrows a decoded CBOR unsigned to 32 bits, or fails.
+/// Narrows a decoded CBOR integer, or fails with \p where.
 ///
-/// Every count, size and slot number in this group is a `uint32` on the wire;
-/// a larger value is a device saying something smply will not act on.
-[[nodiscard]] Result<std::uint32_t> narrow(std::uint64_t value, const char* where) noexcept
+/// Every count, size and slot number in this group is a `uint32` on the wire,
+/// and every status an `int32`; a value outside that is a device saying
+/// something smply will not act on.
+template<class To, class From>
+[[nodiscard]] Result<To> narrow(From value, const char* where) noexcept
 {
-    if (value > std::numeric_limits<std::uint32_t>::max()) {
-        return fail(Error{ErrorCode::CborDecode, where});
+    if (const std::optional<To> narrowed = detail::checked_narrow<To>(value)) {
+        return *narrowed;
     }
-    return static_cast<std::uint32_t>(value);
+    return fail(Error{ErrorCode::CborDecode, where});
 }
 
 /// Decodes one entry of the image-state "images" array.
@@ -108,11 +110,12 @@ constexpr std::uint32_t kMaxSlotNumber =
     ImageSlot decoded;
     // An absent "image" means zero -- single-image devices omit it entirely
     // (docs/protocol-notes.md section 9, A9).
-    const auto image_number = narrow(image.value_or(0), "image: image number out of range");
+    const auto image_number =
+        narrow<std::uint32_t>(image.value_or(0), "image: image number out of range");
     if (!image_number.has_value()) {
         return fail(image_number.error());
     }
-    const auto slot_number = narrow(*slot, "image: slot number out of range");
+    const auto slot_number = narrow<std::uint32_t>(*slot, "image: slot number out of range");
     if (!slot_number.has_value()) {
         return fail(slot_number.error());
     }
@@ -174,11 +177,11 @@ constexpr std::uint32_t kMaxSlotNumber =
         return fail(status.error());
     }
     if (split.has_value()) {
-        if (*split < std::numeric_limits<std::int32_t>::min() ||
-            *split > std::numeric_limits<std::int32_t>::max()) {
-            return fail(Error{ErrorCode::CborDecode, "image: splitStatus out of range"});
+        const auto value = narrow<std::int32_t>(*split, "image: splitStatus out of range");
+        if (!value.has_value()) {
+            return fail(value.error());
         }
-        state.split_status = static_cast<std::int32_t>(*split);
+        state.split_status = *value;
     }
     return state;
 }
@@ -202,32 +205,33 @@ constexpr std::uint32_t kMaxSlotNumber =
     }
 
     SlotDescriptor descriptor;
-    const auto slot_number = narrow(*slot, "image: slot number out of range");
+    const auto slot_number = narrow<std::uint32_t>(*slot, "image: slot number out of range");
     if (!slot_number.has_value()) {
         return fail(slot_number.error());
     }
     descriptor.slot = *slot_number;
 
     if (size.has_value()) {
-        const auto value = narrow(*size, "image: slot size out of range");
+        const auto value = narrow<std::uint32_t>(*size, "image: slot size out of range");
         if (!value.has_value()) {
             return fail(value.error());
         }
         descriptor.size = *value;
     }
     if (upload_image_id.has_value()) {
-        const auto value = narrow(*upload_image_id, "image: upload image id out of range");
+        const auto value =
+            narrow<std::uint32_t>(*upload_image_id, "image: upload image id out of range");
         if (!value.has_value()) {
             return fail(value.error());
         }
         descriptor.upload_image_id = *value;
     }
     if (open_error.has_value()) {
-        if (*open_error < std::numeric_limits<std::int32_t>::min() ||
-            *open_error > std::numeric_limits<std::int32_t>::max()) {
-            return fail(Error{ErrorCode::CborDecode, "image: slot rc out of range"});
+        const auto value = narrow<std::int32_t>(*open_error, "image: slot rc out of range");
+        if (!value.has_value()) {
+            return fail(value.error());
         }
-        descriptor.open_error = static_cast<std::int32_t>(*open_error);
+        descriptor.open_error = *value;
     }
     return descriptor;
 }
@@ -250,13 +254,15 @@ constexpr std::uint32_t kMaxSlotNumber =
             }
 
             ImageSlotsInfo entry;
-            const auto image_number = narrow(image.value_or(0), "image: image number out of range");
+            const auto image_number =
+                narrow<std::uint32_t>(image.value_or(0), "image: image number out of range");
             if (!image_number.has_value()) {
                 return fail(image_number.error());
             }
             entry.image = *image_number;
             if (max_image_size.has_value()) {
-                const auto value = narrow(*max_image_size, "image: max image size out of range");
+                const auto value =
+                    narrow<std::uint32_t>(*max_image_size, "image: max image size out of range");
                 if (!value.has_value()) {
                     return fail(value.error());
                 }

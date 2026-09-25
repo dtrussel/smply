@@ -90,10 +90,10 @@ SOURCE_DEPENDENCIES: dict[str, tuple[set[str], int]] = {
     "detail": ({"detail"}, 0),
     "cbor": ({"cbor"}, 0),
     "smp": ({"smp", "cbor", "detail"}, 3),
-    "image": ({"image"}, 2),
+    "image": ({"image", "detail"}, 2),
     "groups": ({"groups", "cbor"}, 3),
-    "groups/os": ({"groups/os", "groups", "cbor"}, 4),
-    "groups/image": ({"groups/image", "groups", "cbor"}, 4),
+    "groups/os": ({"groups/os", "groups", "cbor", "detail"}, 4),
+    "groups/image": ({"groups/image", "groups", "cbor", "detail"}, 4),
     "dfu": ({"dfu"}, 5),
     "util": ({"util"}, 0),
 }
