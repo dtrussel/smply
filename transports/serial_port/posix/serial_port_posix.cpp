@@ -108,7 +108,11 @@ void close_fd(int& fd) noexcept
 void wake(const State& state) noexcept
 {
     const std::byte token{1};
-    static_cast<void>(::write(state.wake_write, &token, 1));
+    // Bound to a name rather than cast to void: glibc marks write() as
+    // warn_unused_result under _FORTIFY_SOURCE, which a Release build turns
+    // on, and GCC does not accept a void cast as using the result.
+    const ssize_t ignored = ::write(state.wake_write, &token, 1);
+    static_cast<void>(ignored);
 }
 
 /// Stops the thread, joins it, and closes the port. Client context; idempotent.

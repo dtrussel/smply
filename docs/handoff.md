@@ -251,6 +251,11 @@ true.
   stays up after traffic" is the case that fails without the fix. **A
   transport test that never waits after the traffic has not tested the link
   staying up.**
+* **`static_cast<void>` does not discard `write()`'s result in Release.**
+  glibc marks it `warn_unused_result` under `_FORTIFY_SOURCE`, which only the
+  optimised build enables, and GCC rejects the cast. Bind the result to a
+  named variable and cast that. The Debug presets never show it; the handoff's
+  "Build Release too" is the rule that would have caught it before CI did.
 * **Count before you post.** An adapter that posts a packet and updates its
   counters afterwards lets a listener see a packet `counters()` does not show
   yet. Under ASan's slower timing, a test caught exactly that.
