@@ -131,7 +131,11 @@ struct ServerConfig {
     bool supports_mcumgr_params = true;      // else ENOTSUP
     bool supports_slot_info     = false;     // CONFIG_MCUMGR_GRP_IMG_SLOT_INFO
     bool image_check_enabled    = true;      // emits "match"; enables rule 9a
-    bool single_image           = true;      // omits "image" in state
+    bool single_image           = true;      // omits "image" in state (one image only)
+    std::uint32_t image_count   = 1;         // CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER
+    bool allow_confirm_non_active_image_secondary = false;  // the three A27
+    bool allow_confirm_non_active_image_any       = false;  // Kconfigs, off
+    bool allow_confirm_non_active_slot            = false;  // as in Zephyr
     bool translate_v1_errors    = true;      // the A16 rebuild for a v1 request
     std::uint32_t slot_size     = 0;         // 0 = unbounded
     Duration response_delay{0};
@@ -147,7 +151,7 @@ what `translate_v1_errors` models.
 Scripted misbehaviour lives in methods rather than in the config, so that a
 config stays a description and does not become a script:
 `answer_offset_once()`, `fail_next()`, `drop_next_response()`,
-`reset_busy_once()`, plus `load_slot()`, `reboot()` and
+`reset_busy_once()`, `device_commits()`, plus `load_slot()`, `reboot()` and
 `rebind_transport()` for the device's own state. `answer_offset_once()` changes
 only the *answer*, never the flash: a client that follows the correction is put
 right on the next round trip, and one that computes its own offsets flashes a
@@ -155,9 +159,24 @@ corrupt image -- which is exactly the asymmetry the acceptance test relies on.
 
 `ServerSimulator` is how the update state machine gets end-to-end coverage
 without hardware. It is **not** a reference implementation and is never linked
-into the library. It models **one image and two slots**, and refuses an upload naming any other
-image with `NoFreeSlot` rather than quietly writing slot 1; a second image pair
-is follow-up work, recorded in the roadmap.
+into the library.
+
+**It models `image_count` image pairs**, numbered globally as Zephyr does:
+image `n` owns slots `2n` and `2n + 1`. The multi-image rules are
+[`protocol-notes.md`](protocol-notes.md) §6 ("Several images on one device"),
+each with a `[multi]` test in `test_simulator.cpp`:
+* each image's primary is listed `active`;
+* set-state finds a hash in any image;
+* a hashless confirm names the running image (0) only;
+* confirming a non-running image is denied unless the A27 knobs allow it;
+* the upload's first-packet `image` picks that image's secondary, and an
+  image the device lacks gets `NoFreeSlot`;
+* every image swaps at the same reboot.
+
+`device_commits(image, outcome, reads)` makes one image **device-committed**,
+the staged image of a second MCU in `docs/multi-image.md`. A reboot swaps it in
+as an unconfirmed trial. After `reads` more state reads, the device finishes:
+confirmed, or the old image swapped back with nothing pending.
 
 ## 3. Required unit coverage
 

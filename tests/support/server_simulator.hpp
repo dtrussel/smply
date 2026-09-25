@@ -99,7 +99,22 @@ struct ServerConfig
     bool image_check_enabled = true;
 
     /// Omit `image` from image-state entries, as a single-image device does.
+    /// Ignored when `image_count` is above one: Zephyr omits the field only
+    /// with one updatable image (protocol-notes section 6, S35).
     bool single_image = true;
+
+    /// `CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER`: how many image pairs.
+    /// Image 0 is the running application; every other image is reported with
+    /// its primary slot `active`, as Zephyr's listing does, but is never the
+    /// one a hashless confirm names.
+    std::uint32_t image_count = 1;
+
+    /// The three Kconfigs that let a confirm reach something other than the
+    /// running image's active slot (protocol-notes section 6, A27). All off,
+    /// as in Zephyr.
+    bool allow_confirm_non_active_image_secondary = false;
+    bool allow_confirm_non_active_image_any = false;
+    bool allow_confirm_non_active_slot = false;
 
     /// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`: an image-group code sent
     /// to a **v1** client is translated onto `mcumgr_err_t` and the payload
@@ -116,10 +131,19 @@ struct ServerConfig
     Duration response_delay{0};
 };
 
+/// How a device-committed image's apply ends (docs/multi-image.md).
+enum class ApplyOutcome : std::uint8_t
+{
+    Applied, ///< The target MCU committed it: slot 0 new, confirmed.
+    Failed,  ///< It could not: slot 0 back on the old image, nothing pending.
+};
+
 /// An in-memory MCUmgr server driven through a `FakeTransport`.
 ///
-/// One image, two slots: slot 0 is primary and always the running one, as it is
-/// in a swap-based MCUboot build, and a swap exchanges the two slots' contents.
+/// `ServerConfig::image_count` image pairs, two slots each. Slots are numbered
+/// globally, as Zephyr does: image `n` owns slots `2n` (primary, the one that
+/// runs) and `2n + 1` (secondary, the upload target), and a swap exchanges the
+/// pair's contents.
 class ServerSimulator
 {
 public:
@@ -144,7 +168,8 @@ public:
 
     // --- Device state ------------------------------------------------------
 
-    /// Puts an image into a slot, as though it had been flashed there.
+    /// Puts an image into a slot, as though it had been flashed there. \p slot
+    /// is global: image `n`'s slots are `2n` and `2n + 1`.
     void load_slot(std::size_t slot, std::vector<std::byte> content);
 
     [[nodiscard]] ConstBytes slot_content(std::size_t slot) const;
@@ -171,10 +196,18 @@ public:
     /// case: a continuation then gets `off == 0` with no special handling.
     void reboot();
 
-    [[nodiscard]] SwapType swap_type() const noexcept
+    /// What \p image will do on the next boot.
+    [[nodiscard]] SwapType swap_type(std::uint32_t image = 0) const noexcept
     {
-        return swap_;
+        return images_.at(image).swap;
     }
+
+    /// Makes \p image **device-committed**, as the staged image of a second MCU
+    /// is (docs/multi-image.md). A reboot swaps it in as an unconfirmed trial,
+    /// exactly as MCUboot would; then, after \p reads more image-state reads,
+    /// the device finishes the apply with \p outcome -- confirming it, or
+    /// swapping the old image back. Until then it reports "still applying".
+    void device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads = 1);
 
     /// True once a reset command has been accepted. A real device answers the
     /// reset and *then* goes down, so a test drops the link itself.
@@ -251,12 +284,26 @@ private:
     struct Session
     {
         bool active = false;
+        /// Global slot being written.
         std::size_t slot = 1;
         std::uint64_t off = 0;
         std::uint64_t size = 0;
         /// The `sha` exactly as the client sent it: the server accepts one
         /// trimmed to any length and remembers whatever it was given.
         std::vector<std::byte> sha;
+    };
+
+    /// One image pair: its two slots and what the next boot does with them.
+    struct ImagePair
+    {
+        std::vector<std::vector<std::byte>> slots{2};
+        SwapType swap = SwapType::None;
+        /// Set by `device_commits()`: this image is applied by the device.
+        std::optional<ApplyOutcome> device_outcome;
+        unsigned apply_reads = 1;
+        /// Reads left before an apply in progress finishes; nullopt when none
+        /// is in progress.
+        std::optional<unsigned> applying;
     };
 
     void handle(const Header& header, ConstBytes payload, TimePoint now);
@@ -266,7 +313,8 @@ private:
     [[nodiscard]] std::vector<std::byte> handle_os(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_image(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_upload(const Header& header, ConstBytes payload);
-    [[nodiscard]] std::vector<std::byte> handle_state_read() const;
+    [[nodiscard]] std::vector<std::byte> handle_state_read();
+    [[nodiscard]] std::vector<std::byte> encode_state() const;
     [[nodiscard]] std::vector<std::byte> handle_state_write(Version version, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_erase(Version version, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_slot_info() const;
@@ -277,17 +325,20 @@ private:
     /// A flat SMP-level failure, which never carries a group.
     [[nodiscard]] static std::vector<std::byte> smp_failure(Version version, SmpError code);
 
-    /// Which slot the next boot runs, and how that boot is classified.
-    [[nodiscard]] std::size_t next_boot_slot() const noexcept;
+    /// Which slot of \p image (0 or 1, within the pair) the next boot runs.
+    [[nodiscard]] std::size_t next_boot_slot(std::uint32_t image) const noexcept;
 
-    /// Applies `boot_set_next()`'s rules; returns `ImageError::Ok` on success.
+    /// Applies `img_mgmt_set_next_boot_slot()`'s rules to a global slot;
+    /// returns `ImageError::Ok` on success.
     [[nodiscard]] ImageError set_next_boot_slot(std::size_t slot, bool confirm);
+
+    /// Advances every device-committed apply in progress by one state read.
+    void advance_applies();
 
     std::reference_wrapper<FakeTransport> transport_;
     ServerConfig config_;
 
-    std::vector<std::vector<std::byte>> slots_{2};
-    SwapType swap_ = SwapType::None;
+    std::vector<ImagePair> images_;
     Session session_;
 
     std::vector<Pending> pending_;

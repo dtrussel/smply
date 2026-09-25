@@ -26,8 +26,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using smply::ConstBytes;
@@ -748,4 +750,231 @@ TEST_CASE("an unknown group is not supported", "[simulator][errors]")
     empty.map(0);
     const tcbor::Value response = device.exchange(Operation::Read, Group::Stat, 0, empty.view());
     CHECK(flat_rc(response) == static_cast<std::uint64_t>(SmpError::NotSupported));
+}
+
+// --- Several images (protocol-notes section 6, "Several images on one device")
+
+namespace {
+
+/// A two-image device: image 0 running v1.0.0 with v2.0.0 staged, image 1
+/// (another MCU's image, say) running v5.0.0 with v6.0.0 staged.
+[[nodiscard]] ServerConfig two_images()
+{
+    ServerConfig config;
+    config.image_count = 2;
+    return config;
+}
+
+void load_two_images(ServerSimulator& simulator)
+{
+    simulator.load_slot(0, make_firmware(kBody, 1, 0, 0, 1));
+    simulator.load_slot(1, make_firmware(kBody, 2, 0, 0, 2));
+    simulator.load_slot(2, make_firmware(kBody, 5, 0, 0, 5));
+    simulator.load_slot(3, make_firmware(kBody, 6, 0, 0, 6));
+}
+
+/// The state entries, as decoded.
+[[nodiscard]] std::vector<tcbor::Value> entries_of(Device& device)
+{
+    tcbor::Writer empty;
+    empty.map(0);
+    const tcbor::Value state = device.exchange(Operation::Read, Group::Image, 0, empty.view());
+    const tcbor::Value* images = state.find("images");
+    REQUIRE(images != nullptr);
+    REQUIRE(images->is(tcbor::Value::Kind::Array));
+    return images->items;
+}
+
+/// The entry for (image, slot), which the test requires to exist.
+[[nodiscard]] tcbor::Value entry_of(Device& device, std::uint64_t image, std::uint64_t slot)
+{
+    for (const tcbor::Value& entry : entries_of(device)) {
+        if (entry.get_uint("image") == image && entry.get_uint("slot") == slot) {
+            return entry;
+        }
+    }
+    FAIL("no entry for image " << image << " slot " << slot);
+    return {};
+}
+
+/// A set-state request, with or without a hash.
+[[nodiscard]] tcbor::Value set_state(Device& device, std::optional<ConstBytes> hash, bool confirm,
+                                     Version version = Version::V2)
+{
+    tcbor::Writer request;
+    request.map(hash.has_value() ? 2 : 1);
+    if (hash.has_value()) {
+        request.text("hash").blob(*hash);
+    }
+    request.text("confirm").boolean(confirm);
+    return device.exchange(Operation::Write, Group::Image, 0, request.view(), version);
+}
+
+[[nodiscard]] std::vector<std::byte> hash_at(Device& device, std::uint64_t image,
+                                             std::uint64_t slot)
+{
+    const tcbor::Value entry = entry_of(device, image, slot);
+    const tcbor::Value* hash = entry.find("hash");
+    REQUIRE(hash != nullptr);
+    return hash->bytes;
+}
+
+} // namespace
+
+TEST_CASE("two images are listed with their numbers, each primary active", "[simulator][multi]")
+{
+    // S35: two entries per image, `image` present once there is more than one,
+    // and each image's active slot flagged -- not only the running image's.
+    Device device{two_images()};
+    load_two_images(device.simulator());
+
+    const std::vector<tcbor::Value> entries = entries_of(device);
+    REQUIRE(entries.size() == 4);
+    for (const tcbor::Value& entry : entries) {
+        REQUIRE(entry.find("image") != nullptr);
+    }
+    CHECK(entry_of(device, 0, 0).get_bool("active") == true);
+    CHECK(entry_of(device, 1, 0).get_bool("active") == true);
+    CHECK(entry_of(device, 1, 1).get_bool("active") == false);
+    CHECK(entry_of(device, 1, 0).find("version")->text == "5.0.0");
+}
+
+TEST_CASE("a hash marks the slot it names in any image, and only that image", "[simulator][multi]")
+{
+    Device device{two_images()};
+    load_two_images(device.simulator());
+
+    const std::vector<std::byte> staged = hash_at(device, 1, 1);
+    static_cast<void>(set_state(device, ConstBytes{staged}, false));
+    CHECK(device.simulator().swap_type(1) == SwapType::Test);
+    CHECK(device.simulator().swap_type(0) == SwapType::None);
+    CHECK(entry_of(device, 1, 1).get_bool("pending") == true);
+    CHECK(entry_of(device, 0, 1).get_bool("pending") == false);
+}
+
+TEST_CASE("a hashless confirm names the running image, never another", "[simulator][multi]")
+{
+    // S35: img_mgmt_active_slot(img_mgmt_active_image()). A trial of image 1
+    // cannot be confirmed without its hash.
+    Device device{two_images()};
+    load_two_images(device.simulator());
+    const std::vector<std::byte> staged = hash_at(device, 1, 1);
+    static_cast<void>(set_state(device, ConstBytes{staged}, false));
+    device.simulator().reboot();
+    REQUIRE(device.simulator().swap_type(1) == SwapType::Revert);
+
+    static_cast<void>(set_state(device, std::nullopt, true));
+    CHECK(device.simulator().swap_type(1) == SwapType::Revert);
+}
+
+TEST_CASE("confirming a non-running image is denied, and each Kconfig relaxes only its rule",
+          "[simulator][multi]")
+{
+    const auto trial_of_image_1 = [](ServerConfig config) {
+        auto device = std::make_unique<Device>(config);
+        load_two_images(device->simulator());
+        const std::vector<std::byte> staged = hash_at(*device, 1, 1);
+        static_cast<void>(set_state(*device, ConstBytes{staged}, false));
+        device->simulator().reboot();
+        return device;
+    };
+    const auto denied = static_cast<std::uint64_t>(ImageError::ImageConfirmationDenied);
+
+    SECTION("by default")
+    {
+        auto device = trial_of_image_1(two_images());
+        const std::vector<std::byte> running = hash_at(*device, 1, 0);
+        CHECK(scoped_rc(set_state(*device, ConstBytes{running}, true), 1) == denied);
+    }
+    SECTION("ALLOW_CONFIRM_NON_ACTIVE_IMAGE_SECONDARY does not reach the primary")
+    {
+        ServerConfig config = two_images();
+        config.allow_confirm_non_active_image_secondary = true;
+        auto device = trial_of_image_1(config);
+        const std::vector<std::byte> running = hash_at(*device, 1, 0);
+        CHECK(scoped_rc(set_state(*device, ConstBytes{running}, true), 1) == denied);
+    }
+    SECTION("ALLOW_CONFIRM_NON_ACTIVE_IMAGE_ANY confirms the trial")
+    {
+        ServerConfig config = two_images();
+        config.allow_confirm_non_active_image_any = true;
+        auto device = trial_of_image_1(config);
+        const std::vector<std::byte> running = hash_at(*device, 1, 0);
+        const tcbor::Value answer = set_state(*device, ConstBytes{running}, true);
+        CHECK(answer.find("err") == nullptr);
+        CHECK(device->simulator().swap_type(1) == SwapType::None);
+    }
+}
+
+TEST_CASE("the upload's image picks that image's secondary, and an absent image has no slot",
+          "[simulator][multi]")
+{
+    Device device{two_images()};
+    load_two_images(device.simulator());
+    const std::vector<std::byte> fresh = make_firmware(kBody, 7, 0, 0, 7);
+    const std::vector<std::byte> sha = sha_bytes(fresh);
+
+    const auto first_packet = [&](std::uint64_t image) {
+        tcbor::Writer out;
+        out.map(5)
+            .text("image")
+            .uint(image)
+            .text("len")
+            .uint(fresh.size())
+            .text("off")
+            .uint(0)
+            .text("sha")
+            .blob(ConstBytes{sha})
+            .text("data")
+            .blob(ConstBytes{fresh});
+        return device.exchange(Operation::Write, Group::Image, 1, out.view(), Version::V2);
+    };
+
+    const tcbor::Value done = first_packet(1);
+    CHECK(offset_of(done) == fresh.size());
+    CHECK(device.simulator().slot_content(3).size() == fresh.size());
+    CHECK(entry_of(device, 0, 1).find("version")->text == "2.0.0"); // image 0 untouched
+
+    CHECK(scoped_rc(first_packet(2), 1) == static_cast<std::uint64_t>(ImageError::NoFreeSlot));
+}
+
+TEST_CASE("a device-committed image applies after the configured reads, or rolls back",
+          "[simulator][multi]")
+{
+    // docs/multi-image.md, the swap variant: a trial until the device is done,
+    // then confirmed -- or the old image back, with nothing pending.
+    const auto run = [](smply::test::ApplyOutcome outcome) {
+        auto device = std::make_unique<Device>(two_images());
+        load_two_images(device->simulator());
+        device->simulator().device_commits(1, outcome, 2);
+        const std::vector<std::byte> staged = hash_at(*device, 1, 1);
+        static_cast<void>(set_state(*device, ConstBytes{staged}, false));
+        device->simulator().reboot();
+        return std::make_pair(std::move(device), staged);
+    };
+
+    SECTION("applied")
+    {
+        auto [device, staged] = run(smply::test::ApplyOutcome::Applied);
+        // Two reads still applying: the new image in slot 0, unconfirmed.
+        for (int read = 0; read < 2; ++read) {
+            const tcbor::Value primary = entry_of(*device, 1, 0);
+            CHECK(primary.find("hash")->bytes == staged);
+            CHECK(primary.get_bool("confirmed") == false);
+        }
+        const tcbor::Value primary = entry_of(*device, 1, 0);
+        CHECK(primary.find("hash")->bytes == staged);
+        CHECK(primary.get_bool("confirmed") == true);
+    }
+    SECTION("failed")
+    {
+        auto [device, staged] = run(smply::test::ApplyOutcome::Failed);
+        static_cast<void>(entries_of(*device));
+        static_cast<void>(entries_of(*device));
+        const tcbor::Value primary = entry_of(*device, 1, 0);
+        CHECK(primary.find("hash")->bytes != staged);
+        const tcbor::Value secondary = entry_of(*device, 1, 1);
+        CHECK(secondary.find("hash")->bytes == staged);
+        CHECK(secondary.get_bool("pending") == false);
+    }
 }
