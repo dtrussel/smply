@@ -631,6 +631,12 @@ running MCUboot + the pinned `smp_svr` over BLE, reachable from a Windows host,
 with the exact west manifest, Kconfig snapshots and coprocessor firmware recorded
 so results are reproducible.
 
+**The serial cases have never run.** `test_hil_serial.cpp` puts the serial
+port adapter (its Win32 half) on the bench's console UART. The `serial` group
+(echo and image state) is in the default run, and the exploratory
+`serial-update` group is not. Both were written without the bench.
+`tests/hil/README.md` says what their first run must show.
+
 **Shape.** `test_hil_cases.cpp` is a Catch2 suite over the public API **plus
 two headers no application consumer gets**: `support/dfu_app/reconnect_policy.hpp`
 and `transports/winrt_ble/winrt_ble_transport.hpp` (`tests/hil/support/rig.hpp`).

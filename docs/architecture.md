@@ -458,7 +458,8 @@ smply/
 │   │                           driven out of tree by tools/check_install.sh
 │   └── hil/                    hardware interoperability, opt-in (SMPLY_BUILD_HIL, preset
 │                               windows-hil): test_hil_cases.cpp over support/rig.* and
-│                               support/bench.*; run_hil.py supervises the case suite and
+│                               support/bench.*; test_hil_serial.cpp — the serial adapter
+│                               on the console UART, never run; run_hil.py supervises the case suite and
 │                               crosscheck.py the third-party comparison; firmware/ is the
 │                               reproducible peer (manifest, peer.conf, build and flash
 │                               scripts); tools/ are the bench instruments and the

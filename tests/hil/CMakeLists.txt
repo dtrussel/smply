@@ -16,6 +16,7 @@ add_executable(smply_hil
     support/bench.cpp
     support/rig.cpp
     test_hil_cases.cpp
+    test_hil_serial.cpp   # the serial adapter on the console UART; has never run
 )
 
 target_link_libraries(smply_hil
@@ -23,6 +24,7 @@ target_link_libraries(smply_hil
         smply::smply
         smply::util
         smply::winrt_ble
+        smply::serial_port
         smply::dfu_app
         smply_internal_options
         Catch2::Catch2WithMain
