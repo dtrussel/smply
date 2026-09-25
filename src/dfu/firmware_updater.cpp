@@ -317,21 +317,10 @@ private:
             image_->resume(upload_, upload_done());
             return;
 
-        case Effect::MarkForTest: {
-            SetStateRequest request;
-            request.hash = context_.target;
-            request.confirm = false;
-            static_cast<void>(image_->set_state(
-                request, guarded<ImageState>([](Impl& self, const Result<ImageState>& result) {
-                    if (!result.has_value()) {
-                        self.dispatch(failure(result.error()));
-                        return;
-                    }
-                    self.context_.device = *result;
-                    self.dispatch(plain(Event::Kind::MarkedForTest));
-                })));
+        case Effect::MarkForTest:
+            set_state(SetStateRequest{.hash = context_.target, .confirm = false},
+                      Event::Kind::MarkedForTest);
             return;
-        }
 
         case Effect::Reset:
         case Effect::ForceReset: {
@@ -365,25 +354,33 @@ private:
             return;
         }
 
-        case Effect::Confirm: {
-            SetStateRequest request;
-            request.confirm = true; // No hash: the running image is the target.
-            static_cast<void>(image_->set_state(
-                request, guarded<ImageState>([](Impl& self, const Result<ImageState>& result) {
-                    if (!result.has_value()) {
-                        self.dispatch(failure(result.error()));
-                        return;
-                    }
-                    self.context_.device = *result;
-                    self.dispatch(plain(Event::Kind::Confirmed));
-                })));
+        case Effect::Confirm:
+            // No hash: the running image is the target.
+            set_state(SetStateRequest{.hash = std::nullopt, .confirm = true},
+                      Event::Kind::Confirmed);
             return;
-        }
 
         case Effect::Finish:
             finish();
             return;
         }
+    }
+
+    /// Marks the target for test, or confirms the running image: one command,
+    /// with a different request and a different event on success. Either way
+    /// the answer is the refreshed slot table, which the machine decides on.
+    void set_state(const SetStateRequest& request, Event::Kind on_success)
+    {
+        static_cast<void>(image_->set_state(
+            request,
+            guarded<ImageState>([on_success](Impl& self, const Result<ImageState>& result) {
+                if (!result.has_value()) {
+                    self.dispatch(failure(result.error()));
+                    return;
+                }
+                self.context_.device = *result;
+                self.dispatch(plain(on_success));
+            })));
     }
 
     void start_upload()

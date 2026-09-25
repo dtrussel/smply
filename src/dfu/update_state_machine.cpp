@@ -149,6 +149,85 @@ namespace {
     return confirmation_fork(plan);
 }
 
+/// `Uploading`, on `UploadFinished`.
+[[nodiscard]] Step upload_finished(const Event& event, const UpdatePlan& plan, Context& context)
+{
+    context.upload_in_progress = false;
+    context.report.bytes_transferred = event.transferred;
+    // The pre-flight check is not the only way a transfer gets skipped: the
+    // server runs the same check on the first packet and can answer "complete"
+    // before any image data is really sent (rule 9a), and
+    // UploadResult::already_present says so.
+    context.report.upload_skipped = context.report.upload_skipped || event.already_present;
+    if (upload_only(plan)) {
+        return Step{UpdateState::Completed, Effect::Finish};
+    }
+    return Step{UpdateState::VerifyingUpload, Effect::ReadState};
+}
+
+/// `Uploading`, on a failure.
+[[nodiscard]] Step upload_failed(const Error& error, Context& context)
+{
+    // A dropped link suspends the transfer rather than ending it: the device
+    // keeps the session and resumes by `sha` (section 6, rule 6).
+    if (error.code() == ErrorCode::Disconnected) {
+        return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
+    }
+    return fail(context, error);
+}
+
+/// `MarkingForTest`, on a refusal: recover once from a lost response, or fail.
+///
+/// `ImageAlreadyPending` means a swap is scheduled -- possibly the one this
+/// request was asking for, whose response was lost. Read the state back and let
+/// the planner decide; case 2 there sees our own image already marked and moves
+/// on.
+///
+/// A group-less `BadState` gets the same treatment, and that is the whole of
+/// the A24 fix. A server built with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`
+/// translates an image-group code onto `mcumgr_err_t` for a v1 client and drops
+/// the group, so `image_error()` is always `nullopt` there and a branch on it
+/// alone cannot fire at all (docs/protocol-notes.md section 9, A16 and A24).
+/// Exactly three image codes translate to `EBADSTATE` -- `NoFreeSlot`,
+/// `CurrentVersionIsNewer` and `ImageAlreadyPending` -- and all three want the
+/// same answer: re-read the state and let the planner decide, which fails
+/// cleanly when the pending swap turns out not to be ours.
+///
+/// Deliberately not widened to `Unknown`: that is the catch-all the same table
+/// gives eighteen other codes, every flash failure among them, so recovering
+/// from it would retry genuine refusals. `mark_retried` still bounds this to
+/// one extra round trip.
+[[nodiscard]] Step mark_refused(const Error& error, Context& context)
+{
+    const std::optional<ImageError> code = image_error(error);
+    const bool recoverable =
+        code == ImageError::ImageAlreadyPending || smp_error(error) == SmpError::BadState;
+    if (recoverable && !context.mark_retried) {
+        context.mark_retried = true;
+        return Step{UpdateState::InspectingImages, Effect::ReadState};
+    }
+    return fail(context, error);
+}
+
+/// `Resetting`, on a refusal or a lost answer.
+[[nodiscard]] Step reset_refused(const Error& error, Context& context)
+{
+    // A reset hook may refuse with `Busy`, which invites one retry with `force`
+    // (docs/protocol-notes.md section 5).
+    if (smp_error(error) == SmpError::Busy && !context.reset_forced) {
+        context.reset_forced = true;
+        return Step{UpdateState::Resetting, Effect::ForceReset};
+    }
+    // Losing the response is normal: the device may reset before the answer
+    // goes out (A3). A drop, or silence, is treated as the reset having happened
+    // -- the verify step after the reboot is the real check, and failing here
+    // would abandon a device that is already swapping.
+    if (error.code() == ErrorCode::Disconnected || error.code() == ErrorCode::Timeout) {
+        return Step{UpdateState::AwaitingDisconnect, Effect::AwaitDisconnect};
+    }
+    return fail(context, error);
+}
+
 } // namespace
 
 Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Context& context)
@@ -201,25 +280,10 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
 
     case UpdateState::Uploading:
         if (event.kind == Event::Kind::UploadFinished) {
-            context.upload_in_progress = false;
-            context.report.bytes_transferred = event.transferred;
-            // The pre-flight check is not the only way a transfer gets skipped:
-            // the server runs the same check on the first packet and can answer
-            // "complete" before any image data is really sent (rule 9a), and
-            // UploadResult::already_present says so.
-            context.report.upload_skipped = context.report.upload_skipped || event.already_present;
-            if (upload_only(plan)) {
-                return Step{UpdateState::Completed, Effect::Finish};
-            }
-            return Step{UpdateState::VerifyingUpload, Effect::ReadState};
+            return upload_finished(event, plan, context);
         }
         if (event.kind == Event::Kind::Failed) {
-            // A dropped link suspends the transfer rather than ending it: the
-            // device keeps the session and resumes by `sha` (section 6, rule 6).
-            if (event.error.code() == ErrorCode::Disconnected) {
-                return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
-            }
-            return fail(context, event.error);
+            return upload_failed(event.error, context);
         }
         break;
 
@@ -244,35 +308,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
             return Step{UpdateState::Resetting, Effect::Reset};
         }
         if (event.kind == Event::Kind::Failed) {
-            // `ImageAlreadyPending` means a swap is scheduled -- possibly the
-            // one this request was asking for, whose response was lost. Read
-            // the state back and let the planner decide; case 2 there sees our
-            // own image already marked and moves on.
-            //
-            // A group-less `BadState` gets the same treatment, and that is the
-            // whole of the A24 fix. A server built with
-            // `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` translates an
-            // image-group code onto `mcumgr_err_t` for a v1 client and drops
-            // the group, so `image_error()` is always `nullopt` there and the
-            // branch above cannot fire at all (docs/protocol-notes.md section
-            // 9, A16 and A24). Exactly three image codes translate to
-            // `EBADSTATE` -- `NoFreeSlot`, `CurrentVersionIsNewer` and
-            // `ImageAlreadyPending` -- and all three want the same answer:
-            // re-read the state and let the planner decide, which fails
-            // cleanly when the pending swap turns out not to be ours.
-            //
-            // Deliberately not widened to `Unknown`: that is the catch-all the
-            // same table gives eighteen other codes, every flash failure among
-            // them, so recovering from it would retry genuine refusals.
-            // `mark_retried` still bounds this to one extra round trip.
-            const std::optional<ImageError> code = image_error(event.error);
-            const bool recoverable = code == ImageError::ImageAlreadyPending ||
-                                     smp_error(event.error) == SmpError::BadState;
-            if (recoverable && !context.mark_retried) {
-                context.mark_retried = true;
-                return Step{UpdateState::InspectingImages, Effect::ReadState};
-            }
-            return fail(context, event.error);
+            return mark_refused(event.error, context);
         }
         break;
 
@@ -281,22 +317,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
             return Step{UpdateState::AwaitingDisconnect, Effect::AwaitDisconnect};
         }
         if (event.kind == Event::Kind::Failed) {
-            // A reset hook may refuse with `Busy`, which invites one retry with
-            // `force` (docs/protocol-notes.md section 5).
-            if (smp_error(event.error) == SmpError::Busy && !context.reset_forced) {
-                context.reset_forced = true;
-                return Step{UpdateState::Resetting, Effect::ForceReset};
-            }
-            // Losing the response is normal: the device may reset before the
-            // answer goes out (A3). A drop, or silence, is treated as the reset
-            // having happened -- the verify step after the reboot is the real
-            // check, and failing here would abandon a device that is already
-            // swapping.
-            if (event.error.code() == ErrorCode::Disconnected ||
-                event.error.code() == ErrorCode::Timeout) {
-                return Step{UpdateState::AwaitingDisconnect, Effect::AwaitDisconnect};
-            }
-            return fail(context, event.error);
+            return reset_refused(event.error, context);
         }
         break;
 
