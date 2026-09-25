@@ -80,6 +80,7 @@ target_sources(smply
         src/core.cpp
         src/dfu/firmware_updater.cpp
         src/dfu/update_state_machine.cpp
+        src/groups/image/decode.cpp
         src/groups/image/image_management.cpp
         src/groups/image/upload_driver.cpp
         src/groups/image/upload_session.cpp

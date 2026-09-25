@@ -135,7 +135,8 @@ so nobody has yet implemented `Transport` over one.
 * **Namespaces follow the same line.** The public API is in `smply` (plus
   `smply::limits` for the constants). An internal type is in a namespace named
   after its component: `smply::smp` (the assembler), `smply::cbor`,
-  `smply::groups` (the plumbing every management group shares),
+  `smply::groups` (the plumbing every management group shares, and the
+  groups' response decoders),
   `smply::upload` (the upload state machine and its driver), `smply::image`
   (SHA-256 and the source reader), `smply::dfu` (the update state machine) and
   `smply::detail`. A function defined in `src/` that implements a public
@@ -390,7 +391,7 @@ smply/
 │   ├── groups/                 common.hpp — what every group shares: send(), reject(),
 │   │                           the decode plumbing (namespace smply::groups)
 │   ├── groups/os/              os_management.cpp
-│   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
+│   ├── groups/image/           image_management.cpp  decode.{hpp,cpp}  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
 │   │                           sha256.{hpp,cpp}  source_reader.hpp  image_values.cpp
