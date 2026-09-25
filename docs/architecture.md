@@ -135,6 +135,7 @@ so nobody has yet implemented `Transport` over one.
 * **Namespaces follow the same line.** The public API is in `smply` (plus
   `smply::limits` for the constants). An internal type is in a namespace named
   after its component: `smply::smp` (the assembler), `smply::cbor`,
+  `smply::groups` (the plumbing every management group shares),
   `smply::upload` (the upload state machine and its driver), `smply::image`
   (SHA-256 and the source reader), `smply::dfu` (the update state machine) and
   `smply::detail`. A function defined in `src/` that implements a public
@@ -386,6 +387,8 @@ smply/
 │   ├── cbor/                   cbor.hpp  reader.cpp  writer.cpp  mgmt_error.{hpp,cpp}
 │   │                           — reader/writer ARE the QCBOR backend; there is no
 │   │                             separate backend file
+│   ├── groups/                 common.hpp — what every group shares: send(), reject(),
+│   │                           the decode plumbing (namespace smply::groups)
 │   ├── groups/os/              os_management.cpp
 │   ├── groups/image/           image_management.cpp  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}

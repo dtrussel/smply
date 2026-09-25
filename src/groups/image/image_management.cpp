@@ -3,6 +3,7 @@
 #include "smply/groups/image.hpp"
 
 #include "cbor/cbor.hpp"
+#include "groups/common.hpp"
 #include "groups/image/upload_driver.hpp"
 #include "groups/image/upload_session.hpp"
 #include "smply/error.hpp"
@@ -23,6 +24,9 @@
 namespace smply {
 namespace {
 
+using groups::command_id;
+using groups::reject;
+
 /// Image-group command IDs (docs/protocol-notes.md section 6, S6).
 enum class ImageCommand : std::uint8_t
 {
@@ -39,9 +43,11 @@ constexpr std::size_t kRequestBufferSize = limits::kMaxImageHashLength + 32;
 
 // Sized from the same constant that bounds the only variable-length field any
 // request in this group carries, so encoding cannot run out of room -- which is
-// why the encode guards below report Internal rather than an ordinary failure.
+// why groups::send() reports a failure to encode as Internal.
 static_assert(kRequestBufferSize >= limits::kMaxImageHashLength + kLargestRequestEnvelope,
               "the request buffer must fit the largest legal set-state request");
+
+constexpr const char* kBufferTooSmall = "image: request buffer too small";
 
 /// Largest slot number smply will ask a device to erase.
 ///
@@ -51,30 +57,6 @@ static_assert(kRequestBufferSize >= limits::kMaxImageHashLength + kLargestReques
 /// have; this only rejects a number no device could mean.
 constexpr std::uint32_t kMaxSlotNumber =
     static_cast<std::uint32_t>(limits::kMaxImages * limits::kMaxSlotsPerImage);
-
-/// The empty CBOR map, `{}`, the body of every request with no fields.
-[[nodiscard]] Result<ConstBytes> encode_empty(MutBytes buffer) noexcept
-{
-    cbor::Writer writer{buffer};
-    return writer.open_map().close_map().finish();
-}
-
-[[nodiscard]] std::uint8_t command_id(ImageCommand command) noexcept
-{
-    return static_cast<std::uint8_t>(command);
-}
-
-/// Reports \p error to \p on_done on the next poll(), never inside this call.
-template<class T>
-RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
-{
-    if (on_done) {
-        client.defer([callback = std::move(on_done), failure = std::move(error)]() mutable {
-            callback(fail(std::move(failure)));
-        });
-    }
-    return {};
-}
 
 /// Narrows a decoded CBOR unsigned to 32 bits, or fails.
 ///
@@ -164,17 +146,9 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
 [[nodiscard]] Result<ImageState> decode_state(ConstBytes payload)
 {
     cbor::Reader reader{payload};
-    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
-    // only the `if` leaves its body counted against the branch denominator,
-    // which is what docs/quality-gates.md section 6 excludes it for.
-    if (const auto entered = reader.enter_map(); !entered.has_value()) {
-        // Unreachable today: SmpClient::interpret() has already run
-        // extract_mgmt_error() over this payload, which fails unless it is a
-        // map. Checked anyway -- a decoder that assumes its input was validated
-        // elsewhere is one refactor away from trusting a device.
+    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
         return fail(entered.error());
     }
-    // LCOV_EXCL_STOP
 
     ImageState state;
     // An absent or empty array is a successful, empty answer: the device
@@ -262,13 +236,9 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
 [[nodiscard]] Result<SlotInfo> decode_slot_info(ConstBytes payload)
 {
     cbor::Reader reader{payload};
-    // LCOV_EXCL_START -- unreachable guard; see the note above the first
-    // one for why the whole block and not just the condition.
-    if (const auto entered = reader.enter_map(); !entered.has_value()) {
-        // Unreachable today: see decode_state().
+    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
         return fail(entered.error());
     }
-    // LCOV_EXCL_STOP
 
     SlotInfo info;
     const auto walked = reader.for_each_map_in_array(
@@ -318,26 +288,6 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
         return fail(status.error());
     }
     return info;
-}
-
-/// Completes \p callback with the result of \p decode, or with the failure that
-/// arrived instead of a response.
-template<class T, class Decode>
-void complete(Callback<T>& callback, Result<RawResponse>& response, Decode decode)
-{
-    if (!callback) {
-        return;
-    }
-    if (!response.has_value()) {
-        callback(fail(response.error()));
-        return;
-    }
-    auto decoded = decode(response->payload);
-    if (!decoded.has_value()) {
-        callback(fail(decoded.error()));
-        return;
-    }
-    callback(*std::move(decoded));
 }
 
 } // namespace
@@ -528,28 +478,14 @@ bool ImageManagement::uploading(const UploadHandle& handle) const noexcept
 RequestHandle ImageManagement::get_state(Callback<ImageState> on_done)
 {
     std::array<std::byte, kRequestBufferSize> buffer{};
-    const auto payload = encode_empty(MutBytes{buffer});
-    // LCOV_EXCL_START -- unreachable guard; see the note above the first
-    // one for why the whole block and not just the condition.
-    if (!payload.has_value()) {
-        // Unreachable: see the static_assert on kRequestBufferSize. Kept as a
-        // guard rather than deleted, so a future change to the sizing fails
-        // loudly instead of sending a truncated request.
-        return reject(*client_, std::move(on_done),
-                      Error{ErrorCode::Internal, "image: request buffer too small"});
-    }
-    // LCOV_EXCL_STOP
-
-    const RequestSpec spec{.op = Operation::Read,
-                           .group = Group::Image,
-                           .command = command_id(ImageCommand::State),
-                           .payload = *payload,
-                           .timeout = {}};
-
-    return client_->request(spec,
-                            [callback = std::move(on_done)](Result<RawResponse> response) mutable {
-                                complete(callback, response, decode_state);
-                            });
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Read,
+                                    .group = Group::Image,
+                                    .command = command_id(ImageCommand::State),
+                                    .payload = {},
+                                    .timeout = {}},
+                        groups::encode_empty(MutBytes{buffer}), std::move(on_done), decode_state,
+                        kBufferTooSmall);
 }
 
 RequestHandle ImageManagement::set_state(const SetStateRequest& request,
@@ -571,26 +507,16 @@ RequestHandle ImageManagement::set_state(const SetStateRequest& request,
     // Encoded even when false: the specification does not mark it optional, and
     // a confirm that silently became a test would be the worse failure.
     writer.put_bool("confirm", request.confirm);
-    const auto payload = writer.close_map().finish();
-    // LCOV_EXCL_START -- unreachable guard; see the note above the first
-    // one for why the whole block and not just the condition.
-    if (!payload.has_value()) {
-        // Unreachable: see the static_assert on kRequestBufferSize.
-        return reject(*client_, std::move(on_done),
-                      Error{ErrorCode::Internal, "image: request buffer too small"});
-    }
-    // LCOV_EXCL_STOP
 
-    const RequestSpec spec{.op = Operation::Write,
-                           .group = Group::Image,
-                           .command = command_id(ImageCommand::State),
-                           .payload = *payload,
-                           .timeout = {}};
-
-    return client_->request(spec,
-                            [callback = std::move(on_done)](Result<RawResponse> response) mutable {
-                                complete(callback, response, decode_state);
-                            });
+    // The answer is the refreshed slot table, the same shape get_state reads.
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Write,
+                                    .group = Group::Image,
+                                    .command = command_id(ImageCommand::State),
+                                    .payload = {},
+                                    .timeout = {}},
+                        writer.close_map().finish(), std::move(on_done), decode_state,
+                        kBufferTooSmall);
 }
 
 RequestHandle ImageManagement::erase(const EraseOptions& options, Callback<void> on_done)
@@ -608,37 +534,18 @@ RequestHandle ImageManagement::erase(const EraseOptions& options, Callback<void>
         // erase the slot opposite the running one -- the upload target.
         writer.put_uint("slot", *options.slot);
     }
-    const auto payload = writer.close_map().finish();
-    // LCOV_EXCL_START -- unreachable guard; see the note above the first
-    // one for why the whole block and not just the condition.
-    if (!payload.has_value()) {
-        // Unreachable: see the static_assert on kRequestBufferSize.
-        return reject(*client_, std::move(on_done),
-                      Error{ErrorCode::Internal, "image: request buffer too small"});
-    }
-    // LCOV_EXCL_STOP
 
-    const RequestSpec spec{.op = Operation::Write,
-                           .group = Group::Image,
-                           .command = command_id(ImageCommand::Erase),
-                           .payload = *payload,
-                           // Erase is synchronous on the device and can take
-                           // tens of seconds (protocol-notes section 9, A12).
-                           .timeout = options.timeout.value_or(limits::kEraseTimeout)};
-
-    return client_->request(spec, [callback = std::move(on_done)](Result<RawResponse> response) {
-        if (!callback) {
-            return;
-        }
-        if (!response.has_value()) {
-            callback(fail(response.error()));
-            return;
-        }
-        // Success carries an empty map -- or `{"rc": 0}` from a server built
-        // for the legacy result-code behaviour, which SmpClient has already
-        // read as success. Either way there is nothing to decode.
-        callback({});
-    });
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Write,
+                                    .group = Group::Image,
+                                    .command = command_id(ImageCommand::Erase),
+                                    .payload = {},
+                                    // Erase is synchronous on the device and can
+                                    // take tens of seconds (protocol-notes
+                                    // section 9, A12).
+                                    .timeout = options.timeout.value_or(limits::kEraseTimeout)},
+                        writer.close_map().finish(), std::move(on_done), groups::decode_nothing,
+                        kBufferTooSmall);
 }
 
 RequestHandle ImageManagement::erase(Callback<void> on_done)
@@ -649,28 +556,16 @@ RequestHandle ImageManagement::erase(Callback<void> on_done)
 RequestHandle ImageManagement::get_slot_info(Callback<SlotInfo> on_done)
 {
     std::array<std::byte, kRequestBufferSize> buffer{};
-    const auto payload = encode_empty(MutBytes{buffer});
-    // LCOV_EXCL_START -- unreachable guard; see the note above the first
-    // one for why the whole block and not just the condition.
-    if (!payload.has_value()) {
-        // Unreachable: see the static_assert on kRequestBufferSize.
-        return reject(*client_, std::move(on_done),
-                      Error{ErrorCode::Internal, "image: request buffer too small"});
-    }
-    // LCOV_EXCL_STOP
-
-    const RequestSpec spec{.op = Operation::Read,
-                           .group = Group::Image,
-                           .command = command_id(ImageCommand::SlotInfo),
-                           .payload = *payload,
-                           .timeout = {}};
-
-    return client_->request(spec,
-                            [callback = std::move(on_done)](Result<RawResponse> response) mutable {
-                                // SmpError::NotSupported arrives here like any other device error;
-                                // recognising it and falling back is the caller's decision.
-                                complete(callback, response, decode_slot_info);
-                            });
+    // SmpError::NotSupported arrives as a failure like any other device error;
+    // recognising it and falling back is the caller's decision.
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Read,
+                                    .group = Group::Image,
+                                    .command = command_id(ImageCommand::SlotInfo),
+                                    .payload = {},
+                                    .timeout = {}},
+                        groups::encode_empty(MutBytes{buffer}), std::move(on_done),
+                        decode_slot_info, kBufferTooSmall);
 }
 
 } // namespace smply

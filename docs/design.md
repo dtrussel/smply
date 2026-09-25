@@ -452,6 +452,13 @@ TLVs against what a device reports.
 
 ### Four rules every group follows
 
+A group command is always the same five steps: encode a request, build a
+`RequestSpec`, send it, and on the answer either pass the failure on or decode
+the payload. `src/groups/common.hpp` holds those steps once (`groups::send()`,
+`reject()`, `enter_response()`), so a new group is its command enumeration,
+its encoders and its decoders. The rules below are what those encoders and
+decoders must still get right themselves.
+
 1. **Requests encode into a stack buffer**, sized from the constant that bounds
    the input rather than from what the caller passed. Nothing in the CBOR façade
    allocates, and a device cannot induce an allocation by claiming a size.
