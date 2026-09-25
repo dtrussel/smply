@@ -42,6 +42,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers) -- posix_openpt, grantpt: POSIX, not <cstdlib>
+#include <sys/ioctl.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -351,6 +352,30 @@ TEST_CASE("an idle link stays up after traffic", "[serial_port]")
     CHECK(recorder.disconnects.empty());
     CHECK(transport->send(ConstBytes{message}).has_value());
 }
+
+#ifdef TIOCGEXCL
+TEST_CASE("close gives up exclusive use, so the port can be reopened", "[serial_port]")
+{
+    // TIOCEXCL is a property of the tty and outlives the adapter's descriptor
+    // while anything else holds the port. Reopening then fails with EBUSY --
+    // but only for a non-root user, which is why this reads the flag itself
+    // instead of trying a reopen that would pass when run as root.
+    const PtyDevice device;
+    const int other = ::open(device.slave_path.c_str(), O_RDWR | O_NOCTTY);
+    REQUIRE(other >= 0);
+
+    ClientContext context;
+    const auto transport = open_on(device, context);
+    int exclusive = 0;
+    REQUIRE(::ioctl(other, TIOCGEXCL, &exclusive) == 0);
+    CHECK(exclusive != 0);
+
+    transport->close();
+    REQUIRE(::ioctl(other, TIOCGEXCL, &exclusive) == 0);
+    CHECK(exclusive == 0);
+    static_cast<void>(::close(other));
+}
+#endif
 
 TEST_CASE("send refuses what it cannot carry", "[serial_port]")
 {

@@ -256,6 +256,15 @@ true.
   optimised build enables, and GCC rejects the cast. Bind the result to a
   named variable and cast that. The Debug presets never show it; the handoff's
   "Build Release too" is the rule that would have caught it before CI did.
+* **This container runs as root, and root hides tty permission bugs.** The
+  adapter took `TIOCEXCL` and never gave it up. The flag belongs to the tty,
+  not the descriptor, so it outlived the adapter while the stub's keeper held
+  the port. Reopening after a reset then failed with `EBUSY` for every user
+  but root, which means on the CI runner and on every workstation, and never
+  here. Run anything that opens a tty once as another user as well:
+  `setpriv --reuid=nobody --regid=nogroup --clear-groups <binary>`. Prefer a
+  test that reads the state directly: "close gives up exclusive use" checks
+  `TIOCGEXCL` and fails as root too.
 * **Count before you post.** An adapter that posts a packet and updates its
   counters afterwards lets a listener see a packet `counters()` does not show
   yet. Under ASan's slower timing, a test caught exactly that.

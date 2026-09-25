@@ -138,6 +138,14 @@ void shutdown(State& state) noexcept
         const std::lock_guard<std::mutex> lock{state.mutex};
         state.outbound.discard_queued();
     }
+    // Give up exclusive use before letting go of the port. TIOCEXCL belongs to
+    // the tty, not to this descriptor, and outlives it for as long as anything
+    // else still holds the port open -- so without this, reopening after a
+    // reset is refused with EBUSY for every user but root, which is exactly
+    // how CI found it when a root container had not.
+    if (state.fd >= 0) {
+        static_cast<void>(::ioctl(state.fd, TIOCNXCL));
+    }
     close_fd(state.fd);
     close_fd(state.wake_read);
     close_fd(state.wake_write);

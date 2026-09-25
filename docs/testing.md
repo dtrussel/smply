@@ -475,6 +475,11 @@ case that failed when the adapter mistook an empty `VMIN = 0` read for end of
 file. Every other case had already checked its packets before the spurious
 disconnect was drained (handoff.md, "Serial ports").
 
+**Check the tty's own state, not what root is allowed to do.** "close gives up
+exclusive use" reads `TIOCGEXCL` after `close()`. A reopen test would pass as
+root whatever the adapter left behind, and root is what this development
+container runs as (handoff.md, "Serial ports").
+
 **Assert only what the queue guarantees.** A message admitted by
 `StartWriter` waits in `SendQueue` until the I/O thread takes it. So a third
 offer can be refused before any offer was ever deferred, and

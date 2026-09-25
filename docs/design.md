@@ -1411,7 +1411,10 @@ part-way cannot be resumed.
 5. discard any waiting message;
 6. close the port.
 
-It never drains or clears the `Dispatcher`, which belongs to the application
+Before closing the port, `close()` gives up exclusive use (`TIOCNXCL`).
+`TIOCEXCL` belongs to the tty and would otherwise outlive the adapter while
+anything else holds the port open, refusing a reopen with `EBUSY`. `close()`
+never drains or clears the `Dispatcher`, which belongs to the application
 (handoff.md). The destructor calls it.
 
 **A device reset.** The adapter reports what the medium says, and assumes
