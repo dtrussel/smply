@@ -127,7 +127,7 @@ Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget, const FirstP
 
     const std::uint64_t overhead = kHeaderSize + first_packet_overhead(fields);
     if (message_budget <= overhead) {
-        return fail(Error{ErrorCode::MessageTooLarge, "upload: no room for a chunk"});
+        return fail(ErrorCode::MessageTooLarge, "upload: no room for a chunk");
     }
 
     const std::uint64_t available = message_budget - overhead;
@@ -135,7 +135,7 @@ Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget, const FirstP
     if (capped < limits::kUploadChunkMin) {
         // The server rejects a first chunk that does not carry the whole
         // 32-byte MCUboot header, so a smaller chunk can never succeed.
-        return fail(Error{ErrorCode::MessageTooLarge, "upload: chunk below the 32-byte minimum"});
+        return fail(ErrorCode::MessageTooLarge, "upload: chunk below the 32-byte minimum");
     }
     return static_cast<std::uint32_t>(capped);
 }

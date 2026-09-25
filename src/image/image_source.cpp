@@ -64,7 +64,7 @@ Result<Hash> sha256(ImageSource& source)
             // Short of the end, so the source has broken its contract. Bailing
             // out rather than looping keeps a source that returns one byte at a
             // time from turning this into millions of calls.
-            return fail(Error{ErrorCode::InvalidArgument, "image: source returned a short read"});
+            return fail(ErrorCode::InvalidArgument, "image: source returned a short read");
         }
 
         hasher.update(ConstBytes{buffer.data(), wanted});

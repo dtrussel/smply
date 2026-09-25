@@ -36,7 +36,7 @@ template<class To, class From>
     if (const std::optional<To> narrowed = detail::checked_narrow<To>(value)) {
         return *narrowed;
     }
-    return fail(Error{ErrorCode::CborDecode, where});
+    return fail(ErrorCode::CborDecode, where);
 }
 
 /// Decodes one entry of the image-state "images" array.
@@ -63,15 +63,15 @@ template<class To, class From>
     // "slot" and "version" are the two fields the specification does not mark
     // optional, and the server always encodes both.
     if (!slot.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "image: state entry has no slot"});
+        return fail(ErrorCode::CborDecode, "image: state entry has no slot");
     }
     if (!version.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "image: state entry has no version"});
+        return fail(ErrorCode::CborDecode, "image: state entry has no version");
     }
     if (version->size() > limits::kMaxVersionStringLength) {
         // Bounded before the copy: a device cannot make smply allocate on a
         // size it chose.
-        return fail(Error{ErrorCode::CborDecode, "image: version string too long"});
+        return fail(ErrorCode::CborDecode, "image: version string too long");
     }
 
     ImageSlot decoded;
@@ -126,7 +126,7 @@ template<class To, class From>
         return fail(status.error());
     }
     if (!slot.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "image: slot-info entry has no slot"});
+        return fail(ErrorCode::CborDecode, "image: slot-info entry has no slot");
     }
 
     SlotDescriptor descriptor;

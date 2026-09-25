@@ -175,7 +175,7 @@ public:
                 continue; // a callback already completed it
             }
             ++stats_.timeouts;
-            complete(*entry, fail(Error{ErrorCode::Timeout, "smp client: no response"}));
+            complete(*entry, fail(ErrorCode::Timeout, "smp client: no response"));
         }
 
         // A callback may have queued more work.

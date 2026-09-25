@@ -59,12 +59,12 @@ constexpr const char* kBufferTooSmall = "os: request buffer too small";
         return fail(status.error());
     }
     if (!buf_size.has_value() || !buf_count.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "os: parameters incomplete"});
+        return fail(ErrorCode::CborDecode, "os: parameters incomplete");
     }
     const std::optional<std::uint32_t> size = detail::checked_narrow<std::uint32_t>(*buf_size);
     const std::optional<std::uint32_t> count = detail::checked_narrow<std::uint32_t>(*buf_count);
     if (!size.has_value() || !count.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "os: parameters out of range"});
+        return fail(ErrorCode::CborDecode, "os: parameters out of range");
     }
     return McumgrParameters{.buf_size = *size, .buf_count = *count};
 }
@@ -83,13 +83,13 @@ constexpr const char* kBufferTooSmall = "os: request buffer too small";
         return fail(status.error());
     }
     if (!echoed.has_value()) {
-        return fail(Error{ErrorCode::CborDecode, "os: echo reply has no text"});
+        return fail(ErrorCode::CborDecode, "os: echo reply has no text");
     }
     if (echoed->size() > limits::kMaxEchoLength) {
         // Bounded before the copy. A device cannot make smply allocate on a
         // size it chose, and a reply longer than the request is not an answer
         // to it.
-        return fail(Error{ErrorCode::CborDecode, "os: echo reply too long"});
+        return fail(ErrorCode::CborDecode, "os: echo reply too long");
     }
     // The view points into the assembler's buffer, which is valid only for
     // this callback. The copy is what the caller keeps.

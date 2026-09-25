@@ -75,7 +75,7 @@ void UploadDriver::abandon()
     request_ = {};
     // Inline, because this runs from a destructor and the deferred completion
     // the line above queued will find this driver gone.
-    finish(fail(Error{ErrorCode::Cancelled, "upload: image management destroyed"}));
+    finish(fail(ErrorCode::Cancelled, "upload: image management destroyed"));
 }
 
 void UploadDriver::send(const UploadRequest& request)
@@ -110,7 +110,7 @@ void UploadDriver::send(const UploadRequest& request)
     if (*read != request.length) {
         // A short read anywhere but the end of the image is a broken source --
         // the same rule src/image/ applies, and for the same reason.
-        finish(fail(Error{ErrorCode::InvalidArgument, "upload: source returned a short read"}));
+        finish(fail(ErrorCode::InvalidArgument, "upload: source returned a short read"));
         return;
     }
     writer.put_bytes("data", ConstBytes{into});
@@ -123,7 +123,7 @@ void UploadDriver::send(const UploadRequest& request)
         // Unreachable: kUploadBufferSize covers the largest legal chunk plus
         // the largest envelope, and chunk_size is bounded before a session
         // exists. Kept so a future change to the sizing fails loudly.
-        finish(fail(Error{ErrorCode::Internal, "upload: request buffer too small"}));
+        finish(fail(ErrorCode::Internal, "upload: request buffer too small"));
         return;
     }
     // LCOV_EXCL_STOP

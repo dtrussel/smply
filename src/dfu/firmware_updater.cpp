@@ -120,7 +120,7 @@ public:
         // MCUboot image fails here rather than half way through an update.
         const Result<ImageHash> target = read_target_hash(source);
         if (!target.has_value()) {
-            return unexpected<Error>{target.error()};
+            return fail(target.error());
         }
 
         plan_ = plan;
@@ -425,8 +425,8 @@ private:
 
         Result<UpdateReport> outcome = report_;
         if (state_ != UpdateState::Completed) {
-            outcome = unexpected<Error>{
-                context_.report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"})};
+            outcome = fail(
+                context_.report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"}));
         }
 
         emit(UpdateFinished{.result = std::move(outcome)});
@@ -463,7 +463,7 @@ private:
         std::array<std::byte, kMcubootHeaderSize> head{};
         const Result<std::size_t> read = source.read(0, MutBytes{head});
         if (!read.has_value()) {
-            return unexpected<Error>{read.error()};
+            return fail(read.error());
         }
         if (*read != head.size()) {
             return fail(ErrorCode::InvalidArgument, "updater: source shorter than an image header");
@@ -471,12 +471,12 @@ private:
 
         const Result<McubootImageInfo> info = parse_mcuboot_header(ConstBytes{head});
         if (!info.has_value()) {
-            return unexpected<Error>{info.error()};
+            return fail(info.error());
         }
 
         const Result<std::optional<ImageHash>> found = find_image_tlv_hash(source, *info);
         if (!found.has_value()) {
-            return unexpected<Error>{found.error()};
+            return fail(found.error());
         }
         // Bound once: the engaged state is then visible where the value is
         // read, to a reader and to static analysis alike.

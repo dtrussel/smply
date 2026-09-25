@@ -93,7 +93,7 @@ Result<void> Reader::enter_map(std::string_view key) noexcept
         // Distinguishing "absent" from "present but not a map" here would need
         // a peek; callers that care check for the key first.
         QCBORDecode_GetAndResetError(&context_);
-        return fail(Error{ErrorCode::CborDecode, "cbor reader: no such map"});
+        return fail(ErrorCode::CborDecode, "cbor reader: no such map");
     }
     ++depth_;
     return {};

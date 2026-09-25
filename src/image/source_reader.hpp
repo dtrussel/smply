@@ -34,7 +34,7 @@ namespace smply::image {
     // end of the image is not an error to a source, so only the caller can tell
     // "past the end" from "short read".
     if (offset > source.size() || out.size() > source.size() - offset) {
-        return fail(Error{ErrorCode::MalformedMessage, "image: read past the end of the image"});
+        return fail(ErrorCode::MalformedMessage, "image: read past the end of the image");
     }
 
     const auto read = source.read(offset, out);
@@ -42,7 +42,7 @@ namespace smply::image {
         return fail(read.error());
     }
     if (*read != out.size()) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: source returned a short read"});
+        return fail(ErrorCode::InvalidArgument, "image: source returned a short read");
     }
     return {};
 }

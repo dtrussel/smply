@@ -22,10 +22,10 @@ Result<ImageHash> ImageHash::from(ConstBytes bytes) noexcept
     if (bytes.empty()) {
         // An absent hash decodes to std::nullopt; a present but empty one is a
         // device saying something that cannot be true.
-        return fail(Error{ErrorCode::CborDecode, "image: empty hash"});
+        return fail(ErrorCode::CborDecode, "image: empty hash");
     }
     if (bytes.size() > limits::kMaxImageHashLength) {
-        return fail(Error{ErrorCode::CborDecode, "image: hash too long"});
+        return fail(ErrorCode::CborDecode, "image: hash too long");
     }
     ImageHash hash;
     std::copy(bytes.begin(), bytes.end(), hash.data_.begin());
@@ -44,7 +44,7 @@ ImageHash ImageHash::from(const Hash& hash) noexcept
 Result<ImageVersion> ImageVersion::parse(std::string_view text)
 {
     if (text.empty() || text.size() > limits::kMaxVersionStringLength) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: version string not parseable"});
+        return fail(ErrorCode::InvalidArgument, "image: version string not parseable");
     }
 
     // Hand-written rather than delegating to a stream or strtoul: both accept
@@ -57,13 +57,12 @@ Result<ImageVersion> ImageVersion::parse(std::string_view text)
         while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
             value = (value * 10) + static_cast<std::uint64_t>(text[at] - '0');
             if (value > limit) {
-                return fail(
-                    Error{ErrorCode::InvalidArgument, "image: version component too large"});
+                return fail(ErrorCode::InvalidArgument, "image: version component too large");
             }
             ++at;
         }
         if (at == start) {
-            return fail(Error{ErrorCode::InvalidArgument, "image: version component missing"});
+            return fail(ErrorCode::InvalidArgument, "image: version component missing");
         }
         return value;
     };
@@ -81,14 +80,14 @@ Result<ImageVersion> ImageVersion::parse(std::string_view text)
         return fail(major.error());
     }
     if (!separator('.')) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: version needs major.minor.revision"});
+        return fail(ErrorCode::InvalidArgument, "image: version needs major.minor.revision");
     }
     const auto minor = number(std::numeric_limits<std::uint8_t>::max());
     if (!minor.has_value()) {
         return fail(minor.error());
     }
     if (!separator('.')) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: version needs major.minor.revision"});
+        return fail(ErrorCode::InvalidArgument, "image: version needs major.minor.revision");
     }
     const auto revision = number(std::numeric_limits<std::uint16_t>::max());
     if (!revision.has_value()) {
@@ -110,7 +109,7 @@ Result<ImageVersion> ImageVersion::parse(std::string_view text)
     }
 
     if (at != text.size()) {
-        return fail(Error{ErrorCode::InvalidArgument, "image: trailing text after version"});
+        return fail(ErrorCode::InvalidArgument, "image: trailing text after version");
     }
     return version;
 }
