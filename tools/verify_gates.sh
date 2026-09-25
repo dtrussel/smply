@@ -541,10 +541,36 @@ PROBE
         # that does not mean the same thing. Only gcovr is hidden -- env -i
         # would drop the compiler too, and the check would pass for the wrong
         # reason.
-        GCOVR_DIR="$(dirname "$(command -v gcovr)")"
-        NO_GCOVR_PATH="$(echo "$PATH" | tr ':' '\n' | grep -vxF "$GCOVR_DIR" | paste -sd:)"
-        expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
-            env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
+        #
+        # Every directory holding a gcovr is shadowed, not dropped from PATH: an
+        # apt-installed gcovr lives in /usr/bin, which also holds bash and the
+        # compiler, and /bin is often a symlink to it, so dropping one entry
+        # leaves gcovr reachable through the other. Each PATH entry with a
+        # gcovr in it is replaced by a copy of that directory without it, and
+        # the case is refused outright if gcovr can still be found.
+        NO_GCOVR_PATH=""
+        IFS=: read -r -a path_entries <<< "$PATH"
+        for entry in "${path_entries[@]}"; do
+            if [[ -x "$entry/gcovr" ]]; then
+                real="$(cd "$entry" && pwd -P)"
+                shadow="$SCRATCH/no-gcovr$(echo "$real" | tr '/' '_')"
+                if [[ ! -d "$shadow" ]]; then
+                    mkdir -p "$shadow"
+                    for tool in "$real"/*; do
+                        [[ "$(basename "$tool")" == gcovr ]] || ln -sf "$tool" "$shadow/"
+                    done
+                fi
+                entry="$shadow"
+            fi
+            NO_GCOVR_PATH="${NO_GCOVR_PATH:+$NO_GCOVR_PATH:}$entry"
+        done
+        if env PATH="$NO_GCOVR_PATH" bash -c 'command -v gcovr' > /dev/null; then
+            printf '  FAIL  coverage.sh without gcovr: gcovr is still on the PATH\n'
+            FAIL=$((FAIL + 1))
+        else
+            expect_fail "coverage.sh --enforce refuses to pass without gcovr" \
+                env PATH="$NO_GCOVR_PATH" tools/coverage.sh build-covprobe --enforce
+        fi
     else
         skip 'coverage reporter (the --coverage probe did not build)'
         tail -5 "$SCRATCH/covprobe-build.log"
