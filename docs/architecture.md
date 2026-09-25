@@ -416,7 +416,8 @@ smply/
 │   │                           Transport, with one I/O thread of its own;
 │   │                           serial_port_config.hpp  serial_link.hpp — configuration,
 │   │                           counters, and the byte-level halves both platforms share;
-│   │                           posix/ — termios and poll()
+│   │                           posix/ — termios and poll(); win32/ — CreateFile and
+│   │                           overlapped I/O, compiled by CI and never run on a port
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
@@ -491,8 +492,8 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
   as untested.
 * **Serial: a reference adapter exists, and has not met a device.**
   `transports/serial/` implements MCUmgr's console encapsulation in both
-  directions. `transports/serial_port/` opens a port (POSIX `termios`) and
-  implements `Transport` over it. It runs in CI against a pseudo-terminal
+  directions. `transports/serial_port/` opens a port (POSIX `termios`, or
+  Win32, which is compile-only in CI) and implements `Transport` over it. It runs in CI against a pseudo-terminal
   only, so **no serial byte has been on a wire to a real device**. The framing's
   evidence is still agreement with a transcription of Zephyr's source (ADR-0017,
   ADR-0020). Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented;

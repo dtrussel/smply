@@ -40,10 +40,15 @@ status=0
 # exclude exactly these and nothing else -- an over-broad filter here (say,
 # matching the substring "winrt") would silently stop analysing real code, which
 # is the failure shape this project has hit six times.
+#
+# The fourth is the Win32 half of the serial port adapter (ADR-0020). Only that
+# half: transports/serial_port/ itself, and its posix/ directory, are analysed
+# like any other code. MSVC /W4 /WX in the windows-msvc job covers win32/.
 WINRT_DIRS=(
     "transports/winrt_ble/"
     "examples/winrt_ble_dfu/"
     "tests/hil/"
+    "transports/serial_port/win32/"
 )
 
 # One extended-regex alternation of anchored prefixes, for grep -E below.

@@ -1312,10 +1312,24 @@ protocol it carries; this section is the port.*
 `SerialPortTransport` implements `Transport` over anything that looks like a
 tty: a hardware UART, a USB CDC ACM port, a pseudo-terminal. One header,
 `serial_port_transport.hpp`, names no OS type. `posix/` implements it with
-`termios` and `poll()`, and it runs in CI against a pseudo-terminal
-(`tests/serial_port/`). A Win32 implementation behind the same header, with
-`CreateFile` and overlapped I/O, is the next step. It mirrors the POSIX file
-section for section.
+`termios` and `poll()`, and `win32/` with `CreateFile` and overlapped I/O. The
+two files mirror each other section by section, and should be reviewed side by
+side. The POSIX one runs in CI against a pseudo-terminal (`tests/serial_port/`).
+The Win32 one is compiled by `windows-msvc` and is outside clang-tidy and
+cppcheck (quality-gates.md §3). It **has never opened a port**: the only
+Windows test opens one that does not exist.
+
+The Win32 differences are the ones the platform forces:
+* **The wake-up.** An auto-reset event, not a self-pipe, and
+  `WaitForMultipleObjects` over it and one event per overlapped direction.
+* **The read timeouts.** `ReadIntervalTimeout` and
+  `ReadTotalTimeoutMultiplier` are `MAXDWORD`, with a constant, so a read
+  returns as soon as anything arrives.
+* **The open.** The port is opened unshared rather than with `TIOCEXCL`, and
+  as `\\.\COMn`, the only spelling that works above `COM9`. DTR is asserted,
+  as a POSIX open does.
+* **Error mapping.** Once open, every failure is `Disconnected`, because a
+  vanished USB port answers with several different codes.
 
 ### Configuration
 
@@ -1418,7 +1432,10 @@ hardware; roadmap O7 stays open for that.
 ### Counters
 
 `counters()` returns a `SerialLinkCounters` snapshot, taken under the
-adapter's mutex and readable from any thread, even after `close()`. A serial
+adapter's mutex and readable from any thread, even after `close()`. **A packet
+is counted before it is posted**, so any packet the listener has seen is one
+`counters()` already shows. The first version counted after a whole read and
+let a test under ASan see the second of two packets before the count did. A serial
 link fails *quietly*: frames lost to a shared console look exactly like a
 switched-off device. The counters tell those apart.
 

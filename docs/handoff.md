@@ -240,6 +240,21 @@ true.
   switched off. Nothing obliges a product to advertise the UUID, so connecting
   by address must stay possible.
 
+**Serial ports**
+
+* **A raw tty needs `VMIN = 1`, not 0.** With `VMIN` and `VTIME` both 0, Linux
+  answers a read of an empty tty with 0 even under `O_NONBLOCK`, and 0 is also
+  what end of file looks like. The first version of the serial adapter read
+  until "empty", took that 0 for a hang-up, and disconnected after every
+  exchange. Its tests stayed green, because each checked its packets before
+  the spurious disconnect was drained. `tests/serial_port/`'s "an idle link
+  stays up after traffic" is the case that fails without the fix. **A
+  transport test that never waits after the traffic has not tested the link
+  staying up.**
+* **Count before you post.** An adapter that posts a packet and updates its
+  counters afterwards lets a listener see a packet `counters()` does not show
+  yet. Under ASan's slower timing, a test caught exactly that.
+
 **The Windows half: run from a bench, never by CI**
 
 * **No CI job puts a byte of the WinRT code on the air.** `windows-winrt`
@@ -248,11 +263,23 @@ true.
   against a real device only from the bench, by hand. So a green badge means
   "it builds", and any change to that code is unproven until someone runs the
   bench again.
-* **Three directories are outside clang-tidy and cppcheck**:
-  `transports/winrt_ble/`, `examples/winrt_ble_dfu/` and `tests/hil/`. Both
+* **The serial adapter's Win32 half has never opened a port either.**
+  `windows-msvc` compiles `transports/serial_port/win32/` and runs
+  `smply_serial_port_tests`, whose only Windows cases open no port. Before
+  pushing a change there, a MinGW cross-build catches most of what MSVC
+  would: `apt-get install g++-mingw-w64-x86-64-posix`, then configure with
+  `-DCMAKE_SYSTEM_NAME=Windows` and the `x86_64-w64-mingw32-*-posix`
+  compilers, and build `smply_serial_port_tests`. It compiles under smply's
+  strict GCC warning set and links. Test discovery then fails trying to run
+  the `.exe`, which is expected. It is not MSVC: `/W4` still has its own
+  opinions (C4505, bitfield narrowing).
+* **Four directories are outside clang-tidy and cppcheck**:
+  `transports/winrt_ble/`, `examples/winrt_ble_dfu/`, `tests/hil/` and
+  `transports/serial_port/win32/`. Only the serial adapter's *Win32* half is
+  excluded; the rest of `transports/serial_port/` is analysed. Both
   analysers run from a Linux build, where those translation units do not exist.
   `clang-format` still covers them, and MSVC `/W4 /WX` stands in for the
-  analysers. **Never widen that filter to the substring `winrt`.**
+  analysers. **Never widen that filter to the substring `winrt` or `win32`.**
   `verify_gates.sh` plants a portable decoy beside each directory and requires
   it to be analysed.
 

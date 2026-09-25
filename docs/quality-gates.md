@@ -27,7 +27,7 @@ A18–A24).
 | `linux-gcc-release` | ubuntu-latest | GCC 13 | C++20 | **Release**, because that is what a consumer builds. Every other preset is Debug, and some warnings appear only when optimising. |
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
-| `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests, with `SMPLY_BUILD_WINRT=OFF` set explicitly in the preset. This is also the **API-discipline gate**: the core must build cleanly with no WinRT anywhere in the build |
+| `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests, with `SMPLY_BUILD_WINRT=OFF` set explicitly in the preset. Also compiles the serial port adapter's Win32 half and runs `smply_serial_port_tests`, whose Windows cases open no port: like `windows-winrt`, green means "it builds". This is also the **API-discipline gate**: the core must build cleanly with no WinRT anywhere in the build |
 | `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour is established on the bench, by `tests/hil/` and the evidence bundles it writes |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
@@ -123,22 +123,27 @@ to minimise `sizeof` -- `Group` must be `uint16_t` because the SMP header
 carries 16 bits, so the check would fight every protocol enumeration for no
 benefit.
 
-### The three directories neither analyser sees
+### The four directories neither analyser sees
 
-`tools/lint.sh` excludes three directories from clang-tidy **and** cppcheck:
+`tools/lint.sh` excludes four directories from clang-tidy **and** cppcheck:
 * `transports/winrt_ble/`, the adapter;
 * `examples/winrt_ble_dfu/`, the tool that drives it;
-* `tests/hil/`, the hardware suite built on both.
+* `tests/hil/`, the hardware suite built on both;
+* `transports/serial_port/win32/`, the Win32 half of the serial port adapter
+  (ADR-0020). The rest of `transports/serial_port/`, the POSIX half included,
+  is analysed like any other code.
 
 Both gates run from a Linux build, where those translation units are absent from
 the compile database. clang-tidy would fall back to default arguments and fail
-on the first `<winrt/…>` include, and cppcheck can parse neither the projection
-headers nor the coroutines. This is the only code in the repository outside
+on the first `<winrt/…>` or `<windows.h>` include, and cppcheck can parse
+neither the projection headers nor the coroutines. This is the only code in the repository outside
 clang-tidy's reach. It is said plainly so that a green `gates` job does not
 imply otherwise.
 
 What still covers it: **clang-format**, which sees every file
-`tools/sources.sh` lists, and **MSVC `/W4 /WX`** in the `windows-winrt` job.
+`tools/sources.sh` lists, and **MSVC `/W4 /WX`**: in the `windows-winrt` job
+for the WinRT code, and in `windows-msvc` for the serial adapter's Win32 half,
+which builds without `SMPLY_BUILD_WINRT`.
 
 Each exclusion is an exact directory prefix, and `tools/verify_gates.sh` proves
 it. A portable decoy file whose *name* contains the excluded directory's name

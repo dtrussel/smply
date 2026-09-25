@@ -1264,8 +1264,8 @@ bytes for no reason. It should be at most `kMaxSerialPacket`.
 The pieces of a `Transport` over a UART, a USB CDC ACM port or a
 pseudo-terminal, carrying the framing above: its configuration, its counters,
 and the byte-level halves that are the same on every platform. The transport
-is `SerialPortTransport`, implemented over POSIX `termios`. It is a reference
-adapter like `winrt_ble`: built and
+is `SerialPortTransport`, over POSIX `termios` or Win32 overlapped I/O. It is a
+reference adapter like `winrt_ble`: built and
 tested in-tree, outside the stable surface of ADR-0016 clause 4, and not in
 the installed package
 ([ADR-0020](decisions/ADR-0020-serial-port-reference-adapter.md)). The mechanics

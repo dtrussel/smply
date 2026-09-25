@@ -131,15 +131,6 @@ private:
     bool woken_ = false;
 };
 
-[[nodiscard]] std::vector<std::byte> message_of(std::size_t size)
-{
-    std::vector<std::byte> out(size);
-    for (std::size_t i = 0; i < size; ++i) {
-        out[i] = static_cast<std::byte>((i * 13U + 1U) & 0xFFU);
-    }
-    return out;
-}
-
 } // namespace
 
 TEST_CASE("an invalid configuration is refused before any port is touched", "[serial_port]")
@@ -249,6 +240,17 @@ private:
     smply::transport::SerialInbound rx_;
 };
 
+/// Only the POSIX cases send anything, and an unreferenced internal function
+/// is an error under MSVC /W4 /WX (C4505), so it lives here.
+[[nodiscard]] std::vector<std::byte> message_of(std::size_t size)
+{
+    std::vector<std::byte> out(size);
+    for (std::size_t i = 0; i < size; ++i) {
+        out[i] = static_cast<std::byte>((i * 13U + 1U) & 0xFFU);
+    }
+    return out;
+}
+
 [[nodiscard]] std::unique_ptr<SerialPortTransport> open_on(const PtyDevice& device,
                                                            ClientContext& context)
 {
@@ -325,6 +327,29 @@ TEST_CASE("a sent message crosses the tty as console frames", "[serial_port]")
     CHECK(counters.send.refused == 0);
     CHECK(recorder.errors.empty());
     CHECK(recorder.disconnects.empty());
+}
+
+TEST_CASE("an idle link stays up after traffic", "[serial_port]")
+{
+    // The regression test for VMIN: with VMIN 0 an empty read answered 0, the
+    // adapter took it for end of file, and every exchange was followed by a
+    // spurious hang-up that the other cases were too quick to notice.
+    PtyDevice device;
+    ClientContext context;
+    Recorder recorder;
+    const auto transport = open_on(device, context);
+    transport->set_listener(&recorder);
+
+    const std::vector<std::byte> message = message_of(40);
+    device.write_all(smply::transport::frame_message(ConstBytes{message}));
+    REQUIRE(context.pump_until([&] { return recorder.received.size() == 1; }));
+    REQUIRE(transport->send(ConstBytes{message}).has_value());
+    REQUIRE(device.read_packet().has_value());
+
+    std::this_thread::sleep_for(300ms);
+    context.inbound.drain();
+    CHECK(recorder.disconnects.empty());
+    CHECK(transport->send(ConstBytes{message}).has_value());
 }
 
 TEST_CASE("send refuses what it cannot carry", "[serial_port]")
@@ -411,14 +436,14 @@ TEST_CASE("close is idempotent and silences work already queued", "[serial_port]
     const std::vector<std::byte> message = message_of(20);
     device.write_all(smply::transport::frame_message(ConstBytes{message}));
 
-    // Wait until the I/O thread has posted the packet -- it counts it after
-    // posting -- but do not drain: the closure is sitting in the dispatcher.
+    // Wait until the I/O thread has posted the packet, but do not drain: the
+    // closure is sitting in the dispatcher. pending() is racy by design; here
+    // it can only grow, which is all a wait needs.
     const auto deadline = std::chrono::steady_clock::now() + kPatience;
-    while (transport->counters().deframe.packets == 0 &&
-           std::chrono::steady_clock::now() < deadline) {
+    while (context.inbound.pending() == 0 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(1ms);
     }
-    REQUIRE(transport->counters().deframe.packets == 1);
+    REQUIRE(context.inbound.pending() == 1);
 
     transport->close();
     transport->close();

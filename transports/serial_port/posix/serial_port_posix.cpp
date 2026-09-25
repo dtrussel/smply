@@ -141,11 +141,12 @@ void shutdown(State& state) noexcept
     state.link.finish_close();
 }
 
-/// Queues one inbound packet for the client context. The copy is the one the
-/// borrowed-buffer rule requires: \p packet points into the deframer.
-void post_packet(const std::shared_ptr<State>& state, ConstBytes packet)
+/// Queues one inbound packet for the client context. It arrives already
+/// copied out of the deframer, whose own view dies at its next line (the
+/// borrowed-buffer rule), and the closure takes ownership of that copy.
+void post_packet(const std::shared_ptr<State>& state, std::vector<std::byte> packet)
 {
-    state->inbound->post([state, owned = std::vector<std::byte>{packet.begin(), packet.end()}] {
+    state->inbound->post([state, owned = std::move(packet)] {
         if (!state->link.may_deliver() || state->listener == nullptr) {
             return;
         }
@@ -207,12 +208,21 @@ void take_next(State& state)
         const ssize_t got = ::read(state->fd, buffer.data(), buffer.size());
         if (got > 0) {
             const auto count = static_cast<std::size_t>(got);
-            state->rx.feed(ConstBytes{buffer.data(), count},
-                           [&state](ConstBytes packet) { post_packet(state, packet); });
-            const std::lock_guard<std::mutex> lock{state->mutex};
-            state->stats.bytes_read += count;
-            state->stats.deframe = state->rx.deframe_counters();
-            state->stats.dropped_lines = state->rx.dropped_lines();
+            // Counted before anything is posted, so a packet the listener has
+            // seen is always one counters() already shows.
+            std::vector<std::vector<std::byte>> packets;
+            state->rx.feed(ConstBytes{buffer.data(), count}, [&packets](ConstBytes packet) {
+                packets.emplace_back(packet.begin(), packet.end());
+            });
+            {
+                const std::lock_guard<std::mutex> lock{state->mutex};
+                state->stats.bytes_read += count;
+                state->stats.deframe = state->rx.deframe_counters();
+                state->stats.dropped_lines = state->rx.dropped_lines();
+            }
+            for (std::vector<std::byte>& packet : packets) {
+                post_packet(state, std::move(packet));
+            }
             continue;
         }
         if (got == 0) {
@@ -373,8 +383,12 @@ void run(const std::shared_ptr<State>& state)
         return fail(ErrorCode::InvalidArgument, "serial_port: no RTS/CTS on this platform");
     }
 #endif
-    // Non-blocking reads that return what is there: poll() does the waiting.
-    settings.c_cc[VMIN] = 0;
+    // VMIN 1, not 0. With VMIN and VTIME both 0, Linux answers a read of an
+    // empty tty with 0 even under O_NONBLOCK, which is indistinguishable from
+    // end of file: the first version of this adapter reported a hang-up
+    // after every read. With VMIN 1 an empty non-blocking read is EAGAIN, and
+    // 0 means what it says. poll() does the waiting either way.
+    settings.c_cc[VMIN] = 1;
     settings.c_cc[VTIME] = 0;
     if (::cfsetispeed(&settings, *speed) != 0 || ::cfsetospeed(&settings, *speed) != 0) {
         return fail(ErrorCode::InvalidArgument, "serial_port: this platform cannot set that rate");
