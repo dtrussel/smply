@@ -7,6 +7,7 @@ add_executable(smply_unit_tests
     test_clock.cpp
     test_dispatcher.cpp
     test_error.cpp
+    test_file_image_source.cpp
     test_fake_transport.cpp
     test_image_group.cpp
     test_image_source.cpp
@@ -22,6 +23,7 @@ add_executable(smply_unit_tests
     test_sha256.cpp
     test_smp_client.cpp
     test_smp_codec.cpp
+    test_source_reader.cpp
     test_tlv.cpp
     test_update_state_machine.cpp
     test_upload_driver.cpp

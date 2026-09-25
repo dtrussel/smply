@@ -292,6 +292,19 @@ fails every read, one that always reads short — because `MemoryImageSource`
 cannot do either, and an error path no test can reach is indistinguishable from
 one that does not work.
 
+The shared reader under both parsers (`src/image/source_reader.hpp`,
+`test_source_reader.cpp`) is also tested directly: `read_exact` refuses a read
+past the end *before* asking the source, passes on a source's failure, and
+refuses a short read; the little-endian loads use bytes with the high bit set,
+so a load that sign-extends shows up as a wrong value.
+
+`support/dfu_app/`'s `FileImageSource`, the source every example reads firmware
+through (`test_file_image_source.cpp`): a missing or empty file is refused, reads
+are clamped at the end, end of file is zero bytes and later reads still work,
+and a file that shrinks after `open()` is a broken source. `support/` is outside
+the coverage filter ([`quality-gates.md`](quality-gates.md) §6), so these tests
+add proof, not a gate number.
+
 ### Update state machine (pure function)
 Every transition in [`design.md`](design.md) §8, and every row of its
 failure/recovery table, driven directly as `(state, event)` pairs — no client,
