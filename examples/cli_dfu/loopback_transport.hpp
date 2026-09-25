@@ -23,6 +23,8 @@
 /// means constructing a new one and calling `SmpClient::rebind_transport()`.
 /// `FakeTransport` behaves the same way in the tests, for the same reason.
 
+#include "stub_device/device_link.hpp"
+
 #include "smply/bytes.hpp"
 #include "smply/error.hpp"
 #include "smply/result.hpp"
@@ -37,7 +39,7 @@ namespace smply::example {
 class StubDevice;
 
 /// One link between the client and the stub device.
-class LoopbackTransport final : public Transport
+class LoopbackTransport final : public Transport, public DeviceLink
 {
 public:
     /// \param device   Answers what is sent. Must outlive this transport.
@@ -58,7 +60,7 @@ public:
     void set_listener(TransportListener* listener) noexcept override;
     void close() noexcept override;
 
-    // --- Called from the device thread --------------------------------------
+    // --- DeviceLink, called from the device thread ---------------------------
 
     /// Queues \p message for delivery on the client context.
     ///
@@ -66,10 +68,21 @@ public:
     /// of the callback (design.md section 9), so anything crossing a thread
     /// boundary has to own its own copy. This is the single most common bug in
     /// a first adapter.
-    void deliver_from_device(std::vector<std::byte> message);
+    void deliver(std::vector<std::byte> message) override;
 
-    /// Queues a disconnect, as a device does when it reboots.
-    void drop_from_device(Error reason);
+    /// Queues a disconnect, as a BLE link does when the device reboots.
+    void device_resetting(Error reason) override;
+
+    /// Nothing: a BLE device's boot is invisible until the application
+    /// reconnects, which it does on a new link.
+    void device_booted() override {}
+
+    /// False: a reboot drops a BLE connection, so the device forgets this
+    /// link and waits for the application to attach a new one.
+    [[nodiscard]] bool survives_reset() const noexcept override
+    {
+        return false;
+    }
 
 private:
     StubDevice* device_;
@@ -78,7 +91,7 @@ private:
     /// Both are read and written **only on the client context**, and that is
     /// what makes this class free of synchronisation of its own. The device
     /// thread never inspects them: it posts a closure, and the closure looks at
-    /// them later, on the pump thread. Reading `open_` from `deliver_from_device`
+    /// them later, on the pump thread. Reading `open_` from `deliver()`
     /// would be a data race for no gain -- TSan says so, and it would be right.
     TransportListener* listener_ = nullptr;
     bool open_ = true;

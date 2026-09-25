@@ -179,6 +179,37 @@ device over ST-LINK on that line; it never worked, because CubeProgrammer
 toggles reset to attach and the device re-advertises before the erase halts it.
 Exit status: 0 all pass, 1 any fail, 2 any unavailable.
 
+### The serial cases — never run
+
+`test_hil_serial.cpp` drives `smply::serial_port` (the Win32 half) over the
+same console port, `--uart COM4`, reached by the case as `SMPLY_HIL_UART`.
+**Neither case has run.** They were written without the bench (ADR-0020), and
+their first run is the first time smply's serial path meets a device.
+
+| Group | In `--cases all`? | What it shows |
+| ----- | ----------------- | ------------- |
+| `serial` | yes | echo and image state over the console, with the link's counters as `HIL-METRIC serial_*` |
+| `serial-update` | no; run with `--cases serial-update` | a whole update over the console, including the first real reset on a serial port (roadmap O7), and whether the device keeps up with back-to-back frames (protocol-notes A26) |
+
+Both groups are marked `holds_uart`, so the supervisor starts **no**
+`uart_log.py` on the port while they run. Only one process may hold it, so
+these groups have no device log in their bundle.
+
+The console is the hard case on purpose. It carries the MCUmgr shell
+transport, an echoing shell, and a deferred UART log backend, the stream over
+which `mcumgr-client` could not complete an upload (protocol-notes §9). So
+read the metrics, not only the verdict:
+* `serial_ignored` and `serial_dropped_lines` show how much noise the adapter
+  discarded;
+* a non-zero `serial_framing_errors` or `serial_crc_failures` means frames
+  were damaged on the way;
+* `serial-update` prints `HIL-NOTE serial reset seen as: grace|dropped`. For
+  the ST-LINK VCP, a UART that stays up across a target reset, `grace` is
+  expected, and that line is the first measurement for O7.
+
+A failure in `serial-update` is a finding to record in protocol-notes.md,
+not something to retry until it passes.
+
 A run that fails part way can leave the board **not advertising**. The next
 run's per-group baseline flash recovers it; to recover by hand, run
 `firmware/flash_baseline.py --evidence <out>/evidence`.

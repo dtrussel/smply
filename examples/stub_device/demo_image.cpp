@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "demo_image.hpp"
+#include "stub_device/demo_image.hpp"
 
 #include "smply/mcuboot_image.hpp"
 

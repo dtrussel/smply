@@ -20,6 +20,7 @@ add_executable(smply_unit_tests
     test_result.cpp
     test_send_queue.cpp
     test_serial_framing.cpp
+    test_serial_port_config.cpp
     test_sha256.cpp
     test_smp_client.cpp
     test_smp_codec.cpp
@@ -38,6 +39,10 @@ target_link_libraries(smply_unit_tests
         # separate target a real adapter would link.
         smply::util
         smply::transport_common
+        # The serial port adapter's pure parts: configuration, the byte-level
+        # link helpers, and the POSIX baud and errno tables. Nothing here opens
+        # a port; tests/serial_port/ does.
+        smply::serial_port
         # The application-side helpers the examples share: the reconnect policy
         # is tested here because examples/winrt_ble_dfu/ cannot be run at all.
         smply::dfu_app

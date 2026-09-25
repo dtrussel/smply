@@ -1259,6 +1259,89 @@ message spans as many frames as it needs, exactly as a BLE message spans GATT
 packets; reporting the frame size there would cap every upload chunk at 93
 bytes for no reason. It should be at most `kMaxSerialPacket`.
 
+### `serial_port/` — the reference serial port adapter (target `smply::serial_port`, **not installed**)
+
+The pieces of a `Transport` over a UART, a USB CDC ACM port or a
+pseudo-terminal, carrying the framing above: its configuration, its counters,
+and the byte-level halves that are the same on every platform. The transport
+is `SerialPortTransport`, over POSIX `termios` or Win32 overlapped I/O. It is a
+reference adapter like `winrt_ble`: built and
+tested in-tree, outside the stable surface of ADR-0016 clause 4, and not in
+the installed package
+([ADR-0020](decisions/ADR-0020-serial-port-reference-adapter.md)). The mechanics
+are in [`design.md`](design.md) §13.
+
+```cpp
+// serial_port/serial_port_config.hpp
+enum class FlowControl : std::uint8_t { None, RtsCts };
+inline constexpr std::size_t kDefaultSerialMessageSize = 256;
+inline constexpr std::size_t kMinSerialMessageSize     = 128;
+
+struct SerialPortConfig {
+    std::string   path;                          // "/dev/ttyACM0", "COM4"
+    std::uint32_t baud = 115200;                 // always 8N1
+    FlowControl   flow = FlowControl::None;
+    std::size_t   max_message_size = kDefaultSerialMessageSize;
+};
+[[nodiscard]] bool         is_supported_baud(std::uint32_t) noexcept;
+[[nodiscard]] Result<void> validate(const SerialPortConfig&);   // InvalidArgument
+
+struct SerialLinkCounters {
+    SerialCounters deframe;          // ignored, crc_failures, framing_errors, packets
+    std::uint64_t  dropped_lines = 0;
+    SendCounters   send;             // deferred, refused
+    std::uint64_t  bytes_read = 0, bytes_written = 0;
+};
+
+// serial_port/serial_link.hpp -- the byte-level halves, no port involved
+[[nodiscard]] std::vector<std::byte> frame_message(ConstBytes message);
+class SerialInbound {
+public:
+    explicit SerialInbound(std::size_t max_packet = limits::kMaxAssemblyBuffer) noexcept;
+    template <typename OnPacket> void feed(ConstBytes chunk, OnPacket&& on_packet);
+    void reset() noexcept;
+    [[nodiscard]] SerialCounters deframe_counters() const noexcept;
+    [[nodiscard]] std::uint64_t  dropped_lines() const noexcept;
+};
+
+// serial_port/serial_port_transport.hpp
+class SerialPortTransport final : public Transport {
+public:
+    [[nodiscard]] static Result<std::unique_ptr<SerialPortTransport>>
+    open(const SerialPortConfig&, Dispatcher& inbound);
+    ~SerialPortTransport() override;                  // calls close()
+
+    [[nodiscard]] Result<void> send(ConstBytes) override;
+    [[nodiscard]] std::size_t  max_message_size() const noexcept override;
+    void set_listener(TransportListener*) noexcept override;
+    void close() noexcept override;
+
+    [[nodiscard]] SerialLinkCounters counters() const;  // any thread
+};
+```
+
+What a caller has to know:
+
+* **`max_message_size` is a whole SMP message, and 256 is deliberate.** Over
+  serial a device accepts at most `buf_size − 4` (protocol-notes §9, A25).
+  Raise it only for a device whose `buf_size` you know.
+* **`SerialInbound`'s counters are cumulative** and survive `reset()`: they
+  describe the link, not the packet in progress.
+* **`open()` is also how to reconnect.** It answers `Disconnected` for a port
+  that does not exist (yet), which is what a USB port looks like mid-reset, so
+  a reconnect loop retries exactly that. It answers `InvalidArgument` for a
+  path that is not a serial port and `TransportError` for one another process
+  holds, and retrying helps with neither.
+* **Every failure ends the link** with one `on_disconnected()`. There is no
+  `on_transport_error()` from this adapter.
+* **After a reset**, a USB CDC port reports a disconnect and a hardware UART
+  reports nothing. Set `UpdatePlan::disconnect_grace` to a few seconds for a
+  UART, and reopen by path on `ReconnectRequired` in both cases
+  ([`design.md`](design.md) §13).
+* **One I/O thread per open port**, owned by the transport. Inbound bytes reach
+  the listener only through the `Dispatcher`, which must be drained.
+  `close()` joins the thread and never touches the `Dispatcher`.
+
 ---
 
 ## Representative usage

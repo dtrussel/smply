@@ -4,10 +4,10 @@
 /// A console DFU driver: the canonical pump loop, against a device on another
 /// thread.
 ///
-/// **This is the file to read.** The other four are scaffolding -- a stub device
-/// to talk to, a link to talk over, an image to install and a file to read it
-/// from. What is demonstrated here is the arrangement every application that
-/// uses smply has to build:
+/// **This is the file to read.** Everything else is scaffolding -- a stub device
+/// to talk to (`examples/stub_device/`), a link to talk over, an image to
+/// install and a file to read it from. What is demonstrated here is the arrangement every
+/// application that uses smply has to build:
 ///
 /// * **one client context**, the thread running this loop. Every call into the
 ///   library and every callback out of it happens here (ADR-0004).
@@ -22,9 +22,10 @@
 ///
 /// Run it with no arguments and it invents a device and an image to install.
 
-#include "demo_image.hpp"
 #include "loopback_transport.hpp"
-#include "stub_device.hpp"
+
+#include "stub_device/demo_image.hpp"
+#include "stub_device/stub_device.hpp"
 
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/reconnect_policy.hpp"

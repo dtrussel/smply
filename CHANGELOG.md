@@ -19,6 +19,39 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ## [Unreleased]
 
+### Added
+
+- **A reference serial port adapter**, `smply::serial_port`
+  (`transports/serial_port/`). It is a `Transport` over a UART, a USB CDC ACM
+  port or any tty, carrying MCUmgr's console framing. It has POSIX (`termios`)
+  and Win32 (overlapped I/O) implementations behind one header, and one I/O
+  thread of its own that marshals through the application's `Dispatcher`.
+  `counters()` surfaces what the link discarded, including
+  `LineSplitter::dropped_lines()`. It is **not installed**: a reference adapter
+  like `winrt_ble`, outside the stable surface
+  ([ADR-0020](docs/decisions/ADR-0020-serial-port-reference-adapter.md)).
+  Tested over a pseudo-terminal. The Win32 half is compile-only, and nothing
+  serial has run against a device yet.
+- **`examples/serial_dfu/`**: the DFU loop over a serial port. With `--port`
+  it drives a device. Without it, and on POSIX only, it runs a whole update,
+  reset included, against the stub device behind a pseudo-terminal, as two
+  ctests covering a UART that stays open and a USB port that vanishes and
+  returns renamed (roadmap O7).
+- Serial HIL cases for the bench's console UART, which have never run.
+
+### Changed
+
+- The examples' stub device moved to `examples/stub_device/` and talks to a
+  `DeviceLink`, so `cli_dfu` and `serial_dfu` share it. `cli_dfu` behaves as
+  before.
+
+### Documented
+
+- Over serial, a Zephyr device accepts at most `buf_size − 4` bytes per SMP
+  message, because its netbuf also holds the serial length prefix and CRC
+  (protocol-notes A25). The serial adapter's default cap of 256 keeps a
+  default device safe. The general fix is on the roadmap.
+
 ## [0.2.0] - 2026-09-25
 
 A quality release. A structured review, from the architecture down to the

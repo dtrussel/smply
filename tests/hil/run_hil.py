@@ -56,6 +56,12 @@ GROUPS = [
     # compare the two bundles (tests/hil/support/bench.hpp).
     {"name": "o2",
      "cases": ["hil: an image-group refusal carries what this server's SMP version allows"]},
+    # The serial adapter on the console UART (ADR-0020). `holds_uart`: the case
+    # opens the port itself, so the supervisor's logger must not -- only one
+    # process may hold it. Needs --uart; without it the case SKIPs and is
+    # reported unavailable. Written without the bench and never run.
+    {"name": "serial", "holds_uart": True,
+     "cases": ["hil: serial -- image state and echo over the console UART"]},
 ]
 
 # Manual cases: not in the unattended default (an automated device-removal races
@@ -67,6 +73,12 @@ GROUPS = [
 MANUAL_GROUPS = [
     {"name": "give-up", "manual": True,
      "cases": ["hil: reconnection gives up when the device does not come back"]},
+    # Exploratory, so not in the unattended default either: the first whole
+    # update over the console UART, and the first observation of a real reset
+    # on a serial port (roadmap O7). Run it with `--cases serial-update`. A
+    # failure is a finding for protocol-notes.md, not something to retry away.
+    {"name": "serial-update", "holds_uart": True,
+     "cases": ["hil: serial -- a whole update over the console UART (exploratory)"]},
 ]
 
 
@@ -76,7 +88,8 @@ def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
     env = dict(os.environ,
                SMPLY_HIL_ADDRESS=bench.args.address,
                SMPLY_HIL_IMAGE_A=str(bench.args.evidence / "a.signed.bin"),
-               SMPLY_HIL_IMAGE_B=str(bench.args.evidence / "b.signed.bin"))
+               SMPLY_HIL_IMAGE_B=str(bench.args.evidence / "b.signed.bin"),
+               SMPLY_HIL_UART=bench.args.uart or "")
     command = [str(bench.args.exe), case, "--reporter", f"junit::out={junit}",
                "--reporter", "console::out=-", "--success"]
     started = time.monotonic()
@@ -183,7 +196,8 @@ def main() -> int:
                     break
                 continue
             time.sleep(3)  # let the peer boot and start advertising
-        uart = bench.start_uart(group_dir / "uart.log")
+        # A group whose case holds the console itself gets no logger on it.
+        uart = None if group.get("holds_uart") else bench.start_uart(group_dir / "uart.log")
         try:
             for case in group["cases"]:
                 result = run_case(bench, case, group_dir / slug(case))

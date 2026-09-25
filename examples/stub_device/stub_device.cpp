@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "stub_device.hpp"
+#include "stub_device/stub_device.hpp"
 
-#include "loopback_transport.hpp"
+#include "stub_device/device_link.hpp"
 
 #include "minicbor/minicbor.hpp"
 
@@ -20,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -33,8 +34,6 @@ constexpr std::uint8_t kOsMcumgrParams = 6;
 constexpr std::uint8_t kImageState = 0;
 constexpr std::uint8_t kImageUpload = 1;
 
-/// The device's whole-SMP-message budget, reported through mcumgr params.
-constexpr std::uint32_t kBufSize = 512;
 constexpr std::uint32_t kBufCount = 2;
 
 /// How long the device pretends a reboot takes. Long enough that the
@@ -88,15 +87,22 @@ StubDevice::StubDevice(std::vector<std::byte> primary)
 
 StubDevice::~StubDevice()
 {
+    stop();
+}
+
+void StubDevice::stop() noexcept
+{
     {
         const std::lock_guard<std::mutex> lock{mutex_};
         stop_ = true;
     }
     work_.notify_all();
-    thread_.join();
+    if (thread_.joinable()) {
+        thread_.join();
+    }
 }
 
-void StubDevice::attach(LoopbackTransport& link)
+void StubDevice::attach(DeviceLink& link)
 {
     {
         const std::lock_guard<std::mutex> lock{mutex_};
@@ -344,7 +350,7 @@ void StubDevice::run()
 {
     while (true) {
         std::vector<std::byte> request;
-        LoopbackTransport* link = nullptr;
+        DeviceLink* link = nullptr;
         {
             std::unique_lock<std::mutex> lock{mutex_};
             work_.wait(lock, [this] { return stop_ || !inbox_.empty(); });
@@ -362,7 +368,7 @@ void StubDevice::run()
 
         const std::optional<std::vector<std::byte>> reply = answer(request);
         if (reply.has_value()) {
-            link->deliver_from_device(*reply);
+            link->deliver(*reply);
         }
 
         if (!reboot_pending_) {
@@ -370,9 +376,9 @@ void StubDevice::run()
         }
         reboot_pending_ = false;
 
-        // The reset was accepted and answered. Now the link drops, the device
-        // reboots, and the application's job begins.
-        link->drop_from_device(Error{ErrorCode::Disconnected, "device rebooting"});
+        // The reset was accepted and answered. Now the device reboots: a link
+        // that a reset drops goes down here, and the application's job begins.
+        link->device_resetting(Error{ErrorCode::Disconnected, "device rebooting"});
 
         // Forget the dead link and everything queued for it **before** the
         // reboot delay, not after. The application reconnects as soon as it
@@ -380,15 +386,29 @@ void StubDevice::run()
         // so clearing `link_` afterwards would wipe the link it had just
         // attached, and clearing the inbox afterwards would swallow the first
         // request on it. Requests that arrive during the sleep are answered
-        // after the swap, which is exactly what a booting device does.
+        // after the swap, which is exactly what a booting device does. A link
+        // that survives the reset -- the device's own serial port -- is kept.
         {
             const std::lock_guard<std::mutex> lock{mutex_};
-            link_ = nullptr;
+            if (!link->survives_reset()) {
+                link_ = nullptr;
+            }
             inbox_.clear();
         }
 
         std::this_thread::sleep_for(kRebootDuration);
         reboot();
+
+        // Whatever link is attached now hears the device come up. For a
+        // serial port that is where the boot banners appear.
+        DeviceLink* booted = nullptr;
+        {
+            const std::lock_guard<std::mutex> lock{mutex_};
+            booted = link_;
+        }
+        if (booted != nullptr) {
+            booted->device_booted();
+        }
     }
 }
 

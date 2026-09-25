@@ -26,6 +26,8 @@
 /// hash path, and therefore out of smply's private headers, which is what lets
 /// an example use it at all.
 
+#include "stub_device/device_link.hpp"
+
 #include "smply/bytes.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
@@ -41,8 +43,6 @@
 #include <vector>
 
 namespace smply::example {
-
-class LoopbackTransport;
 
 /// What the bootloader will do on the next reset (protocol-notes section 7).
 enum class SwapType : std::uint8_t
@@ -78,15 +78,26 @@ public:
     StubDevice& operator=(const StubDevice&) = delete;
     StubDevice& operator=(StubDevice&&) = delete;
 
-    /// Stops the thread and joins it. Anything still queued is dropped.
+    /// The device's whole-SMP-message budget, reported as `buf_size` through
+    /// mcumgr params. A link that models the device's receive side bounds
+    /// inbound packets by it (`PtyStub` does, protocol-notes A25).
+    static constexpr std::uint32_t kBufSize = 512;
+
+    /// Calls `stop()`.
     ~StubDevice();
+
+    /// Stops the device thread and joins it; anything still queued is
+    /// dropped, and the link is called no more. Idempotent. An owner whose
+    /// link has a thread of its own that calls `submit()` stops that first,
+    /// then this, then destroys either.
+    void stop() noexcept;
 
     /// Binds the device to a link. Called on the client context, before the
     /// client is given the same transport.
-    void attach(LoopbackTransport& link);
+    void attach(DeviceLink& link);
 
-    /// Queues a request. Called from `LoopbackTransport::send()`, on the client
-    /// context; the device thread picks it up.
+    /// Queues a request, from whatever thread the link receives on; the device
+    /// thread picks it up.
     void submit(std::vector<std::byte> request);
 
 private:
@@ -103,7 +114,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable work_;
     std::deque<std::vector<std::byte>> inbox_;
-    LoopbackTransport* link_ = nullptr;
+    DeviceLink* link_ = nullptr;
     bool stop_ = false;
     /// Set while answering a reset, acted on once the answer is out. Touched
     /// only on the device thread.
