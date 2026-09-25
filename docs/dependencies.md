@@ -89,8 +89,8 @@ upstream is in the roadmap's backlog.
 | **C++/WinRT** (Windows SDK) | BLE GATT | Microsoft Windows SDK licence | `smply::winrt_ble`, `examples/winrt_ble_dfu` only |
 | **Threads** (`Threads::Threads`, i.e. pthreads on Linux) | `std::mutex` in `Dispatcher` | part of the platform's C library | `smply::util` only |
 
-Never linked by `smply::smply`; enforced for WinRT by the `core-without-winrt`
-CI job, and for Threads by the fact that `smply::util` is a separate target the
+Never linked by `smply::smply`; enforced for WinRT by the `windows-msvc`
+CI job, which builds everything else with WinRT off, and for Threads by the fact that `smply::util` is a separate target the
 core does not link (`architecture.md` §5).
 
 Neither is a `FetchContent` dependency, so neither is covered by

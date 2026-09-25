@@ -41,8 +41,9 @@ jobs:
           # standard backing is never exercised, because std::expected does not
           # exist under the C++20 baseline (ADR-0002).
           - { os: ubuntu-latest,  preset: linux-gcc-cxx23-std-expected }
+          # Also the API-discipline gate: its preset sets SMPLY_BUILD_WINRT=OFF,
+          # so the core and its tests must build with no WinRT anywhere.
           - { os: windows-latest, preset: windows-msvc }
-          - { os: windows-latest, preset: core-without-winrt }
           # Compiles smply::winrt_ble and runs its link-and-call smoke test.
           # See the note at the top of this file for what it does not prove.
           - { os: windows-latest, preset: windows-winrt }

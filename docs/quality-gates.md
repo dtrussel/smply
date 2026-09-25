@@ -27,9 +27,8 @@ A18–A24).
 | `linux-gcc-release` | ubuntu-latest | GCC 13 | C++20 | **Release**, because that is what a consumer builds. Every other preset is Debug, and some warnings appear only when optimising. |
 | `linux-gcc-fallback-expected` | ubuntu-latest | GCC 13 | C++20 | forces smply's own `expected<>` even where `std::expected` exists (ADR-0002) |
 | `linux-gcc-cxx23-std-expected` | ubuntu-latest | GCC 13 | **C++23** | builds the same tests against `std::expected`. Under the C++20 baseline the standard type does not exist, so without this job only smply's own backing is ever exercised and ADR-0002's interchangeability claim is untested. C++20 remains the baseline (ADR-0001); this job only proves the C++23 path works. |
-| `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests |
+| `windows-msvc` | windows-latest | MSVC v143 | C++20 | core + tests, with `SMPLY_BUILD_WINRT=OFF` set explicitly in the preset. This is also the **API-discipline gate**: the core must build cleanly with no WinRT anywhere in the build |
 | `windows-winrt` | windows-latest | MSVC v143 | C++20 | `-DSMPLY_BUILD_WINRT=ON`: **compiles** `smply::winrt_ble` and `examples/winrt_ble_dfu`, and runs the adapter's link-and-call smoke test. A runner has no Bluetooth radio, so it never exercises GATT and never runs the example at all — green means "it builds". Behaviour is established on the bench, by `tests/hil/` and the evidence bundles it writes |
-| `core-without-winrt` | windows-latest | MSVC v143 | C++20 | **API-discipline gate**: `-DSMPLY_BUILD_WINRT=OFF` must build cleanly |
 | `linux-clang-asan-ubsan` | ubuntu-latest | Clang 18 | C++20 | tests under ASan+UBSan |
 | `linux-gcc-asan-ubsan` | ubuntu-latest | GCC 13 | C++20 | the same, under GCC — the two implementations do not diagnose identically, and GCC's runtime is available where Clang's `compiler-rt` package is not |
 | `linux-clang-tsan` | ubuntu-latest | Clang 18 | C++20 | the suite under ThreadSanitizer; it exists for `Dispatcher` (§7) |
@@ -468,9 +467,9 @@ may include neither `cbor/` nor `smp_client.hpp`, so parsing a firmware file
 can never come to depend on the SMP client. Both tables are at the top of the
 script, and `verify_gates.sh` proves each rule fires.
 
-Plus the `core-without-winrt` matrix job (§1), and a configure-time assertion in
-`tests/consumer/` that smply's interface does not propagate its strict warning
-set — checking both `INTERFACE_COMPILE_OPTIONS` **and**
+Plus the `windows-msvc` matrix job, which builds the core with WinRT off (§1),
+and a configure-time assertion in `tests/consumer/` that smply's interface does
+not propagate its strict warning set — checking both `INTERFACE_COMPILE_OPTIONS` **and**
 `INTERFACE_LINK_LIBRARIES`, since linking `smply_internal_options` `PUBLIC`
 instead of `PRIVATE` leaks the flags transitively while leaving the former
 empty.

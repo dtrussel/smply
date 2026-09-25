@@ -92,8 +92,8 @@ ctest --preset windows-winrt
 ```
 
 The option refuses a non-Windows host at configure time, and the core must go on
-building with it off — which is what the `core-without-winrt` job exists to
-prove.
+building with it off — which is what the `windows-msvc` job, whose preset sets it
+`OFF`, proves.
 
 ## What is not here
 

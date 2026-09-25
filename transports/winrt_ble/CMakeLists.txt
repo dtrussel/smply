@@ -2,9 +2,10 @@
 #
 # smply::winrt_ble -- the reference Transport, over C++/WinRT GATT.
 #
-# Windows-only, and guarded by SMPLY_BUILD_WINRT so that the core-without-winrt
-# job stays meaningful. Nothing here is part of libsmply: an adapter consumes
-# smply::smply like any other consumer (architecture.md section 2).
+# Windows-only, and guarded by SMPLY_BUILD_WINRT so that the windows-msvc job,
+# which sets it OFF, proves the core builds without it. Nothing here is part of
+# libsmply: an adapter consumes smply::smply like any other consumer
+# (architecture.md section 2).
 #
 # NOT INSTALLED, as ADR-0016 records: this is a *reference*
 # adapter, shipped as source to read and copy rather than as a package member.

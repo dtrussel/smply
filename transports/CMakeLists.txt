@@ -62,7 +62,7 @@ install(DIRECTORY serial DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/smply/transport
 # --- platform adapters -------------------------------------------------------
 #
 # The option is validated in the top-level CMakeLists (it refuses a non-Windows
-# host there), so the core-without-winrt gate is meaningful whether or not the
+# host there), so the windows-msvc job, which sets it OFF, is a real gate whether or not the
 # directory below is ever entered.
 if(SMPLY_BUILD_WINRT)
     add_subdirectory(winrt_ble)
