@@ -60,6 +60,10 @@ earlier.
 | S32 | `subsys/mgmt/mcumgr/transport/Kconfig.shell` | `CONFIG_MCUMGR_TRANSPORT_SHELL_MTU` (default **256**); the shell transport selects the same `MCUMGR_TRANSPORT_SERIAL_HAS_SMP_OVER_CONSOLE` framing as S30 | same |
 | S33 | `subsys/mgmt/mcumgr/transport/src/smp.c` | `smp_packet_alloc()`: every SMP packet, inbound on any transport, is a buffer from one pool of `CONFIG_MCUMGR_TRANSPORT_NETBUF_COUNT` buffers of `CONFIG_MCUMGR_TRANSPORT_NETBUF_SIZE` bytes, the same number that mcumgr params reports as `buf_size` (S13) | same |
 | S34 | `lib/utils/base64.c` | `base64_decode()` returns `-ENOBUFS` and writes nothing when the decoded bytes do not fit the destination | same |
+| S35 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c` (multi-image paths) | `img_mgmt_state_read()` (two slots per image, `image = slot >> 1`, `slot = slot % 2`, `image` omitted when `CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER == 1`, each image's active slot flagged `active`); `img_mgmt_state_write()` (a hash is found across all images; a hashless confirm targets `img_mgmt_active_slot(img_mgmt_active_image())`); `img_mgmt_set_next_boot_slot()` (the confirm-denial rules) | `zephyrproject-rtos/zephyr@main` (verified 2026-09-25 **from source**) |
+| S36 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/zephyr_img_mgmt.c`, `img_mgmt.c` (upload) | `img_mgmt_upload_inspect()` reads `image` only on a first packet and picks `img_mgmt_get_unused_slot_area_id(image)`; continuations use the stored area; `mcuboot_swap_type_multi(image)` per image | same |
+| S37 | `boot/bootutil/include/bootutil/image.h`, `boot/bootutil/src/loader.c` | `IMAGE_TLV_DEPENDENCY` (`0x40`) and `struct image_dependency { image_id; pad; pad; image_min_version }`; `boot_verify_slot_dependency()` -- an unsatisfied dependency downgrades a TEST or PERM swap to NONE, and NONE to REVERT | `mcu-tools/mcuboot@main` (verified 2026-09-25 from source) |
+| S38 | `nrfconnect/sdk-nrf`: `scripts/bootloader/generate_zip.py`, `cmake/sysbuild/zip.cmake` | The DFU package layout: a zip written with Python's default `ZIP_STORED`, and `manifest.json` with `format-version`, `time`, `files[]`; per file `file`, `size`, `modtime` and the sysbuild-supplied `image_index`, `slot_index_primary`/`_secondary`, `version_MCUBOOT`, `load_address`, `board`, `soc`, including an "extra images" path | `nrfconnect/sdk-nrf@main` (read 2026-09-25). A **format** reference for the package reader, not a protocol source |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -539,6 +543,37 @@ only for slots that are not the active one (S10).
 
 ---
 
+### Several images on one device (S35-S37)
+
+Read from source for ADR-0021. None of it has been observed on a device.
+
+* **The listing.** Two entries per image. `image` is `slot >> 1`, `slot` is
+  `slot % 2`, and `image` is **omitted** when the device has one updatable
+  image (A9). Each image's active slot is flagged `active`, including an image
+  the device is not running, such as a network core or a staged image for
+  another MCU.
+* **Set-state by hash finds the slot across every image.** So marking and
+  confirming by hash land on the right image without naming it.
+* **A confirm without a hash targets the *running* image's active slot**
+  (`img_mgmt_active_slot(img_mgmt_active_image())`). It can never confirm
+  image ≥ 1. smply therefore always confirms by hash (ADR-0021), which for
+  image 0 names the same slot.
+* **Confirming an image that is not running is refused by default**:
+  `IMAGE_CONFIRMATION_DENIED` unless
+  `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_SECONDARY` or `_ANY` is
+  set, and confirming a non-active slot needs
+  `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT` (A27).
+* **The upload's `image` is read only on a first packet** (`off == 0`), where it
+  selects that image's unused slot, answering `NO_FREE_SLOT` if the slot is in
+  use. Continuations write to the area the first packet chose. smply sending
+  `image` only on first packets, including restarts, is therefore complete.
+* **MCUboot checks dependencies at the boot that would swap.** An image whose
+  `IMAGE_TLV_DEPENDENCY` names an image and minimum version that will not be
+  present after this boot has its TEST or PERM swap downgraded to NONE: the new
+  image is simply not booted. So in a multi-image update **every image must be
+  marked before the single reset**, and "did not boot the new image" can mean
+  "its dependency was not staged".
+
 ## 7. [BOOT] MCUboot image and update semantics (S12, S18-S20)
 
 ### Image header — 32 bytes, **little-endian** (S18)
@@ -932,6 +967,7 @@ Recorded so future sessions do not rediscover them.
 | A24 | **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1 destroys image-group error codes many-to-one -- measured, not inferred.** The pinned peer sets that option. Two refusals provoked from an identical baseline, each issued once as v1 and once as v2 (bench, 2026-09-09): marking an absent image for test, which is `IMG_MGMT_ERR_HASH_NOT_FOUND` (8), and marking the *running* image for test, which is `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` (33). Under **v2** both arrive group-scoped and intact: `group=1 rc=8` and `group=1 rc=33`. Under **v1** both arrive as a flat `rc=1` (`EUNKNOWN`) with no group at all, so two distinct causes become one indistinguishable answer. This is A16's prediction confirmed on hardware, and the second data point is what makes it a demonstration of *loss* rather than of translation. | Confirms smply's position under A16 and answers the evidence half of open question **O2**: v1 stays the default and v2 stays an explicit application opt-in (`SmpClientConfig::smp_version`), because probing costs a round trip and a fallback path to learn what an integrator already knows, and defaulting to v2 fails outright against an older server. But the cost of v1 is **behavioural, not only diagnostic**: `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost, and a recovery branching on `ImageError::ImageAlreadyPending` alone could never fire against this server under v1, where `image_error()` is always `nullopt`. That specific code was **not** provoked -- reaching it needs a pending swap plus a mark for a third image, and this bench holds two -- so it follows from the same measured mechanism rather than being measured itself. **Acted on** (2026-09-19): the recovery also accepts a group-less `SmpError::BadState`, which is what `img_mgmt_translate_error_code()` (S10) produces for `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` alike -- all three want the same re-read-and-replan. It is **not** extended to `EUNKNOWN`, the code this row actually measured, because the same table gives that to eighteen others including every flash failure. So the fix is traced to the translation table rather than to a provocation: code 28 has still never been seen on a bench. |
 | A25 | **Over serial, the device's receive buffer holds the length prefix and the CRC as well as the SMP message** (section 8, S27, S33, S34), so the largest message it accepts is `buf_size − 4`, not the `buf_size` that mcumgr params reports. A message between the two is dropped with no response. | smply sizes an upload's messages to `min(buf_size, transport max_message_size, cap)`, which is right over BLE and can be four bytes too large over serial. The serial adapter defaults `max_message_size` to 256, below the default netbuf's serial limit (380), so a default device is safe. A device whose `buf_size` is at or below the adapter's cap is **not** safe until the core subtracts a per-transport overhead. That is on the roadmap backlog, and not patched in the adapter, because the adapter cannot see `buf_size`. |
 | A26 | **The UART transport's driver holds at most `CONFIG_UART_MCUMGR_RX_BUF_COUNT` (default 2) undecoded lines** and drops a line that starts while both are held (S31). Inferred from the source, not observed. | smply writes a message's frames back to back, as the reference transmitter's peer would. If it were ever observed, the symptom would be a timeout with no response, and the remedy a pause between frames in the adapter. Not implemented, because nothing has shown it is needed. |
+| A27 | **Image ≥ 1 cannot be confirmed the way image 0 can.** A hashless confirm names the running image, and a confirm of a non-running image is refused unless `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*` is set (§6, S35). | smply confirms by hash, always. An image the device commits itself -- the staged image of a second MCU -- is `CommitBy::Device`, and smply waits for the device to report it applied rather than confirming it (ADR-0021, `docs/multi-image.md`). |
 
 ### Test-method correction (not a protocol inference)
 
