@@ -25,11 +25,9 @@ a hardware bench. The serial framing has not yet been used against a device.
 
 ## In progress
 
-**The quality review in [`review-plan.md`](review-plan.md).** Work it stage by
-stage, in order. Stages 1 (process and documentation, which produced this
-file), 2 (architecture), 3 (design and API, including the async adapters), 4
-(implementation) and 5 (tests, tooling and CI) are done. Stage 6 is the final
-pass and the 0.2.0 release.
+Nothing. The structured quality review that produced 0.2.0 is finished; its
+plan is in git history (`git log --diff-filter=D -- docs/review-plan.md`). Pick
+the next item from the backlog below, by its "When".
 
 ## Acceptance gaps that need the hardware bench
 
@@ -66,7 +64,7 @@ comment. The IDs are stable, because code and documents cite them, and
 ## Backlog
 
 Known work that nobody has needed yet. Each item says when it becomes worth
-doing. Items the quality review will close are marked *(review)*.
+doing.
 
 ### Core library and API
 
@@ -117,6 +115,7 @@ doing. Items the quality review will close are marked *(review)*.
 | **R5 cannot read a glob** (`server_simulator.*`), so a layout entry written with one is checked by nobody. | when a glob entry drifts |
 | **`protocol-notes.md` has two kinds of verification date**: read from source, and observed on a radio. Nothing marks which is which. A per-fact `[source]` / `[bench]` marker would make it checkable. | when a third kind of evidence appears |
 | **`osv.yml` is unproven on two counts.** It has never fired on its cron, and nothing shows that OSV has advisory coverage for QCBOR and Catch2 as `pkg:github` PURLs. An empty report looks the same either way. Put a package with a known advisory through `tools/sbom.py` once. | before a clean report is relied on |
+| **Nothing enforces that unit and component tests never read the real clock** (`testing.md` §2). A `lint.sh` grep for `steady_clock::now()` under `tests/unit/` and `tests/component/`, with a `verify_gates.sh` case proving it fires, would. | when a test is next found reading it |
 | **`-Wnull-dereference` is off for GCC** because of false positives inside libstdc++ under `-O2` (`cmake/warnings.cmake`). | when GCC stops false-positiving |
 
 ### Hardware bench
