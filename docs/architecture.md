@@ -428,8 +428,11 @@ smply/
 │                               ReconnectPolicy. smply::dfu_app, used by both
 │                               examples and unit-tested
 ├── examples/
+│   ├── stub_device/            stub_device.hpp  demo_image.hpp  device_link.hpp — the
+│   │                           pretend device both portable examples drive, behind a
+│   │                           DeviceLink. Scaffolding, not a protocol reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
-│   │                           the other files are the stub device it drives. Runs
+│   │                           loopback_transport.* is the link to the stub device. Runs
 │   │                           in CI, --flaky-reconnect included
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
 │                               Compiled by CI; runs on the bench: see its README

@@ -9,16 +9,14 @@
 
 add_executable(cli_dfu
     main.cpp
-    demo_image.cpp
     loopback_transport.cpp
-    stub_device.cpp
 )
 
 target_link_libraries(cli_dfu
     PRIVATE
         smply::smply
         smply::util       # Dispatcher: the whole point of the threading in here
-        smply::minicbor   # the stub device has to speak CBOR; smply's own is internal
+        smply_example_stub # the pretend device, shared with serial_dfu
         smply::dfu_app    # FileImageSource, and the reconnect policy below
         smply_internal_options
 )

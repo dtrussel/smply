@@ -7,6 +7,8 @@
 # gates apply to them -- but PRIVATE, so nothing about that reaches a real
 # consumer copying the code out.
 
+# The stub device first: both portable examples talk to it.
+add_subdirectory(stub_device)
 add_subdirectory(cli_dfu)
 
 # The Bluetooth LE tool needs the WinRT transport, so it appears only when that

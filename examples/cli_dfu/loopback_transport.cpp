@@ -2,7 +2,7 @@
 
 #include "loopback_transport.hpp"
 
-#include "stub_device.hpp"
+#include "stub_device/stub_device.hpp"
 
 #include "smply/bytes.hpp"
 #include "smply/error.hpp"
@@ -57,7 +57,7 @@ void LoopbackTransport::close() noexcept
     listener_ = nullptr;
 }
 
-void LoopbackTransport::deliver_from_device(std::vector<std::byte> message)
+void LoopbackTransport::deliver(std::vector<std::byte> message)
 {
     // The closure owns the bytes, and everything it reads it reads on the
     // client context. That is the whole marshalling pattern.
@@ -69,7 +69,7 @@ void LoopbackTransport::deliver_from_device(std::vector<std::byte> message)
     });
 }
 
-void LoopbackTransport::drop_from_device(Error reason)
+void LoopbackTransport::device_resetting(Error reason)
 {
     inbound_->post([this, reason = std::move(reason)] {
         if (!open_ || listener_ == nullptr) {

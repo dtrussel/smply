@@ -337,7 +337,7 @@ it covers ground no other suite does:
 * it exercises the **application's half of the reconnect protocol**: a dropped
   link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
 
-Its device is `examples/cli_dfu/stub_device.*`, and that device is **not** a
+Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
 clean update needs and no more. If the two ever disagree, the simulator is right;
 growing the stub to match it would be building a second test double outside
