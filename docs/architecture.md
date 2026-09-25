@@ -494,9 +494,12 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 * SMP v1 by default; v2 opt-in (protocol-notes §9 A1).
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
-* Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
-  but nothing yet exercises it. O5 tracks whether to exercise it or document it
-  as untested.
+* **Image ≥ 1** is updated like image 0, one image per update, and is
+  exercised against a two-image `ServerSimulator`. Confirming it needs the
+  device's `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*`
+  (protocol-notes A27). Several images in one update, and an image the device
+  commits itself, are ADR-0021's flow. None of it has run against a
+  multi-image device.
 * **Serial: a reference adapter exists, and has not met a device.**
   `transports/serial/` implements MCUmgr's console encapsulation in both
   directions. `transports/serial_port/` opens a port (POSIX `termios`, or
@@ -515,8 +518,7 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 
 ## 12. Planned future extensions
 
-Ordered by expected value, none scheduled: multi-image (`UploadOptions::image`
-is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
+Ordered by expected value, none scheduled: FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·
 request pipelining driven by `buf_count` (O3) · `std::error_code` interop for

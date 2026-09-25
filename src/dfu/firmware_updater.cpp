@@ -355,8 +355,10 @@ private:
         }
 
         case Effect::Confirm:
-            // No hash: the running image is the target.
-            set_state(SetStateRequest{.hash = std::nullopt, .confirm = true},
+            // By hash, always. A hashless confirm names the device's *running*
+            // image, so it can never confirm image >= 1; for image 0 the hash
+            // names the same slot (protocol-notes section 6, ADR-0021).
+            set_state(SetStateRequest{.hash = context_.target, .confirm = true},
                       Event::Kind::Confirmed);
             return;
 

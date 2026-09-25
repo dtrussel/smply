@@ -599,7 +599,7 @@ namespace smply {
 // --- smply/groups/image_upload.hpp ---
 
 struct UploadOptions {
-    std::uint32_t image = 0;
+    std::uint32_t image = 0;                 // sent on first packets only (protocol-notes §6)
     bool          upgrade_only = false;      // protocol-notes §9 A11 — off by default
     std::optional<Hash> sha;                 // computed from the source when absent
     std::uint32_t chunk_size = 0;            // 0 => negotiate (design §6)
@@ -819,7 +819,10 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
     // upload.image is the image the whole update works on: transferred,
-    // inspected, marked and confirmed. There is no second image number.
+    // inspected, marked and confirmed (by hash). There is no second image
+    // number. Image >= 1 works; confirming it needs the device to allow it
+    // (CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*, protocol-notes
+    // A27), and an image the device lacks fails the first packet (NoFreeSlot).
     UploadOptions upload{};
     // Skip the upload when the device already holds this image (by TLV hash).
     bool          skip_if_already_present = true;

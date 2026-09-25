@@ -24,7 +24,9 @@ namespace smply {
 /// What to ask for when uploading an image.
 struct UploadOptions
 {
-    /// Which image to write. Zephyr supports two today; 0 is the usual one.
+    /// Which image to write: 0 is the running application, and a multi-image
+    /// device numbers the rest from 1. Sent on first packets only, where the
+    /// device uses it to choose the slot (docs/protocol-notes.md section 6).
     std::uint32_t image = 0;
 
     /// Ask the server to refuse a version that is not newer than the running

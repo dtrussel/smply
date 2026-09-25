@@ -37,23 +37,34 @@ namespace {
     return context.device->active_slot(image);
 }
 
-/// Any slot marked to boot next.
-[[nodiscard]] bool anything_pending(const Context& context)
+/// Any slot of \p image marked to boot next.
+///
+/// Scoped to the image being updated: on a multi-image device another image's
+/// pending swap says nothing about this one (ADR-0021).
+[[nodiscard]] bool anything_pending(const Context& context, std::uint32_t image)
 {
     if (!context.device.has_value()) {
         return false;
     }
     const std::vector<ImageSlot>& slots = context.device->slots;
-    return std::ranges::any_of(slots, [](const ImageSlot& slot) { return slot.pending; });
+    return std::ranges::any_of(
+        slots, [image](const ImageSlot& slot) { return slot.image == image && slot.pending; });
 }
 
-/// The slot holding the image being installed, or nullptr.
-[[nodiscard]] const ImageSlot* slot_with_target(const Context& context)
+/// The slot of \p image holding the image being installed, or nullptr.
+///
+/// The device finds a hash in any image (protocol-notes section 6), but only a
+/// slot of the image being updated counts as holding it.
+[[nodiscard]] const ImageSlot* slot_with_target(const Context& context, std::uint32_t image)
 {
     if (!context.device.has_value() || context.target.empty()) {
         return nullptr;
     }
-    return context.device->find_by_hash(context.target);
+    const std::vector<ImageSlot>& slots = context.device->slots;
+    const auto found = std::ranges::find_if(slots, [&context, image](const ImageSlot& slot) {
+        return slot.image == image && slot.hash.has_value() && *slot.hash == context.target;
+    });
+    return found == slots.end() ? nullptr : &*found;
 }
 
 /// Whether the update should stop once the device merely holds the image.
@@ -80,7 +91,7 @@ namespace {
 [[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
 {
     const ImageSlot* active = active_of(context, plan.upload.image);
-    const ImageSlot* holder = slot_with_target(context);
+    const ImageSlot* holder = slot_with_target(context, plan.upload.image);
 
     // 1. The device is already running the image being installed.
     if (active != nullptr && holder == active) {
@@ -130,7 +141,7 @@ namespace {
         // The signature of a revert: the device is running something else and
         // nothing is queued to change that. If something *is* pending the swap
         // simply has not happened, which is a different failure.
-        if (!anything_pending(context)) {
+        if (!anything_pending(context, plan.upload.image)) {
             context.report.rolled_back = true;
             context.swap_scheduled = false;
             return fail(context, ErrorCode::UpdateFailed, "dfu: device reverted to the old image");
@@ -290,7 +301,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::VerifyingUpload:
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
-            if (slot_with_target(context) == nullptr) {
+            if (slot_with_target(context, plan.upload.image) == nullptr) {
                 // The device does not report holding what was just sent.
                 return fail(context, ErrorCode::ImageMismatch,
                             "dfu: uploaded image not present in any slot");

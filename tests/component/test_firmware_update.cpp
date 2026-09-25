@@ -993,3 +993,175 @@ TEST_CASE("an image with a broken TLV area is refused", "[dfu][update]")
     CHECK(started.error().code() == ErrorCode::MalformedMessage);
     CHECK(fixture.simulator.requests().empty());
 }
+
+// --- Image >= 1 (O5, ADR-0021) ----------------------------------------------
+
+namespace {
+
+/// A two-image device: image 0 runs v1.0.0, image 1 runs v5.0.0. The knob
+/// decides whether a confirm may reach image 1 (protocol-notes A27).
+[[nodiscard]] ServerConfig two_image_device(bool allow_confirm_image_1)
+{
+    ServerConfig config;
+    config.image_count = 2;
+    config.allow_confirm_non_active_image_any = allow_confirm_image_1;
+    return config;
+}
+
+[[nodiscard]] SmpClientConfig v2_client()
+{
+    SmpClientConfig config;
+    config.smp_version = Version::V2; // keeps the group-scoped code (A16)
+    return config;
+}
+
+[[nodiscard]] UpdatePlan plan_for_image(std::uint32_t image)
+{
+    UpdatePlan plan;
+    plan.upload.image = image;
+    return plan;
+}
+
+[[nodiscard]] bool same_bytes(ConstBytes actual, const std::vector<std::byte>& expected)
+{
+    return actual.size() == expected.size() &&
+           std::equal(actual.begin(), actual.end(), expected.begin());
+}
+
+} // namespace
+
+TEST_CASE("image 1 is updated and image 0 is left exactly as it was", "[dfu][update][multi]")
+{
+    const std::vector<std::byte> app = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> other_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    const std::vector<std::byte> other_update = make_firmware(kBodySize, 6, 0, 0, 6);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{two_image_device(true), v2_client()};
+    fixture.simulator.load_slot(0, app);
+    fixture.simulator.load_slot(2, other_running);
+    MemoryImageSource source{ConstBytes{other_update}};
+
+    REQUIRE(fixture.updater.start(source, plan_for_image(1), outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.report->rolled_back);
+
+    // Image 1 now runs the update, confirmed; image 0 was never touched.
+    CHECK(same_bytes(fixture.simulator.slot_content(2), other_update));
+    CHECK(fixture.simulator.swap_type(1) == SwapType::None);
+    CHECK(same_bytes(fixture.simulator.slot_content(0), app));
+    CHECK(fixture.simulator.slot_content(1).empty());
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+}
+
+TEST_CASE("an interrupted image-1 upload resumes on image 1", "[dfu][update][multi]")
+{
+    const std::vector<std::byte> app = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> other_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    const std::vector<std::byte> other_update = make_firmware(kBodySize, 6, 0, 0, 6);
+
+    UpdateOutcome outcome;
+    FakeTransport resumed_link;
+    FakeTransport rebooted_link;
+    Fixture fixture{two_image_device(true), v2_client()};
+    fixture.simulator.load_slot(0, app);
+    fixture.simulator.load_slot(2, other_running);
+    MemoryImageSource source{ConstBytes{other_update}};
+
+    REQUIRE(fixture.updater.start(source, plan_for_image(1), outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.last_progress > 0; }));
+    fixture.transport.disconnect();
+
+    Application application;
+    REQUIRE(application.run(fixture, {&resumed_link, &rebooted_link}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.reconnects == 2);
+    CHECK(same_bytes(fixture.simulator.slot_content(2), other_update));
+    CHECK(fixture.simulator.slot_content(1).empty()); // nothing strayed into image 0
+}
+
+TEST_CASE("a revert of image 1 is reported as a rollback", "[dfu][update][multi]")
+{
+    const std::vector<std::byte> app = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> other_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    const std::vector<std::byte> other_update = make_firmware(kBodySize, 6, 0, 0, 6);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{two_image_device(true), v2_client()};
+    fixture.simulator.load_slot(0, app);
+    fixture.simulator.load_slot(2, other_running);
+    MemoryImageSource source{ConstBytes{other_update}};
+
+    REQUIRE(fixture.updater.start(source, plan_for_image(1), outcome.handler()).has_value());
+    Application application;
+    application.reboot_twice = true;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    CHECK(fixture.updater.report().rolled_back);
+    CHECK(same_bytes(fixture.simulator.slot_content(2), other_running));
+}
+
+TEST_CASE("a plan for an image the device does not have fails cleanly", "[dfu][update][multi]")
+{
+    // A device lists nothing for an image it has never been flashed with, so
+    // the updater cannot tell "absent" from "empty" before trying; the server's
+    // first-packet answer is the authority (protocol-notes section 6).
+    const std::vector<std::byte> app = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 6, 0, 0, 6);
+
+    UpdateOutcome outcome;
+    Fixture fixture{two_image_device(true), v2_client()};
+    fixture.simulator.load_slot(0, app);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, plan_for_image(2), outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {}, outcome));
+
+    CHECK(outcome.code == ErrorCode::ProtocolError);
+    const UpdateReport& report = fixture.updater.report();
+    REQUIRE(report.cause.has_value());
+    CHECK(smply::image_error(*report.cause) == ImageError::NoFreeSlot);
+    CHECK_FALSE(outcome.reached(UpdateState::Resetting));
+    CHECK(same_bytes(fixture.simulator.slot_content(0), app));
+}
+
+TEST_CASE("a default build refuses to confirm image 1, and the update says so",
+          "[dfu][update][multi]")
+{
+    // A27: the confirm names image 1 by hash -- a hashless one would confirm
+    // image 0 -- and Zephyr denies it without the Kconfig. The update fails
+    // with the device's own reason and warns that the trial will revert.
+    const std::vector<std::byte> app = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> other_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    const std::vector<std::byte> other_update = make_firmware(kBodySize, 6, 0, 0, 6);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{two_image_device(false), v2_client()};
+    fixture.simulator.load_slot(0, app);
+    fixture.simulator.load_slot(2, other_running);
+    MemoryImageSource source{ConstBytes{other_update}};
+
+    REQUIRE(fixture.updater.start(source, plan_for_image(1), outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::ProtocolError);
+    const UpdateReport& report = fixture.updater.report();
+    REQUIRE(report.cause.has_value());
+    CHECK(smply::image_error(*report.cause) == ImageError::ImageConfirmationDenied);
+    CHECK(report.revert_pending);
+    // Image 0 stayed confirmed: the confirm did not land on it instead.
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+    CHECK(fixture.simulator.swap_type(1) == SwapType::Revert);
+}

@@ -91,6 +91,7 @@ const ImageHash kOther = hash_of(200);
 /// One slot, spelled so a test states only what it is about.
 struct SlotSpec
 {
+    std::uint32_t image = 0;
     std::uint32_t slot = 0;
     ImageHash hash;
     bool active = false;
@@ -103,7 +104,7 @@ struct SlotSpec
     ImageState out;
     for (const SlotSpec& spec : specs) {
         ImageSlot slot;
-        slot.image = 0;
+        slot.image = spec.image;
         slot.slot = spec.slot;
         slot.version = "1.0.0";
         slot.hash = spec.hash;
@@ -955,4 +956,46 @@ TEST_CASE("every state has a name", "[dfu][machine]")
     CHECK(smply::to_string(UpdateState::Cancelled) == "Cancelled");
     CHECK(smply::is_terminal(UpdateState::Completed));
     CHECK_FALSE(smply::is_terminal(UpdateState::Uploading));
+}
+
+// --- Several images: every decision is about the plan's image (ADR-0021) ----
+
+TEST_CASE("another image's pending swap does not hide a revert of this one",
+          "[dfu][machine][multi]")
+{
+    // Image 1 came back on its old image with nothing of its own pending: a
+    // rollback. Image 0 happens to have a swap queued, which says nothing
+    // about image 1 -- and before scoping, it turned the verdict into "did not
+    // boot the new image" instead.
+    Context context = fresh();
+    context.swap_scheduled = true;
+    const ImageState state = state_of(
+        {SlotSpec{.image = 0, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 0, .slot = 1, .hash = hash_of(50), .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 1, .hash = kTarget}});
+    UpdatePlan plan;
+    plan.upload.image = 1;
+
+    const Step step = advance(UpdateState::VerifyingBooted, state_read(state), plan, context);
+    CHECK(step.next == UpdateState::Failed);
+    CHECK(context.report.rolled_back);
+}
+
+TEST_CASE("the target held by another image is not held by this one", "[dfu][machine][multi]")
+{
+    // The device finds a hash in any image, but a copy sitting in image 0's
+    // secondary is not an image-1 update that is already staged.
+    Context context = fresh();
+    context.device = state_of(
+        {SlotSpec{.image = 0, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 0, .slot = 1, .hash = kTarget, .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = hash_of(60), .active = true, .confirmed = true}});
+    UpdatePlan plan;
+    plan.upload.image = 1;
+
+    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    CHECK(step.next == UpdateState::Uploading);
+    CHECK(step.effect == Effect::StartUpload);
+    CHECK_FALSE(context.report.upload_skipped);
 }

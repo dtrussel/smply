@@ -802,7 +802,7 @@ callbacks).
                     └───────┬──────────┘  confirm() (skipped when the mode is
                             │             ConfirmImmediately)
                             ▼
-                    ┌──────────────────┐  IMG set-state{confirm=true}
+                    ┌──────────────────┐  IMG set-state{hash, confirm=true}
                     │ Confirming       │
                     └───────┬──────────┘
                             ▼
@@ -847,6 +847,19 @@ performed a `REVERT` (PN §7).
   a confirm on any slot that is not the running one is refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
   ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
+**Every decision is about `plan.upload.image`** (ADR-0021). The pending
+check, the "does the device hold the target" lookup and the running slot all
+look at that image's slots only. On a multi-image device another image's
+pending swap says nothing about this one, and the device finds a hash in *any*
+image. **The confirm names its slot by hash**, because a hashless confirm
+targets the device's *running* image and could never reach image ≥ 1
+([`protocol-notes.md`](protocol-notes.md) §6). A device that has no such image
+refuses the first upload packet with `NoFreeSlot`, and the update fails with
+that code. The updater cannot tell an absent image from an empty one before
+trying, because the listing omits both. Confirming image ≥ 1 is refused on a
+default Zephyr build (A27). An image the device commits itself belongs to the
+multi-image flow ([`multi-image.md`](multi-image.md)).
+
 * `UpdateMode::UploadOnly` — stops when the transfer completes, going straight
   from `Uploading` to `Completed` without `VerifyingUpload`; the application
   decides when to verify and activate.

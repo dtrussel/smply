@@ -111,7 +111,10 @@ struct UpdatePlan
     ///
     /// `upload.image` is also the image the rest of the update inspects, marks
     /// and confirms: there is one image number for the whole update, not one
-    /// for the transfer and another for everything after it.
+    /// for the transfer and another for everything after it. The confirm names
+    /// the image by hash, because a hashless confirm reaches only the device's
+    /// running image. Confirming image >= 1 is refused unless the device is
+    /// built to allow it (docs/protocol-notes.md section 9, A27).
     UploadOptions upload{};
 
     /// Skip the transfer when the device already holds this image, recognised
