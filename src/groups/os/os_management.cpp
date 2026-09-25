@@ -43,12 +43,8 @@ static_assert(kRequestBufferSize >= limits::kMaxEchoLength + kLargestRequestEnve
 constexpr const char* kBufferTooSmall = "os: request buffer too small";
 
 /// Decodes an mcumgr-parameters response.
-[[nodiscard]] Result<McumgrParameters> decode_parameters(ConstBytes payload)
+[[nodiscard]] Result<McumgrParameters> decode_parameters(cbor::Reader& reader)
 {
-    cbor::Reader reader{payload};
-    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
-        return fail(entered.error());
-    }
     const std::optional<std::uint64_t> buf_size = reader.uint("buf_size");
     const std::optional<std::uint64_t> buf_count = reader.uint("buf_count");
     static_cast<void>(reader.leave_map());
@@ -70,12 +66,8 @@ constexpr const char* kBufferTooSmall = "os: request buffer too small";
 }
 
 /// Decodes an echo response.
-[[nodiscard]] Result<std::string> decode_echo(ConstBytes payload)
+[[nodiscard]] Result<std::string> decode_echo(cbor::Reader& reader)
 {
-    cbor::Reader reader{payload};
-    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
-        return fail(entered.error());
-    }
     const std::optional<std::string_view> echoed = reader.text("r");
     static_cast<void>(reader.leave_map());
 

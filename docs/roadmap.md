@@ -27,8 +27,9 @@ a hardware bench. The serial framing has not yet been used against a device.
 
 **The quality review in [`review-plan.md`](review-plan.md).** Work it stage by
 stage, in order. Stages 1 (process and documentation, which produced this
-file), 2 (architecture) and 3 (design and API, including the async adapters)
-are done. Stages 4 to 6 cover implementation, tooling and the 0.2.0 release.
+file), 2 (architecture), 3 (design and API, including the async adapters) and
+4 (implementation) are done. Stages 5 and 6 cover tooling and CI, and the 0.2.0
+release.
 
 ## Acceptance gaps that need the hardware bench
 

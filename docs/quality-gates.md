@@ -251,11 +251,11 @@ guard's body counted. Guards are wrapped in `LCOV_EXCL_START` /
 path and must stay counted. A marker on a comment line above the code is
 silently ignored.
 
-| Gate | Threshold | Measured 2026-09-19 |
+| Gate | Threshold | Measured 2026-09-25 |
 | ---- | --------- | ------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.3 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 88.0 % ✓ |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.1 % ✓ |
+| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 86.9 % ✓ |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
@@ -266,13 +266,21 @@ number recorded by hand decays: treat these as "true when last measured", and
 re-measure rather than quote them. A directory could fall below 90 % with CI
 green. The roadmap's backlog tracks this.
 
+**A template is counted once per instantiation.** `src/groups/common.hpp`'s
+`send()`, `complete()` and `reject()` are instantiated for every result type a
+group returns. A branch that no caller can take, such as an empty callback, is
+then missing once per type. The same holds for `include/smply/async/task.hpp`.
+Read those gaps from the list, not the percentage: each line is exercised,
+just not in every instantiation.
+
 **A new *consumer* can move the whole-core number without any regression.** A
 caller that instantiates `Result<T>` for new types grows the counted lines of
 `include/smply/detail/expected.hpp`, because an uninstantiated template counts
 on neither side of the ratio. Before treating a small move as lost coverage,
 read it against what was added.
 
-The rest of `src/`, outside the elevated list (2026-09-19):
+The rest of `src/`, outside the elevated list (2026-09-19; the review's Stage 4
+reorganised `src/groups/`, see `review-plan.md`):
 
 | Area | Line | Branch | Notes |
 | ---- | ---- | ------ | ----- |

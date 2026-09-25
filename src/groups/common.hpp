@@ -7,7 +7,8 @@
 ///
 /// A group command is always the same five steps: encode a small request into
 /// a fixed buffer, build a `RequestSpec`, hand it to `SmpClient`, and when the
-/// response arrives either pass on the failure or decode the payload. The
+/// response arrives either pass on the failure or open the response map and
+/// decode its fields. The
 /// client has already done everything else: sequence numbers, deadlines, and
 /// the `rc` and `err` checks. So a group is its encoders and decoders plus a
 /// call to `send()`.
@@ -63,28 +64,16 @@ RequestHandle reject(SmpClient& client, Callback<T> on_done, Error error)
     return {};
 }
 
-/// Opens a response's top-level map.
-///
-/// Every response is a map by the time a group sees it: `SmpClient` has already
-/// run `extract_mgmt_error()` over the payload, which fails on anything else.
-/// Checked anyway, because a decoder that assumes its input was validated
-/// elsewhere is one refactor away from trusting a device.
-[[nodiscard]] inline Result<void> enter_response(cbor::Reader& reader)
-{
-    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
-    // only the `if` leaves its body counted against the branch denominator,
-    // which is what docs/quality-gates.md section 6 excludes it for.
-    if (const auto entered = reader.enter_map(); !entered.has_value()) {
-        return fail(entered.error());
-    }
-    // LCOV_EXCL_STOP
-    return {};
-}
-
 /// Completes \p callback with the result of \p decode, or with the failure that
 /// arrived instead of a response.
 ///
-/// \p decode takes the response payload and returns a `Result<T>`.
+/// \p decode is `Result<T>(cbor::Reader&)`. It receives a reader already
+/// inside the response's top-level map, reads its fields, and leaves the map.
+/// Opening the map is done here, once. Every response is a map by the time a
+/// group sees it: `SmpClient` has already run `extract_mgmt_error()` over the
+/// payload, which fails on anything else. It is still checked, because a
+/// decoder that assumes its input was validated elsewhere is one refactor away
+/// from trusting a device.
 template<class T, class Decode>
 void complete(Callback<T>& callback, Result<RawResponse>& response, Decode& decode)
 {
@@ -95,7 +84,16 @@ void complete(Callback<T>& callback, Result<RawResponse>& response, Decode& deco
         callback(fail(response.error()));
         return;
     }
-    Result<T> decoded = decode(response->payload);
+    cbor::Reader reader{response->payload};
+    // LCOV_EXCL_START -- unreachable guard, and the whole block is: marking
+    // only the `if` leaves its body counted against the branch denominator,
+    // which is what docs/quality-gates.md section 6 excludes it for.
+    if (const auto entered = reader.enter_map(); !entered.has_value()) {
+        callback(fail(entered.error()));
+        return;
+    }
+    // LCOV_EXCL_STOP
+    Result<T> decoded = decode(reader);
     if (!decoded.has_value()) {
         callback(fail(decoded.error()));
         return;
@@ -108,8 +106,8 @@ void complete(Callback<T>& callback, Result<RawResponse>& response, Decode& deco
 /// \param spec    Everything but the payload.
 /// \param payload The encoded request. It must stay valid for this call only:
 ///                `SmpClient::request()` copies it into the message.
-/// \param decode  `Result<T>(ConstBytes payload)`, run on a successful
-///                response.
+/// \param decode  `Result<T>(cbor::Reader&)`, run inside the response map of a
+///                successful response (see `complete()`).
 /// \param where   The error text if the request did not fit its buffer.
 template<class T, class Decode>
 RequestHandle send(SmpClient& client, RequestSpec spec, const Result<ConstBytes>& payload,
@@ -130,7 +128,7 @@ RequestHandle send(SmpClient& client, RequestSpec spec, const Result<ConstBytes>
 /// The decoder for a command whose success carries nothing to read: an empty
 /// map, or `{"rc": 0}` from a server with the legacy result-code behaviour,
 /// which `SmpClient` has already read as success.
-[[nodiscard]] inline Result<void> decode_nothing(ConstBytes /*payload*/) noexcept
+[[nodiscard]] inline Result<void> decode_nothing(cbor::Reader& /*reader*/) noexcept
 {
     return {};
 }

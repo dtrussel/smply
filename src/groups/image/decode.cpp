@@ -206,12 +206,8 @@ template<class To, class From>
 
 /// Decodes an image-state response. Shared by get_state and set_state, which
 /// answer with the same shape.
-Result<ImageState> decode_state(ConstBytes payload)
+Result<ImageState> decode_state(cbor::Reader& reader)
 {
-    cbor::Reader reader{payload};
-    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
-        return fail(entered.error());
-    }
 
     ImageState state;
     // An absent or empty array is a successful, empty answer: the device
@@ -247,12 +243,8 @@ Result<ImageState> decode_state(ConstBytes payload)
 }
 
 /// Decodes a slot-info response.
-Result<SlotInfo> decode_slot_info(ConstBytes payload)
+Result<SlotInfo> decode_slot_info(cbor::Reader& reader)
 {
-    cbor::Reader reader{payload};
-    if (const auto entered = groups::enter_response(reader); !entered.has_value()) {
-        return fail(entered.error());
-    }
 
     SlotInfo info;
     const auto walked = reader.for_each_map_in_array(

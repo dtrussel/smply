@@ -8,8 +8,9 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 - **Stage 1: done** (2026-09-24). R6 now covers source, build, CI and tool files as well as documents, so the history cannot creep back.
 - **Stage 2: done** (2026-09-24): 2a the header cycle, 2b namespaces, 2c the layering gate, 2d `architecture.md` accuracy.
 - **Stage 3: done** (2026-09-24): 3a–3d the API changes, 3e the `smply::asyncutil` extension.
-- **Next: Stage 4**, the implementation review.
-- Stages 5–6: not started.
+- **Stage 4: done** (2026-09-25): 4a–4e, see below.
+- **Next: Stage 5**, tests, tooling and CI.
+- Stage 6: not started.
 
 ### Stage 0 results
 
@@ -147,15 +148,23 @@ Deliberately out of scope, and still in the roadmap: `std::error_code` interop (
 
 ## Stage 4: implementation review
 
-- **Duplicated group helpers.** `reject`/`defer` exists three times (`image_management.cpp:69`, `os_management.cpp:58`, `client.cpp:396`), and `encode_empty`, `command_id` and `kRequestBufferSize` are duplicated too. Move them to `src/groups/group_common.hpp`.
-- **Two helpers named `narrow` with different meanings.** `src/image/source_reader.hpp:32` is an unchecked cast; `image_management.cpp:83` is checked. Move both to `src/detail/narrow.hpp` as `narrow_cast` and `checked_narrow`, and replace the hand-written range checks at `image_management.cpp:203,252` and `os_management.cpp:182-189`.
-- **`image_management.cpp` (784 lines).** Move the response decoders (`:24-343`) into `src/groups/image/decode.cpp`, and flatten `decode_slot_info`'s nested lambdas.
-- **`firmware_updater.cpp` `apply()`** (117-line switch). Factor out the near-identical `MarkForTest` and `Confirm` blocks.
-- **`update_state_machine.cpp` `advance()`** (about 230 lines). Split it into one function per state.
-- **Error construction.** `fail(ErrorCode,…)`, `fail(Error{…})` and raw `unexpected<Error>{…}` are all used. Pick one style, as `result.hpp:74` already asks.
-- **Little-endian loads** (`source_reader.hpp:75`, `smp_ble_uuid.hpp:81`): share one helper where the layering allows.
-- **Unreachable guards.** Review the 11 `LCOV_EXCL` blocks. Keep them only when they guard untrusted input. Remove the ones that are provably unreachable.
-- **Review against the rules.** Each changed file is checked against `design.md` §11 (robustness rules) and CLAUDE.md rule 6 (bound every device-supplied length).
+There were no public API changes, and no behaviour changes. What each item became:
+
+- **4a. `src/groups/common.hpp` (`smply::groups`).**
+  - `send()`, `reject()`, `complete()`, `command_id()` and `encode_empty()` were each written once per group, and now live here.
+  - `complete()` opens each response map once, so a decoder receives an open reader.
+  - Eleven identical `LCOV_EXCL` guards become two.
+  - `image_management.cpp` went from 676 to 571 lines, and `os_management.cpp` from 275 to about 160.
+- **4b. `src/detail/narrow.hpp`.**
+  - `narrow_cast`, unchecked, replaces `image::narrow`.
+  - `checked_narrow`, on `std::in_range`, replaces a checked helper and three hand-written range checks.
+  - `test_narrow.cpp` covers them.
+- **4c. `src/groups/image/decode.{hpp,cpp}`.** The image decoders get their own file. `image_management.cpp` is now 341 lines, from 784 at the start of the review.
+- **4d. `src/dfu/`.** One `set_state()` helper in the updater, and named functions for the long rows of `advance()`. The table itself stays a table.
+- **4e. One spelling for a failure.** `fail(code, where)` everywhere, and no `unexpected<Error>{…}` constructions.
+- **Dropped:** sharing little-endian loads with `transports/common/`. It is installed, so it cannot include `src/`.
+
+Result: 721 tests on all ten presets, `verify_gates.sh` 30 gates, and a clean full lint. Coverage is 98.1 % line and 86.9 % branch. The branch figure is lower than 88.0 % only because `common.hpp`'s templates count once per instantiation; every elevated target is still above 90 %.
 
 ## Stage 5: tests, tooling and CI
 
