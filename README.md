@@ -17,7 +17,7 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Version 0.1.0.** The library does what it exists to do:
+**Version 0.2.0.** The library does what it exists to do:
 * SMP framing and streaming reassembly;
 * a bounded CBOR façade;
 * request correlation with timeouts and cancellation;
@@ -28,6 +28,9 @@ protocol, focused on **MCUboot firmware update (DFU)**.
   trial boot and confirmation.
 
 Around the core library:
+* **For application code:** `smply::asyncutil`, C++20 coroutines and
+  `std::future` over the callbacks, for code that would rather read as a
+  sequence.
 * **For adapter authors:** `smply::Dispatcher` (a thread-marshalling helper
   the core does not link), portable BLE helpers, and MCUmgr's serial console
   framing.

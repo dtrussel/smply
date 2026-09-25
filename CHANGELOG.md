@@ -19,6 +19,16 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-25
+
+A quality release. A structured review, from the architecture down to the
+tests and CI, found and fixed what had drifted: a header cycle, internals in
+the public namespace, an update event whose fields depended on its kind, docs
+that no longer described the code, and CI gates that could pass without having
+checked anything. It adds the coroutine and future adapters `architecture.md`
+had long promised, and the serial console framing. **It breaks the API in the
+places listed under "Changed"**, which is what `0.x` allows (ADR-0016).
+
 ### Added
 
 - **`smply::asyncutil`: coroutines and futures over the callbacks**
@@ -132,6 +142,20 @@ git; commit `97f1647` is the last to carry the per-phase record in
   (`SMPLY_BUILD_FUZZERS` is on only in the fuzz preset), so clang-tidy had been
   *inferring* their command from a neighbouring directory — which happened to
   work until a fuzz target included a transport header.
+- **The process is simpler**
+  ([ADR-0018](docs/decisions/ADR-0018-maintenance-process.md)). The roadmap
+  is a backlog, not a phase record, and there is no session log; the
+  reasoning behind a change is in its commit message. `CONTRIBUTING.md`, a
+  pull-request template and Dependabot (GitHub Actions only) are new.
+- **CI no longer passes quietly when a tool is missing.** Under `CI=true`,
+  `tools/lint.sh` fails without cppcheck and `tools/verify_gates.sh` fails on
+  any skipped case. The coverage job uploads a real report (`coverage.xml`,
+  `coverage-html/`); before this, the upload matched nothing. The nightly fuzz
+  soak runs all eight targets, and the smoke job fails if one is left out.
+- **Build presets:** `core-without-winrt` is removed; it configured exactly what
+  `windows-msvc` does, and `windows-msvc` now sets `SMPLY_BUILD_WINRT=OFF`
+  explicitly. The flag-leak check moved from `tests/consumer/` to
+  `tests/interface_flags/`.
 - `.github/workflows/hil.yml` no longer carries a nightly `schedule:`. No
   self-hosted runner is registered, so it was queueing a 90-minute timeout
   every night against nothing. `workflow_dispatch` remains, and the file
@@ -178,5 +202,6 @@ indefinite-length, and that the final upload chunk is answered only after the
 device has hashed the whole image, which is why `UploadOptions` carries a
 separate `final_chunk_timeout`.
 
-[Unreleased]: https://github.com/dtrussel/smply/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dtrussel/smply/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dtrussel/smply/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dtrussel/smply/releases/tag/v0.1.0

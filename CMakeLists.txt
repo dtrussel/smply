@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.25)
 # C is required in addition to CXX: QCBOR is a C project and fails to
 # configure as a subproject otherwise.
 project(smply
-    VERSION     0.1.0
+    VERSION     0.2.0
     DESCRIPTION "Transport-agnostic C++ client library for Zephyr MCUmgr/SMP"
     HOMEPAGE_URL "https://github.com/dtrussel/smply"
     LANGUAGES   CXX C

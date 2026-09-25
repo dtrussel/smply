@@ -20,7 +20,7 @@ The library is feature-complete for what it exists to do:
 * a reference WinRT BLE adapter and a Windows DFU tool;
 * serial console framing.
 
-Its released version is 0.1.0. The Windows side has updated a real device from
+Its released version is 0.2.0. The Windows side has updated a real device from
 a hardware bench. The serial framing has not yet been used against a device.
 
 ## In progress
