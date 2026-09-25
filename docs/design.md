@@ -5,7 +5,7 @@ wire facts referenced as *(PN §x)* live in [`protocol-notes.md`](protocol-notes
 
 ---
 
-## 1. SMP codec (`src/smp/codec.*`)
+## 1. SMP codec (`include/smply/smp/header.hpp`, `src/smp/codec.cpp`)
 
 Pure functions over an 8-byte header. No allocation, no state.
 
@@ -17,7 +17,8 @@ struct Header {
 };
 
 std::array<std::byte, 8> encode(const Header&) noexcept;
-Result<Header>           decode(std::span<const std::byte, 8>) noexcept;
+Result<Header>           decode_header(std::span<const std::byte, 8>) noexcept;
+Result<Header>           decode_header(ConstBytes) noexcept;  // too short => MalformedMessage
 ```
 
 Encoding: byte0 = `(res=0 << 5) | (version << 3) | op`, all multi-byte fields
@@ -424,7 +425,7 @@ class ImageManagement {                    // src/groups/image/
     RequestHandle get_slot_info(Callback<SlotInfo>);
     UploadHandle upload(ImageSource&, const UploadOptions&,   // see §6
                         std::function<void(UploadProgress)>, Callback<UploadResult>);
-    void         resume(const UploadHandle&, Callback<UploadResult>);
+    UploadHandle resume(const UploadHandle&, Callback<UploadResult>);  // invalid if refused
     void         cancel(const UploadHandle&) noexcept;
 };
 ```
@@ -517,12 +518,16 @@ struct UploadState {
     std::uint32_t consecutive_no_progress = 0;
     std::uint32_t restarts = 0;
     std::uint32_t retries  = 0;
+    bool          progressed = false;           // the server acknowledged a byte this session
     bool          first_packet_pending = true;  // next request must be a full first packet
     Phase         phase = Phase::Idle;
 };
 
 enum class Action { SendChunk, Complete, Fail };
-struct Step { Action action; UploadRequest request; Error error; std::optional<bool> match; };
+struct Step {
+    Action action; UploadRequest request; Error error; std::optional<bool> match;
+    bool completed_on_first_packet = false;  // Complete only: the server's already-present check
+};
 
 Step plan_next  (const UploadState&, const UploadConfig&);          // what to send
 void record_sent(UploadState&, const UploadRequest&);               // what went out
@@ -544,12 +549,17 @@ retransmission possible.
 ### Chunk sizing
 
 ```
-budget      = min(server_buf_size (OS params, PN §5) or default 256,
-                  transport.max_message_size() when it has an opinion,
-                  limits::kUploadChunkMax)
-overhead    = 8 (SMP header) + cbor_overhead_first_packet(len, sha, image, upgrade)
-chunk_size  = clamp(budget - overhead, 32, limits::kUploadChunkMax)
+budget      = min(server_buf_size (OS params, PN §5) or kDefaultSmpMessageBudget (256),
+                  transport.max_message_size() when it is not 0)
+overhead    = 8 (SMP header) + first_packet_overhead(len, sha, image, upgrade)
+chunk_size  = min(budget - overhead, configured_max)   // configured_max defaults to kUploadChunkMax
+fail with MessageTooLarge if budget <= overhead or chunk_size < 32
 ```
+
+`compute_chunk_size()` in `src/groups/image/upload_session.cpp` is the whole
+rule. The three limits are separate inputs (`ChunkBudget`), each ignored when it
+has no opinion, and nothing is clamped *up*: a chunk under 32 bytes is an
+error, not a rounding.
 
 **`server_buf_size` is supplied by the caller**, in `UploadOptions`, not fetched
 by the image group. It belongs to the OS group, and `SmpError::NotSupported`
@@ -557,7 +567,7 @@ from that command is a normal answer to fall back from (A8) rather than an
 upload failure — keeping the fallback in one place is worth more than saving the
 caller a line. A present-but-zero value is ignored like an absent one.
 
-`cbor_overhead_first_packet` is computed exactly, by encoding a probe map with
+`first_packet_overhead` is computed exactly, by encoding a probe map with
 the real `len`/`sha`/`image` values and a zero-length `data` bstr, then adding
 the bstr header for `chunk_size`. Using the *first-packet* overhead for every
 chunk wastes a handful of bytes on subsequent chunks and guarantees the first
@@ -580,7 +590,7 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
 
 | Condition | Action |
 | --------- | ------ |
-| protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request after a backoff. |
+| protocol error `rc != 0` | `Fail` with the `MgmtError`. Exception: `EBUSY`/`ENOMEM` within the retry budget ⇒ re-send the *same* request at once. There is no backoff, because nothing here owns a clock (see below). |
 | `"off"` absent on a success | `Fail(MalformedMessage)` — a success response must carry it. |
 | `rsp_off > image_size` | `Fail(MalformedMessage)` — hostile/buggy device. |
 | `rsp_off == image_size` | upload byte-complete → check `"match"` (below) → `Complete`. **If the request was a first packet, this is the server's own already-present check (PN §6 rule 9a), not a transfer that finished**, and the two are indistinguishable from `off` alone — both report the whole image. `Step::completed_on_first_packet` records which, and surfaces as `UploadResult::already_present` — **but only if the session had acknowledged nothing yet** (`UploadState::progressed`). A first packet re-sent after a rule-9b `off == 0` completes the same way, and the image the server then "already holds" is the one this session transferred (PN §9 A19, seen on every hardware update before the final chunk had its own deadline). |
@@ -706,8 +716,9 @@ confused.
 What smply **does**: validate the magic `0x96F3B83D` and header size, read the
 version for reporting and for pre-flight comparison against the device, compute
 the file's SHA-256 (streaming, 4 KiB at a time, no full-file buffering), and —
-optionally — scan the TLV area for `IMAGE_TLV_SHA256` so the uploaded file can
-be correlated with a device slot entry without trusting the device's word.
+optionally — scan the TLV area for its image hash (`IMAGE_TLV_SHA256`, `SHA384`
+or `SHA512`) so the uploaded file can be correlated with a device slot entry
+without trusting the device's word.
 
 What smply **does not** do: verify signatures, decrypt, evaluate dependency
 TLVs, or reimplement any swap logic.
@@ -746,28 +757,28 @@ callbacks).
                           │ Idle │
                           └───┬──┘  start()
                               ▼
-                    ┌──────────────────┐
-                    │ QueryingParams   │  OS mcumgr-params (optional; ENOTSUP ok)
-                    └───────┬──────────┘
+                    ┌────────────────────┐
+                    │ QueryingParameters │  OS mcumgr-params (optional; ENOTSUP ok)
+                    └───────┬────────────┘
                             ▼
                     ┌──────────────────┐
                     │ InspectingImages │  IMG get-state  → learn active/pending/slots
                     └───────┬──────────┘
                             ▼
-                    ┌──────────────────┐   already-running target image
-                    │ Planning         ├──────────────────────────────► Completed
-                    └───────┬──────────┘   already-uploaded ─► VerifyingUpload
+                    ┌──────────────────┐   (four cases, below the diagram)
+                    │ Planning         ├──► Completed / AwaitingConfirmation /
+                    └───────┬──────────┘    Confirming / Resetting / MarkingForTest
                             ▼
                     ┌──────────────────┐◄── resume_after_reconnect()
               ┌────►│ Uploading        │
               │     └───────┬──────────┘
               │  disconnect │ byte-complete
               │     ┌───────▼──────────┐
-              │     │ VerifyingUpload  │  IMG get-state → secondary slot hash present?
+              │     │ VerifyingUpload  │  IMG get-state → target hash in any slot?
               │     └───────┬──────────┘
               │             ▼
-              │     ┌──────────────────┐  IMG set-state{hash, confirm=false}
-              │     │ MarkingForTest   │  (or confirm=true in ConfirmImmediately mode)
+              │     ┌──────────────────┐  IMG set-state{hash, confirm=false},
+              │     │ MarkingForTest   │  in every mode
               │     └───────┬──────────┘
               │             ▼
               │     ┌──────────────────┐  OS reset
@@ -795,14 +806,28 @@ callbacks).
                     │ Confirming       │
                     └───────┬──────────┘
                             ▼
-                    ┌──────────────────┐  IMG get-state → confirmed == true
-                    │ VerifyingConfirm │
-                    └───────┬──────────┘
+                    ┌────────────────────┐  IMG get-state → confirmed == true
+                    │ VerifyingConfirmed │
+                    └───────┬────────────┘
                             ▼
                     ┌──────────────────┐        ┌──────────┐     ┌───────────┐
                     │ Completed        │        │ Failed   │     │ Cancelled │
                     └──────────────────┘        └──────────┘     └───────────┘
 ```
+
+**`Planning` decides from the slot table alone**
+(`plan_from_state()` in `update_state_machine.cpp`), in this order. The first
+two cases exist because a restarted application may resume an update a
+previous process left part-way:
+
+1. **The target is already running.** Confirmed, or `UploadOnly`: `Completed`.
+   Unconfirmed: a trial boot is in progress, so the confirmation window opens
+   (`AwaitingConfirmation`, or `Confirming` under `ConfirmImmediately`).
+2. **Another slot holds it, already marked pending:** `Resetting`
+   (`Completed` under `UploadOnly`).
+3. **Another slot holds it, unmarked**, and `skip_if_already_present` is set:
+   `MarkingForTest` (`Completed` under `UploadOnly`).
+4. Otherwise: `Uploading`.
 
 `Failed` and `Cancelled` are reachable from every non-terminal state.
 `RolledBack` is a distinguished `Failed` reason detected in `VerifyingBooted`
@@ -822,8 +847,9 @@ performed a `REVERT` (PN §7).
   a confirm on any slot that is not the running one is refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
   ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
-* `UpdateMode::UploadOnly` — stops after `VerifyingUpload`; the application
-  decides when to activate.
+* `UpdateMode::UploadOnly` — stops when the transfer completes, going straight
+  from `Uploading` to `Completed` without `VerifyingUpload`; the application
+  decides when to verify and activate.
 
 ### Application-facing events
 
@@ -845,7 +871,7 @@ that forgets a kind does not compile:
 
 | State | Failure | Recovery |
 | ----- | ------- | -------- |
-| `QueryingParams` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
+| `QueryingParameters` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
 | `InspectingImages` | any error | fatal; nothing has been changed on the device |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
@@ -853,7 +879,7 @@ that forgets a kind does not compile:
 | `VerifyingUpload` | target hash absent from any slot | fatal `ImageMismatch` — the device did not store what we sent |
 | `MarkingForTest` | `IMAGE_ALREADY_PENDING`, **or a group-less `EBADSTATE`** | re-read state **once**; the planner then sees our own image already marked and steps straight to `Resetting`, or re-marks it if the refusal was not ours after all. The second shape is not a second rule: a v1 server that translates group codes sends `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` all as a flat `EBADSTATE` (PN §9 A16, A24), so without it the recovery cannot fire at all on the commonest configuration. Deliberately not extended to `EUNKNOWN`, which the same table gives to every flash failure |
 | `MarkingForTest` | `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` | fatal, with a clear diagnostic |
-| `Resetting` | `EBUSY` | one retry with `force = 1` (PN §5) |
+| `Resetting` | `EBUSY` | one retry with `ResetOptions::force = true`, sent as a CBOR boolean (PN §5) |
 | `Resetting` | no response but the link drops, or the request times out | **treated as success** (PN §9 A3): the device may reset before its answer goes out, and the verify after the reboot is the real check |
 | `AwaitingDisconnect` | grace timeout with the link still up | proceed to `AwaitingReconnect` anyway; the verify step is the real check |
 | `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
@@ -894,7 +920,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | Who outlives whom? | **The transport outlives every client bound to it.** `~SmpClient` and `rebind_transport()` both detach by calling `set_listener(nullptr)`, so a transport destroyed first leaves those calls dangling. |
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
 | Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
-| Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "unknown"; the core then uses its configured default. |
+| Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "no opinion", and that limit is simply skipped; only the device's buffer size falls back to a default (`kDefaultSmpMessageBudget`, §6). |
 
 ### The adapter's marshalling obligation, and `smply::Dispatcher`
 
