@@ -10,6 +10,8 @@
 # The stub device first: both portable examples talk to it.
 add_subdirectory(stub_device)
 add_subdirectory(cli_dfu)
+# cli_dfu's loop over a serial port; its CI runs are against a pty stub.
+add_subdirectory(serial_dfu)
 
 # The Bluetooth LE tool needs the WinRT transport, so it appears only when that
 # is being built. cli_dfu above is the portable one and is always present --

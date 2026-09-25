@@ -14,6 +14,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
 | The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **three** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, and `cli_dfu_reconnect_gives_up` |
+| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **two** tests: `serial_dfu_pty_uart` and `serial_dfu_pty_cdc`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
@@ -342,6 +343,27 @@ protocol reference — `ServerSimulator` is. The stub answers the five commands 
 clean update needs and no more. If the two ever disagree, the simulator is right;
 growing the stub to match it would be building a second test double outside
 `tests/`.
+
+### The serial example as a test (`examples/serial_dfu/`)
+
+Two ctests run a whole update over a pseudo-terminal, against the same stub
+device, behind `pty_stub.*`. That makes them the first test in which smply's
+serial framing crosses a real byte stream in both directions for a complete
+update. They differ only in the shape of the reset, which is roadmap O7's
+question:
+* `serial_dfu_pty_uart`: the port stays open. The updater leaves
+  `AwaitingDisconnect` on the grace timer. Boot banners arrive as ignored
+  lines, and an over-long log line is dropped and counted.
+* `serial_dfu_pty_cdc`: the port vanishes, and the adapter reports the
+  hang-up. It returns as a different `/dev/pts/N` behind the same symlink. The
+  example reopens the path, and `devices=2` proves it reached the new tty.
+
+Both pass on one summary line (`PASS_REGULAR_EXPRESSION`), never on the exit
+code alone: an update that completed with the wrong reset shape, a framing
+error or a refused send is a failure. Each was run 50 times under TSan and
+under ASan with no failure. The stub also bounds inbound packets at
+`kBufSize − 2` in declared length, which is the device's real serial limit
+(protocol-notes A25).
 
 ### BLE framing, link state and send admission (`transports/common/`)
 

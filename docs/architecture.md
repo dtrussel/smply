@@ -434,6 +434,9 @@ smply/
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           loopback_transport.* is the link to the stub device. Runs
 │   │                           in CI, --flaky-reconnect included
+│   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
+│   │                           pty_stub.* — the stub device behind a pseudo-terminal, in
+│   │                           a UART and a USB CDC reset shape. Runs in CI; see README.md
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
 │                               Compiled by CI; runs on the bench: see its README
 ├── tests/

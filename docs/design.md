@@ -1426,8 +1426,10 @@ nothing else.
 Either way, on `ReconnectRequired` the application opens a **new** transport
 by path, retrying while `open()` answers `Disconnected`, and rebinds. Naming
 the port by a stable path (`/dev/serial/by-id/…`) covers a CDC port that
-returns under a different `ttyACMn`. None of it has been **measured** on
-hardware; roadmap O7 stays open for that.
+returns under a different `ttyACMn`. `examples/serial_dfu/` does exactly this,
+and its two ctests run it against a pseudo-terminal stub in both shapes: a port
+that stays open, and one that vanishes and returns as a different tty. None of
+it has been **measured** on hardware; roadmap O7 stays open for that.
 
 ### Counters
 
