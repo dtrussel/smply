@@ -9,8 +9,8 @@ Written 2026-09-24. The roadmap's "In progress" section points here. Work the st
 - **Stage 2: done** (2026-09-24): 2a the header cycle, 2b namespaces, 2c the layering gate, 2d `architecture.md` accuracy.
 - **Stage 3: done** (2026-09-24): 3a–3d the API changes, 3e the `smply::asyncutil` extension.
 - **Stage 4: done** (2026-09-25): 4a–4e, see below.
-- **Next: Stage 5**, tests, tooling and CI.
-- Stage 6: not started.
+- **Stage 5: done** (2026-09-25): 5a–5e, see below.
+- **Next: Stage 6**, the final pass and the 0.2.0 release.
 
 ### Stage 0 results
 
@@ -168,30 +168,36 @@ Result: 721 tests on all ten presets, `verify_gates.sh` 30 gates, and a clean fu
 
 ## Stage 5: tests, tooling and CI
 
-Bugs to fix first:
-- `nightly-fuzz.yml:120-127` leaves `fuzz_serial_deframe` out of its matrix.
-- The coverage artifact path in `ci.yml:214` never matches the gcovr output.
-- The `gate-self-check` job never installs cppcheck or gcovr, so those self-check cases always print SKIP. Install both, and make `verify_gates.sh` fail on a SKIP in CI (`CI=true`).
-- `lint.sh` passes when cppcheck is missing. Make that an error in CI.
+Outcome, one commit each:
+- **5a, CI bugs.**
+  - `coverage.sh` writes `coverage.xml` and `coverage-html/`, and CI uploads them with `if-no-files-found: error`. The old upload matched nothing.
+  - `fuzz_serial_deframe` joins the nightly matrix. The smoke job fails if a built target is missing from it.
+  - Under `CI=true`, a SKIP in `verify_gates.sh` fails the run, and so does a missing cppcheck in `lint.sh`. Both were proven by hiding the tool: each run exits 1.
+  - `gate-self-check` installs gcovr.
+- **5b, presets.**
+  - `core-without-winrt` is removed. It was identical to `windows-msvc`, whose preset now sets `SMPLY_BUILD_WINRT=OFF` explicitly and carries the API-discipline claim.
+  - Test presets inherit a hidden `test-base`.
+- **5c, tooling.**
+  - `tools/cmake_deps.py` is the one FetchContent parser. The two old regexes disagreed, and `sbom.py` did not strip comments. The SBOM output is unchanged.
+  - `tests/consumer/` → `tests/interface_flags/`.
+- **5d, tests.** `test_file_image_source.cpp` and `test_source_reader.cpp` add 8 cases.
+- **5e, metadata.**
+  - `CONTRIBUTING.md`.
+  - A PR template that explains the `Docs-Impact: none` waiver without ever starting a line with it, since that would waive R1.
+  - Dependabot for GitHub Actions only.
 
-Simplification:
-- Remove the `core-without-winrt` preset and CI row; it is identical to `windows-msvc`.
-- Add hidden base presets to `CMakePresets.json` to remove about 160 lines of copied test-preset entries.
-- Stop running CI twice on PR branches: limit `push` to `main`.
-- Add `actions/cache` for `_deps`.
-- `check_deps.py` and `sbom.py` both parse `dependencies.cmake`. Share the parser.
-- Rename `tests/consumer/` to `tests/interface_flags/` so it is not confused with `tests/consumption/`.
-- Remove the stale TSan comment in `cmake/sanitizers.cmake`.
+Dropped, with reasons:
+- **Limiting `push` to `main`.** Branches without a PR, this one included, would get no CI.
+- **Caching `_deps`.** It would need a per-preset key that includes build state, to save a few shallow clones.
+- **Pruning the fuzz corpora.** `-merge=1` would delete the committed reproducers the corpus exists to keep (`quality-gates.md` §8). The roadmap row is removed as settled.
+- **The sanitizers comment.** Already gone.
 
-Gaps to fill:
-- Unit tests for `support/dfu_app/file_image_source.cpp`.
-- A direct test for `src/image/source_reader.hpp`.
-- Prune the fuzz corpora (`-merge=1`).
-
-Repository metadata:
-- Add `.github/pull_request_template.md` explaining the `Docs-Impact: none` waiver.
-- Add `.github/dependabot.yml` for GitHub Actions.
-- Add a short `CONTRIBUTING.md` that points to the contributor guide from 1c, `quality-gates.md` and the build presets.
+Result:
+- 729 tests on all ten presets; fuzz smoke 8/8; `check_install.sh` 3 modes.
+- Coverage 98.2 % line and 86.9 % branch.
+- `CI=true verify_gates.sh`: 30 gates, 0 skipped.
+- `CI=true lint.sh`: clean.
+- The workflow changes are proven only by the first CI run after the push.
 
 ## Stage 6: final pass and release
 

@@ -260,7 +260,7 @@ silently ignored.
 
 | Gate | Threshold | Measured 2026-09-25 |
 | ---- | --------- | ------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ |
+| Line coverage, whole core | **≥ 85 %** | 98.2 % ✓ |
 | Branch coverage, whole core | **≥ 75 %** | 86.9 % ✓ |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
