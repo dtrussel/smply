@@ -409,7 +409,8 @@ int main(int argc, char** argv)
         }
 
         // Sleep until there is something to do: a deadline, or a wake from the
-        // device thread. This is api.md's `app.wait_until(client.next_deadline())`.
+        // device thread, whichever deadline is earlier. This is api.md's
+        // `app.wait_until(earliest(...))`.
         std::optional<TimePoint> deadline = client.next_deadline();
         if (const std::optional<TimePoint> theirs = updater.next_deadline();
             theirs.has_value() && (!deadline.has_value() || *theirs < *deadline)) {

@@ -3,18 +3,25 @@
 Everything lives in namespace `smply`. Baseline **C++20**
 ([ADR-0001](decisions/ADR-0001-cpp-standard.md)).
 
-Every section here describes a shipped header, and must match that header
-exactly. If you change a header, change its section here in the same commit
+Every section here describes a shipped header, and must match that header. If
+you change a header, change its section here in the same commit
 ([ADR-0013](decisions/ADR-0013-living-documentation.md)).
+
+**The declarations below are abridged.** They show each type's members and each
+function's parameters, return type and `noexcept`. What they leave to the
+header: `[[nodiscard]]`, which is on every function returning a `Result`, a
+handle or a value; deleted copy and move operations; and defaulted
+`operator==`. The header is the exact declaration and its `///` comments are
+the full contract.
 
 **Scope: `include/smply/`, plus the installed transport headers**
 ([ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md)):
 
 * `include/smply/` — what an **application** uses. Documented below, header by
   header.
-* `transports/common/` — what an **adapter author** uses. Now part of the
-  installed package, therefore part of the promised surface, and documented
-  below in its own section.
+* `transports/common/` and `transports/serial/` — what an **adapter author**
+  uses. Part of the installed package, therefore part of the promised surface,
+  and documented below in their own section.
 * `transports/winrt_ble/` — the reference adapter. **Not** installed, not
   promised, and documented at its declarations plus [`design.md`](design.md)
   §10. `WinRtBleTransport`'s absence below is a decision, not an omission: it
@@ -25,7 +32,7 @@ exactly. If you change a header, change its section here in the same commit
 
 | Header | Target |
 | ------ | ------ |
-| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` | `smply::smply` |
+| `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` · `version.hpp` | `smply::smply` |
 | `smp/header.hpp` · `transport.hpp` · `smp_client.hpp` | `smply::smply` |
 | `groups/os.hpp` · `groups/image.hpp` · `groups/image_upload.hpp` | `smply::smply` |
 | `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
@@ -208,6 +215,29 @@ are grouped here so the whole defensive surface can be reviewed at once.
 
 These are defaults: `SmpClientConfig` and `UploadOptions` override the ones that
 belong to an instance. The rest are hard bounds on what smply will accept.
+
+## `smply/version.hpp`
+
+Generated at configure time from `project(VERSION)` in `CMakeLists.txt`, and
+installed with the package.
+
+```cpp
+#define SMPLY_VERSION_MAJOR  /* e.g. 0 */
+#define SMPLY_VERSION_MINOR  /* e.g. 2 */
+#define SMPLY_VERSION_PATCH  /* e.g. 0 */
+#define SMPLY_VERSION_STRING /* e.g. "0.2.0" */
+
+namespace smply {
+// The version of the library this program is linked against. Comparing it
+// with SMPLY_VERSION_STRING detects a header/library mismatch at run time.
+const char* version() noexcept;   // static storage duration
+}
+```
+
+The macros are the version the program was *compiled* against, for `#if`
+checks; `version()` is the one it *runs* against. The versioning policy is
+[ADR-0016](decisions/ADR-0016-installed-package-and-versioning.md) and
+[`CHANGELOG.md`](../CHANGELOG.md).
 
 ## `smply/smp/header.hpp`
 
@@ -713,8 +743,8 @@ namespace smply {
 class ImageHash {
 public:
     ImageHash() = default;                              // empty
-    static Result<ImageHash> from(ConstBytes);          // rejects empty or > 64
-    static ImageHash        from(const Hash&);          // the 32-byte case
+    static Result<ImageHash> from(ConstBytes) noexcept; // rejects empty or > 64
+    static ImageHash        from(const Hash&) noexcept; // the 32-byte case
     ConstBytes  bytes() const noexcept;
     std::size_t size()  const noexcept;
     bool        empty() const noexcept;
@@ -775,9 +805,9 @@ namespace smply {
 
 // TestThenConfirm stops after the trial boot and asks; ConfirmImmediately
 // runs the same sequence and confirms without asking (ADR-0014).
-enum class UpdateMode { TestThenConfirm, ConfirmImmediately, UploadOnly };
+enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, UploadOnly };
 
-enum class UpdateState {
+enum class UpdateState : std::uint8_t {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
     AwaitingReconnect, VerifyingBooted, AwaitingConfirmation, Confirming,
@@ -822,10 +852,15 @@ using UpdateEvent = std::variant<UpdateStateChanged, UploadProgress, DisconnectE
 
 // Combines lambdas into one std::visit visitor.
 template<class... Handlers> struct overloaded : Handlers... { using Handlers::operator()...; };
+template<class... Handlers> overloaded(Handlers...) -> overloaded<Handlers...>;
 
-class FirmwareUpdater {
+// Invoked for every event, on the client context.
+using UpdateEventCallback = std::function<void(const UpdateEvent&)>;
+
+class FirmwareUpdater {       // non-copyable, non-movable: callbacks capture it
 public:
-    FirmwareUpdater(SmpClient&, ImageManagement&, OsManagement&);
+    FirmwareUpdater(SmpClient&, ImageManagement&, OsManagement&) noexcept;
+    ~FirmwareUpdater();       // completes a running update with Cancelled
 
     // `source`, and whatever the callback captures, must outlive the update --
     // and outlive the client and both groups, all of which finish outstanding
@@ -919,7 +954,14 @@ namespace smply::async {
 //   co_await await_result<ImageState>([&](auto done) { images.get_state(std::move(done)); });
 // The coroutine resumes INSIDE that callback -- where a callback chain would
 // continue -- so it may start the next operation at once.
-template<class T, class Start> ResultAwaitable<T, Start> await_result(Start&& start);
+template<class T, class Start>
+ResultAwaitable<T, std::decay_t<Start>> await_result(Start&& start);
+
+// What await_result returns: an awaitable that holds `start` until the
+// coroutine suspends, then calls it. Its state is shared with the callback, so
+// a Task destroyed while suspended drops a late result instead of resuming a
+// freed frame. Not constructed directly.
+template<class T, class Start> class ResultAwaitable;
 
 // A coroutine that starts eagerly and stays suspended at its end, so the result
 // outlives the body. Move-only; destroying it destroys the coroutine, and an
@@ -997,7 +1039,9 @@ serial framing is a protocol an adapter cannot skip and cannot guess. An
 adapter author who cannot get them from the package re-derives all three,
 including the bug.
 
-Everything here is in `namespace smply::transport`.
+The public surface is in `namespace smply::transport`. `serial/base64.hpp` is
+installed because `serial_framing.hpp` includes it, but it is
+`smply::transport::detail` and not part of the promise.
 
 ### `common/ble_framing.hpp` — one SMP message into GATT writes
 
@@ -1032,7 +1076,7 @@ public:
 ### `common/send_queue.hpp` — admission for one background writer
 
 ```cpp
-enum class Admission { StartWriter, Queued, Busy };
+enum class Admission : std::uint8_t { StartWriter, Queued, Busy };
 
 struct SendCounters {
     std::uint64_t deferred = 0;   // Queued admissions
@@ -1076,7 +1120,7 @@ run (PN §9 A22).
 ### `common/link_state.hpp` — the three-phase shutdown
 
 ```cpp
-enum class LinkPhase { Open, Closing, Closed };
+enum class LinkPhase : std::uint8_t { Open, Closing, Closed };
 
 class LinkState {
 public:
@@ -1140,9 +1184,16 @@ see [`design.md`](design.md) §12 for the loop an adapter writes around it and
 inline constexpr std::array<std::byte, 2> kPacketMarker;    // 0x06 0x09
 inline constexpr std::array<std::byte, 2> kFragmentMarker;  // 0x04 0x14
 inline constexpr std::size_t kMaxFrame          = 127;  // marker + base64 + '\n'
+inline constexpr std::size_t kMarkerSize        = 2;    // not base64-encoded
+inline constexpr std::size_t kTerminatorSize    = 1;    // the '\n'
 inline constexpr std::size_t kMaxBase64PerFrame = 124;  // characters, NOT bytes
 inline constexpr std::size_t kMaxRawPerFrame    = 93;   // bytes
 inline constexpr std::size_t kMaxSerialPacket   = 65533; // what the length field holds
+
+// How one frame splits, mirroring mcumgr_serial_tx_pkt(): the CRC is never
+// split across frames. Shared by next_frame() and count() so they cannot drift.
+struct FramePlan { std::size_t triplets = 0; bool carries_crc = false; };
+constexpr FramePlan plan_frame(std::size_t packet_size, std::size_t offset, bool first) noexcept;
 
 class SerialFramer {                       // outbound: one message -> frames
 public:
@@ -1161,7 +1212,9 @@ public:
     [[nodiscard]] std::size_t buffered() const noexcept;
 };
 
-struct SerialCounters { std::uint64_t ignored, crc_failures, framing_errors, packets; };
+struct SerialCounters {    // every field starts at 0
+    std::uint64_t ignored = 0, crc_failures = 0, framing_errors = 0, packets = 0;
+};
 
 class SerialDeframer {                     // inbound: lines -> SMP packets
 public:
@@ -1208,15 +1261,13 @@ bytes for no reason. It should be at most `kMaxSerialPacket`.
 
 ---
 
----
-
 ## Representative usage
 
-**All of this is now runnable.** `examples/cli_dfu/main.cpp` is the sketch below
-as a working program — the same pump, against a stub device on another thread,
-with the reconnect and the confirmation actually handled rather than elided. It
-runs on every push as the `cli_dfu_demo` test. Where the two differ, the example
-is the one that compiles.
+**All of this is runnable.** `examples/cli_dfu/main.cpp` is the sketch below as
+a working program — the same pump, against a stub device on another thread,
+with the reconnect and the confirmation handled rather than elided. It runs on
+every push as the `cli_dfu_demo` test. Where the two differ, the example is the
+one that compiles.
 
 ### Portable: one update, application-driven pump
 
@@ -1231,51 +1282,53 @@ smply::MemoryImageSource source{firmware_bytes};
 smply::UpdatePlan plan;                       // TestThenConfirm by default,
                                               // so ConfirmationRequired will arrive
 
-bool done = false;
+// The handler runs inside poll(). It records what was asked; the loop acts on
+// it, because reconnecting and self-testing are the application's own work.
+struct { bool reconnect = false, confirm = false, done = false; } pending;
 const auto on_event = smply::overloaded{
     [&](const smply::UploadProgress& p) { ui.set_progress(p.transferred, p.total); },
     [&](const smply::UpdateStateChanged& e) { ui.set_status(smply::to_string(e.to)); },
     [&](const smply::DisconnectExpected&) { ui.set_status("device rebooting"); },
-    [&](const smply::ReconnectRequired& e) {
-        app.reconnect_async(e.hint, [&](auto& new_transport) {
-            client.rebind_transport(new_transport);
-            static_cast<void>(updater.resume_after_reconnect());
-        });
-    },
-    [&](const smply::ConfirmationRequired&) {
-        // The device is running the new image, unconfirmed. This is the only
-        // chance to decide it works; doing nothing leaves it to revert.
-        if (app.self_test_passes()) {
-            static_cast<void>(updater.confirm());
-        } else {
-            updater.cancel();
-        }
-    },
+    [&](const smply::ReconnectRequired&) { pending.reconnect = true; },
+    [&](const smply::ConfirmationRequired&) { pending.confirm = true; },
     [&](const smply::UpdateFinished& e) {
-        done = true;
+        pending.done = true;
         if (e.result) ui.done();
         else          ui.error(smply::to_string(e.result.error()));
     },
 };
-updater.start(source, plan,
-              [&](const smply::UpdateEvent& ev) { std::visit(on_event, ev); });
+if (const auto begun = updater.start(source, plan,
+        [&](const smply::UpdateEvent& ev) { std::visit(on_event, ev); }); !begun) {
+    return ui.error(smply::to_string(begun.error()));
+}
 
-while (!done) {                                // the pump: one thread, no magic
+while (!pending.done) {                        // the pump: one thread, no magic
     dispatcher.drain();                        // inbound bytes -> client
-    auto now = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     client.poll(now);
     updater.poll(now);
-    app.wait_until(client.next_deadline());
+
+    if (std::exchange(pending.reconnect, false)) {
+        if (auto* link = app.reconnect()) {    // a real reconnect retries with backoff
+            client.rebind_transport(*link);
+            static_cast<void>(updater.resume_after_reconnect());
+        } else {
+            updater.reconnect_failed(smply::Error{smply::ErrorCode::Disconnected, "gave up"});
+        }
+    }
+    if (std::exchange(pending.confirm, false)) {
+        // The device is running the new image, unconfirmed. This is the only
+        // chance to decide it works; doing nothing leaves it to revert.
+        if (app.self_test_passes()) static_cast<void>(updater.confirm());
+        else                        updater.cancel();
+    }
+
+    // Sleep until the EARLIER deadline, woken early by Dispatcher's wake
+    // callback. The client's alone would sleep through the updater's
+    // reconnect grace timer.
+    app.wait_until(earliest(client.next_deadline(), updater.next_deadline()));
 }
 ```
-
-Two things the sketch leaves out and the example does not. **`wait_until` waits on
-the earlier of `client.next_deadline()` and `updater.next_deadline()`**, woken
-early by `Dispatcher`'s wake callback — waiting on the client's alone would sleep
-through the updater's reconnect grace timer. And **the handler above does not
-reconnect or confirm inline**: it records what was asked and the loop acts on its
-next turn, because both are the application's own work and neither belongs inside
-a callback that is running inside `poll()`.
 
 ### Low-level: a single request
 
