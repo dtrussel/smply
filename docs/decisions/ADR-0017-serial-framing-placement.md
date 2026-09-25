@@ -1,6 +1,9 @@
 # ADR-0017 — MCUmgr serial framing: portable, in `transports/serial/`, with a receiver
 
-**Status:** Accepted (2026-09-19)
+**Status:** Accepted (2026-09-19). Decision 1 qualified by
+[ADR-0020](ADR-0020-serial-port-reference-adapter.md): a reference port
+adapter now ships in-tree as `smply::serial_port`, not installed. The framing's
+placement and packaging are unchanged.
 
 ## Context
 

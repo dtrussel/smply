@@ -86,6 +86,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **Over serial, `buf_size` overstates the device's whole-message limit by four bytes** (protocol-notes §9, A25): the netbuf holds the serial length prefix and CRC too. Upload sizing takes `min(buf_size, transport max, cap)`, so a device whose `buf_size` is at or below the serial adapter's cap gets messages it silently drops. Fixing it means letting a transport report a per-message overhead that the core subtracts from `buf_size`, which is a change to the `Transport` contract. The adapter's 256-byte default keeps a default-configured device safe. | before claiming serial support for devices with a small `buf_size` |
 | **Compressed images are unhandled.** MCUboot's `IMAGE_F_COMPRESSED_*` flags and `IMAGE_TLV_DECOMP_SHA` raise the same slot-hash question as encrypted images (A13). smply carries the flags through without interpreting them. Decide whether to flag them like `encrypted` or document them as untested. | before claiming support |
 | **`upload_image_id` means two things** in a slot-info response (protocol-notes §6): the global slot index plus one under `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`, and the image number otherwise. smply reports it verbatim and treats it as advisory. | if the upload path ever wants it |
 | **The TLV entry cap counts loop iterations**, so stepping over the unprotected area's header consumes one unit. This makes no difference at 256. | if the cap is tightened |
