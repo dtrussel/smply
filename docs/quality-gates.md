@@ -269,7 +269,7 @@ silently ignored.
 | Branch coverage, whole core | **≥ 75 %** | 86.7 % ✓ (86.9 % before the serial port adapter; see below) |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
-| `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (287/313) · branch 78.3 % (166/212). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
+| `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (289/315) · branch 78.5 % (168/214). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 **The elevated per-directory targets are measured, not enforced.** Only the two
