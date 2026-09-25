@@ -67,7 +67,7 @@ jobs:
       # and nothing else -- a package it *can* look up is still looked up, and
       # the report check below still requires a report to exist.
       - name: Scan
-        uses: google/osv-scanner-action/osv-scanner-action@v2.2.2
+        uses: google/osv-scanner-action/osv-scanner-action@v2.6.0
         with:
           scan-args: |-
             --format=sarif
