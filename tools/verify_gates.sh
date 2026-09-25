@@ -208,7 +208,7 @@ STUB
 chmod +x "$WORK/tidy-stub"
 expect_ok "the WinRT lint exclusions are directories, not the substring 'winrt'" \
     bash -c 'expected=$(tools/sources.sh | grep -E "\.(cpp|cc)$" \
-                        | grep -Ev "^tests/consumer/|^tests/consumption/" \
+                        | grep -Ev "^tests/interface_flags/|^tests/consumption/" \
                         | grep -Ev "^transports/winrt_ble/|^examples/winrt_ble_dfu/|^tests/hil/" | wc -l)
              actual=$(env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build 2>&1 \
                         | grep -oE "over [0-9]+ TUs" | grep -oE "[0-9]+")
@@ -392,7 +392,7 @@ restore src/version.cpp
 
 # 12 and 13. Consumer flag-leak guard, at configure time and at compile time.
 # Both layers are checked: the configure-time assertion gives the good error
-# message, the compile of tests/consumer is the ground truth behind it.
+# message, the compile of tests/interface_flags is the ground truth behind it.
 # The real line links it PRIVATE *and* wraps it in $<BUILD_INTERFACE:> so the
 # install export is possible. The violation drops both.
 substitute "$WORK/CMakeLists.txt" \
@@ -403,13 +403,13 @@ expect_fail "the configure-time guard rejects strict flags leaking to consumers"
 
 # Now with the configure-time guard removed, so the compile is the only thing
 # standing between a leak and a silent regression.
-sed -i '/^get_target_property(_smply_iface_libs/,/^endif()$/d' "$WORK/tests/consumer/CMakeLists.txt"
+sed -i '/^get_target_property(_smply_iface_libs/,/^endif()$/d' "$WORK/tests/interface_flags/CMakeLists.txt"
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 expect_fail "the consumer target fails to compile when it inherits strict flags" \
-    cmake --build "$WORK/build" --target smply_consumer_check
+    cmake --build "$WORK/build" --target smply_interface_flags_check
 
 restore CMakeLists.txt
-restore tests/consumer/CMakeLists.txt
+restore tests/interface_flags/CMakeLists.txt
 cmake "${CONFIGURE_ARGS[@]}" > /dev/null 2>&1
 
 

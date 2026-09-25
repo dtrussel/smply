@@ -10,8 +10,8 @@
 missingIncludeSystem
 
 # Deliberately non-idiomatic: this file exists to prove strict warnings do not
-# reach consumers (tests/consumer/CMakeLists.txt).
-*:tests/consumer/consumer_check.cpp
+# reach consumers (tests/interface_flags/CMakeLists.txt).
+*:tests/interface_flags/interface_flags_check.cpp
 
 # There is no blanket `syntaxError:tests/*` suppression. Without include paths
 # and a pinned preprocessor configuration, cppcheck explores a Catch2 option

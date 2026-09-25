@@ -12,18 +12,18 @@
 # add_subdirectory against an install tree) is tests/consumption/, driven by
 # tools/check_install.sh.
 
-add_executable(smply_consumer_check consumer_check.cpp)
+add_executable(smply_interface_flags_check interface_flags_check.cpp)
 
 # Note the absence of smply_internal_options: a consumer never links it.
-target_link_libraries(smply_consumer_check PRIVATE smply::smply)
+target_link_libraries(smply_interface_flags_check PRIVATE smply::smply)
 
 if(MSVC)
-    target_compile_options(smply_consumer_check PRIVATE /W1)
+    target_compile_options(smply_interface_flags_check PRIVATE /W1)
 else()
-    target_compile_options(smply_consumer_check PRIVATE -Wall)
+    target_compile_options(smply_interface_flags_check PRIVATE -Wall)
 endif()
 
-add_test(NAME consumer_check COMMAND smply_consumer_check)
+add_test(NAME interface_flags_check COMMAND smply_interface_flags_check)
 
 # Belt and braces: fail at configure time, with a clear message, rather than as
 # a confusing compile error in an unrelated target.

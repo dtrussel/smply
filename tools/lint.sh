@@ -63,22 +63,22 @@ if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
     # Only translation units, and only ours. Headers are covered via
     # HeaderFilterRegex when they are included by these TUs.
     #
-    # tests/consumer/ and tests/consumption/ are excluded for the same reason,
-    # and it is not the WinRT one: they are *consumer* projects that the main
+    # tests/interface_flags/ and tests/consumption/ are excluded for the same
+    # reason, and it is not the WinRT one: they are *consumer* projects that the main
     # build deliberately does not add, so neither appears in
     # compile_commands.json. clang-tidy then infers a command from a
     # neighbouring directory, which is wrong in a way that is not the code's
     # fault -- tests/consumption/smoke.cpp includes "common/ble_framing.hpp",
     # which needs an include root only a target linking smply::transport_common
-    # carries. And tests/consumer/consumer_check.cpp deliberately contains a
-    # narrowing conversion and a C-style cast, because its whole job is to be
-    # compiled with -Wall and prove smply's strict set did not leak.
+    # carries. And tests/interface_flags/interface_flags_check.cpp deliberately
+    # contains a narrowing conversion and a C-style cast, because its whole job
+    # is to be compiled with -Wall and prove smply's strict set did not leak.
     #
     # Both are covered better elsewhere: check_install.sh compiles and runs
-    # smoke.cpp three times per push with real compilers, and consumer_check is
-    # a ctest.
+    # smoke.cpp three times per push with real compilers, and
+    # interface_flags_check is a ctest.
     mapfile -t tus < <(tools/sources.sh | grep -E '\.(cpp|cc)$' \
-        | grep -Ev '^tests/consumer/|^tests/consumption/' \
+        | grep -Ev '^tests/interface_flags/|^tests/consumption/' \
         | grep -Ev "$WINRT_EXCLUDE")
     # The fuzz targets are NOT in this build's compile database: SMPLY_BUILD_FUZZERS
     # is on only in linux-clang-fuzz, and the gates job configures linux-clang.

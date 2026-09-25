@@ -435,7 +435,7 @@ smply/
 │   │                           test_firmware_update.cpp  test_async.cpp
 │   │                           — the real stack over FakeTransport + ServerSimulator
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
-│   ├── consumer/               consumer_check.cpp — the flag-leak gate: links
+│   ├── interface_flags/        interface_flags_check.cpp — the flag-leak gate: links
 │   │                           smply::smply with -Wall only and must build clean
 │   ├── consumption/            smoke.cpp plus one project per mode —
 │   │                           find_package/ add_subdirectory/ fetchcontent/ —

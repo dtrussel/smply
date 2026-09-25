@@ -370,7 +370,7 @@ wanted. Mark such code with an exclusion marker and a comment instead.
 Note that sanitizer *link* options do propagate to consumers of an instrumented
 static library, and must — a consumer of an ASan-instrumented `libsmply.a` has
 to link the ASan runtime. Only *compile* options are held back; that is what the
-flag-leak guard in `tests/consumer/` checks.
+flag-leak guard in `tests/interface_flags/` checks.
 
 ## 8. Fuzzing (required, smoke)
 
@@ -468,11 +468,11 @@ can never come to depend on the SMP client. Both tables are at the top of the
 script, and `verify_gates.sh` proves each rule fires.
 
 Plus the `windows-msvc` matrix job, which builds the core with WinRT off (§1),
-and a configure-time assertion in `tests/consumer/` that smply's interface does
-not propagate its strict warning set — checking both `INTERFACE_COMPILE_OPTIONS` **and**
-`INTERFACE_LINK_LIBRARIES`, since linking `smply_internal_options` `PUBLIC`
-instead of `PRIVATE` leaks the flags transitively while leaving the former
-empty.
+and a configure-time assertion in `tests/interface_flags/` that smply's
+interface does not propagate its strict warning set — checking both
+`INTERFACE_COMPILE_OPTIONS` **and** `INTERFACE_LINK_LIBRARIES`, since linking
+`smply_internal_options` `PUBLIC` instead of `PRIVATE` leaks the flags
+transitively while leaving the former empty.
 
 ## 11. Documentation gate (required)
 

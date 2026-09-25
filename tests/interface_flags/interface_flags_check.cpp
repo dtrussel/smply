@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// See tests/consumer/CMakeLists.txt. This file is intentionally written in a
-// style that smply's own warning set rejects. It must still compile cleanly
+// See tests/interface_flags/CMakeLists.txt. This file is intentionally written
+// in a style that smply's own warning set rejects. It must still compile cleanly
 // here, because a consumer does not inherit those flags.
 
 #include "smply/version.hpp"
