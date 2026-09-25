@@ -810,11 +810,16 @@ enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, Uplo
 enum class UpdateState : std::uint8_t {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
-    AwaitingReconnect, VerifyingBooted, AwaitingConfirmation, Confirming,
-    VerifyingConfirmed, Completed, Failed, Cancelled,
+    AwaitingReconnect, VerifyingBooted, AwaitingDeviceApply, AwaitingConfirmation,
+    Confirming, VerifyingConfirmed, Completed, Failed, Cancelled,
 };
 std::string_view to_string(UpdateState) noexcept;
 constexpr bool   is_terminal(UpdateState) noexcept;
+
+// Who commits an image once it is in place (ADR-0021). Device: smply stages
+// and marks it, then waits for the device to report it applied
+// (docs/multi-image.md), and never confirms it.
+enum class CommitBy : std::uint8_t { Client, Device };
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
@@ -830,17 +835,32 @@ struct UpdatePlan {
     Duration      disconnect_grace = std::chrono::seconds{10};
     // Hint passed to the application in ReconnectRequired.
     Duration      reconnect_hint   = std::chrono::seconds{3};
+    // Device images: how long to wait after the reset for the device to apply
+    // them, and how often to read its state meanwhile.
+    Duration      apply_timeout       = std::chrono::minutes{5};
+    Duration      apply_poll_interval = std::chrono::seconds{2};
 };
 
-struct UpdateReport {
+struct ImageReport {                  // one per target, in the order given
+    std::uint32_t image = 0;
+    CommitBy      commit = CommitBy::Client;
+    ImageHash     target_hash;
+    std::uint64_t bytes_transferred = 0;
+    bool upload_skipped = false;
+    bool rolled_back = false;         // Client: MCUboot reverted it
+    bool applied = false;             // Device: the device reported it applied
+};
+
+struct UpdateReport {                 // the summary fields cover every image
     UpdateState  final_state{};
-    std::uint64_t bytes_transferred{};
-    bool upload_skipped = false;    // the device already held the image
-    std::optional<ImageHash> target_hash;
+    std::uint64_t bytes_transferred{};  // summed
+    bool upload_skipped = false;    // the device already held every image
+    std::optional<ImageHash> target_hash;  // the first image's
     std::optional<ImageState> final_device_state;
     std::optional<Error> cause;     // set iff the update failed
-    bool rolled_back = false;       // MCUboot reverted (protocol-notes §7)
+    bool rolled_back = false;       // MCUboot reverted an image (protocol-notes §7)
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
+    std::vector<ImageReport> images;
 };
 
 // Exactly one of these per event. A variant, so a handler cannot read another

@@ -28,7 +28,7 @@ namespace {
     return fail(context, Error{code, where});
 }
 
-/// The slot of \p state that is running.
+/// The slot of \p image that is running.
 [[nodiscard]] const ImageSlot* active_of(const Context& context, std::uint32_t image)
 {
     if (!context.device.has_value()) {
@@ -39,8 +39,8 @@ namespace {
 
 /// Any slot of \p image marked to boot next.
 ///
-/// Scoped to the image being updated: on a multi-image device another image's
-/// pending swap says nothing about this one (ADR-0021).
+/// Scoped to one image: on a multi-image device another image's pending swap
+/// says nothing about this one (ADR-0021).
 [[nodiscard]] bool anything_pending(const Context& context, std::uint32_t image)
 {
     if (!context.device.has_value()) {
@@ -51,18 +51,25 @@ namespace {
         slots, [image](const ImageSlot& slot) { return slot.image == image && slot.pending; });
 }
 
-/// The slot of \p image holding the image being installed, or nullptr.
+/// Whether \p slot carries \p target's hash.
+[[nodiscard]] bool holds(const ImageSlot* slot, const Target& target)
+{
+    return slot != nullptr && !target.hash.empty() && slot->hash.has_value() &&
+           *slot->hash == target.hash;
+}
+
+/// The slot of \p target's image holding its file, or nullptr.
 ///
 /// The device finds a hash in any image (protocol-notes section 6), but only a
-/// slot of the image being updated counts as holding it.
-[[nodiscard]] const ImageSlot* slot_with_target(const Context& context, std::uint32_t image)
+/// slot of the target's own image counts as holding it.
+[[nodiscard]] const ImageSlot* slot_holding(const Context& context, const Target& target)
 {
-    if (!context.device.has_value() || context.target.empty()) {
+    if (!context.device.has_value()) {
         return nullptr;
     }
     const std::vector<ImageSlot>& slots = context.device->slots;
-    const auto found = std::ranges::find_if(slots, [&context, image](const ImageSlot& slot) {
-        return slot.image == image && slot.hash.has_value() && *slot.hash == context.target;
+    const auto found = std::ranges::find_if(slots, [&target](const ImageSlot& slot) {
+        return slot.image == target.image && holds(&slot, target);
     });
     return found == slots.end() ? nullptr : &*found;
 }
@@ -73,105 +80,254 @@ namespace {
     return plan.mode == UpdateMode::UploadOnly;
 }
 
-/// The fork ADR-0014 introduced: ask, or confirm without asking.
-[[nodiscard]] Step confirmation_fork(const UpdatePlan& plan)
+/// Whether \p target is a `Client` image running its file, unconfirmed: a
+/// trial boot, which only a reset can have started.
+[[nodiscard]] bool running_on_trial(const Context& context, const Target& target)
 {
+    const ImageSlot* active = active_of(context, target.image);
+    return target.commit == CommitBy::Client && holds(active, target) && !active->confirmed;
+}
+
+/// The first `Client` target still owed a confirm, or `targets.size()`.
+[[nodiscard]] std::size_t next_in_trial(const Context& context, std::size_t from)
+{
+    for (std::size_t index = from; index < context.targets.size(); ++index) {
+        if (context.targets[index].in_trial) {
+            return index;
+        }
+    }
+    return context.targets.size();
+}
+
+/// The fork ADR-0014 introduced: ask, or confirm without asking. Either way
+/// the first image owed a confirm becomes the current one.
+[[nodiscard]] Step confirmation_fork(const UpdatePlan& plan, Context& context)
+{
+    context.current = next_in_trial(context, 0);
     if (plan.mode == UpdateMode::ConfirmImmediately) {
         return Step{UpdateState::Confirming, Effect::Confirm};
     }
     return Step{UpdateState::AwaitingConfirmation, Effect::RequestConfirmation};
 }
 
-/// Decides what, if anything, needs doing -- from the slot table alone.
-///
-/// Four cases, in the order they are checked. The first two exist because an
-/// update may be resumed by a *new* process against a device that is already
-/// part-way through one, which is exactly what happens when an application is
-/// restarted mid-update.
-[[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
+/// What the device reports about a `Device` image after the reset
+/// (docs/multi-image.md, "The contract a device-committed image must honour").
+enum class Apply : std::uint8_t
 {
-    const ImageSlot* active = active_of(context, plan.upload.image);
-    const ImageSlot* holder = slot_with_target(context, plan.upload.image);
+    Applied,
+    Applying,
+    Failed,
+};
 
-    // 1. The device is already running the image being installed.
-    if (active != nullptr && holder == active) {
-        if (active->confirmed || upload_only(plan)) {
-            context.report.upload_skipped = true;
-            return Step{UpdateState::Completed, Effect::Finish};
-        }
-        // Running it unconfirmed: a trial boot is in progress and this is the
-        // confirmation window, whoever started it.
-        context.report.upload_skipped = true;
-        context.swap_scheduled = true;
-        return confirmation_fork(plan);
+[[nodiscard]] Apply apply_of(const Context& context, const Target& target)
+{
+    const ImageSlot* active = active_of(context, target.image);
+    if (holds(active, target)) {
+        // Unconfirmed in the primary slot: the device's own MCUboot swapped it
+        // in and the device is still forwarding it (the nRF5340-style variant).
+        return active->confirmed ? Apply::Applied : Apply::Applying;
     }
-
-    // 2. Another slot holds it, already marked for the next boot. The mark
-    //    succeeded at some point even if we never saw the response.
-    if (holder != nullptr && holder->pending) {
-        context.report.upload_skipped = true;
-        context.swap_scheduled = true;
-        return upload_only(plan) ? Step{UpdateState::Completed, Effect::Finish}
-                                 : Step{UpdateState::Resetting, Effect::Reset};
-    }
-
-    // 3. Another slot holds it, unmarked.
-    if (holder != nullptr && plan.skip_if_already_present) {
-        context.report.upload_skipped = true;
-        return upload_only(plan) ? Step{UpdateState::Completed, Effect::Finish}
-                                 : Step{UpdateState::MarkingForTest, Effect::MarkForTest};
-    }
-
-    // 4. Upload it. Even here the device may answer "already present" on the
-    //    first packet and finish without a transfer (rule 9a).
-    context.upload_in_progress = true;
-    return Step{UpdateState::Uploading, Effect::StartUpload};
+    const ImageSlot* holder = slot_holding(context, target);
+    return holder != nullptr && holder->pending ? Apply::Applying : Apply::Failed;
 }
 
-/// `VerifyingBooted`: did the device come up on the new image, or revert?
-[[nodiscard]] Step inspect_boot(const UpdatePlan& plan, Context& context)
+/// After the reset, once every `Client` image has been checked: wait for the
+/// `Device` images, then confirm.
+///
+/// `Client` images are confirmed only after every `Device` image is reported
+/// applied (ADR-0021). A failed apply therefore leaves them unconfirmed, and
+/// `fail()` reports the revert that follows.
+[[nodiscard]] Step await_device(const UpdatePlan& plan, Context& context)
 {
-    const ImageSlot* active = active_of(context, plan.upload.image);
-    if (active == nullptr) {
-        return fail(context, ErrorCode::UpdateFailed, "dfu: no active slot after reboot");
-    }
-
-    const bool running_target = active->hash.has_value() && *active->hash == context.target;
-    if (!running_target) {
-        // The signature of a revert: the device is running something else and
-        // nothing is queued to change that. If something *is* pending the swap
-        // simply has not happened, which is a different failure.
-        if (!anything_pending(context, plan.upload.image)) {
-            context.report.rolled_back = true;
-            context.swap_scheduled = false;
-            return fail(context, ErrorCode::UpdateFailed, "dfu: device reverted to the old image");
+    bool applying = false;
+    for (std::size_t index = 0; index < context.targets.size(); ++index) {
+        const Target& target = context.targets[index];
+        if (target.commit != CommitBy::Device) {
+            continue;
         }
-        return fail(context, ErrorCode::UpdateFailed, "dfu: device did not boot the new image");
+        switch (apply_of(context, target)) {
+        case Apply::Applied:
+            context.report.images[index].applied = true;
+            break;
+        case Apply::Applying:
+            applying = true;
+            break;
+        case Apply::Failed:
+            return fail(context, ErrorCode::UpdateFailed, "dfu: device did not apply an image");
+        }
     }
-
-    // It booted ours. An already-confirmed image needs nothing further --
-    // a `ConfirmImmediately` update whose confirm response was lost lands here.
-    if (active->confirmed) {
-        context.swap_scheduled = false;
+    if (applying) {
+        return Step{UpdateState::AwaitingDeviceApply, Effect::AwaitApply};
+    }
+    if (!context.swap_scheduled) {
+        // Every `Client` image is already confirmed -- a `ConfirmImmediately`
+        // update whose confirm response was lost lands here.
         return Step{UpdateState::Completed, Effect::Finish};
     }
+    return confirmation_fork(plan, context);
+}
 
-    context.swap_scheduled = true;
-    return confirmation_fork(plan);
+/// `VerifyingBooted`: did the device come up on every new `Client` image, or
+/// revert one?
+[[nodiscard]] Step inspect_boot(const UpdatePlan& plan, Context& context)
+{
+    for (const Target& target : context.targets) {
+        if (target.commit == CommitBy::Client && active_of(context, target.image) == nullptr) {
+            return fail(context, ErrorCode::UpdateFailed, "dfu: no active slot after reboot");
+        }
+    }
+
+    bool reverted = false;
+    bool not_booted = false;
+    for (std::size_t index = 0; index < context.targets.size(); ++index) {
+        Target& target = context.targets[index];
+        target.in_trial = false;
+        if (target.commit != CommitBy::Client) {
+            continue;
+        }
+        const ImageSlot* active = active_of(context, target.image);
+        if (!holds(active, target)) {
+            // The signature of a revert: the device is running something else
+            // and nothing is queued to change that. If something *is* pending
+            // the swap simply has not happened, which is a different failure.
+            if (anything_pending(context, target.image)) {
+                not_booted = true;
+            } else {
+                context.report.images[index].rolled_back = true;
+                reverted = true;
+            }
+            continue;
+        }
+        target.in_trial = !active->confirmed;
+    }
+
+    // Whatever is still on trial, or still queued, happens at the next reset.
+    context.swap_scheduled = not_booted || next_in_trial(context, 0) < context.targets.size();
+    if (reverted) {
+        return fail(context, ErrorCode::UpdateFailed, "dfu: device reverted to the old image");
+    }
+    if (not_booted) {
+        return fail(context, ErrorCode::UpdateFailed, "dfu: device did not boot the new image");
+    }
+    return await_device(plan, context);
+}
+
+/// Every image is staged, or needed nothing: reset, or judge the device as it
+/// stands.
+[[nodiscard]] Step staged(const UpdatePlan& plan, Context& context)
+{
+    if (upload_only(plan)) {
+        return Step{UpdateState::Completed, Effect::Finish};
+    }
+    if (context.swap_scheduled) {
+        return Step{UpdateState::Resetting, Effect::Reset};
+    }
+    // Nothing is queued, so a reset would change nothing: what the device runs
+    // now is what it would run after one.
+    return inspect_boot(plan, context);
+}
+
+/// Decides what, if anything, needs doing for each image in turn -- from the
+/// slot table alone.
+///
+/// Four cases per image, in the order they are checked. The first two exist
+/// because an update may be resumed by a *new* process against a device that
+/// is already part-way through one, which is exactly what happens when an
+/// application is restarted mid-update.
+[[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
+{
+    // A `Client` image running its file on trial means the reset has already
+    // happened: this is the confirmation window, or the wait for the device,
+    // whoever started it. Staging anything now would need another reset, and
+    // that would revert the trial.
+    const bool after_reset =
+        context.current == 0 && std::ranges::any_of(context.targets, [&context](const Target& t) {
+            return running_on_trial(context, t);
+        });
+    if (after_reset && !upload_only(plan)) {
+        for (ImageReport& image : context.report.images) {
+            image.upload_skipped = true;
+        }
+        return inspect_boot(plan, context);
+    }
+
+    for (; context.current < context.targets.size(); ++context.current) {
+        const Target& target = context.targets[context.current];
+        ImageReport& report = context.report.images[context.current];
+        const ImageSlot* holder = slot_holding(context, target);
+
+        // 1. The device is already running it.
+        if (holder != nullptr && holder == active_of(context, target.image)) {
+            report.upload_skipped = true;
+            continue;
+        }
+
+        // 2. Another slot holds it, already marked for the next boot. The mark
+        //    succeeded at some point even if we never saw the response.
+        if (holder != nullptr && holder->pending) {
+            report.upload_skipped = true;
+            context.swap_scheduled = context.swap_scheduled || !upload_only(plan);
+            continue;
+        }
+
+        // 3. Another slot holds it, unmarked.
+        if (holder != nullptr && plan.skip_if_already_present) {
+            report.upload_skipped = true;
+            if (upload_only(plan)) {
+                continue;
+            }
+            return Step{UpdateState::MarkingForTest, Effect::MarkForTest};
+        }
+
+        // 4. Upload it. Even here the device may answer "already present" on
+        //    the first packet and finish without a transfer (rule 9a).
+        context.upload_in_progress = true;
+        return Step{UpdateState::Uploading, Effect::StartUpload};
+    }
+    return staged(plan, context);
+}
+
+/// Moves on to the next image once the current one is staged.
+[[nodiscard]] Step next_target(const UpdatePlan& plan, Context& context)
+{
+    ++context.current;
+    context.mark_retried = false;
+    if (context.current < context.targets.size()) {
+        return Step{UpdateState::Planning, Effect::Continue};
+    }
+    return staged(plan, context);
+}
+
+/// Derives the report's summary fields from its images.
+void summarise(Context& context)
+{
+    std::vector<ImageReport>& images = context.report.images;
+    if (images.empty()) {
+        return;
+    }
+    context.report.bytes_transferred = 0;
+    for (const ImageReport& image : images) {
+        context.report.bytes_transferred += image.bytes_transferred;
+    }
+    context.report.upload_skipped =
+        std::ranges::all_of(images, [](const ImageReport& image) { return image.upload_skipped; });
+    context.report.rolled_back =
+        std::ranges::any_of(images, [](const ImageReport& image) { return image.rolled_back; });
 }
 
 /// `Uploading`, on `UploadFinished`.
 [[nodiscard]] Step upload_finished(const Event& event, const UpdatePlan& plan, Context& context)
 {
     context.upload_in_progress = false;
-    context.report.bytes_transferred = event.transferred;
+    ImageReport& report = context.report.images[context.current];
+    report.bytes_transferred = event.transferred;
     // The pre-flight check is not the only way a transfer gets skipped: the
     // server runs the same check on the first packet and can answer "complete"
     // before any image data is really sent (rule 9a), and
     // UploadResult::already_present says so.
-    context.report.upload_skipped = context.report.upload_skipped || event.already_present;
+    report.upload_skipped = report.upload_skipped || event.already_present;
     if (upload_only(plan)) {
-        return Step{UpdateState::Completed, Effect::Finish};
+        return next_target(plan, context);
     }
     return Step{UpdateState::VerifyingUpload, Effect::ReadState};
 }
@@ -241,7 +397,29 @@ namespace {
 
 } // namespace
 
-Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Context& context)
+Context make_context(std::vector<Target> targets)
+{
+    Context context;
+    context.report.images.reserve(targets.size());
+    for (const Target& target : targets) {
+        context.report.images.push_back(ImageReport{
+            .image = target.image, .commit = target.commit, .target_hash = target.hash});
+    }
+    context.targets = std::move(targets);
+    return context;
+}
+
+namespace {
+
+/// Whether \p state works on `context.current`, which must then name a target.
+[[nodiscard]] bool needs_current(UpdateState state)
+{
+    return state == UpdateState::Uploading || state == UpdateState::VerifyingUpload ||
+           state == UpdateState::MarkingForTest || state == UpdateState::Confirming;
+}
+
+[[nodiscard]] Step decide(UpdateState state, const Event& event, const UpdatePlan& plan,
+                          Context& context)
 {
     // Cancellation is legal everywhere and looks the same everywhere, so it is
     // handled once rather than as a row of every state below.
@@ -301,7 +479,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::VerifyingUpload:
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
-            if (slot_with_target(context, plan.upload.image) == nullptr) {
+            if (slot_holding(context, context.targets[context.current]) == nullptr) {
                 // The device does not report holding what was just sent.
                 return fail(context, ErrorCode::ImageMismatch,
                             "dfu: uploaded image not present in any slot");
@@ -316,7 +494,7 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::MarkingForTest:
         if (event.kind == Event::Kind::MarkedForTest) {
             context.swap_scheduled = true;
-            return Step{UpdateState::Resetting, Effect::Reset};
+            return next_target(plan, context);
         }
         if (event.kind == Event::Kind::Failed) {
             return mark_refused(event.error, context);
@@ -363,6 +541,22 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
         }
         break;
 
+    case UpdateState::AwaitingDeviceApply:
+        if (event.kind == Event::Kind::ApplyPollDue) {
+            return Step{UpdateState::AwaitingDeviceApply, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::StateRead) {
+            context.device = *event.state;
+            return await_device(plan, context);
+        }
+        if (event.kind == Event::Kind::ApplyTimedOut) {
+            return fail(context, ErrorCode::Timeout, "dfu: device did not apply an image in time");
+        }
+        if (event.kind == Event::Kind::Failed) {
+            return fail(context, event.error);
+        }
+        break;
+
     case UpdateState::AwaitingConfirmation:
         if (event.kind == Event::Kind::ConfirmApproved) {
             return Step{UpdateState::Confirming, Effect::Confirm};
@@ -371,6 +565,13 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
 
     case UpdateState::Confirming:
         if (event.kind == Event::Kind::Confirmed) {
+            // One image at a time, each by its own hash: a hashless confirm
+            // reaches only the running image (protocol-notes section 6).
+            context.targets[context.current].in_trial = false;
+            context.current = next_in_trial(context, context.current);
+            if (context.current < context.targets.size()) {
+                return Step{UpdateState::Confirming, Effect::Confirm};
+            }
             context.swap_scheduled = false;
             return Step{UpdateState::VerifyingConfirmed, Effect::ReadState};
         }
@@ -384,10 +585,13 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     case UpdateState::VerifyingConfirmed:
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
-            const ImageSlot* active = active_of(context, plan.upload.image);
-            const bool ours =
-                active != nullptr && active->hash.has_value() && *active->hash == context.target;
-            if (ours && active->confirmed) {
+            const bool all_confirmed =
+                std::ranges::all_of(context.targets, [&context](const Target& target) {
+                    const ImageSlot* active = active_of(context, target.image);
+                    return target.commit != CommitBy::Client ||
+                           (holds(active, target) && active->confirmed);
+                });
+            if (all_confirmed) {
                 return Step{UpdateState::Completed, Effect::Finish};
             }
             context.swap_scheduled = true;
@@ -410,6 +614,22 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     // An event this state has no rule for. Ignoring it would hide a driver bug;
     // failing makes it visible at the point it happens.
     return fail(context, ErrorCode::Internal, "dfu: event not legal in this state");
+}
+
+} // namespace
+
+Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Context& context)
+{
+    // Both are the updater's to guarantee; a slip is a bug, reported as one
+    // rather than read out of bounds.
+    const bool consistent = !context.targets.empty() &&
+                            context.report.images.size() == context.targets.size() &&
+                            (!needs_current(state) || context.current < context.targets.size());
+    const Step step = consistent || is_terminal(state)
+                          ? decide(state, event, plan, context)
+                          : fail(context, ErrorCode::Internal, "dfu: no image to work on");
+    summarise(context);
+    return step;
 }
 
 } // namespace smply::dfu

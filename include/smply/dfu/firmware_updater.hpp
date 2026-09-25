@@ -45,6 +45,7 @@
 #include <optional>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace smply {
 
@@ -82,6 +83,7 @@ enum class UpdateState : std::uint8_t
     AwaitingDisconnect,   ///< The link should drop; a grace timer bounds the wait.
     AwaitingReconnect,    ///< The application's turn.
     VerifyingBooted,      ///< Get-state: did it boot ours, or revert?
+    AwaitingDeviceApply,  ///< Polling get-state until the device applied its images.
     AwaitingConfirmation, ///< `TestThenConfirm` only: waiting for `confirm()`.
     Confirming,           ///< Set-state{confirm}.
     VerifyingConfirmed,   ///< Get-state: is it confirmed?
@@ -99,6 +101,20 @@ enum class UpdateState : std::uint8_t
     return state == UpdateState::Completed || state == UpdateState::Failed ||
            state == UpdateState::Cancelled;
 }
+
+/// Who commits an image once it is in place (ADR-0021).
+enum class CommitBy : std::uint8_t
+{
+    /// smply: it is marked for test, verified after the reset, and confirmed
+    /// by hash after the confirmation window. The ordinary update.
+    Client,
+
+    /// The device: smply stages and marks it, then waits in
+    /// `AwaitingDeviceApply` until the device reports it applied, and never
+    /// confirms it. What "applied" looks like is the device contract in
+    /// docs/multi-image.md.
+    Device,
+};
 
 /// What to do, and how.
 struct UpdatePlan
@@ -132,18 +148,48 @@ struct UpdatePlan
     /// Passed to the application in `ReconnectRequired`, as a hint about how
     /// long to wait before its first attempt.
     Duration reconnect_hint = std::chrono::seconds{3};
+
+    /// How long to wait, after the reset, for the device to apply every
+    /// `CommitBy::Device` image. Size it for the slowest apply: on a
+    /// coordinating MCU that is a whole image sent to the second MCU over its
+    /// link, plus that MCU's reboot (docs/multi-image.md).
+    Duration apply_timeout = std::chrono::minutes{5};
+
+    /// How often to read the device's image state while waiting for it to
+    /// apply.
+    Duration apply_poll_interval = std::chrono::seconds{2};
+};
+
+/// What an update did to one of its images.
+struct ImageReport
+{
+    std::uint32_t image = 0;
+    CommitBy commit = CommitBy::Client;
+    /// The image-state hash of this image's file.
+    ImageHash target_hash;
+    std::uint64_t bytes_transferred = 0;
+    /// The device already held the image, so nothing was transferred.
+    bool upload_skipped = false;
+    /// `Client` only: MCUboot reverted this image to the old one.
+    bool rolled_back = false;
+    /// `Device` only: the device reported the image applied.
+    bool applied = false;
 };
 
 /// What an update did, however it ended.
+///
+/// Every field but `images` sums up all the images of the update, and for a
+/// single-image update describes that image.
 struct UpdateReport
 {
     UpdateState final_state = UpdateState::Idle;
+    /// Bytes transferred, over every image.
     std::uint64_t bytes_transferred = 0;
-    /// True when the transfer was skipped because the device already held the
-    /// image -- by the pre-flight check or by the server's own (rule 9a).
+    /// True when every transfer was skipped because the device already held
+    /// the image -- by the pre-flight check or by the server's own (rule 9a).
     bool upload_skipped = false;
 
-    /// The image-state hash of the file, once it has been read.
+    /// The image-state hash of the first image's file, once it has been read.
     std::optional<ImageHash> target_hash;
     /// The last slot table read from the device.
     std::optional<ImageState> final_device_state;
@@ -152,7 +198,7 @@ struct UpdateReport
     std::optional<Error> cause;
 
     /// MCUboot reverted: the device booted the **old** image
-    /// (docs/protocol-notes.md section 7).
+    /// (docs/protocol-notes.md section 7), for at least one image.
     bool rolled_back = false;
 
     /// The device holds a swapped-in image that nobody confirmed, so it will
@@ -162,7 +208,13 @@ struct UpdateReport
     /// or refused by the device. It is the difference between "nothing
     /// happened" and "something will happen when this device next restarts",
     /// which a caller must be able to tell apart.
+    ///
+    /// A multi-image update whose `Device` image was not applied ends here
+    /// too: its `Client` images are left unconfirmed, so they revert.
     bool revert_pending = false;
+
+    /// One entry per image, in the order the update was given them.
+    std::vector<ImageReport> images;
 };
 
 /// The update moved from one state to another.

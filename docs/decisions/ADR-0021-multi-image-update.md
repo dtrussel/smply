@@ -108,7 +108,9 @@ for a product without a coordinating MCU.
 
 * O5 is resolved. `plan.upload.image` is now honoured throughout. Pending,
   holder and active slots are scoped to it, and a plan for an image the device
-  does not report fails cleanly in Planning.
+  does not have fails cleanly on the first upload packet (`NoFreeSlot`): the
+  listing omits an absent image and an empty one alike, so Planning cannot
+  tell them apart.
 * `UpdateState` gains `AwaitingDeviceApply` and `UpdateReport` gains per-image
   results. That is a source break for exhaustive `switch`es, allowed in 0.x and
   recorded in the CHANGELOG.

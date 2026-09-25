@@ -778,8 +778,8 @@ callbacks).
               │     └───────┬──────────┘
               │             ▼
               │     ┌──────────────────┐  IMG set-state{hash, confirm=false},
-              │     │ MarkingForTest   │  in every mode
-              │     └───────┬──────────┘
+              │     │ MarkingForTest   │  in every mode; another image to
+              │     └───────┬──────────┘  stage → back to Planning for it
               │             ▼
               │     ┌──────────────────┐  OS reset
               │     │ Resetting        │
@@ -794,8 +794,12 @@ callbacks).
                     └───────┬──────────┘
                             ▼
                     ┌──────────────────┐  IMG get-state → active slot must carry
-                    │ VerifyingBooted  │  the target hash
+                    │ VerifyingBooted  │  the target hash, for every Client image
                     └───────┬──────────┘
+                            ▼
+                    ┌───────────────────┐ Device images only: IMG get-state every
+                    │AwaitingDeviceApply│ apply_poll_interval until each is
+                    └───────┬───────────┘ applied (docs/multi-image.md)
                             ▼
                     ┌──────────────────┐  emits ConfirmationRequired; the
                     │ AwaitingConfirmation│ APPLICATION validates and calls
@@ -816,18 +820,28 @@ callbacks).
 ```
 
 **`Planning` decides from the slot table alone**
-(`plan_from_state()` in `update_state_machine.cpp`), in this order. The first
-two cases exist because a restarted application may resume an update a
-previous process left part-way:
+(`plan_from_state()` in `update_state_machine.cpp`), for each image in turn,
+in this order. The first two cases exist because a restarted application may
+resume an update a previous process left part-way:
 
-1. **The target is already running.** Confirmed, or `UploadOnly`: `Completed`.
-   Unconfirmed: a trial boot is in progress, so the confirmation window opens
-   (`AwaitingConfirmation`, or `Confirming` under `ConfirmImmediately`).
-2. **Another slot holds it, already marked pending:** `Resetting`
-   (`Completed` under `UploadOnly`).
+1. **The target is already running.** Nothing to stage for this image.
+2. **Another slot holds it, already marked pending.** Nothing to stage, but a
+   reset is owed (not under `UploadOnly`).
 3. **Another slot holds it, unmarked**, and `skip_if_already_present` is set:
-   `MarkingForTest` (`Completed` under `UploadOnly`).
+   `MarkingForTest` (nothing, under `UploadOnly`).
 4. Otherwise: `Uploading`.
+
+Once every image is staged: `Completed` under `UploadOnly`; `Resetting` if a
+reset is owed; otherwise the device is judged as it stands, exactly as
+`VerifyingBooted` would judge it after a reset -- so a single image running
+confirmed is `Completed`, and one running unconfirmed opens the confirmation
+window (`AwaitingConfirmation`, or `Confirming` under `ConfirmImmediately`).
+
+**A `Client` image running its target on trial means the reset has already
+happened**, and `Planning` then stages nothing and goes straight to that
+judgement. Staging would need a second reset, and a reset reverts the trial.
+This is what lets a restarted application pick up a multi-image update in
+`AwaitingDeviceApply` or the confirmation window.
 
 `Failed` and `Cancelled` are reachable from every non-terminal state.
 `RolledBack` is a distinguished `Failed` reason detected in `VerifyingBooted`
@@ -847,9 +861,10 @@ performed a `REVERT` (PN §7).
   a confirm on any slot that is not the running one is refused with `IMAGE_CONFIRMATION_DENIED` unless the build sets
   `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_SLOT`
   ([`protocol-notes.md`](protocol-notes.md) §7), so that flow cannot be built.
-**Every decision is about `plan.upload.image`** (ADR-0021). The pending
-check, the "does the device hold the target" lookup and the running slot all
-look at that image's slots only. On a multi-image device another image's
+**Every decision is about one image's slots** (ADR-0021): the image of the
+target being decided, which for the single-image `start()` is
+`plan.upload.image`. The pending check, the "does the device hold the target"
+lookup and the running slot all look at that image's slots only. On a multi-image device another image's
 pending swap says nothing about this one, and the device finds a hash in *any*
 image. **The confirm names its slot by hash**, because a hashless confirm
 targets the device's *running* image and could never reach image ≥ 1
@@ -860,9 +875,49 @@ trying, because the listing omits both. Confirming image ≥ 1 is refused on a
 default Zephyr build (A27). An image the device commits itself belongs to the
 multi-image flow ([`multi-image.md`](multi-image.md)).
 
-* `UpdateMode::UploadOnly` — stops when the transfer completes, going straight
-  from `Uploading` to `Completed` without `VerifyingUpload`; the application
-  decides when to verify and activate.
+* `UpdateMode::UploadOnly` — stops when every transfer completes, going
+  straight from `Uploading` to the next image's `Planning`, and after the last
+  to `Completed`, without `VerifyingUpload`; the application decides when to
+  verify and activate.
+
+### Several images in one update
+
+The machine takes a list of targets, each an image number, a hash and who
+commits it ([ADR-0021](decisions/ADR-0021-multi-image-update.md)). It runs the
+diagram above once, with the staging part once per image: each image is
+planned, uploaded, verified and marked, in the order given, and
+`Context::current` says which. Then **one** reset, because MCUboot evaluates
+every image's dependency TLV at that one boot, and an image whose dependency is
+not yet staged is not booted (protocol-notes §6). The single-image `start()`
+is this with one `Client` target, `plan.upload.image`; an image-list
+`start()` is the next step.
+
+After the reset, `VerifyingBooted` checks every `Client` image, then
+`AwaitingDeviceApply` waits for every `Device` image. The wait is a poll timer,
+not a clock in the machine: the `AwaitApply` effect makes the updater arm
+`apply_poll_interval` (and `apply_timeout`, once), exposed through
+`next_deadline()` like the disconnect grace, and `poll()` feeds back
+`ApplyPollDue` or, once the timeout has passed, `ApplyTimedOut`. The timeout is
+judged only when a poll falls due, never while a read is outstanding, so no
+answer can arrive after the update has ended. A `Device` image is:
+
+| The device reports | Verdict |
+| ------------------ | ------- |
+| the target in the primary slot, `confirmed` | applied |
+| the target in the primary slot, unconfirmed (the device's MCUboot swapped it and it is still forwarding it) | still applying |
+| the target in a pending slot | still applying |
+| anything else | **failed** |
+
+**`Client` images are confirmed only once every `Device` image is applied**,
+each by its own hash, one set-state at a time; `VerifyingConfirmed` then
+requires every `Client` image confirmed. A failed or timed-out apply ends the
+update with the `Client` images unconfirmed, so `revert_pending` is set and the
+device reverts them on its next reset.
+
+`UpdateReport::images` has one `ImageReport` per target. The summary fields add
+them up: `bytes_transferred` is the sum, `upload_skipped` is true when every
+image was skipped, `rolled_back` when any `Client` image was reverted, and
+`target_hash` is the first image's.
 
 ### Application-facing events
 
@@ -898,6 +953,9 @@ that forgets a kind does not compile:
 | `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
 | `VerifyingBooted` | active image is the old one | `RolledBack` |
 | `VerifyingBooted` | active image is ours, `confirmed == true` already | skip `Confirming` |
+| `VerifyingBooted`, `AwaitingDeviceApply` | a `Device` image neither applied nor applying | fatal `UpdateFailed`; nothing is confirmed, so `revert_pending` |
+| `AwaitingDeviceApply` | `apply_timeout` passes | fatal `Timeout`; nothing is confirmed, so `revert_pending` |
+| `AwaitingDeviceApply` | a state read fails | fatal, with the read's error; nothing is confirmed |
 | `AwaitingConfirmation` | the application cancels, or never confirms | terminal; the device reverts on its next reset — `UpdateReport::revert_pending` says so |
 | `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
 

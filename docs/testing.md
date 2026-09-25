@@ -342,6 +342,14 @@ cancellation from every non-terminal state; and an illegal event in **every**
 state, because "this one silently swallows a stray event" is precisely the hole
 a spot check leaves.
 
+The `[multi]` cases cover the image list (ADR-0021): every image staged before
+the one reset; the mark recovery spent once per image; the three answers of
+the device contract (applied, still applying in either variant, failed); the
+timeout and a failed read while waiting; a revert of one `Client` image; a
+resume after the reset that stages nothing; each `Client` image confirmed in
+turn and all read back confirmed; `UploadOnly` over two images; and a context
+with no image to work on.
+
 ### The example as a test (`examples/cli_dfu/`)
 
 `cli_dfu_demo` runs the example with `--quiet` and checks its exit code, which is

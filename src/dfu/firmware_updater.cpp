@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace smply {
 namespace {
@@ -73,6 +74,8 @@ std::string_view to_string(UpdateState state) noexcept
         return "AwaitingReconnect";
     case UpdateState::VerifyingBooted:
         return "VerifyingBooted";
+    case UpdateState::AwaitingDeviceApply:
+        return "AwaitingDeviceApply";
     case UpdateState::AwaitingConfirmation:
         return "AwaitingConfirmation";
     case UpdateState::Confirming:
@@ -124,10 +127,10 @@ public:
         }
 
         plan_ = plan;
-        source_ = &source;
+        sources_ = {&source};
         on_event_ = std::move(on_event);
-        context_ = dfu::Context{};
-        context_.target = *target;
+        // One image, committed by smply: the update this class has always run.
+        context_ = dfu::make_context({dfu::Target{.image = plan.upload.image, .hash = *target}});
         report_ = UpdateReport{};
         state_ = UpdateState::Idle;
         running_ = true;
@@ -185,6 +188,10 @@ public:
         if (!running_) {
             return;
         }
+        if (state_ == UpdateState::AwaitingDeviceApply) {
+            poll_apply(now);
+            return;
+        }
         if (state_ != UpdateState::AwaitingDisconnect) {
             return;
         }
@@ -203,7 +210,8 @@ public:
 
     [[nodiscard]] std::optional<TimePoint> next_deadline() const noexcept
     {
-        return grace_deadline_;
+        // At most one is armed: they belong to different states.
+        return grace_deadline_.has_value() ? grace_deadline_ : apply_poll_;
     }
 
     [[nodiscard]] UpdateState state() const noexcept
@@ -229,6 +237,20 @@ public:
     }
 
 private:
+    /// `AwaitingDeviceApply`: read the state again once the interval is up.
+    ///
+    /// The timeout is judged only when a poll falls due, never while a read is
+    /// outstanding, so no answer can arrive after the update has ended on it.
+    void poll_apply(TimePoint now)
+    {
+        if (!apply_poll_.has_value() || now < *apply_poll_) {
+            return;
+        }
+        apply_poll_.reset();
+        const bool timed_out = apply_deadline_.has_value() && now >= *apply_deadline_;
+        dispatch(plain(timed_out ? Event::Kind::ApplyTimedOut : Event::Kind::ApplyPollDue));
+    }
+
     /// Queues an event for the next `poll()`.
     ///
     /// Every externally triggered event goes through here, so that no callback
@@ -318,7 +340,7 @@ private:
             return;
 
         case Effect::MarkForTest:
-            set_state(SetStateRequest{.hash = context_.target, .confirm = false},
+            set_state(SetStateRequest{.hash = current_target().hash, .confirm = false},
                       Event::Kind::MarkedForTest);
             return;
 
@@ -349,6 +371,15 @@ private:
             return;
         }
 
+        case Effect::AwaitApply: {
+            // The timeout runs from the first wait, not from each poll.
+            if (!apply_deadline_.has_value()) {
+                apply_deadline_ = last_poll_ + plan_.apply_timeout;
+            }
+            apply_poll_ = last_poll_ + plan_.apply_poll_interval;
+            return;
+        }
+
         case Effect::RequestConfirmation: {
             emit(ConfirmationRequired{});
             return;
@@ -358,7 +389,7 @@ private:
             // By hash, always. A hashless confirm names the device's *running*
             // image, so it can never confirm image >= 1; for image 0 the hash
             // names the same slot (protocol-notes section 6, ADR-0021).
-            set_state(SetStateRequest{.hash = context_.target, .confirm = true},
+            set_state(SetStateRequest{.hash = current_target().hash, .confirm = true},
                       Event::Kind::Confirmed);
             return;
 
@@ -385,15 +416,24 @@ private:
             })));
     }
 
+    /// The target the machine is working on. `dfu::advance()` checks the
+    /// index before it asks for an effect that uses it.
+    [[nodiscard]] const dfu::Target& current_target() const
+    {
+        return context_.targets[context_.current];
+    }
+
     void start_upload()
     {
         UploadOptions options = plan_.upload;
+        options.image = current_target().image;
         if (!options.server_buf_size.has_value() && context_.buf_size != 0) {
             options.server_buf_size = context_.buf_size;
         }
 
         upload_ = image_->upload(
-            *source_, options, [this](UploadProgress progress) { emit(progress); }, upload_done());
+            *sources_[context_.current], options,
+            [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
         // callback still reports why, on the next poll, so there is nothing to
@@ -419,10 +459,12 @@ private:
     {
         running_ = false;
         grace_deadline_.reset();
+        apply_poll_.reset();
+        apply_deadline_.reset();
 
         report_ = context_.report;
         report_.final_state = state_;
-        report_.target_hash = context_.target;
+        report_.target_hash = context_.targets.front().hash;
         report_.final_device_state = context_.device;
 
         Result<UpdateReport> outcome = report_;
@@ -435,7 +477,7 @@ private:
 
         // Nothing may reach the application after `Finished`.
         on_event_ = {};
-        source_ = nullptr;
+        sources_.clear();
         upload_ = UploadHandle{};
     }
 
@@ -496,7 +538,8 @@ private:
     OsManagement* os_;
 
     UpdatePlan plan_;
-    ImageSource* source_ = nullptr;
+    /// Parallel to `context_.targets`.
+    std::vector<ImageSource*> sources_;
     UpdateEventCallback on_event_;
     UploadHandle upload_;
 
@@ -506,6 +549,9 @@ private:
     bool running_ = false;
 
     std::optional<TimePoint> grace_deadline_;
+    /// `AwaitingDeviceApply`: when to read the state next, and when to give up.
+    std::optional<TimePoint> apply_poll_;
+    std::optional<TimePoint> apply_deadline_;
     TimePoint last_poll_;
 
     /// Kept alive only while this object is; every callback holds a weak

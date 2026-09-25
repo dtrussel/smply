@@ -27,13 +27,21 @@
 /// * **A refused confirm is fatal *and* leaves the device about to revert.**
 ///   The report has to say so; "failed" alone would let a caller believe
 ///   nothing had changed.
+///
+/// And one from ADR-0021, for an update of several images:
+///
+/// * **`Client` images are confirmed only after every `Device` image is
+///   reported applied.** A failed or timed-out apply leaves them unconfirmed,
+///   so the device reverts them, rather than keeping half a package.
 
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace smply::dfu {
 
@@ -58,6 +66,8 @@ enum class Effect : std::uint8_t
     AwaitDisconnect,
     /// Emit `ReconnectRequired`.
     RequestReconnect,
+    /// Arm the apply-poll timer, and the apply timeout if it is not armed yet.
+    AwaitApply,
     /// Emit `ConfirmationRequired` and wait for the application (ADR-0014).
     RequestConfirmation,
     Confirm,
@@ -85,6 +95,10 @@ struct Event
         GraceExpired,
         Reconnected,
         ReconnectFailed,
+        /// The apply-poll timer fired: time to read the state again.
+        ApplyPollDue,
+        /// The apply-poll timer fired after `UpdatePlan::apply_timeout`.
+        ApplyTimedOut,
         /// The application called `confirm()`.
         ConfirmApproved,
         /// The device accepted the confirm.
@@ -108,24 +122,40 @@ struct Event
     Error error;
 };
 
+/// One image of the update, as the decisions see it.
+struct Target
+{
+    std::uint32_t image = 0;
+    CommitBy commit = CommitBy::Client;
+    /// The MCUboot hash TLV of the file being installed.
+    ImageHash hash;
+    /// `Client` only: booted and not yet confirmed, so a confirm is owed.
+    bool in_trial = false;
+};
+
 /// Everything the decisions need, carried between them.
 ///
 /// Deliberately small: anything the machine does not branch on belongs in
 /// `FirmwareUpdater`, not here.
 struct Context
 {
-    /// The MCUboot hash TLV of the file being installed.
-    ImageHash target;
+    /// The images, in the order they are staged. Never empty; build it with
+    /// `make_context()`, which sizes `report.images` to match.
+    std::vector<Target> targets;
+    /// The target being uploaded, marked or confirmed. Equal to
+    /// `targets.size()` once every image is staged.
+    std::size_t current = 0;
     /// The most recent slot table.
     std::optional<ImageState> device;
     /// From the device, or zero when it does not implement the command.
     std::uint32_t buf_size = 0;
 
     /// What the update will report. The machine writes the outcome fields
-    /// (`bytes_transferred`, `upload_skipped`, `rolled_back`, `revert_pending`
-    /// and `cause`) here as it decides them, so the updater hands the report
-    /// out rather than copying it field by field. `FirmwareUpdater` adds the
-    /// final state, the target hash and the last slot table when it finishes.
+    /// here as it decides them -- per image in `images`, and `revert_pending`
+    /// and `cause` for the whole -- and derives the summary fields from the
+    /// images after every step, so the updater hands the report out rather
+    /// than copying it field by field. `FirmwareUpdater` adds the final
+    /// state, the target hash and the last slot table when it finishes.
     UpdateReport report;
 
     /// An upload was started and has not finished, so a reconnect resumes it
@@ -135,8 +165,9 @@ struct Context
     /// A swap is scheduled and not yet confirmed, so an update that ends now
     /// leaves the device about to revert.
     bool swap_scheduled = false;
-    /// The one mark-for-test recovery has been spent -- for either shape of
-    /// refusal, `ImageAlreadyPending` or a group-less `BadState`.
+    /// The one mark-for-test recovery has been spent for the current target --
+    /// for either shape of refusal, `ImageAlreadyPending` or a group-less
+    /// `BadState`.
     bool mark_retried = false;
     /// The one `Busy` reset retry has been spent.
     bool reset_forced = false;
@@ -148,6 +179,9 @@ struct Step
     UpdateState next{};
     Effect effect = Effect::None;
 };
+
+/// A context for \p targets, with one report entry per target.
+[[nodiscard]] Context make_context(std::vector<Target> targets);
 
 /// Applies one event.
 ///
