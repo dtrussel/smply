@@ -18,10 +18,12 @@ The library is feature-complete for what it exists to do:
 * MCUboot image handling;
 * the upload state machine and `FirmwareUpdater`;
 * a reference WinRT BLE adapter and a Windows DFU tool;
-* serial console framing.
+* serial console framing, and a reference serial port adapter with an example.
 
 Its released version is 0.2.0. The Windows side has updated a real device from
-a hardware bench. The serial framing has not yet been used against a device.
+a hardware bench. A reference serial port adapter (`transports/serial_port/`)
+has updated the stub device over a pseudo-terminal in CI. It has not yet been
+used against a device.
 
 ## In progress
 
@@ -31,7 +33,13 @@ the next item from the backlog below, by its "When".
 
 ## Acceptance gaps that need the hardware bench
 
-Neither of these can be closed from a container.
+None of these can be closed from a container.
+
+* **Run the serial HIL cases** (`--uart COM4 --cases serial,serial-update`).
+  The serial port adapter's Win32 half has only been compiled, and nothing
+  serial has met a device. The first run answers O7 and A26, and says whether
+  the adapter tolerates the bench console's shell and log traffic, which
+  defeated `mcumgr-client`. A failure there is a finding for protocol-notes.md.
 
 * **Re-run an update from a fresh clone consumed out of tree.** The
   consumption half runs on every push (`tools/check_install.sh`, three modes).
@@ -59,7 +67,7 @@ comment. The IDs are stable, because code and documents cite them, and
 | O4 | Is `MemoryImageSource` enough, or does the library want a `FileImageSource`? | **Resolved: `MemoryImageSource` only.** A file-backed source is a dozen lines in the application. The examples share one in `support/dfu_app/`. |
 | O5 | Multi-image (image ≥ 1) in `UpdatePlan`: exercise it, or document it as untested? | **Open.** The API can already express it. The bench device has one image pair, so deciding means either extending `ServerSimulator` to two pairs or documenting the path as untested in `api.md`. |
 | O6 | Expose a `std::error_code` interop layer? | **Open.** Only if a consumer asks. |
-| O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | **Open.** `AwaitingDisconnect`, `AwaitingReconnect` and `UpdatePlan::disconnect_grace` assume a link that drops on reset, which BLE does. A hardware UART stays open across a reset. A USB CDC port disappears and comes back, possibly under another name. Nothing can be measured until a serial port adapter exists (ADR-0017). |
+| O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | **Open: designed for, tested on a pseudo-terminal, not measured on hardware.** ADR-0020's answer needs no core change. A USB CDC port that vanishes is reported by the adapter as `on_disconnected`, so `AwaitingDisconnect` ends at once. A hardware UART that stays open reports nothing, so the updater moves on when `UpdatePlan::disconnect_grace` expires; a serial application sets that to a few seconds. On `ReconnectRequired` the application reopens by path in both cases, and a stable path such as `/dev/serial/by-id/…` covers a port that returns renamed. `examples/serial_dfu/`'s two ctests show both shapes against a pty stub, the renamed CDC case included. **Assumed, not measured:** that a real CDC port reports the hang-up at all, how long it is gone, and whether a real UART's boot output is only noise. The `serial-update` HIL case (`tests/hil/README.md`) is the measurement, and closing this needs one run of it. |
 
 ## Backlog
 
@@ -71,7 +79,7 @@ doing.
 | Item | When |
 | ---- | ---- |
 | **Retry, restart and bytes-sent counters in `UpdateReport`.** A caller cannot see that an update succeeded only after retransmissions, and a resume that finds the transfer already complete cannot say how much this run moved. `UploadResult` would have to carry the counters first. `already_present` means only "no progress in this session". | when a caller asks |
-| **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is the device's `rsn`, so an adapter drops the `HRESULT` behind every WinRT failure. Widen `reason()`'s contract or add a detail field. | when an adapter is next touched |
+| **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is the device's `rsn`, so an adapter drops the `HRESULT` behind every WinRT failure, and the serial adapter drops the `errno` or `GetLastError()` behind every port failure. Widen `reason()`'s contract or add a detail field. | when an adapter is next touched |
 | **`Transport` has no `connected()` query**, so a transport that reconnects underneath the client cannot say so. `SmpClient` tracks link state itself, which is enough today. | if a self-healing transport is wanted |
 | **Two transport obligations are documented on `SmpClient`, not in the normative contract** (`transport.hpp`, `design.md` §9): `send()` must not deliver inbound bytes before it returns, and a transport must outlive every client bound to it. A transport that notified its listener on destruction would remove the second. | when the transport contract is next revised |
 | **`Result` has no monadic operations** (`and_then`, `transform`). `std::expected` has them and smply's C++20 subset does not, so using them would break the C++20 build. | if the same unwrap is hand-rolled repeatedly |
@@ -98,8 +106,10 @@ doing.
 
 | Item | When |
 | ---- | ---- |
-| **A serial port adapter and an example that drives it.** `transports/serial/` is the protocol only. An integrator writes the `termios`/`CreateFile` half, the reader thread and its `Dispatcher` (ADR-0017). No serial byte has been on a wire yet. The framing agrees with a transcription of `mcumgr_serial_tx_pkt()`, which is weaker evidence than a device. | with a bench that has a serial peer |
-| **`LineSplitter` drops an over-long line with only a counter.** That is right for a console shared with a log backend. But a peer whose frames are consistently too long looks like a silent device. An adapter should surface `dropped_lines()`. | with the serial port adapter |
+| **The serial port adapter's Win32 half is compile-only** (ADR-0020). It is outside clang-tidy and cppcheck, and CI never opens a port with it; a MinGW cross-build is the only local check (handoff.md). Running clang-tidy on the Windows runner would recover the analysis for this half and for `winrt_ble` alike. | with the WinRT row below |
+| **No CI job builds on macOS**, so the POSIX serial half's macOS paths (`#ifdef B460800` and friends, `CRTSCTS` as a plain `int`) are unbuilt. | if a macOS user appears |
+| **The serial adapter writes a message's frames back to back.** Zephyr's UART driver holds only two undecoded lines (protocol-notes A26), so a slow device could drop one and the request would time out. A per-frame pause in the adapter would fix it. Not observed. | if the bench shows it |
+| **Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented.** It needs no framing, only the port, so it is `SerialPortTransport` without `frame_message()`/`SerialInbound`, plus a way to delimit messages without the frame markers. | when a device uses it |
 | **The WinRT adapter is outside clang-tidy and cppcheck**, because both run from a Linux build. Running clang-tidy on the Windows runner would recover the analysis. That is the prerequisite for installing `smply::winrt_ble` (ADR-0016). | when the adapter is wanted in the package |
 | **`cli_dfu` shows only the happy path.** A `--fail-confirm` mode would show MCUboot's revert, the safety property the design turns on. It needs the stub device to model a boot failure. | when revert is to be demonstrated |
 | **`--flaky-reconnect` refuses attempts in the application**, not in the stub device, so it cannot model a device that accepts a connection and then drops it mid-handshake. | when the stub is next extended |

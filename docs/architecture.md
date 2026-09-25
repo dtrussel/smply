@@ -515,8 +515,7 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 
 ## 12. Planned future extensions
 
-Ordered by expected value, none scheduled: a **serial port adapter** over the
-framing in `transports/serial/`, and an example driving it · multi-image (`UploadOptions::image`
+Ordered by expected value, none scheduled: multi-image (`UploadOptions::image`
 is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·

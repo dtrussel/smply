@@ -266,9 +266,10 @@ silently ignored.
 | Gate | Threshold | Measured 2026-09-25 |
 | ---- | --------- | ------------------- |
 | Line coverage, whole core | **≥ 85 %** | 98.2 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 86.9 % ✓ |
+| Branch coverage, whole core | **≥ 75 %** | 86.7 % ✓ (86.9 % before the serial port adapter; see below) |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
+| `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (287/313) · branch 78.3 % (166/212). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 **The elevated per-directory targets are measured, not enforced.** Only the two
@@ -285,7 +286,12 @@ then missing once per type. The same holds for `include/smply/async/task.hpp`.
 Read those gaps from the list, not the percentage: each line is exercised,
 just not in every instantiation.
 
-**A new *consumer* can move the whole-core number without any regression.** A
+**A new *consumer* can move the whole-core number without any regression.**
+The serial port adapter is the measured example. Whole-core branch coverage
+went from 86.9 % (1803/2075) to 86.7 % (1807/2083). A per-file diff against
+the baseline commit shows the entire change in `detail/expected.hpp`: 182 → 190
+branches, 90 → 94 taken, from the adapter's new `Result<>` instantiations.
+Every other file is identical. A
 caller that instantiates `Result<T>` for new types grows the counted lines of
 `include/smply/detail/expected.hpp`, because an uninstantiated template counts
 on neither side of the ratio. Before treating a small move as lost coverage,
