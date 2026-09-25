@@ -22,15 +22,16 @@ protocol honest. The demo is the happy path; `--flaky-reconnect 3` refuses three
 reconnection attempts so the backoff in `smply::dfu_app::ReconnectPolicy` runs
 for real; and `cli_dfu_reconnect_gives_up` exhausts the policy, which is the
 only exercise anywhere of `FirmwareUpdater::reconnect_failed()` outside the
-component suite. That last one is a `WILL_FAIL` test — it has to fail *through*
+component suite. That last one passes only on the exact failure message
+(`PASS_REGULAR_EXPRESSION`), not on any non-zero exit: it has to fail *through*
 `reconnect_failed()` rather than by timing out, or it is green and meaningless.
 
 ## 2. Test doubles (`tests/support/`)
 
 ### `ManualClock`
-`Clock` implementation with `advance(Duration)`. **No test may call
-`std::chrono::steady_clock::now()`.** A CI grep enforces this in `tests/unit`
-and `tests/component`.
+`Clock` implementation with `advance(Duration)`. **No unit or component test
+may call `std::chrono::steady_clock::now()`.** Nothing enforces this yet; review
+does, and the roadmap's backlog has the gate.
 
 ### `FakeTransport`
 The workhorse (`tests/support/`). A `Transport` that records outbound messages
@@ -429,7 +430,7 @@ transport.
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is
-something CTest can say. Two files:
+something CTest can say. Four files:
 
 **`test_simulator.cpp`** checks the double against the specification it claims
 to implement, driven with hand-built requests and **no smply client at all** --
@@ -686,6 +687,10 @@ Commissioning it is in the roadmap's acceptance gaps.
 ## 7. Determinism rules
 
 * No wall-clock time in unit or component tests (`ManualClock` only).
-* No sleeps, no threads, no network, no filesystem outside `tests/data/`.
+* No sleeps and no network. Threads only where a test exists to exercise them:
+  `test_dispatcher.cpp` and the future adapter in `test_async.cpp`, both run
+  under TSan.
+* No filesystem, except a uniquely named temporary file that the test itself
+  removes (`test_file_image_source.cpp`).
 * Randomised tests use a fixed seed printed on failure and reproducible from it.
 * Tests assert on structured values, never on formatted error strings.

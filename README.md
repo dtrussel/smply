@@ -108,8 +108,8 @@ whole update against a stub device running on a second thread — upload, mark f
 test, reset, reconnect, trial boot, confirm. `--image PATH` installs a real
 firmware file instead; `--mode` picks one of the three `UpdateMode`s.
 
-`examples/cli_dfu/main.cpp` is the file to read: the other four are the stub
-device it drives.
+`examples/cli_dfu/main.cpp` is the file to read: the other six are the stub
+device it drives, the loopback link to it, and the demo image.
 
 ### Consuming it
 

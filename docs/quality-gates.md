@@ -286,16 +286,17 @@ caller that instantiates `Result<T>` for new types grows the counted lines of
 on neither side of the ratio. Before treating a small move as lost coverage,
 read it against what was added.
 
-The rest of `src/`, outside the elevated list (2026-09-19; the review's Stage 4
-reorganised `src/groups/`, see `review-plan.md`):
+The rest of `src/`, outside the elevated list (2026-09-25):
 
 | Area | Line | Branch | Notes |
 | ---- | ---- | ------ | ----- |
 | `src/util/` | 100 % | 100 % | |
-| `src/image/` | 98.8 % | 93.2 % | |
-| `src/groups/image/` | 98.2 % | 89.6 % | |
+| `src/groups/os/` | 100 % | 94.4 % | |
 | `src/core.cpp` | 99.1 % | 98.5 % | |
-| `src/groups/os/` | 92.4 % | 80.7 % | The lowest in the tree. The gap is invariant guards, which carry markers, plus the `reject()` instantiations only those guards call. |
+| `src/image/` | 98.8 % | 95.4 % | |
+| `src/groups/image/` | 98.7 % | 91.0 % | Includes `upload_session.*`, which has its own elevated row above. |
+| `src/groups/common.hpp` | 91.6 % | 70.4 % | Templates, counted once per result type (see above). The misses are, per instantiation: the empty-callback arms of `reject()` and `complete()`, the decode-failure arm for decoders that cannot fail (`decode_nothing`), and compiler-generated branches in the lambdas `reject()` and `send()` capture into. |
+| `src/detail/` | 92.9 % | 50.0 % | Two branches in all. `client_thread.hpp`'s miss is the debug assertion firing, which no test can take without aborting. `narrow.hpp`'s is `checked_narrow`'s refusal arm as gcovr counts it; `test_narrow.cpp` checks that arm directly. |
 
 ### Reading the list, not the percentage
 

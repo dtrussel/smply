@@ -448,13 +448,14 @@ smply/
 │                               scripts); tools/ are the bench instruments and the
 │                               capture/decode helpers; README.md is the bench itself.
 │                               Never a PR gate
-├── .github/workflows/          ci.yml (the 16-job gate)  nightly-fuzz.yml
+├── .github/                    pull_request_template.md  dependabot.yml (Actions only)
+├── .github/workflows/          ci.yml (the 15-job gate)  nightly-fuzz.yml
 │                               osv.yml — weekly dependency scan, advisory
 │                               hil.yml — self-hosted, advisory, no runner
 │                               registered and no schedule
 ├── tools/                      format.sh  lint.sh  coverage.sh  sources.sh
 │                               check_public_headers.py  check_deps.py  check_docs.py
-│                               check_install.sh  sbom.py
+│                               check_install.sh  sbom.py  cmake_deps.py (their shared parser)
 │                               verify_gates.sh  cppcheck-suppressions.txt
 └── docs/                       this documentation set + decisions/
 ```
