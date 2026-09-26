@@ -18,12 +18,16 @@ The library is feature-complete for what it exists to do:
 * MCUboot image handling;
 * the upload state machine and `FirmwareUpdater`;
 * a reference WinRT BLE adapter and a Windows DFU tool;
-* serial console framing, and a reference serial port adapter with an example.
+* serial console framing, and a reference serial port adapter with an example;
+* several images of one device in one update, including images the device
+  commits itself, and a reader for nRF Connect SDK's multi-image package
+  (ADR-0021).
 
 Its released version is 0.2.0. The Windows side has updated a real device from
 a hardware bench. A reference serial port adapter (`transports/serial_port/`)
 has updated the stub device over a pseudo-terminal in CI. It has not yet been
-used against a device.
+used against a device. Nor has the multi-image update: it runs against the
+simulator and the stub device only.
 
 ## In progress
 
@@ -47,6 +51,12 @@ None of these can be closed from a container.
   `find_package` consumer instead of in-tree. The install rules have changed
   since the last bench run, and the protocol path has not. So a pass is
   expected, but it has not been shown.
+* **Run a two-image package against a coordinating MCU** (ADR-0021). This
+  needs product firmware that implements the device contract in
+  `multi-image.md`, such as the STM32H5 that applies a BL54L10's image. That
+  firmware is outside smply. Until then, the contract is tested against the
+  simulator and the stub device only. `serial_dfu --port … --package …` is
+  the tool for the run.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed
   but no runner is registered, so the hardware suite has only ever run by hand.
   Its header carries the steps and the `schedule:` block to restore. The
@@ -65,7 +75,7 @@ comment. The IDs are stable, because code and documents cite them, and
 | O2 | Should smply probe SMP v2 and fall back to v1? | **Resolved: no.** v1 stays the default and v2 is an explicit opt-in (`SmpClientConfig::smp_version`). Resolved from hardware; see ADR-0010's status note. |
 | O3 | Raise `max_in_flight` above 1 using `buf_count`? | **Open.** The peer reports `buf_count` 4 beside `buf_size` 2475 (protocol-notes §8), so server buffering is not what limits smply to one request. The open question is whether the throughput gain is worth giving up the retransmission reasoning of ADR-0010. Answering it needs a new ADR, because pipelining changes ADR-0010's premise about which offset is authoritative and ADR-0006's about non-interleaved fragments. It also needs a `ServerSimulator` that models `buf_count`. |
 | O4 | Is `MemoryImageSource` enough, or does the library want a `FileImageSource`? | **Resolved: `MemoryImageSource` only.** A file-backed source is a dozen lines in the application. The examples share one in `support/dfu_app/`. |
-| O5 | Multi-image (image ≥ 1) in `UpdatePlan`: exercise it, or document it as untested? | **Resolved: exercised** ([ADR-0021](decisions/ADR-0021-multi-image-update.md)). `ServerSimulator` models N image pairs, and the updater scopes every decision to `plan.upload.image` and confirms by hash. Component tests cover the image-1 update, resume, revert, an absent image and the default refusal to confirm image 1. Not yet run against a multi-image device. |
+| O5 | Multi-image (image ≥ 1) in `UpdatePlan`: exercise it, or document it as untested? | **Resolved: exercised, and extended** ([ADR-0021](decisions/ADR-0021-multi-image-update.md)). Every decision is scoped to one image, and every confirm names its image by hash. Several images of one device go in one update with one reset, each committed by smply (`Client`) or by the device (`Device`, per the contract in `multi-image.md`). `support/dfu_package/` reads nRF Connect SDK's multi-image package. Covered by `ServerSimulator`'s N image pairs and device-committed mode, the stub device, and the examples' package ctests. Not yet run against a multi-image device. |
 | O6 | Expose a `std::error_code` interop layer? | **Open.** Only if a consumer asks. |
 | O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | **Open: designed for, tested on a pseudo-terminal, not measured on hardware.** ADR-0020's answer needs no core change. A USB CDC port that vanishes is reported by the adapter as `on_disconnected`, so `AwaitingDisconnect` ends at once. A hardware UART that stays open reports nothing, so the updater moves on when `UpdatePlan::disconnect_grace` expires; a serial application sets that to a few seconds. On `ReconnectRequired` the application reopens by path in both cases, and a stable path such as `/dev/serial/by-id/…` covers a port that returns renamed. `examples/serial_dfu/`'s two ctests show both shapes against a pty stub, the renamed CDC case included. **Assumed, not measured:** that a real CDC port reports the hang-up at all, how long it is gone, and whether a real UART's boot output is only noise. The `serial-update` HIL case (`tests/hil/README.md`) is the measurement, and closing this needs one run of it. |
 
@@ -78,6 +88,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **Several *devices* in one update.** `FirmwareUpdater` updates one device, whose own firmware keeps several images consistent (ADR-0021). A product without a coordinating MCU would need a host-side coordinator over several updaters, and ADR-0021 records why that cannot make the pair atomic. | when a product without a coordinating MCU needs it |
 | **Retry, restart and bytes-sent counters in `UpdateReport`.** A caller cannot see that an update succeeded only after retransmissions, and a resume that finds the transfer already complete cannot say how much this run moved. `UploadResult` would have to carry the counters first. `already_present` means only "no progress in this session". | when a caller asks |
 | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is the device's `rsn`, so an adapter drops the `HRESULT` behind every WinRT failure, and the serial adapter drops the `errno` or `GetLastError()` behind every port failure. Widen `reason()`'s contract or add a detail field. | when an adapter is next touched |
 | **`Transport` has no `connected()` query**, so a transport that reconnects underneath the client cannot say so. `SmpClient` tracks link state itself, which is enough today. | if a self-healing transport is wanted |
@@ -106,6 +117,8 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **`support/dfu_package` reads stored zips only.** A deflated package is refused by name. Deflate would mean a new dependency or a hand-written inflater, and the package format written today is stored (ADR-0021, S38). | when someone ships a deflated package |
+| **The stub device does not model the confirm-denial rules for image 1** (A27), so `--commit 1=client` succeeds against it where a default Zephyr build would refuse. `ServerSimulator` models them, and its tests cover the refusal. | if the examples are used to demonstrate A27 |
 | **The serial port adapter's Win32 half is compile-only** (ADR-0020). It is outside clang-tidy and cppcheck, and CI never opens a port with it; a MinGW cross-build is the only local check (handoff.md). Running clang-tidy on the Windows runner would recover the analysis for this half and for `winrt_ble` alike. | with the WinRT row below |
 | **No CI job builds on macOS**, so the POSIX serial half's macOS paths (`#ifdef B460800` and friends, `CRTSCTS` as a plain `int`) are unbuilt. | if a macOS user appears |
 | **The serial adapter writes a message's frames back to back.** Zephyr's UART driver holds only two undecoded lines (protocol-notes A26), so a slow device could drop one and the request would time out. A per-frame pause in the adapter would fix it. Not observed. | if the bench shows it |

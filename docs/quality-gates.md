@@ -265,9 +265,9 @@ silently ignored.
 
 | Gate | Threshold | Measured 2026-09-25 |
 | ---- | --------- | ------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.2 % ✓ |
-| Branch coverage, whole core | **≥ 75 %** | 86.7 % ✓ (86.9 % before the serial port adapter; see below) |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 92.5 % ✓ |
+| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ (3860/3935; 98.2 % before the multi-image update; see below) |
+| Branch coverage, whole core | **≥ 75 %** | 86.4 % ✓ (2007/2323; 86.7 % before the multi-image update, 86.9 % before the serial port adapter; see below) |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 93.7 % ✓ (492/525) |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (289/315) · branch 78.5 % (168/214). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
 | `support/dfu_package/` (support code: **not** in the whole-core figure; recorded 2026-09-25) | — | line 97.2 % (551/567) · branch 91.5 % (483/528). Among the misses: `kMaxPackageSize`, whose test would need a 64 MiB archive; a manifest over the JSON size bound inside a valid zip; and a few of the JSON reader's end-of-input arms. `fuzz_dfu_package` reaches what the table does not |
@@ -297,6 +297,18 @@ caller that instantiates `Result<T>` for new types grows the counted lines of
 `include/smply/detail/expected.hpp`, because an uninstantiated template counts
 on neither side of the ratio. Before treating a small move as lost coverage,
 read it against what was added.
+
+The multi-image update (ADR-0021) is the second measured example. Whole-core
+branch went from 86.7 % (1807/2083) to 86.4 % (2007/2323), and lines from
+98.2 % to 98.1 % (3513/3578 to 3860/3935). A per-file diff against `ee1efcb`,
+built in a separate worktree, puts 34 of the 40 new untaken branches and 9 of
+the 12 new missed lines in `detail/expected.hpp`, the same per-instantiation
+effect. The rest are in `src/dfu/`, whose branch figure rose from 92.5 % to
+93.7 %: three untaken branches in `firmware_updater.cpp` and four in
+`update_state_machine.cpp`. All are the short-circuit half of a compound
+condition, or a defensive arm, such as the apply deadline being unset when a
+poll falls due, which the updater never allows. `mcuboot_image.hpp` gained one
+taken branch. Every other file is identical.
 
 The rest of `src/`, outside the elevated list (2026-09-25):
 
