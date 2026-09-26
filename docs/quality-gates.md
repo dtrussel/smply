@@ -263,14 +263,14 @@ guard's body counted. Guards are wrapped in `LCOV_EXCL_START` /
 path and must stay counted. A marker on a comment line above the code is
 silently ignored.
 
-| Gate | Threshold | Measured 2026-09-25 |
+| Gate | Threshold | Measured 2026-09-26 |
 | ---- | --------- | ------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ (3860/3935; 98.2 % before the multi-image update; see below) |
-| Branch coverage, whole core | **≥ 75 %** | 86.4 % ✓ (2007/2323; 86.7 % before the multi-image update, 86.9 % before the serial port adapter; see below) |
-| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 93.7 % ✓ (492/525) |
+| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ (3912/3988; 98.2 % before the multi-image update; see below) |
+| Branch coverage, whole core | **≥ 75 %** | 86.5 % ✓ (2039/2356; 86.4 % before ADR-0022's commit wait, 86.7 % before the multi-image update, 86.9 % before the serial port adapter; see below) |
+| Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 94.6 % ✓ · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 94.6 % ✓ (522/552) |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (289/315) · branch 78.5 % (168/214). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
-| `support/dfu_package/` (support code: **not** in the whole-core figure; recorded 2026-09-25) | — | line 97.2 % (551/567) · branch 91.5 % (483/528). Among the misses: `kMaxPackageSize`, whose test would need a 64 MiB archive; a manifest over the JSON size bound inside a valid zip; and a few of the JSON reader's end-of-input arms. `fuzz_dfu_package` reaches what the table does not |
+| `support/dfu_package/` (support code: **not** in the whole-core figure; recorded 2026-09-26) | — | line 97.3 % (571/587) · branch 91.8 % (504/549), the package self-consistency check fully covered. Among the misses: `kMaxPackageSize`, whose test would need a 64 MiB archive; a manifest over the JSON size bound inside a valid zip; and a few of the JSON reader's end-of-input arms. `fuzz_dfu_package` reaches what the table does not |
 | Regression | no drop > 1 pp vs. the base branch | — |
 
 **The elevated per-directory targets are measured, not enforced.** Only the two

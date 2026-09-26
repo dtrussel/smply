@@ -20,8 +20,8 @@ The library is feature-complete for what it exists to do:
 * a reference WinRT BLE adapter and a Windows DFU tool;
 * serial console framing, and a reference serial port adapter with an example;
 * several images of one device in one update, including images the device
-  commits itself, and a reader for nRF Connect SDK's multi-image package
-  (ADR-0021).
+  commits itself after the client images are confirmed, and a reader for
+  nRF Connect SDK's multi-image package (ADR-0021, ADR-0022).
 
 Its released version is 0.2.0. The Windows side has updated a real device from
 a hardware bench. A reference serial port adapter (`transports/serial_port/`)
@@ -31,12 +31,7 @@ simulator and the stub device only.
 
 ## In progress
 
-**ADR-0022: a device-committed image commits after the client images, and the
-wait survives the link.** The decision, the device contract (`multi-image.md`) and its
-implementation are in: the simulator, the state machine and updater
-(`AwaitingDeviceCommit`, the verdicts, reconnecting during the waits), the
-stub device and examples, and the package self-consistency check. Left: the
-close-out (CHANGELOG, backlog, coverage, the full gate run).
+Nothing. Pick the next item from the backlog below, by its "When".
 
 ## Acceptance gaps that need the hardware bench
 
@@ -103,12 +98,15 @@ doing.
 | **The client-context assertion covers `SmpClient` only.** Using `ImageManagement` from a second thread without reaching the client (for example, by reading `transferred()`) does not trip it. Closing that needs the groups to use pimpl. | when the groups are next reworked |
 | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics. An adapter branching on it is a bug; a blocking `wait_and_drain()` may be the better offer. | when an adapter asks |
 | `ImageState` has no `operator==`. | when a test wants it |
+| **Nothing checks that a package is meant for the device it is sent to.** The package names its `board` (`DfuPackage::board`), but smply takes no expectation from the caller and does not compare. A mismatch is refused only by the device's signature check, after the upload. A caller-supplied expectation compared in `PackageUpdate` would catch it before the first byte. | when a product ships several boards from one tool |
 
 ### Protocol and images
 
 | Item | When |
 | ---- | ---- |
 | **Over serial, `buf_size` overstates the device's whole-message limit by four bytes** (protocol-notes §9, A25): the netbuf holds the serial length prefix and CRC too. Upload sizing takes `min(buf_size, transport max, cap)`, so a device whose `buf_size` is at or below the serial adapter's cap gets messages it silently drops. Fixing it means letting a transport report a per-message overhead that the core subtracts from `buf_size`, which is a change to the `Transport` contract. The adapter's 256-byte default keeps a default-configured device safe. | before claiming serial support for devices with a small `buf_size` |
+| **Ask the device which board it is.** The OS group's `info` command (`os_mgmt_info`) can report the board, which would let the board check above use the device's own answer instead of the caller's. It needs the command implemented in `OsManagement`, and reading Zephyr's source for the format. | with the board check, if a caller cannot supply the expectation |
+| **The package manifest is not authenticated.** nRF Connect SDK's `manifest.json` carries no signature, so a tampered manifest can relabel an image's index. Each image is signed, and its signed dependency TLVs are what stop a mismatched set from booting; smply's self-consistency check (ADR-0022) reads those, not the manifest. A signed manifest would be a product format of its own. | if a product defines a signed container |
 | **Compressed images are unhandled.** MCUboot's `IMAGE_F_COMPRESSED_*` flags and `IMAGE_TLV_DECOMP_SHA` raise the same slot-hash question as encrypted images (A13). smply carries the flags through without interpreting them. Decide whether to flag them like `encrypted` or document them as untested. | before claiming support |
 | **`upload_image_id` means two things** in a slot-info response (protocol-notes §6): the global slot index plus one under `CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD`, and the image number otherwise. smply reports it verbatim and treats it as advisory. | if the upload path ever wants it |
 | **The TLV entry cap counts loop iterations**, so stepping over the unprotected area's header consumes one unit. This makes no difference at 256. | if the cap is tightened |
@@ -120,6 +118,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **`winrt_ble_dfu` has no `--package`.** The multi-image update runs from `cli_dfu` and `serial_dfu` only. Over BLE on a dual-MCU product the link drops while the controller is updated (ADR-0022), so the Windows tool's reconnect policy (six attempts, 23.5 s of backoff between them) must be sized for the controller's transfer and reboot before a package update can rely on it. | when the dual-MCU product is on the bench |
 | **`support/dfu_package` reads stored zips only.** A deflated package is refused by name. Deflate would mean a new dependency or a hand-written inflater, and the package format written today is stored (ADR-0021, S38). | when someone ships a deflated package |
 | **The stub device does not model the confirm-denial rules for image 1** (A27), so `--commit 1=client` succeeds against it where a default Zephyr build would refuse. `ServerSimulator` models them, and its tests cover the refusal. | if the examples are used to demonstrate A27 |
 | **The serial port adapter's Win32 half is compile-only** (ADR-0020). It is outside clang-tidy and cppcheck, and CI never opens a port with it; a MinGW cross-build is the only local check (handoff.md). Running clang-tidy on the Windows runner would recover the analysis for this half and for `winrt_ble` alike. | with the WinRT row below |

@@ -43,26 +43,36 @@ git; commit `97f1647` is the last to carry the per-phase record in
   [`docs/multi-image.md`](docs/multi-image.md)).
   `FirmwareUpdater::start(std::span<const ImageTarget>, plan, callback)`
   stages every image, resets once, and confirms only after every image the
-  device commits itself has been reported applied. New types: `ImageTarget`,
-  `CommitBy` (`Client` or `Device`) and `ImageReport`. `UpdateReport::images`
-  reports each image. `UpdatePlan::apply_timeout` and `apply_poll_interval`
-  bound the wait, in the new state `UpdateState::AwaitingDeviceApply`. The
-  device contract for a device-committed image is `docs/multi-image.md`.
-  Tested against the simulator and the stub; nothing multi-image has run on
-  hardware.
+  device commits itself runs on trial. The device commits those images when
+  smply confirms image 0, and smply waits to see it, so `Completed` means the
+  whole set is committed
+  ([ADR-0022](docs/decisions/ADR-0022-device-images-commit-after-client.md)).
+  New types: `ImageTarget`, `CommitBy` (`Client` or `Device`) and
+  `ImageReport`, whose `applied` and `committed` say how far each image got.
+  `UpdateReport::images` reports each image. `UpdatePlan::apply_timeout` and
+  `apply_poll_interval` bound each of the two waits, in the new states
+  `UpdateState::AwaitingDeviceApply` and `AwaitingDeviceCommit`. A read that
+  finds the link gone during either wait asks the application to reconnect
+  and carries on, since the link may run through the MCU being updated; a
+  read that times out is retried. The device contract for a device-committed
+  image is `docs/multi-image.md`. Tested against the simulator and the stub;
+  nothing multi-image has run on hardware.
 - **`smply::dfu_package`** (`support/dfu_package/`, not installed): reads the
   multi-image `dfu_application.zip` nRF Connect SDK's sysbuild writes, stored
   zips only, and checks the manifest against the images' own headers. It
-  reports each image's MCUboot dependency TLVs. Hand-written, bounded, and
-  fuzzed (`fuzz_dfu_package`). `smply::dfu_app::PackageUpdate` turns a package
+  reports each image's MCUboot dependency TLVs, and refuses a package whose
+  images depend on a newer version of another image it carries, compared as
+  a default MCUboot compares them. Hand-written, bounded, and fuzzed
+  (`fuzz_dfu_package`). `smply::dfu_app::PackageUpdate` turns a package
   file into `start()`'s image list.
 - `--package`, `--demo-package`, `--commit` and `--apply-fails` in `cli_dfu`
   and `serial_dfu`, and three ctests that run a two-image package end to end.
 
 ### Changed
 
-- **`UpdateState` gains `AwaitingDeviceApply`.** An exhaustive `switch` over
-  it no longer compiles until it handles the new value. `0.x` allows this
+- **`UpdateState` gains `AwaitingDeviceApply` and `AwaitingDeviceCommit`.**
+  An exhaustive `switch` over it no longer compiles until it handles the new
+  values. `0.x` allows this
   (ADR-0016).
 - **Every confirm names its image by hash.** A hashless confirm reaches only
   the device's running image, so image ≥ 1 could never have been confirmed.
