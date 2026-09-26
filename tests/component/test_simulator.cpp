@@ -24,6 +24,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -788,13 +789,15 @@ void load_two_images(ServerSimulator& simulator)
 /// The entry for (image, slot), which the test requires to exist.
 [[nodiscard]] tcbor::Value entry_of(Device& device, std::uint64_t image, std::uint64_t slot)
 {
-    for (const tcbor::Value& entry : entries_of(device)) {
-        if (entry.get_uint("image") == image && entry.get_uint("slot") == slot) {
-            return entry;
-        }
-    }
-    FAIL("no entry for image " << image << " slot " << slot);
-    return {};
+    // No return after a FAIL: MSVC knows it throws, and reports the unreachable
+    // return as C4702, an error under /WX.
+    const std::vector<tcbor::Value> entries = entries_of(device);
+    const auto found = std::find_if(entries.begin(), entries.end(), [&](const tcbor::Value& entry) {
+        return entry.get_uint("image") == image && entry.get_uint("slot") == slot;
+    });
+    INFO("image " << image << " slot " << slot);
+    REQUIRE(found != entries.end());
+    return *found;
 }
 
 /// A set-state request, with or without a hash.

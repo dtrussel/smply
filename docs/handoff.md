@@ -286,7 +286,12 @@ true.
   compilers, and build `smply_serial_port_tests`. It compiles under smply's
   strict GCC warning set and links. Test discovery then fails trying to run
   the `.exe`, which is expected. It is not MSVC: `/W4` still has its own
-  opinions (C4505, bitfield narrowing).
+  opinions (C4505, bitfield narrowing, and C4702, unreachable code: never
+  put a `return` after a Catch2 `FAIL()`, which MSVC knows throws).
+* **Read CI after every push, Windows included.** Three pushes of the
+  multi-image work went red on the two Windows jobs over one C4702, and
+  nobody looked until the fourth. Every Linux job was green each time, and
+  nothing local runs MSVC.
 * **Four directories are outside clang-tidy and cppcheck**:
   `transports/winrt_ble/`, `examples/winrt_ble_dfu/`, `tests/hil/` and
   `transports/serial_port/win32/`. Only the serial adapter's *Win32* half is
