@@ -55,7 +55,7 @@ if(SMPLY_BUILD_TESTS AND NOT WIN32)
     add_test(NAME serial_dfu_pty_package COMMAND serial_dfu --quiet --stub uart --demo-package)
     set_tests_properties(serial_dfu_pty_package PROPERTIES
         PASS_REGULAR_EXPRESSION
-            "serial_dfu: Completed reset=grace links=2 devices=1 packets=[1-9][0-9]* .*framing_errors=0 crc_failures=0 refused=0 images=2 applied=1"
+            "serial_dfu: Completed reset=grace links=2 devices=1 packets=[1-9][0-9]* .*framing_errors=0 crc_failures=0 refused=0 images=2 applied=1 committed=1"
         TIMEOUT 60
     )
 endif()

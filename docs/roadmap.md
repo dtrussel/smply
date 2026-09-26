@@ -32,16 +32,10 @@ simulator and the stub device only.
 ## In progress
 
 **ADR-0022: a device-committed image commits after the client images, and the
-wait survives the link.** The decision and the device contract
-(`multi-image.md`) are written. The implementation follows in this order:
-1. `ServerSimulator` models the new contract.
-2. The state machine and updater (`AwaitingDeviceCommit`, the new verdicts, and
-   reconnecting during the waits).
-3. The stub device and the examples.
-4. The package self-consistency check.
-
-Until step 2 lands, the code still behaves as ADR-0021 described:
-"applied" means committed, and a failed read while waiting ends the update.
+wait survives the link.** The decision, the device contract (`multi-image.md`) and its
+implementation are in: the simulator, the state machine and updater
+(`AwaitingDeviceCommit`, the verdicts, reconnecting during the waits), and the
+stub device and examples. Left: the package self-consistency check.
 
 ## Acceptance gaps that need the hardware bench
 

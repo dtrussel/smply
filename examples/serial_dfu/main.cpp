@@ -594,8 +594,10 @@ int main(int argc, char** argv)
     }
     const UpdateReport& report = *outcome;
     std::size_t applied = 0;
+    std::size_t committed = 0;
     for (const ImageReport& image : report.images) {
         applied += image.applied ? 1U : 0U;
+        committed += image.committed ? 1U : 0U;
     }
     // One line, so a ctest can match all of it with a single expression.
     std::cout << "serial_dfu: " << to_string(report.final_state) << " reset=" << reset_seen
@@ -605,6 +607,6 @@ int main(int argc, char** argv)
               << " framing_errors=" << counters.deframe.framing_errors
               << " crc_failures=" << counters.deframe.crc_failures
               << " refused=" << counters.send.refused << " images=" << report.images.size()
-              << " applied=" << applied << '\n';
+              << " applied=" << applied << " committed=" << committed << '\n';
     return report.final_state == UpdateState::Completed ? 0 : 1;
 }

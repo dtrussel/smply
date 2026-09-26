@@ -114,29 +114,69 @@ namespace {
 /// (docs/multi-image.md, "The contract a device-committed image must honour").
 enum class Apply : std::uint8_t
 {
-    Applied,
     Applying,
+    /// The other MCU runs it, not yet committed.
+    OnTrial,
+    Committed,
     Failed,
 };
 
+/// Slot 0 reports what the other MCU runs (ADR-0022), so the target there
+/// means applied -- on trial until confirmed. The target pending in a slot
+/// means still applying. Anything else is a failed apply.
 [[nodiscard]] Apply apply_of(const Context& context, const Target& target)
 {
     const ImageSlot* active = active_of(context, target.image);
     if (holds(active, target)) {
-        // Unconfirmed in the primary slot: the device's own MCUboot swapped it
-        // in and the device is still forwarding it (the nRF5340-style variant).
-        return active->confirmed ? Apply::Applied : Apply::Applying;
+        return active->confirmed ? Apply::Committed : Apply::OnTrial;
     }
     const ImageSlot* holder = slot_holding(context, target);
     return holder != nullptr && holder->pending ? Apply::Applying : Apply::Failed;
 }
 
-/// After the reset, once every `Client` image has been checked: wait for the
-/// `Device` images, then confirm.
+/// Once every `Client` image is confirmed, or none is on trial: wait until the
+/// device has committed every `Device` image (ADR-0022).
 ///
-/// `Client` images are confirmed only after every `Device` image is reported
-/// applied (ADR-0021). A failed apply therefore leaves them unconfirmed, and
-/// `fail()` reports the revert that follows.
+/// Image 0 is confirmed by now, so nothing reverts: a failure here is
+/// reported with `revert_pending` false, and the device's boot-time logic
+/// owns what follows.
+[[nodiscard]] Step await_commit(Context& context)
+{
+    bool committing = false;
+    for (std::size_t index = 0; index < context.targets.size(); ++index) {
+        const Target& target = context.targets[index];
+        if (target.commit != CommitBy::Device) {
+            continue;
+        }
+        switch (apply_of(context, target)) {
+        case Apply::Committed:
+            context.report.images[index].applied = true;
+            context.report.images[index].committed = true;
+            break;
+        case Apply::OnTrial:
+            context.report.images[index].applied = true;
+            committing = true;
+            break;
+        case Apply::Applying:
+        case Apply::Failed:
+            // It ran on trial and no longer does: the other MCU reverted it.
+            context.report.images[index].applied = false;
+            return fail(context, ErrorCode::UpdateFailed, "dfu: device did not commit an image");
+        }
+    }
+    if (committing) {
+        return Step{UpdateState::AwaitingDeviceCommit, Effect::AwaitApply};
+    }
+    return Step{UpdateState::Completed, Effect::Finish};
+}
+
+/// After the reset, once every `Client` image has been checked: wait for the
+/// `Device` images to run on trial, then confirm.
+///
+/// `Client` images are confirmed only after every `Device` image is running
+/// on trial, and the device commits those only after that confirm (ADR-0021,
+/// ADR-0022). A failed apply therefore leaves the `Client` images unconfirmed,
+/// and `fail()` reports the revert that follows.
 [[nodiscard]] Step await_device(const UpdatePlan& plan, Context& context)
 {
     bool applying = false;
@@ -146,7 +186,11 @@ enum class Apply : std::uint8_t
             continue;
         }
         switch (apply_of(context, target)) {
-        case Apply::Applied:
+        case Apply::Committed:
+            context.report.images[index].committed = true;
+            context.report.images[index].applied = true;
+            break;
+        case Apply::OnTrial:
             context.report.images[index].applied = true;
             break;
         case Apply::Applying:
@@ -160,11 +204,27 @@ enum class Apply : std::uint8_t
         return Step{UpdateState::AwaitingDeviceApply, Effect::AwaitApply};
     }
     if (!context.swap_scheduled) {
-        // Every `Client` image is already confirmed -- a `ConfirmImmediately`
-        // update whose confirm response was lost lands here.
-        return Step{UpdateState::Completed, Effect::Finish};
+        // No `Client` image is on trial, so no confirm will come: the device
+        // commits on its own (ADR-0022). A `ConfirmImmediately` update whose
+        // confirm response was lost lands here too.
+        return await_commit(context);
     }
     return confirmation_fork(plan, context);
+}
+
+/// A failed read while waiting on the device. The link may be down because the
+/// device is updating the MCU it runs through -- on a coordinating MCU the BLE
+/// controller is that MCU -- so a drop asks for a reconnect and a lost answer
+/// is simply asked again (ADR-0022). The deadline keeps running either way.
+[[nodiscard]] Step wait_read_failed(UpdateState state, const Error& error, Context& context)
+{
+    if (error.code() == ErrorCode::Disconnected) {
+        return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
+    }
+    if (error.code() == ErrorCode::Timeout) {
+        return Step{state, Effect::AwaitApply};
+    }
+    return fail(context, error);
 }
 
 /// `VerifyingBooted`: did the device come up on every new `Client` image, or
@@ -553,7 +613,23 @@ namespace {
             return fail(context, ErrorCode::Timeout, "dfu: device did not apply an image in time");
         }
         if (event.kind == Event::Kind::Failed) {
-            return fail(context, event.error);
+            return wait_read_failed(state, event.error, context);
+        }
+        break;
+
+    case UpdateState::AwaitingDeviceCommit:
+        if (event.kind == Event::Kind::ApplyPollDue) {
+            return Step{UpdateState::AwaitingDeviceCommit, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::StateRead) {
+            context.device = *event.state;
+            return await_commit(context);
+        }
+        if (event.kind == Event::Kind::ApplyTimedOut) {
+            return fail(context, ErrorCode::Timeout, "dfu: device did not commit an image in time");
+        }
+        if (event.kind == Event::Kind::Failed) {
+            return wait_read_failed(state, event.error, context);
         }
         break;
 
@@ -592,7 +668,8 @@ namespace {
                            (holds(active, target) && active->confirmed);
                 });
             if (all_confirmed) {
-                return Step{UpdateState::Completed, Effect::Finish};
+                // The device commits its own images now (ADR-0022).
+                return await_commit(context);
             }
             context.swap_scheduled = true;
             return fail(context, ErrorCode::UpdateFailed,

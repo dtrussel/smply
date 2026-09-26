@@ -44,6 +44,7 @@ using smply::UpdateReport;
 using smply::UpdateState;
 using smply::Version;
 using smply::test::ApplyOutcome;
+using smply::test::CommitOutcome;
 using smply::test::FakeTransport;
 using smply::test::Fixture;
 using smply::test::make_firmware;
@@ -1195,11 +1196,12 @@ struct AppAndRadio
         ImageTarget{.image = 1, .source = &radio, .commit = CommitBy::Device}};
 
     /// Loads the running images, and makes image 1 device-committed.
-    void install(Fixture& fixture, ApplyOutcome outcome, unsigned reads) const
+    void install(Fixture& fixture, ApplyOutcome outcome, unsigned reads,
+                 CommitOutcome commit = CommitOutcome::Commits, unsigned commit_reads = 1) const
     {
         fixture.simulator.load_slot(0, app_running);
         fixture.simulator.load_slot(2, radio_running);
-        fixture.simulator.device_commits(1, outcome, reads);
+        fixture.simulator.device_commits(1, outcome, reads, commit, commit_reads);
     }
 };
 
@@ -1250,7 +1252,10 @@ TEST_CASE("two images, one reset, and image 0 confirmed only after the device ap
     CHECK(report.bytes_transferred == images.app_update.size() + images.radio_update.size());
     REQUIRE(report.images.size() == 2);
     CHECK(report.images[1].applied);
+    CHECK(report.images[1].committed);
     CHECK(report.images[1].commit == CommitBy::Device);
+    // The device committed image 1 only after image 0 was confirmed (ADR-0022).
+    CHECK(outcome.reached(UpdateState::AwaitingDeviceCommit));
 
     CHECK(resets(fixture) == 1);
     CHECK(outcome.confirmations == 1);
@@ -1460,4 +1465,122 @@ TEST_CASE("an image list start() cannot honour is refused before anything is sen
 
     CHECK(fixture.simulator.requests().empty());
     CHECK(outcome.events == 0);
+}
+
+// --- ADR-0022: commit after the confirm, and a link that drops mid-apply -----
+
+TEST_CASE("a commit that never comes fails the update, with nothing left to revert",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1, CommitOutcome::Never);
+
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{2};
+    plan.apply_poll_interval = std::chrono::milliseconds{200};
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::Timeout);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.final_state == UpdateState::Failed);
+    // Image 0 is confirmed, so nothing reverts; the device's boot-time logic
+    // owns the rest (multi-image.md).
+    CHECK_FALSE(report.revert_pending);
+    CHECK(fixture.simulator.swap_type(0) == SwapType::None);
+    REQUIRE(report.images.size() == 2);
+    CHECK(report.images[1].applied);
+    CHECK_FALSE(report.images[1].committed);
+}
+
+TEST_CASE("the link dropping while the device applies its image is a reconnect, not a failure",
+          "[dfu][update][multi]")
+{
+    // On the product the BLE link runs through the MCU being updated.
+    UpdateOutcome outcome;
+    FakeTransport after_reset;
+    FakeTransport after_apply;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 20);
+
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    const std::vector<FakeTransport*> spares{&after_reset, &after_apply};
+    REQUIRE(drive_until(application, fixture, spares, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingDeviceApply;
+    }));
+    after_reset.disconnect();
+
+    REQUIRE(application.run(fixture, spares, outcome));
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.reconnects == 2);
+    CHECK(resets(fixture) == 1);
+    CHECK(outcome.report->images[1].committed);
+}
+
+TEST_CASE("a read lost while the device applies its image is asked again", "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 5);
+
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(drive_until(application, fixture, {&reconnected}, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingDeviceApply;
+    }));
+    fixture.simulator.drop_next_response();
+
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(fixture.simulator.dropped() == 1);
+    CHECK(outcome.reconnects == 1);
+}
+
+TEST_CASE("an update resumed after the confirm waits for the device's commit",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome first;
+    UpdateOutcome second;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1, CommitOutcome::Commits, 40);
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+
+    // The first process confirms image 0, then goes away while the device is
+    // still committing image 1.
+    REQUIRE(fixture.updater.start(images.targets, plan, first.handler()).has_value());
+    Application application;
+    REQUIRE(drive_until(application, fixture, {&reconnected}, first,
+                        [&] { return first.reached(UpdateState::AwaitingDeviceCommit); }));
+    fixture.updater.cancel();
+    REQUIRE(fixture.run_until([&] { return first.finished(); }));
+    CHECK_FALSE(fixture.updater.report().revert_pending);
+
+    REQUIRE(fixture.updater.start(images.targets, plan, second.handler()).has_value());
+    Application again;
+    REQUIRE(again.run(fixture, {}, second));
+
+    REQUIRE(second.report.has_value());
+    CHECK(second.report->final_state == UpdateState::Completed);
+    CHECK(second.reached(UpdateState::AwaitingDeviceCommit));
+    CHECK_FALSE(second.reached(UpdateState::Resetting));
+    CHECK(second.confirmations == 0);
+    CHECK(second.report->images[1].committed);
+    CHECK(resets(fixture) == 1);
 }

@@ -187,11 +187,25 @@ ConstBytes ServerSimulator::slot_content(std::size_t slot) const
     return ConstBytes{images_[slot / 2].slots[slot % 2]};
 }
 
-void ServerSimulator::device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads)
+void ServerSimulator::device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads,
+                                     CommitOutcome commit, unsigned commit_reads)
 {
     assert(image < images_.size());
     images_[image].device_outcome = outcome;
     images_[image].apply_reads = reads;
+    images_[image].commit = commit;
+    images_[image].commit_reads = commit_reads;
+}
+
+void ServerSimulator::start_device_commits()
+{
+    for (ImagePair& pair : images_) {
+        const bool on_trial = pair.device_outcome.has_value() && pair.swap == SwapType::Revert &&
+                              !pair.applying.has_value();
+        if (on_trial && pair.commit == CommitOutcome::Commits && !pair.committing.has_value()) {
+            pair.committing = pair.commit_reads;
+        }
+    }
 }
 
 void ServerSimulator::reboot()
@@ -202,14 +216,16 @@ void ServerSimulator::reboot()
         case SwapType::None:
             break;
         case SwapType::Test:
+            if (pair.device_outcome.has_value()) {
+                // Not this MCU's image: the coordinating MCU starts applying it
+                // to the other one, and slot 0 keeps reporting what the other
+                // MCU runs -- still the old image, with slot 1 pending
+                // (docs/multi-image.md, ADR-0022).
+                pair.applying = pair.apply_reads;
+                break;
+            }
             std::swap(pair.slots[0], pair.slots[1]);
             pair.swap = SwapType::Revert;
-            // A device-committed image now starts being applied to its MCU,
-            // which takes a while; until then it reads as an unconfirmed trial
-            // (docs/multi-image.md, the swap variant).
-            if (pair.device_outcome.has_value()) {
-                pair.applying = pair.apply_reads;
-            }
             break;
         case SwapType::Perm:
         case SwapType::Revert:
@@ -217,9 +233,12 @@ void ServerSimulator::reboot()
             // new image in for good, `Revert` swaps the old one back after an
             // unconfirmed trial. Either way the contents exchange and nothing
             // is left scheduled.
+            // For a device-committed image this is the other MCU reverting
+            // its unconfirmed trial on a reset.
             std::swap(pair.slots[0], pair.slots[1]);
             pair.swap = SwapType::None;
             pair.applying.reset();
+            pair.committing.reset();
             break;
         }
     }
@@ -585,6 +604,16 @@ void ServerSimulator::advance_applies()
     // The device-committed image's MCU finishes its update in the background;
     // each state read is one step of "a while" (docs/multi-image.md).
     for (ImagePair& pair : images_) {
+        if (pair.committing.has_value()) {
+            if (*pair.committing > 0) {
+                --*pair.committing;
+                continue;
+            }
+            // Committed: the other MCU's trial becomes permanent.
+            pair.committing.reset();
+            pair.swap = SwapType::None;
+            continue;
+        }
         if (!pair.applying.has_value()) {
             continue;
         }
@@ -594,14 +623,20 @@ void ServerSimulator::advance_applies()
         }
         pair.applying.reset();
         if (pair.device_outcome == ApplyOutcome::Applied) {
-            // Committed: the trial becomes permanent.
-            pair.swap = SwapType::None;
-        } else {
-            // Rolled back: the old image returns to slot 0, and the new one
-            // sits in slot 1 with nothing pending -- the contract's failure.
+            // The other MCU runs it, on trial: slot 0 new and unconfirmed,
+            // nothing pending.
             std::swap(pair.slots[0], pair.slots[1]);
+            pair.swap = SwapType::Revert;
+        } else {
+            // Failed: the old image stays in slot 0, and the new one sits in
+            // slot 1 with nothing pending -- the contract's failure.
             pair.swap = SwapType::None;
         }
+    }
+    // Nothing will confirm image 0 if it is not on trial, so the device
+    // commits at once (ADR-0022).
+    if (images_[0].swap != SwapType::Revert) {
+        start_device_commits();
     }
 }
 
@@ -747,6 +782,12 @@ ImageError ServerSimulator::set_next_boot_slot(std::size_t global_slot, bool con
         if (pair.swap == SwapType::Revert) {
             pair.swap = SwapType::None;
             pair.applying.reset();
+            pair.committing.reset();
+            if (image == 0) {
+                // The coordinating MCU's confirm hook: now commit the images
+                // it applied to the other MCU (protocol-notes S39).
+                start_device_commits();
+            }
         }
     } else if (pair.swap == SwapType::None) {
         pair.swap = confirm ? SwapType::Perm : SwapType::Test;

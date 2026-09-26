@@ -84,10 +84,11 @@ enum class UpdateState : std::uint8_t
     AwaitingDisconnect,   ///< The link should drop; a grace timer bounds the wait.
     AwaitingReconnect,    ///< The application's turn.
     VerifyingBooted,      ///< Get-state: did it boot ours, or revert?
-    AwaitingDeviceApply,  ///< Polling get-state until the device applied its images.
+    AwaitingDeviceApply,  ///< Polling get-state until the device runs its images on trial.
     AwaitingConfirmation, ///< `TestThenConfirm` only: waiting for `confirm()`.
     Confirming,           ///< Set-state{confirm}.
     VerifyingConfirmed,   ///< Get-state: is it confirmed?
+    AwaitingDeviceCommit, ///< Polling get-state until the device committed its images.
     Completed,
     Failed,
     Cancelled,
@@ -111,8 +112,10 @@ enum class CommitBy : std::uint8_t
     Client,
 
     /// The device: smply stages and marks it, then waits in
-    /// `AwaitingDeviceApply` until the device reports it applied, and never
-    /// confirms it. What "applied" looks like is the device contract in
+    /// `AwaitingDeviceApply` until the device reports it running on trial, and
+    /// never confirms it. The device commits it when smply confirms the
+    /// `Client` images, and smply waits for that in `AwaitingDeviceCommit`
+    /// (ADR-0022). What each state looks like is the device contract in
     /// docs/multi-image.md.
     Device,
 };
@@ -163,9 +166,11 @@ struct UpdatePlan
     Duration reconnect_hint = std::chrono::seconds{3};
 
     /// How long to wait, after the reset, for the device to apply every
-    /// `CommitBy::Device` image. Size it for the slowest apply: on a
-    /// coordinating MCU that is a whole image sent to the second MCU over its
-    /// link, plus that MCU's reboot (docs/multi-image.md).
+    /// `CommitBy::Device` image -- and, separately, after the confirm, for it
+    /// to commit them. While the link is down the application's reconnect
+    /// policy bounds the wait instead, so size that for the same outage. Size it for the slowest
+    /// apply: on a coordinating MCU that is a whole image sent to the second MCU over its link,
+    /// plus that MCU's reboot (docs/multi-image.md).
     Duration apply_timeout = std::chrono::minutes{5};
 
     /// How often to read the device's image state while waiting for it to
@@ -185,8 +190,10 @@ struct ImageReport
     bool upload_skipped = false;
     /// `Client` only: MCUboot reverted this image to the old one.
     bool rolled_back = false;
-    /// `Device` only: the device reported the image applied.
+    /// `Device` only: the device reported the image applied, running on trial.
     bool applied = false;
+    /// `Device` only: the device reported the image committed.
+    bool committed = false;
 };
 
 /// What an update did, however it ended.

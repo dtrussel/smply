@@ -84,6 +84,8 @@ std::string_view to_string(UpdateState state) noexcept
         return "Confirming";
     case UpdateState::VerifyingConfirmed:
         return "VerifyingConfirmed";
+    case UpdateState::AwaitingDeviceCommit:
+        return "AwaitingDeviceCommit";
     case UpdateState::Completed:
         return "Completed";
     case UpdateState::Failed:
@@ -202,7 +204,8 @@ public:
         if (!running_) {
             return;
         }
-        if (state_ == UpdateState::AwaitingDeviceApply) {
+        if (state_ == UpdateState::AwaitingDeviceApply ||
+            state_ == UpdateState::AwaitingDeviceCommit) {
             poll_apply(now);
             return;
         }
@@ -417,8 +420,11 @@ private:
         }
 
         case Effect::AwaitApply: {
-            // The timeout runs from the first wait, not from each poll.
-            if (!apply_deadline_.has_value()) {
+            // The timeout runs from the first poll of each wait -- the apply,
+            // then the commit -- not from each poll, and not again after a
+            // reconnect that returns to the same wait (ADR-0022).
+            if (apply_phase_ != state_) {
+                apply_phase_ = state_;
                 apply_deadline_ = last_poll_ + plan_.apply_timeout;
             }
             apply_poll_ = last_poll_ + plan_.apply_poll_interval;
@@ -506,6 +512,7 @@ private:
         grace_deadline_.reset();
         apply_poll_.reset();
         apply_deadline_.reset();
+        apply_phase_.reset();
 
         report_ = context_.report;
         report_.final_state = state_;
@@ -597,6 +604,8 @@ private:
     /// `AwaitingDeviceApply`: when to read the state next, and when to give up.
     std::optional<TimePoint> apply_poll_;
     std::optional<TimePoint> apply_deadline_;
+    /// The wait `apply_deadline_` was armed for.
+    std::optional<UpdateState> apply_phase_;
     TimePoint last_poll_;
 
     /// Kept alive only while this object is; every callback holds a weak

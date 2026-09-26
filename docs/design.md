@@ -798,8 +798,8 @@ callbacks).
                     └───────┬──────────┘
                             ▼
                     ┌───────────────────┐ Device images only: IMG get-state every
-                    │AwaitingDeviceApply│ apply_poll_interval until each is
-                    └───────┬───────────┘ applied (docs/multi-image.md)
+                    │AwaitingDeviceApply│ apply_poll_interval until each runs
+                    └───────┬───────────┘ on trial (docs/multi-image.md)
                             ▼
                     ┌──────────────────┐  emits ConfirmationRequired; the
                     │ AwaitingConfirmation│ APPLICATION validates and calls
@@ -812,6 +812,10 @@ callbacks).
                             ▼
                     ┌────────────────────┐  IMG get-state → confirmed == true
                     │ VerifyingConfirmed │
+                    └───────┬────────────┘
+                            ▼
+                    ┌────────────────────┐ Device images only: IMG get-state until
+                    │AwaitingDeviceCommit│ the device committed each (ADR-0022)
                     └───────┬────────────┘
                             ▼
                     ┌──────────────────┐        ┌──────────┐     ┌───────────┐
@@ -892,26 +896,49 @@ that one boot, and an image whose dependency is not yet staged is not booted
 target.
 
 After the reset, `VerifyingBooted` checks every `Client` image, then
-`AwaitingDeviceApply` waits for every `Device` image. The wait is a poll timer,
-not a clock in the machine: the `AwaitApply` effect makes the updater arm
-`apply_poll_interval` (and `apply_timeout`, once), exposed through
-`next_deadline()` like the disconnect grace, and `poll()` feeds back
-`ApplyPollDue` or, once the timeout has passed, `ApplyTimedOut`. The timeout is
-judged only when a poll falls due, never while a read is outstanding, so no
-answer can arrive after the update has ended. A `Device` image is:
+`AwaitingDeviceApply` waits for every `Device` image to run on trial. The
+wait is a poll timer, not a clock in the machine:
+* the `AwaitApply` effect makes the updater arm `apply_poll_interval`, and
+  `apply_timeout` once per wait (not again when a reconnect returns to the
+  same wait);
+* both are exposed through `next_deadline()`, like the disconnect grace;
+* `poll()` feeds back `ApplyPollDue`, or `ApplyTimedOut` once the timeout
+  has passed.
+
+The timeout is judged only when a poll falls due, never while a read is
+outstanding, so no answer can arrive after the update has ended. Slot 0 of
+a `Device` image reports what the other MCU runs
+([ADR-0022](decisions/ADR-0022-device-images-commit-after-client.md)), and
+the image is:
 
 | The device reports | Verdict |
 | ------------------ | ------- |
-| the target in the primary slot, `confirmed` | applied |
-| the target in the primary slot, unconfirmed (the device's MCUboot swapped it and it is still forwarding it) | still applying |
+| the target in slot 0, unconfirmed | applied, **on trial** |
+| the target in slot 0, `confirmed` | **committed** |
 | the target in a pending slot | still applying |
 | anything else | **failed** |
 
-**`Client` images are confirmed only once every `Device` image is applied**,
-each by its own hash, one set-state at a time; `VerifyingConfirmed` then
-requires every `Client` image confirmed. A failed or timed-out apply ends the
-update with the `Client` images unconfirmed, so `revert_pending` is set and the
-device reverts them on its next reset.
+**`Client` images are confirmed only once every `Device` image is on trial**,
+each by its own hash, one set-state at a time. `VerifyingConfirmed` then
+requires every `Client` image confirmed. **The device commits its images
+only after that confirm**, and `AwaitingDeviceCommit` waits until each reads
+committed, with its own `apply_timeout`. When no `Client` image is on trial,
+so no confirm will come, the machine goes from the apply straight to the
+commit wait, and so does a resumed update after the confirm.
+
+The outcomes:
+* **A failed or timed-out apply** ends the update with the `Client` images
+  unconfirmed, so `revert_pending` is set and the device reverts them on its
+  next reset.
+* **A commit that never comes, or a trial the other MCU reverts**, ends it
+  after image 0 is already confirmed. `revert_pending` is then false, and
+  the device's boot-time logic owns what follows (`multi-image.md`).
+* **In either wait, a failed read is not always the end.** On a coordinating
+  MCU the link can run through the MCU being updated.
+  * `Disconnected` asks the application to reconnect, and `VerifyingBooted`
+    then re-reads and returns to the right wait.
+  * `Timeout` is retried at the next poll.
+  * Anything else is fatal.
 
 `UpdateReport::images` has one `ImageReport` per target. The summary fields add
 them up: `bytes_transferred` is the sum, `upload_skipped` is true when every
@@ -952,9 +979,13 @@ that forgets a kind does not compile:
 | `AwaitingReconnect` | application reports failure | fatal, but the device is in a *pending* state — the report says so |
 | `VerifyingBooted` | active image is the old one | `RolledBack` |
 | `VerifyingBooted` | active image is ours, `confirmed == true` already | skip `Confirming` |
-| `VerifyingBooted`, `AwaitingDeviceApply` | a `Device` image neither applied nor applying | fatal `UpdateFailed`; nothing is confirmed, so `revert_pending` |
+| `VerifyingBooted`, `AwaitingDeviceApply` | a `Device` image neither on trial nor applying | fatal `UpdateFailed`; nothing is confirmed, so `revert_pending` |
 | `AwaitingDeviceApply` | `apply_timeout` passes | fatal `Timeout`; nothing is confirmed, so `revert_pending` |
-| `AwaitingDeviceApply` | a state read fails | fatal, with the read's error; nothing is confirmed |
+| `AwaitingDeviceApply`, `AwaitingDeviceCommit` | a state read fails with `Disconnected` | `AwaitingReconnect` (`ReconnectRequired`); after it, `VerifyingBooted` re-reads and returns to the wait (ADR-0022) |
+| `AwaitingDeviceApply`, `AwaitingDeviceCommit` | a state read times out | asked again at the next poll |
+| `AwaitingDeviceApply`, `AwaitingDeviceCommit` | a state read fails otherwise | fatal, with the read's error |
+| `AwaitingDeviceCommit` | a `Device` image no longer on trial (the other MCU reverted it) | fatal `UpdateFailed`; image 0 is confirmed, so `revert_pending` is false |
+| `AwaitingDeviceCommit` | `apply_timeout` passes | fatal `Timeout`; `revert_pending` false |
 | `AwaitingConfirmation` | the application cancels, or never confirms | terminal; the device reverts on its next reset — `UpdateReport::revert_pending` says so |
 | `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
 

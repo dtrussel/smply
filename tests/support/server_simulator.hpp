@@ -131,11 +131,18 @@ struct ServerConfig
     Duration response_delay{0};
 };
 
-/// How a device-committed image's apply ends (docs/multi-image.md).
+/// How a device-committed image's apply ends (docs/multi-image.md, ADR-0022).
 enum class ApplyOutcome : std::uint8_t
 {
-    Applied, ///< The target MCU committed it: slot 0 new, confirmed.
-    Failed,  ///< It could not: slot 0 back on the old image, nothing pending.
+    Applied, ///< The target MCU runs it on trial: slot 0 new, not confirmed.
+    Failed,  ///< It could not: slot 0 still the old image, nothing pending.
+};
+
+/// Whether the device commits an applied image when it should.
+enum class CommitOutcome : std::uint8_t
+{
+    Commits, ///< After image 0 is confirmed, or at once if image 0 is not on trial.
+    Never,   ///< It stays on trial: a commit that never happens.
 };
 
 /// An in-memory MCUmgr server driven through a `FakeTransport`.
@@ -203,11 +210,16 @@ public:
     }
 
     /// Makes \p image **device-committed**, as the staged image of a second MCU
-    /// is (docs/multi-image.md). A reboot swaps it in as an unconfirmed trial,
-    /// exactly as MCUboot would; then, after \p reads more image-state reads,
-    /// the device finishes the apply with \p outcome -- confirming it, or
-    /// swapping the old image back. Until then it reports "still applying".
-    void device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads = 1);
+    /// is (docs/multi-image.md, ADR-0022).
+    ///
+    /// A reboot leaves it marked, and the device starts applying it: slot 1
+    /// stays pending, slot 0 the old image. After \p reads more image-state
+    /// reads the apply ends with \p outcome -- the new image in slot 0 on
+    /// trial, or the old one still there with nothing pending. An applied image
+    /// is then committed \p commit_reads reads after image 0 is confirmed, or
+    /// after the apply if image 0 is not on trial, unless \p commit is `Never`.
+    void device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads = 1,
+                        CommitOutcome commit = CommitOutcome::Commits, unsigned commit_reads = 1);
 
     /// True once a reset command has been accepted. A real device answers the
     /// reset and *then* goes down, so a test drops the link itself.
@@ -304,7 +316,15 @@ private:
         /// Reads left before an apply in progress finishes; nullopt when none
         /// is in progress.
         std::optional<unsigned> applying;
+        CommitOutcome commit = CommitOutcome::Commits;
+        unsigned commit_reads = 1;
+        /// Reads left before a commit in progress finishes.
+        std::optional<unsigned> committing;
     };
+
+    /// Starts the commit of every device-committed image on trial, as the
+    /// coordinating MCU does from its confirm hook (protocol-notes S39).
+    void start_device_commits();
 
     void handle(const Header& header, ConstBytes payload, TimePoint now);
     void enqueue(const Header& request, ConstBytes payload, TimePoint now);

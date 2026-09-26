@@ -188,7 +188,7 @@ struct SlotSpec
 }
 
 /// Every state an update can be in that is not terminal.
-constexpr std::array<UpdateState, 15> kNonTerminal{
+constexpr std::array<UpdateState, 16> kNonTerminal{
     UpdateState::Idle,
     UpdateState::QueryingParameters,
     UpdateState::InspectingImages,
@@ -204,6 +204,7 @@ constexpr std::array<UpdateState, 15> kNonTerminal{
     UpdateState::AwaitingConfirmation,
     UpdateState::Confirming,
     UpdateState::VerifyingConfirmed,
+    UpdateState::AwaitingDeviceCommit,
 };
 
 } // namespace
@@ -1123,17 +1124,19 @@ TEST_CASE("a device image still applying is waited for", "[dfu][machine][multi]"
     CHECK(context.report.images[1].applied);
 }
 
-TEST_CASE("the swap variant's unconfirmed primary is still applying", "[dfu][machine][multi]")
+TEST_CASE("a device image on trial in slot 0 is applied, not yet committed",
+          "[dfu][machine][multi]")
 {
-    // The device's own MCUboot swapped image 1 in as a trial and is forwarding
-    // it (docs/multi-image.md, the nRF5340-style variant).
+    // ADR-0022: slot 0 reports what the other MCU runs. The new image there,
+    // unconfirmed, is running on trial -- time to open the window for image 0.
     Context context = app_and_radio();
-    const ImageState swapped =
+    const ImageState on_trial =
         after_reset(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
     const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(swapped), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::AwaitingDeviceApply);
-    CHECK_FALSE(context.report.images[1].applied);
+        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::AwaitingConfirmation);
+    CHECK(context.report.images[1].applied);
+    CHECK_FALSE(context.report.images[1].committed);
 }
 
 TEST_CASE("a failed device apply confirms nothing", "[dfu][machine][multi]")
@@ -1151,23 +1154,117 @@ TEST_CASE("a failed device apply confirms nothing", "[dfu][machine][multi]")
     CHECK_FALSE(context.report.rolled_back);
 }
 
-TEST_CASE("waiting for the device ends on a timeout or a failed read", "[dfu][machine][multi]")
+TEST_CASE("waiting for the device ends on a timeout, and survives a dropped link",
+          "[dfu][machine][multi]")
 {
-    Context timed_out = app_and_radio();
-    timed_out.swap_scheduled = true;
-    const Step late = advance(UpdateState::AwaitingDeviceApply, just(Event::Kind::ApplyTimedOut),
-                              UpdatePlan{}, timed_out);
-    CHECK(late.next == UpdateState::Failed);
-    REQUIRE(timed_out.report.cause.has_value());
-    CHECK(timed_out.report.cause->code() == ErrorCode::Timeout);
-    CHECK(timed_out.report.revert_pending);
+    for (const UpdateState wait :
+         {UpdateState::AwaitingDeviceApply, UpdateState::AwaitingDeviceCommit}) {
+        CAPTURE(wait);
+        Context timed_out = app_and_radio();
+        timed_out.swap_scheduled = wait == UpdateState::AwaitingDeviceApply;
+        const Step late = advance(wait, just(Event::Kind::ApplyTimedOut), UpdatePlan{}, timed_out);
+        CHECK(late.next == UpdateState::Failed);
+        REQUIRE(timed_out.report.cause.has_value());
+        CHECK(timed_out.report.cause->code() == ErrorCode::Timeout);
+        // Before the confirm image 0 reverts; after it, nothing does.
+        CHECK(timed_out.report.revert_pending == (wait == UpdateState::AwaitingDeviceApply));
 
-    Context unreadable = app_and_radio();
-    const Step lost = advance(UpdateState::AwaitingDeviceApply, failed(ErrorCode::Disconnected),
-                              UpdatePlan{}, unreadable);
-    CHECK(lost.next == UpdateState::Failed);
-    REQUIRE(unreadable.report.cause.has_value());
-    CHECK(unreadable.report.cause->code() == ErrorCode::Disconnected);
+        // The link runs through the MCU being updated: a drop asks for a
+        // reconnect, and the wait carries on afterwards (ADR-0022).
+        Context dropped = app_and_radio();
+        const Step lost = advance(wait, failed(ErrorCode::Disconnected), UpdatePlan{}, dropped);
+        CHECK(lost.next == UpdateState::AwaitingReconnect);
+        CHECK(lost.effect == Effect::RequestReconnect);
+        CHECK_FALSE(dropped.report.cause.has_value());
+
+        // A lost answer is asked again at the next poll.
+        Context silent = app_and_radio();
+        const Step again = advance(wait, failed(ErrorCode::Timeout), UpdatePlan{}, silent);
+        CHECK(again.next == wait);
+        CHECK(again.effect == Effect::AwaitApply);
+
+        // Anything else is still fatal.
+        Context refused = app_and_radio();
+        const Step broken =
+            advance(wait, image_failure(ImageError::Unknown), UpdatePlan{}, refused);
+        CHECK(broken.next == UpdateState::Failed);
+    }
+}
+
+namespace {
+
+/// Image 0 confirmed on its new image, image 1 as \p radio describes it.
+[[nodiscard]] ImageState after_confirm(SlotSpec radio_primary, SlotSpec radio_secondary)
+{
+    radio_primary.image = 1;
+    radio_primary.slot = 0;
+    radio_primary.active = true;
+    radio_secondary.image = 1;
+    radio_secondary.slot = 1;
+    return state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+                     SlotSpec{.slot = 1, .hash = kOther}, radio_primary, radio_secondary});
+}
+
+} // namespace
+
+TEST_CASE("after the confirm, smply waits for the device to commit its image",
+          "[dfu][machine][multi]")
+{
+    const ImageState on_trial =
+        after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
+    const ImageState committed =
+        after_confirm(SlotSpec{.hash = kRadio, .confirmed = true}, SlotSpec{.hash = kRadioOld});
+    const ImageState reverted =
+        after_confirm(SlotSpec{.hash = kRadioOld, .confirmed = true}, SlotSpec{.hash = kRadio});
+
+    Context context = app_and_radio();
+    const Step verified =
+        advance(UpdateState::VerifyingConfirmed, state_read(on_trial), UpdatePlan{}, context);
+    CHECK(verified.next == UpdateState::AwaitingDeviceCommit);
+    CHECK(verified.effect == Effect::AwaitApply);
+
+    const Step still =
+        advance(UpdateState::AwaitingDeviceCommit, state_read(on_trial), UpdatePlan{}, context);
+    CHECK(still.next == UpdateState::AwaitingDeviceCommit);
+
+    const Step done =
+        advance(UpdateState::AwaitingDeviceCommit, state_read(committed), UpdatePlan{}, context);
+    CHECK(done.next == UpdateState::Completed);
+    CHECK(context.report.images[1].committed);
+    CHECK_FALSE(context.report.revert_pending);
+
+    // The other MCU reverted its trial instead: reported, and nothing reverts
+    // here -- image 0 is already confirmed.
+    Context lost = app_and_radio();
+    const Step gone =
+        advance(UpdateState::AwaitingDeviceCommit, state_read(reverted), UpdatePlan{}, lost);
+    CHECK(gone.next == UpdateState::Failed);
+    REQUIRE(lost.report.cause.has_value());
+    CHECK(lost.report.cause->code() == ErrorCode::UpdateFailed);
+    CHECK_FALSE(lost.report.revert_pending);
+    CHECK_FALSE(lost.report.images[1].committed);
+}
+
+TEST_CASE("with no client image on trial, the commit is waited for at once",
+          "[dfu][machine][multi]")
+{
+    // Only image 1 changed, so no confirm will come and the device commits on
+    // its own. The same state is where a reconnect, or a new process, lands
+    // after the confirm.
+    const ImageState on_trial =
+        after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
+
+    Context booted = app_and_radio();
+    const Step after_reset =
+        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, booted);
+    CHECK(after_reset.next == UpdateState::AwaitingDeviceCommit);
+
+    Context resumed = app_and_radio();
+    resumed.device = on_trial;
+    const Step planned =
+        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, resumed);
+    CHECK(planned.next == UpdateState::AwaitingDeviceCommit);
+    CHECK(resumed.report.upload_skipped);
 }
 
 TEST_CASE("a revert of one client image fails the update and names it", "[dfu][machine][multi]")

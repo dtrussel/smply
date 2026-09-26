@@ -70,8 +70,10 @@ enum class ApplyOutcome : std::uint8_t
 
 /// A second image, which the device commits itself: the staged firmware of
 /// another MCU, as an STM32H5 holds a BLE module's (ADR-0021). After the reset
-/// that swaps it in, the device takes `apply_reads` image-state reads to
-/// finish applying it, then reports `outcome`.
+/// the device takes `apply_reads` image-state reads to apply it, then reports
+/// `outcome`: the new image running on trial, or the old one still there. It
+/// commits an applied image a read after image 0 is confirmed, or at once if
+/// image 0 is not on trial (ADR-0022).
 struct SecondImage
 {
     /// What image 1 runs now. May be empty: nothing applied yet.
@@ -141,6 +143,12 @@ private:
     /// One step of every device-committed apply in progress: each state read
     /// is "a while" passing.
     void advance_applies();
+    /// Starts committing every device-committed image running on trial, as the
+    /// coordinating MCU does when image 0 is confirmed (ADR-0022).
+    void start_device_commits();
+    /// Confirms \p image's running slot. Confirming image 0 is the coordinating
+    /// MCU's cue to commit what it applied to the other MCU (protocol-notes S39).
+    void confirm_running(std::size_t image);
     void reboot();
     /// Re-reads a slot's version and hash from the image it now holds.
     static void describe(Slot& slot);
@@ -166,6 +174,8 @@ private:
         unsigned apply_reads = 0;
         /// State reads left before an apply in progress finishes.
         std::optional<unsigned> applying;
+        /// State reads left before a commit in progress finishes.
+        std::optional<unsigned> committing;
     };
 
     std::vector<ImagePair> images_;

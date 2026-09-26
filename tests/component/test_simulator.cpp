@@ -941,37 +941,92 @@ TEST_CASE("the upload's image picks that image's secondary, and an absent image 
     CHECK(scoped_rc(first_packet(2), 1) == static_cast<std::uint64_t>(ImageError::NoFreeSlot));
 }
 
-TEST_CASE("a device-committed image applies after the configured reads, or rolls back",
+TEST_CASE("a device-committed image applies, runs on trial, and commits when image 0 does",
           "[simulator][multi]")
 {
-    // docs/multi-image.md, the swap variant: a trial until the device is done,
-    // then confirmed -- or the old image back, with nothing pending.
-    const auto run = [](smply::test::ApplyOutcome outcome) {
+    // docs/multi-image.md and ADR-0022: slot 0 reports what the other MCU
+    // runs. Applying: still the old image, the new one pending. Applied: the
+    // new one on trial. Committed: confirmed, once image 0 is confirmed.
+    const auto run = [](smply::test::ApplyOutcome outcome, bool update_image_0,
+                        smply::test::CommitOutcome commit = smply::test::CommitOutcome::Commits) {
         auto device = std::make_unique<Device>(two_images());
         load_two_images(device->simulator());
-        device->simulator().device_commits(1, outcome, 2);
+        device->simulator().device_commits(1, outcome, 2, commit, 1);
+        if (update_image_0) {
+            static_cast<void>(set_state(*device, ConstBytes{hash_at(*device, 0, 1)}, false));
+        }
         const std::vector<std::byte> staged = hash_at(*device, 1, 1);
         static_cast<void>(set_state(*device, ConstBytes{staged}, false));
         device->simulator().reboot();
         return std::make_pair(std::move(device), staged);
     };
+    const auto confirmed = [](Device& device, std::uint64_t image) {
+        return entry_of(device, image, 0).get_bool("confirmed") == true;
+    };
 
-    SECTION("applied")
+    SECTION("applied, then committed after image 0 is confirmed")
     {
-        auto [device, staged] = run(smply::test::ApplyOutcome::Applied);
-        // Two reads still applying: the new image in slot 0, unconfirmed.
+        auto [device, staged] = run(smply::test::ApplyOutcome::Applied, true);
+        // Two reads still applying: the old image in slot 0, the new one
+        // pending. One state read per step -- every read is "a while" passing.
         for (int read = 0; read < 2; ++read) {
+            const std::vector<tcbor::Value> entries = entries_of(*device);
+            for (const tcbor::Value& entry : entries) {
+                if (entry.get_uint("image") == 1U && entry.get_uint("slot") == 0U) {
+                    CHECK(entry.find("hash")->bytes != staged);
+                }
+                if (entry.get_uint("image") == 1U && entry.get_uint("slot") == 1U) {
+                    CHECK(entry.get_bool("pending") == true);
+                }
+            }
+        }
+        // Applied: the new image in slot 0, on trial, and it stays there.
+        for (int read = 0; read < 3; ++read) {
             const tcbor::Value primary = entry_of(*device, 1, 0);
             CHECK(primary.find("hash")->bytes == staged);
             CHECK(primary.get_bool("confirmed") == false);
+        }
+        // Image 0 is confirmed: the device commits image 1 a read later.
+        static_cast<void>(set_state(*device, ConstBytes{hash_at(*device, 0, 0)}, true));
+        CHECK_FALSE(confirmed(*device, 1));
+        CHECK(confirmed(*device, 1));
+    }
+    SECTION("committed at once when image 0 is not on trial")
+    {
+        auto [device, staged] = run(smply::test::ApplyOutcome::Applied, false);
+        // Two reads applying, one to finish, and the commit one read later.
+        for (int read = 0; read < 4; ++read) {
+            static_cast<void>(entries_of(*device));
         }
         const tcbor::Value primary = entry_of(*device, 1, 0);
         CHECK(primary.find("hash")->bytes == staged);
         CHECK(primary.get_bool("confirmed") == true);
     }
+    SECTION("a commit that never comes")
+    {
+        auto [device, staged] =
+            run(smply::test::ApplyOutcome::Applied, true, smply::test::CommitOutcome::Never);
+        for (int read = 0; read < 3; ++read) {
+            static_cast<void>(entries_of(*device));
+        }
+        static_cast<void>(set_state(*device, ConstBytes{hash_at(*device, 0, 0)}, true));
+        for (int read = 0; read < 3; ++read) {
+            CHECK_FALSE(confirmed(*device, 1));
+        }
+    }
+    SECTION("a reset reverts the other MCU's trial")
+    {
+        auto [device, staged] = run(smply::test::ApplyOutcome::Applied, true);
+        for (int read = 0; read < 3; ++read) {
+            static_cast<void>(entries_of(*device));
+        }
+        device->simulator().reboot();
+        CHECK(entry_of(*device, 1, 0).find("hash")->bytes != staged);
+        CHECK(confirmed(*device, 1));
+    }
     SECTION("failed")
     {
-        auto [device, staged] = run(smply::test::ApplyOutcome::Failed);
+        auto [device, staged] = run(smply::test::ApplyOutcome::Failed, true);
         static_cast<void>(entries_of(*device));
         static_cast<void>(entries_of(*device));
         const tcbor::Value primary = entry_of(*device, 1, 0);

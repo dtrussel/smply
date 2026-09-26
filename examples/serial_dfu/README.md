@@ -44,8 +44,9 @@ serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
 The summary line says which shape the reset took (`reset=grace` or
 `reset=dropped`), how many distinct ttys the path resolved to
 (`devices=`), what the link threw away (`ignored=`, `dropped_lines=`,
-`framing_errors=`, `crc_failures=`), and how many images the update had and
-the device applied (`images=`, `applied=`).
+`framing_errors=`, `crc_failures=`), and how many images the update had, the
+device applied and the device committed (`images=`, `applied=`,
+`committed=`).
 
 ## In CI: the pseudo-terminal stub
 
@@ -57,11 +58,11 @@ that. Three ctests run it: one per reset shape, and a two-image package:
 | ---- | -------- | ------------------------- | ---------- |
 | `serial_dfu_pty_uart` | `uart` | stays open; boot banners and an over-long log line follow | `reset=grace devices=1`, `ignored` and `dropped_lines` non-zero, no framing errors |
 | `serial_dfu_pty_cdc` | `cdc` | vanishes, and returns as a **new** `/dev/pts/N` behind the same symlink | `reset=dropped devices=2`, no framing errors |
-| `serial_dfu_pty_package` | `uart`, with `--demo-package` | as `serial_dfu_pty_uart` | `reset=grace`, no framing errors, `images=2 applied=1` |
+| `serial_dfu_pty_package` | `uart`, with `--demo-package` | as `serial_dfu_pty_uart` | `reset=grace`, no framing errors, `images=2 applied=1 committed=1` |
 
-`--demo-package` gives the stub a second image that it applies itself after
-the reset; `--apply-fails` makes that apply fail, and the update then fails
-without confirming image 0.
+`--demo-package` gives the stub a second image that it applies after the reset
+and commits once image 0 is confirmed (ADR-0022); `--apply-fails` makes the
+apply fail, and the update then fails without confirming image 0.
 
 The stub models the device's receive limit too. It refuses a packet the
 device's netbuf could not hold together with the serial length prefix and

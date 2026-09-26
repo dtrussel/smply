@@ -178,6 +178,15 @@ void usage()
     return sources <= 1 && (out.package_mode() || (!out.apply_fails && out.commits.empty()));
 }
 
+/// How far the device took an image it commits itself (ADR-0022).
+[[nodiscard]] std::string_view device_image_state(const ImageReport& image)
+{
+    if (image.committed) {
+        return "committed";
+    }
+    return image.applied ? "applied, not committed" : "not applied";
+}
+
 /// One line per image of a multi-image update.
 void print_images(const UpdateReport& report, std::ostream& out)
 {
@@ -188,7 +197,7 @@ void print_images(const UpdateReport& report, std::ostream& out)
         out << "  image " << image.image << " ("
             << (image.commit == CommitBy::Client ? "client" : "device") << "): ";
         if (image.commit == CommitBy::Device) {
-            out << (image.applied ? "applied" : "not applied");
+            out << device_image_state(image);
         } else if (image.rolled_back) {
             out << "reverted";
         } else {

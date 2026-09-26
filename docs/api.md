@@ -813,14 +813,15 @@ enum class UpdateState : std::uint8_t {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
     AwaitingReconnect, VerifyingBooted, AwaitingDeviceApply, AwaitingConfirmation,
-    Confirming, VerifyingConfirmed, Completed, Failed, Cancelled,
+    Confirming, VerifyingConfirmed, AwaitingDeviceCommit, Completed, Failed, Cancelled,
 };
 std::string_view to_string(UpdateState) noexcept;
 constexpr bool   is_terminal(UpdateState) noexcept;
 
 // Who commits an image once it is in place (ADR-0021). Device: smply stages
-// and marks it, then waits for the device to report it applied
-// (docs/multi-image.md), and never confirms it.
+// and marks it, waits for the device to run it on trial, confirms the Client
+// images, then waits for the device to commit it (ADR-0022,
+// docs/multi-image.md). smply never confirms it.
 enum class CommitBy : std::uint8_t { Client, Device };
 
 struct ImageTarget {                  // one image of a multi-image update
@@ -844,8 +845,10 @@ struct UpdatePlan {
     Duration      disconnect_grace = std::chrono::seconds{10};
     // Hint passed to the application in ReconnectRequired.
     Duration      reconnect_hint   = std::chrono::seconds{3};
-    // Device images: how long to wait after the reset for the device to apply
-    // them, and how often to read its state meanwhile (must be positive).
+    // Device images: how long to wait for the device to apply them, and again
+    // for it to commit them, and how often to read its state meanwhile (must be
+    // positive). While the link is down the application's reconnect policy
+    // bounds the wait instead.
     Duration      apply_timeout       = std::chrono::minutes{5};
     Duration      apply_poll_interval = std::chrono::seconds{2};
 };
@@ -857,7 +860,8 @@ struct ImageReport {                  // one per target, in the order given
     std::uint64_t bytes_transferred = 0;
     bool upload_skipped = false;
     bool rolled_back = false;         // Client: MCUboot reverted it
-    bool applied = false;             // Device: the device reported it applied
+    bool applied = false;             // Device: the device runs it, on trial
+    bool committed = false;           // Device: the device committed it
 };
 
 struct UpdateReport {                 // the summary fields cover every image

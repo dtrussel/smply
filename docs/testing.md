@@ -366,10 +366,23 @@ the device contract (applied, still applying in either variant, failed); the
 timeout and a failed read while waiting; a revert of one `Client` image; a
 resume after the reset that stages nothing; each `Client` image confirmed in
 turn and all read back confirmed; `UploadOnly` over two images; and a context
-with no image to work on. `test_firmware_update.cpp`'s `[multi]` cases drive
-the same against the two-image simulator, including a resume in the wait, a
-resume in the confirmation window, and an image-1 upload interrupted after
-image 0 finished -- each asserting there was exactly one reset.
+with no image to work on. ADR-0022 added:
+* a device image on trial counts as applied;
+* the commit wait after the confirm: its success, a trial the other MCU
+  reverts, and the timeout;
+* the commit wait reached directly when no client image is on trial, after
+  the reset or on resume;
+* in both waits: a dropped link asks for a reconnect, a lost read is
+  retried, and anything else is fatal.
+
+`test_firmware_update.cpp`'s `[multi]` cases drive the same against the
+two-image simulator, each asserting there was exactly one reset:
+* a resume in the wait, and a resume in the confirmation window;
+* an image-1 upload interrupted after image 0 finished;
+* for ADR-0022: the commit observed after the confirm; a commit that never
+  comes (`Timeout`, nothing to revert); the link dropped mid-apply and
+  reconnected; a lost read retried; and a resume after the confirm that
+  waits for the commit.
 
 ### The example as a test (`examples/cli_dfu/`)
 
@@ -390,7 +403,7 @@ Two more run the multi-image update of ADR-0021 end to end, from a package
 built in memory (`--demo-package`) through `smply::dfu_package` and
 `PackageUpdate` to the image-list `start()`, against a stub with a second image
 it commits itself. Each passes on its output lines, never on the exit code:
-* `cli_dfu_package`: `update Completed`, and `image 1 (device): applied`;
+* `cli_dfu_package`: `update Completed`, and `image 1 (device): committed`;
 * `cli_dfu_package_apply_fails`: the stub fails to apply image 1, so the update
   must fail with "device did not apply an image", report image 1 not applied,
   and warn that the next reset reverts image 0. Both patterns were checked
@@ -418,8 +431,9 @@ question:
   hang-up. It returns as a different `/dev/pts/N` behind the same symlink. The
   example reopens the path, and `devices=2` proves it reached the new tty.
 * `serial_dfu_pty_package`: the UART shape, with the demo's two-image package
-  (ADR-0021). `images=2 applied=1` at the end of the summary line says both
-  were staged and image 1 was applied by the stub.
+  (ADR-0021). `images=2 applied=1 committed=1` at the end of the summary line
+  says both were staged, and image 1 was applied and then committed by the
+  stub.
 
 Both pass on one summary line (`PASS_REGULAR_EXPRESSION`), never on the exit
 code alone: an update that completed with the wrong reset shape, a framing

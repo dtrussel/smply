@@ -218,6 +218,16 @@ void StubDevice::advance_applies()
     // each state read is one step of "a while". What it then reports is the
     // device contract in docs/multi-image.md.
     for (ImagePair& pair : images_) {
+        if (pair.committing.has_value()) {
+            if (*pair.committing > 0) {
+                --*pair.committing;
+                continue;
+            }
+            // Committed: the other MCU's trial is permanent.
+            pair.committing.reset();
+            pair.swap = SwapType::None;
+            continue;
+        }
         if (!pair.applying.has_value()) {
             continue;
         }
@@ -226,13 +236,40 @@ void StubDevice::advance_applies()
             continue;
         }
         pair.applying.reset();
-        if (pair.device_commits == ApplyOutcome::Failed) {
-            // Rolled back: the old image returns to slot 0, and the new one sits
-            // in slot 1 with nothing pending.
+        if (pair.device_commits == ApplyOutcome::Applied) {
+            // The other MCU runs it on trial: slot 0 new and unconfirmed.
             std::swap(pair.slots[0], pair.slots[1]);
+            pair.swap = SwapType::Revert;
+        } else {
+            // Failed: the old image stays in slot 0, the new one in slot 1 with
+            // nothing pending.
+            pair.swap = SwapType::None;
         }
-        // Either way the trial is over and nothing is scheduled.
-        pair.swap = SwapType::None;
+    }
+    // Nothing will confirm image 0 if it is not on trial: commit at once.
+    if (images_[0].swap != SwapType::Revert) {
+        start_device_commits();
+    }
+}
+
+void StubDevice::confirm_running(std::size_t image)
+{
+    ImagePair& pair = images_[image];
+    const bool was_trial = pair.swap == SwapType::Revert;
+    pair.swap = SwapType::None;
+    pair.committing.reset();
+    if (image == 0 && was_trial) {
+        start_device_commits();
+    }
+}
+
+void StubDevice::start_device_commits()
+{
+    for (ImagePair& pair : images_) {
+        if (pair.device_commits.has_value() && pair.swap == SwapType::Revert &&
+            !pair.applying.has_value() && !pair.committing.has_value()) {
+            pair.committing = 1U;
+        }
     }
 }
 
@@ -244,12 +281,15 @@ void StubDevice::reboot()
         case SwapType::None:
             break;
         case SwapType::Test:
+            if (pair.device_commits.has_value()) {
+                // Not this MCU's image: the device starts applying it to the
+                // other MCU. Slot 0 keeps reporting what that MCU runs -- the
+                // old image, with the new one pending (docs/multi-image.md).
+                pair.applying = pair.apply_reads;
+                break;
+            }
             std::swap(pair.slots[0], pair.slots[1]);
             pair.swap = SwapType::Revert; // unconfirmed: the next reset undoes it
-            if (pair.device_commits.has_value()) {
-                // The device now starts applying it to the other MCU.
-                pair.applying = pair.apply_reads;
-            }
             break;
         case SwapType::Perm:
         case SwapType::Revert:
@@ -314,7 +354,7 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
         if (confirm && hash == nullptr) {
             // Confirm the *running* image, image 0: the trial, if any, is now
             // permanent. Never another image (protocol-notes section 6).
-            images_[0].swap = SwapType::None;
+            confirm_running(0);
             return respond(*header, ConstBytes{encode_state()});
         }
         if (hash == nullptr || !hash->is(cbor::Value::Kind::Bytes)) {
@@ -322,7 +362,8 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
         }
         // Mark the slot holding that hash for the next boot, in whichever
         // image holds it: the device finds a hash in any image.
-        for (ImagePair& pair : images_) {
+        for (std::size_t image = 0; image < images_.size(); ++image) {
+            ImagePair& pair = images_[image];
             for (std::size_t index = 0; index < pair.slots.size(); ++index) {
                 const Slot& slot = pair.slots[index];
                 if (!slot.hash.has_value() ||
@@ -334,7 +375,9 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
                     // Already running it. A real device refuses to confirm a
                     // slot that is not the running one, and this is the mirror
                     // case.
-                    pair.swap = confirm ? SwapType::None : pair.swap;
+                    if (confirm) {
+                        confirm_running(image);
+                    }
                     return respond(*header, ConstBytes{encode_state()});
                 }
                 pair.swap = confirm ? SwapType::Perm : SwapType::Test;
