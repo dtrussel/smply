@@ -31,9 +31,17 @@ simulator and the stub device only.
 
 ## In progress
 
-Nothing. The structured quality review that produced 0.2.0 is finished; its
-plan is in git history (`git log --diff-filter=D -- docs/review-plan.md`). Pick
-the next item from the backlog below, by its "When".
+**ADR-0022: a device-committed image commits after the client images, and the
+wait survives the link.** The decision and the device contract
+(`multi-image.md`) are written. The implementation follows in this order:
+1. `ServerSimulator` models the new contract.
+2. The state machine and updater (`AwaitingDeviceCommit`, the new verdicts, and
+   reconnecting during the waits).
+3. The stub device and the examples.
+4. The package self-consistency check.
+
+Until step 2 lands, the code still behaves as ADR-0021 described:
+"applied" means committed, and a failed read while waiting ends the update.
 
 ## Acceptance gaps that need the hardware bench
 

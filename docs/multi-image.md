@@ -2,7 +2,9 @@
 
 How smply updates several images of one device in one update, and what the
 device must do for an image that **it** commits rather than smply.
-[ADR-0021](decisions/ADR-0021-multi-image-update.md) is the decision.
+[ADR-0021](decisions/ADR-0021-multi-image-update.md) is the decision, and
+[ADR-0022](decisions/ADR-0022-device-images-commit-after-client.md) sets when a
+device-committed image is committed and what "applied" means.
 [`protocol-notes.md`](protocol-notes.md) §6 ("Several images on one device")
 holds the protocol facts this relies on.
 
@@ -12,23 +14,29 @@ One device, several MCUboot images, **one reset**:
 
 ```
 stage every image  →  reset once  →  verify  →  wait for device-applied images
-      (upload, verify present,         (Client images      (Device images:
-       mark for test, per image)        booted the target)  poll image state)
-                                   →  confirmation window  →  confirm Client images
-                                      (the application's call, ADR-0014)
+      (upload, verify present,         (Client images      (Device images running
+       mark for test, per image)        booted the target)  on trial: poll state)
+                    →  confirmation window  →  confirm Client images  →  wait for the
+                       (the application's      (the device then commits   device's commit
+                        call, ADR-0014)         its own images)           (poll state)
 ```
 
 Each image is either:
 * **`Client`**: smply commits it. It is marked for test, the reset swaps it in,
   smply verifies it booted, and it is confirmed by hash after the window. This
   is the ordinary single-image update, image 0 of a typical device.
-* **`Device`**: the device commits it. smply stages and marks it, then after the
+* **`Device`**: the device commits it. smply stages and marks it. After the
   reset it waits, in `AwaitingDeviceApply`, for the device to report the image
-  applied. It never confirms it.
+  applied: running on the other MCU, on trial. smply never confirms it. The
+  device commits it when smply confirms the `Client` images, and smply waits
+  for that too, in `AwaitingDeviceCommit`.
 
-**`Client` images are confirmed only after every `Device` image is reported
-applied.** If one is not, the update fails, the `Client` images stay
-unconfirmed, and the device reverts them on its next reset.
+**`Client` images are confirmed only after every `Device` image is running
+on trial, and `Device` images are committed only after that confirm.** So
+nothing is committed until the whole set has booted, and the pair is never
+committed half-validated. If a `Device` image fails to apply, the update
+fails, the `Client` images stay unconfirmed, and the device reverts them on
+its next reset.
 
 ## Why "Device" exists: a coordinating MCU
 
@@ -50,52 +58,84 @@ place.
 
 smply reads nothing but the standard image-state listing (group 1, command 0).
 For an image `N` that smply treats as `Device`, the device must report the
-following. Zephyr's slot-state hook (`CONFIG_MCUMGR_GRP_IMG_IMAGE_SLOT_STATE_HOOK`)
-is where an H5 fills in what the BL54L10 actually runs.
+following. **Slot 0 of image `N` reports what the other MCU actually runs**,
+filled in through Zephyr's slot-state hook
+(`CONFIG_MCUMGR_GRP_IMG_IMAGE_SLOT_STATE_HOOK`) from what the BL54L10 itself
+reports.
 
-| When | Image `N`, slot 1 (staging) | Image `N`, slot 0 (what is applied) |
-| ---- | --------------------------- | ------------------------------------ |
-| After upload, before the mark | the new image's hash, not pending | the currently applied image's hash |
+| When | Image `N`, slot 1 (staging) | Image `N`, slot 0 (what the other MCU runs) |
+| ---- | --------------------------- | ------------------------------------------ |
+| After upload, before the mark | the new image's hash, not pending | the old image's hash |
 | After the mark | the new hash, **`pending`** | unchanged |
 | After the reset, while applying | the new hash, still `pending` | unchanged |
-| **Applied** | anything not pending | **the new hash, `confirmed`** |
+| **Applied, on trial** | anything not pending | **the new hash, not confirmed** |
+| **Committed** | anything | **the new hash, `confirmed`** |
 | **Apply failed** | the new hash, **no longer pending** | still the **old** hash |
 
 In words:
-1. **Accept the upload and the mark** for image `N` like any MCUboot image:
+1. **Accept the upload and the mark** for image `N` like any MCUboot image.
    `CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER` covers it, and slot 1 is its
    staging area.
-2. **After the reset, apply it**, and keep slot 1 `pending` while doing so.
-3. **Report success** by showing the new hash in slot 0, `confirmed`, once the
-   target MCU has committed it.
-4. **Report failure** by clearing `pending` on slot 1 while slot 0 still shows
-   the old hash. smply then fails the update rather than waiting out the
-   timeout.
-5. **Finish or roll back an interrupted apply at every boot, on its own.**
-   smply cannot do this. If power fails after smply confirmed image 0 and
-   before the BL54L10 committed, only the H5 is there when it comes back.
+2. **After the reset, apply it**, keeping slot 1 `pending` while doing so. The
+   other MCU boots it **on trial** (its own MCUboot's test swap). Report that as
+   the new hash in slot 0, not confirmed.
+3. **Commit it when smply confirms the `Client` images.** Enable
+   `CONFIG_MCUMGR_GRP_IMG_STATUS_HOOKS` and handle
+   `MGMT_EVT_OP_IMG_MGMT_DFU_CONFIRMED` for image 0 (protocol-notes S39). Then
+   confirm the BL54L10 through the SMP client, and report slot 0 confirmed.
+   **If image 0 is not on trial when the apply finishes** (the update did not
+   change it, so no confirm will come), commit right after the apply. smply
+   waits for the commit either way, bounded by `UpdatePlan::apply_timeout`.
+4. **Report a failed apply** by clearing `pending` on slot 1 while slot 0
+   still shows the old hash. smply then fails the update rather than waiting
+   out the timeout.
+5. **Finish or roll back at every boot, on its own.** smply cannot do this.
+   The rules follow from the order above, and the H5 always still holds the
+   new image in staging:
+   * image 0 confirmed and the BL54L10 on trial (power failed between the two
+     commits): **commit** the BL54L10;
+   * image 0 confirmed and the BL54L10 back on the old image (its trial was
+     reverted by a reset): **apply it again**;
+   * image 0 reverted (smply never confirmed it) and the BL54L10 on trial:
+     **reset the BL54L10**, and its MCUboot reverts it too. The pair is old and
+     old again.
 6. **Refuse to run with a mismatched partner**, e.g. do not start the BLE host
    against a controller of the wrong version. An MCUboot dependency TLV in
    image 0 (`IMAGE_TLV_DEPENDENCY`: image id and minimum version) can carry
-   that rule, signed with the image. smply reads and reports it but does not
-   enforce it.
+   that rule, signed with the image. smply reads and reports it, and refuses a
+   package whose own images do not satisfy it (ADR-0022), but it does not
+   check the device.
 
-**The same rules hold if the H5's MCUboot swaps image `N` itself**, which is
-how nRF Connect SDK handles the nRF5340 network core. There, MCUboot swaps the
-staged image into slot 0 at the reset, as an unconfirmed test. The H5
-application then forwards slot 0 to the BL54L10, and confirms image `N` through
-MCUboot's own API once the BL54L10 has committed. smply sees:
-* slot 0 with the new hash and **not confirmed**: still applying, so it keeps
-  waiting;
-* the new hash, **confirmed**: applied;
-* slot 0 back on the old hash after a revert, with slot 1 no longer pending:
-  failed.
+**Keep the H5's own bootloader away from image `N`**, since it is not the
+H5's image and is signed with another key (protocol-notes S40). Either use
+MCUboot's image-access hooks, as nRF Connect SDK does for the nRF5340 network
+core, or build MCUboot for one image and let the H5 application own image
+`N`'s slot and trailer.
 
-Nothing in smply depends on which variant the device uses.
+**If the H5's MCUboot does swap image `N` into H5 flash**, slot 0 must still
+report the other MCU's real state, not the H5's copy. Otherwise "applied, on
+trial" and "still applying" look the same, and smply would confirm image 0
+before the BL54L10 runs the new image.
 
-smply bounds the wait with `UpdatePlan::apply_timeout` and polls every
-`UpdatePlan::apply_poll_interval`. Size the timeout for the slowest apply:
-a UART upload of the whole image to the second MCU, plus its reboot.
+### The link can drop while the other MCU is being updated
+
+On the product, the BLE link runs through the BL54L10, so it is gone while
+the controller is being updated. smply expects that. In `AwaitingDeviceApply`
+and `AwaitingDeviceCommit`:
+* a read that fails with `Disconnected` asks the application to reconnect
+  (`ReconnectRequired`), as after the reset;
+* a read that times out is simply retried;
+* on the reconnect, smply reads the state again and carries on.
+
+**While the link is down, the application's reconnect policy bounds the wait,
+not `apply_timeout`.** Size it for the whole outage: the UART transfer of
+the controller image, plus the controller's reboot, plus advertising. A
+policy that gives up after a few seconds fails the update even though the
+device is fine.
+
+smply polls every `UpdatePlan::apply_poll_interval` and bounds each wait,
+the apply and the commit, with `UpdatePlan::apply_timeout`. Size it for the
+slowest apply.
 
 ## The package
 
@@ -121,6 +161,12 @@ the one reset.
 
 Which images are `Device` images is the application's call, not the
 package's: nothing in the manifest says who commits an image.
+
+**A package whose own images disagree is refused.** If an image carries a
+dependency on another image in the package, at a minimum version the package
+does not carry, `read_package()` refuses it before anything is sent. The
+comparison is MCUboot's default one, which ignores the build number
+(protocol-notes S41).
 
 ## Trying it
 

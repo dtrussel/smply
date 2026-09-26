@@ -64,6 +64,9 @@ earlier.
 | S36 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/zephyr_img_mgmt.c`, `img_mgmt.c` (upload) | `img_mgmt_upload_inspect()` reads `image` only on a first packet and picks `img_mgmt_get_unused_slot_area_id(image)`; continuations use the stored area; `mcuboot_swap_type_multi(image)` per image | same |
 | S37 | `boot/bootutil/include/bootutil/image.h`, `boot/bootutil/src/loader.c` | `IMAGE_TLV_DEPENDENCY` (`0x40`) and `struct image_dependency { image_id; pad; pad; image_min_version }`; `boot_verify_slot_dependency()` -- an unsatisfied dependency downgrades a TEST or PERM swap to NONE, and NONE to REVERT | `mcu-tools/mcuboot@main` (verified 2026-09-25 from source) |
 | S38 | `nrfconnect/sdk-nrf`: `scripts/bootloader/generate_zip.py`, `cmake/sysbuild/zip.cmake` | The DFU package layout: a zip written with Python's default `ZIP_STORED`, and `manifest.json` with `format-version` (default 1), `time`, optional `name`, `files[]`; per file `file`, `size`, `modtime` and the sysbuild-supplied `image_index`, `slot_index_primary`/`_secondary`, `version_MCUBOOT`, `load_address`, `board`, `soc`, including an "extra images" path. Every sysbuild value arrives as `key=value` and **stays a string unless it starts with `0x`**, so `image_index` is `"1"` while `load_address` and the script's own `size` are numbers. A direct-XIP build lists **two files for one `image_index`** (one per slot, keyed `version_MCUBOOT+XIP`): alternatives, not a set to send | `nrfconnect/sdk-nrf@main` (read 2026-09-25). A **format** reference for the package reader, not a protocol source |
+| S39 | `include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h`, `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c` | `MGMT_EVT_OP_IMG_MGMT_DFU_CONFIRMED`, notified with `struct img_mgmt_image_confirmed { uint8_t image; }` after `img_mgmt_write_confirmed()` succeeds, both for a hashless confirm (image 0) and for a confirm by hash (`img_mgmt_slot_to_image(slot)`), under `CONFIG_MCUMGR_GRP_IMG_STATUS_HOOKS` | `zephyrproject-rtos/zephyr@main` (verified 2026-09-26 from source) |
+| S40 | `boot/bootutil/include/bootutil/boot_hooks.h` | MCUboot's image-access hooks under `MCUBOOT_IMAGE_ACCESS_HOOKS`: `boot_read_image_header_hook`, `boot_image_check_hook`, `boot_perform_update_hook`, `boot_copy_region_post_hook` and others. Each can return `BOOT_HOOK_REGULAR` to fall through, or take over the step for an image | `mcu-tools/mcuboot@main` (verified 2026-09-26 from source) |
+| S41 | `boot/bootutil/src/bootutil_loader.c`, `boot/bootutil/src/loader.c` | `boot_compare_version()` compares major, minor and revision, and the build number only under `MCUBOOT_VERSION_CMP_USE_BUILD_NUMBER`; `boot_verify_slot_dependency()` treats a dependency as satisfied when the depended-on image's version compares `>=` the minimum | `mcu-tools/mcuboot@main` (verified 2026-09-26 from source) |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -573,6 +576,20 @@ Read from source for ADR-0021. None of it has been observed on a device.
   image is simply not booted. So in a multi-image update **every image must be
   marked before the single reset**, and "did not boot the new image" can mean
   "its dependency was not staged".
+* **The comparison ignores the build number by default** (S41):
+  `boot_compare_version()` compares major, minor and revision, and the build
+  number only under `MCUBOOT_VERSION_CMP_USE_BUILD_NUMBER`. A dependency is
+  satisfied when the depended-on image compares `>=` the minimum.
+* **A device can act on smply's confirm** (S39). Zephyr notifies
+  `MGMT_EVT_OP_IMG_MGMT_DFU_CONFIRMED`, with the confirmed image's number,
+  once a confirm has been written, under `CONFIG_MCUMGR_GRP_IMG_STATUS_HOOKS`.
+  That is where a coordinating MCU commits the image it applied to another
+  MCU (ADR-0022).
+* **A bootloader can be kept away from an image slot** (S40). MCUboot's
+  image-access hooks let a coordinating MCU's bootloader leave image 1, the
+  other MCU's firmware, unvalidated and unswapped. The alternative is a
+  single-image MCUboot, with the application owning image 1's slot and
+  trailer.
 
 ## 7. [BOOT] MCUboot image and update semantics (S12, S18-S20)
 

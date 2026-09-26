@@ -1,6 +1,8 @@
 # ADR-0021 — Several images on one device in one update, with per-image commit ownership
 
-**Status:** Accepted (2026-09-25). Resolves roadmap O5.
+**Status:** Accepted (2026-09-25). Resolves roadmap O5. Decision 2's meaning
+of "applied" and decision 3's order of commits superseded by
+[ADR-0022](ADR-0022-device-images-commit-after-client.md) (2026-09-26).
 
 ## Context
 
