@@ -2,7 +2,8 @@
 
 **Status:** Accepted (2026-09-26). Supersedes ADR-0021's decision 2 on what
 "applied" means, and decision 3 on the order of commits. ADR-0021's other
-decisions stand.
+decisions stand. Decision 4 extended by ADR-0023 to the confirm and its
+read-back.
 
 ## Context
 

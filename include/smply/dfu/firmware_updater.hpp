@@ -359,6 +359,11 @@ public:
 
     /// Approves the new image after `ConfirmationRequired`.
     ///
+    /// The approval is remembered for the rest of the update. If the link or
+    /// the device's answer is lost around the confirm, a `ReconnectRequired`
+    /// may follow, and the device is read again and, if needed, confirmed
+    /// again without a second `ConfirmationRequired` (ADR-0023).
+    ///
     /// \return `InvalidState` unless the update is in `AwaitingConfirmation`.
     [[nodiscard]] Result<void> confirm();
 

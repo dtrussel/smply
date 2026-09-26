@@ -12,9 +12,9 @@
 /// alive for the length of the update and nothing else.
 ///
 /// **Who commits which image is the application's call**, not the package's:
-/// nothing in a manifest says so. The default here is the coordinating-MCU
-/// product of docs/multi-image.md -- image 0 committed by smply, every other
-/// image by the device -- and `set_commit()` overrides it per image.
+/// nothing in a manifest says so. The default here is the coordinator layout
+/// of docs/multi-image.md -- image 0 committed by smply, every other image,
+/// one per target, by the device -- and `set_commit()` overrides it per image.
 
 #include "dfu_package/dfu_package.hpp"
 #include "smply/bytes.hpp"

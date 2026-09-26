@@ -69,7 +69,7 @@ enum class ApplyOutcome : std::uint8_t
 };
 
 /// A second image, which the device commits itself: the staged firmware of
-/// another MCU, as an STM32H5 holds a BLE module's (ADR-0021). After the reset
+/// another MCU, as a coordinator holds a target's (docs/multi-image.md). After the reset
 /// the device takes `apply_reads` image-state reads to apply it, then reports
 /// `outcome`: the new image running on trial, or the old one still there. It
 /// commits an applied image a read after image 0 is confirmed, or at once if

@@ -49,10 +49,11 @@ None of these can be closed from a container.
   `find_package` consumer instead of in-tree. The install rules have changed
   since the last bench run, and the protocol path has not. So a pass is
   expected, but it has not been shown.
-* **Run a two-image package against a coordinating MCU** (ADR-0021). This
+* **Run a multi-image package against a coordinator MCU** (ADR-0021). This
   needs product firmware that implements the device contract in
-  `multi-image.md`, such as the STM32H5 that applies a BL54L10's image. That
-  firmware is outside smply. Until then, the contract is tested against the
+  `multi-image.md`: a coordinator that applies a target's image, such as an
+  application MCU updating its Bluetooth controller module. That firmware is
+  outside smply. Until then, the contract is tested against the
   simulator and the stub device only. `serial_dfu --port … --package …` is
   the tool for the run.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed
@@ -104,6 +105,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **MCUboot serial recovery is not a supported target.** Its SMP server is not the application's image group: an upload's `image` names a slot (S43), set-state only schedules the secondary slot (S44), and the default upload overwrites the primary slot with no trial. `serial_dfu` pointed at a device in recovery would not behave. Supporting it would be a separate update mode, not a flag. | if a product updates through serial recovery from the PC |
 | **Over serial, `buf_size` overstates the device's whole-message limit by four bytes** (protocol-notes §9, A25): the netbuf holds the serial length prefix and CRC too. Upload sizing takes `min(buf_size, transport max, cap)`, so a device whose `buf_size` is at or below the serial adapter's cap gets messages it silently drops. Fixing it means letting a transport report a per-message overhead that the core subtracts from `buf_size`, which is a change to the `Transport` contract. The adapter's 256-byte default keeps a default-configured device safe. | before claiming serial support for devices with a small `buf_size` |
 | **Ask the device which board it is.** The OS group's `info` command (`os_mgmt_info`) can report the board, which would let the board check above use the device's own answer instead of the caller's. It needs the command implemented in `OsManagement`, and reading Zephyr's source for the format. | with the board check, if a caller cannot supply the expectation |
 | **The package manifest is not authenticated.** nRF Connect SDK's `manifest.json` carries no signature, so a tampered manifest can relabel an image's index. Each image is signed, and its signed dependency TLVs are what stop a mismatched set from booting; smply's self-consistency check (ADR-0022) reads those, not the manifest. A signed manifest would be a product format of its own. | if a product defines a signed container |

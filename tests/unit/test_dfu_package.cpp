@@ -75,7 +75,7 @@ template<class T>
 [[nodiscard]] std::string file_entry(const std::string& name, std::size_t size,
                                      const std::string& index, const std::string& version)
 {
-    return R"({"board": "stm32h573", "soc": "stm32h5", "image_index": ")" + index +
+    return R"({"board": "example_board", "soc": "example_soc", "image_index": ")" + index +
            R"(", "slot_index_primary": "1", "slot_index_secondary": "2", "version_MCUBOOT": ")" +
            version + R"(", "load_address": 134217728, "size": )" + std::to_string(size) +
            R"(, "file": ")" + name + R"(", "modtime": 1758800000})";
@@ -87,7 +87,7 @@ struct TwoImagePackage
     std::vector<std::byte> app = image(2);
     std::vector<std::byte> radio = image(6);
     std::string manifest =
-        R"({"format-version": 1, "time": 1758800000, "name": "h5 and radio", "files": [)" +
+        R"({"format-version": 1, "time": 1758800000, "name": "app and radio", "files": [)" +
         file_entry("radio.bin", radio.size(), "1", "6.0.0+0") + ", " +
         file_entry("app.bin", app.size(), "0", "2.0.0") + "]}";
 
@@ -335,7 +335,7 @@ TEST_CASE("an nRF Connect SDK-style package reads as its images, by index", "[df
     REQUIRE(package.has_value());
 
     CHECK(package->format_version == 1U);
-    CHECK(package->name == "h5 and radio");
+    CHECK(package->name == "app and radio");
     REQUIRE(package->images.size() == 2);
     const auto& app = package->images[0];
     const auto& radio = package->images[1];
@@ -343,8 +343,8 @@ TEST_CASE("an nRF Connect SDK-style package reads as its images, by index", "[df
     CHECK(app.file == "app.bin");
     CHECK(same(app.bytes, source.app));
     CHECK(app.header.version == ImageVersion{.major = 2});
-    CHECK(app.board == "stm32h573");
-    CHECK(app.soc == "stm32h5");
+    CHECK(app.board == "example_board");
+    CHECK(app.soc == "example_soc");
     CHECK(app.version == "2.0.0");
     CHECK(app.dependencies.empty());
     CHECK(radio.image == 1);

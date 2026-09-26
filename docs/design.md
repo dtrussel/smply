@@ -807,8 +807,10 @@ callbacks).
                             │             ConfirmImmediately)
                             ▼
                     ┌──────────────────┐  IMG set-state{hash, confirm=true}
-                    │ Confirming       │
-                    └───────┬──────────┘
+                    │ Confirming       │  a lost link or answer here, or in the
+                    └───────┬──────────┘  read-back, re-inspects via
+                            │             AwaitingReconnect / VerifyingBooted
+                            │             (ADR-0023)
                             ▼
                     ┌────────────────────┐  IMG get-state → confirmed == true
                     │ VerifyingConfirmed │
@@ -988,6 +990,9 @@ that forgets a kind does not compile:
 | `AwaitingDeviceCommit` | `apply_timeout` passes | fatal `Timeout`; `revert_pending` false |
 | `AwaitingConfirmation` | the application cancels, or never confirms | terminal; the device reverts on its next reset — `UpdateReport::revert_pending` says so |
 | `Confirming` | `IMAGE_CONFIRMATION_DENIED` | fatal; the device will revert on the next reset — the report says so |
+| `Confirming`, `VerifyingConfirmed` | the request fails with `Disconnected` | `AwaitingReconnect` (`ReconnectRequired`); after it, `VerifyingBooted` re-reads: a confirmed image goes on (to `AwaitingDeviceCommit` or `Completed`), one still on trial is confirmed again without asking the application twice (ADR-0023) |
+| `Confirming`, `VerifyingConfirmed` | the request times out | one re-read through `VerifyingBooted`, once per update; a second is fatal with `revert_pending` |
+| `VerifyingConfirmed` | the read-back fails otherwise | fatal, with `revert_pending`: whether the confirm stuck is unknown |
 
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it

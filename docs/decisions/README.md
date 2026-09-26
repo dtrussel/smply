@@ -43,4 +43,5 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0019](ADR-0019-async-adapters.md) | Coroutine and future adapters, in an installed `smply::asyncutil` | Accepted |
 | [0020](ADR-0020-serial-port-reference-adapter.md) | A reference serial port adapter, in `transports/serial_port/`, not installed | Accepted |
 | [0021](ADR-0021-multi-image-update.md) | Several images on one device in one update, with per-image commit ownership | Accepted; decisions 2 and 3 superseded in part by 0022 |
-| [0022](ADR-0022-device-images-commit-after-client.md) | A device-committed image stays on trial until the client images are confirmed, and the wait survives the link | Accepted |
+| [0022](ADR-0022-device-images-commit-after-client.md) | A device-committed image stays on trial until the client images are confirmed, and the wait survives the link | Accepted; decision 4 extended by 0023 |
+| [0023](ADR-0023-lost-link-around-the-confirm.md) | A lost link or answer around the confirm is recovered by re-reading the device | Accepted |

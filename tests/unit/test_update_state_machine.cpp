@@ -815,13 +815,76 @@ TEST_CASE("the confirmation is checked against the device's own report", "[dfu][
     CHECK(bad.report.revert_pending);
 }
 
-TEST_CASE("a failed confirmation read reports the pending revert", "[dfu][machine]")
+TEST_CASE("a lost link or answer around the confirm is re-inspected, not fatal",
+          "[dfu][machine][confirm]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::VerifyingConfirmed, failed(ErrorCode::Timeout), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.revert_pending);
+    // ADR-0023. Whether the confirm landed is unknown, so the machine assumes
+    // nothing: a drop reconnects, a lost answer is read again once, and
+    // VerifyingBooted decides.
+    for (const UpdateState state : {UpdateState::Confirming, UpdateState::VerifyingConfirmed}) {
+        CAPTURE(state);
+
+        Context dropped = fresh();
+        const Step reconnect =
+            advance(state, failed(ErrorCode::Disconnected), UpdatePlan{}, dropped);
+        CHECK(reconnect.next == UpdateState::AwaitingReconnect);
+        CHECK(reconnect.effect == Effect::RequestReconnect);
+        CHECK(dropped.swap_scheduled);
+
+        Context lost = fresh();
+        const Step reread = advance(state, failed(ErrorCode::Timeout), UpdatePlan{}, lost);
+        CHECK(reread.next == UpdateState::VerifyingBooted);
+        CHECK(reread.effect == Effect::ReadState);
+
+        // The re-read is spent once per update; a second lost answer is fatal
+        // and reports the revert that may still come.
+        const Step again = advance(state, failed(ErrorCode::Timeout), UpdatePlan{}, lost);
+        CHECK(again.next == UpdateState::Failed);
+        CHECK(lost.report.revert_pending);
+
+        // Anything else is fatal, as before.
+        Context broken = fresh();
+        const Step fatal =
+            advance(state, failed(ErrorCode::MalformedMessage), UpdatePlan{}, broken);
+        CHECK(fatal.next == UpdateState::Failed);
+        CHECK(broken.report.revert_pending);
+    }
+}
+
+TEST_CASE("after a lost confirm, the re-inspection routes on what the device reports",
+          "[dfu][machine][confirm]")
+{
+    // The confirm landed: done, and nothing is reported as reverting.
+    Context landed = fresh();
+    static_cast<void>(
+        advance(UpdateState::Confirming, failed(ErrorCode::Disconnected), UpdatePlan{}, landed));
+    const ImageState confirmed =
+        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+                  SlotSpec{.slot = 1, .hash = kOther}});
+    const Step done =
+        advance(UpdateState::VerifyingBooted, state_read(confirmed), UpdatePlan{}, landed);
+    CHECK(done.next == UpdateState::Completed);
+    CHECK_FALSE(landed.report.revert_pending);
+
+    // It did not land, and the application had already approved: confirm
+    // again without asking a second time.
+    Context approved = fresh();
+    static_cast<void>(advance(UpdateState::AwaitingConfirmation, just(Event::Kind::ConfirmApproved),
+                              UpdatePlan{}, approved));
+    static_cast<void>(
+        advance(UpdateState::Confirming, failed(ErrorCode::Timeout), UpdatePlan{}, approved));
+    const ImageState trial = trial_boot();
+    const Step retry =
+        advance(UpdateState::VerifyingBooted, state_read(trial), UpdatePlan{}, approved);
+    CHECK(retry.next == UpdateState::Confirming);
+    CHECK(retry.effect == Effect::Confirm);
+
+    // Without an approval on record the application is asked, as on any
+    // trial boot.
+    Context unasked = fresh();
+    const Step ask =
+        advance(UpdateState::VerifyingBooted, state_read(trial), UpdatePlan{}, unasked);
+    CHECK(ask.next == UpdateState::AwaitingConfirmation);
 }
 
 // --- Cancellation and terminal states ---------------------------------------
@@ -1323,6 +1386,29 @@ TEST_CASE("nothing to stage and nothing on trial completes without a reset",
     CHECK(context.report.upload_skipped);
     CHECK(context.report.images[1].applied);
     CHECK_FALSE(context.report.revert_pending);
+}
+
+TEST_CASE("a link lost after the confirm goes on to wait for the device's commit",
+          "[dfu][machine][multi]")
+{
+    // The product's case: the device takes the link down to commit the other
+    // MCU just after smply's confirm (ADR-0023).
+    Context context = app_and_radio();
+    const Step reconnect = advance(UpdateState::VerifyingConfirmed, failed(ErrorCode::Disconnected),
+                                   UpdatePlan{}, context);
+    CHECK(reconnect.next == UpdateState::AwaitingReconnect);
+
+    const Step verify = advance(UpdateState::AwaitingReconnect, just(Event::Kind::Reconnected),
+                                UpdatePlan{}, context);
+    CHECK(verify.next == UpdateState::VerifyingBooted);
+
+    const ImageState on_trial =
+        after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
+    const Step wait =
+        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, context);
+    CHECK(wait.next == UpdateState::AwaitingDeviceCommit);
+    CHECK(wait.effect == Effect::AwaitApply);
+    CHECK_FALSE(context.swap_scheduled);
 }
 
 TEST_CASE("each client image is confirmed in turn, by its own hash", "[dfu][machine][multi]")
