@@ -112,8 +112,8 @@ In words:
 8. **Keep the link up from smply's confirm until it has read the confirm
    back.** smply follows its confirm with an image-state read. Start the
    other MCU's commit from a work item, once `MGMT_EVT_OP_CMD_DONE` reports
-   that read done (group 1, command 0; protocol-notes S46). smply treats a
-   drop between the two as a failed update.
+   that read done (group 1, command 0; protocol-notes S46). smply recovers from a
+   drop between the two (ADR-0023), but it costs a reconnect.
 9. **After a failed apply, reset.** smply fails the update with
    `revert_pending` and does not reset the device itself. Until something
    does, image 0 stays on trial.

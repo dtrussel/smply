@@ -378,6 +378,15 @@ with no image to work on. ADR-0022 added:
 * in both waits: a dropped link asks for a reconnect, a lost read is
   retried, and anything else is fatal.
 
+The `[confirm]` cases for ADR-0023 cover `Confirming` and `VerifyingConfirmed`:
+* a dropped link reconnects;
+* a lost answer is re-read once, and a second is fatal with `revert_pending`;
+* any other error is still fatal;
+* the re-inspection completes a confirmed image;
+* it re-confirms one still on trial without asking the application twice,
+  and asks when no approval is on record;
+* on two images, a link lost after the confirm goes on to the commit wait.
+
 `test_firmware_update.cpp`'s `[multi]` cases drive the same against the
 two-image simulator, each asserting there was exactly one reset:
 * a resume in the wait, and a resume in the confirmation window;
@@ -385,7 +394,14 @@ two-image simulator, each asserting there was exactly one reset:
 * for ADR-0022: the commit observed after the confirm; a commit that never
   comes (`Timeout`, nothing to revert); the link dropped mid-apply and
   reconnected; a lost read retried; and a resume after the confirm that
-  waits for the commit.
+  waits for the commit;
+* for ADR-0023: a confirm whose answer is lost, and one sent into a
+  dropped link, each ending committed with one approval.
+
+Two single-image `[confirm]` cases run the same recoveries. A link lost
+before the confirm reconnects and confirms, and the application is asked
+once. A confirm whose answer is lost is read back through `VerifyingBooted`
+and completes.
 
 ### The example as a test (`examples/cli_dfu/`)
 

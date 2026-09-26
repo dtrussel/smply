@@ -171,6 +171,11 @@ struct Context
     bool mark_retried = false;
     /// The one `Busy` reset retry has been spent.
     bool reset_forced = false;
+    /// The application has approved the confirm, so a re-inspection that finds
+    /// an image still on trial confirms it without asking again (ADR-0023).
+    bool confirm_approved = false;
+    /// The one re-read after a timed-out confirm or read-back has been spent.
+    bool confirm_reread = false;
 };
 
 /// The next state, and what to do to get there.

@@ -100,11 +100,13 @@ namespace {
 }
 
 /// The fork ADR-0014 introduced: ask, or confirm without asking. Either way
-/// the first image owed a confirm becomes the current one.
+/// the first image owed a confirm becomes the current one. An application that
+/// has already approved is not asked again when a lost confirm brings the
+/// update back here (ADR-0023).
 [[nodiscard]] Step confirmation_fork(const UpdatePlan& plan, Context& context)
 {
     context.current = next_in_trial(context, 0);
-    if (plan.mode == UpdateMode::ConfirmImmediately) {
+    if (plan.mode == UpdateMode::ConfirmImmediately || context.confirm_approved) {
         return Step{UpdateState::Confirming, Effect::Confirm};
     }
     return Step{UpdateState::AwaitingConfirmation, Effect::RequestConfirmation};
@@ -223,6 +225,24 @@ enum class Apply : std::uint8_t
     }
     if (error.code() == ErrorCode::Timeout) {
         return Step{state, Effect::AwaitApply};
+    }
+    return fail(context, error);
+}
+
+/// `Confirming` or `VerifyingConfirmed`, on a failure. Whether the confirm
+/// landed is unknown, so nothing is assumed: a drop asks for a reconnect and a
+/// lost answer is followed by one re-read, and either way `VerifyingBooted`
+/// re-inspects the device and routes on what it finds (ADR-0023). Until then
+/// the swap counts as scheduled, which is what a failure here reports.
+[[nodiscard]] Step confirm_failed(const Error& error, Context& context)
+{
+    context.swap_scheduled = true;
+    if (error.code() == ErrorCode::Disconnected) {
+        return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
+    }
+    if (error.code() == ErrorCode::Timeout && !context.confirm_reread) {
+        context.confirm_reread = true;
+        return Step{UpdateState::VerifyingBooted, Effect::ReadState};
     }
     return fail(context, error);
 }
@@ -635,6 +655,7 @@ namespace {
 
     case UpdateState::AwaitingConfirmation:
         if (event.kind == Event::Kind::ConfirmApproved) {
+            context.confirm_approved = true;
             return Step{UpdateState::Confirming, Effect::Confirm};
         }
         break;
@@ -653,8 +674,9 @@ namespace {
         }
         if (event.kind == Event::Kind::Failed) {
             // A refused confirm leaves a running, unconfirmed image: the device
-            // reverts on its next reset. fail() records that.
-            return fail(context, event.error);
+            // reverts on its next reset, and confirm_failed() records that. A
+            // lost link or answer is re-inspected instead.
+            return confirm_failed(event.error, context);
         }
         break;
 
@@ -676,8 +698,7 @@ namespace {
                         "dfu: device did not report the image as confirmed");
         }
         if (event.kind == Event::Kind::Failed) {
-            context.swap_scheduled = true;
-            return fail(context, event.error);
+            return confirm_failed(event.error, context);
         }
         break;
 

@@ -912,7 +912,10 @@ public:
     Result<void> start(std::span<const ImageTarget>, const UpdatePlan&, UpdateEventCallback);
 
     // Approves the running image after ConfirmationRequired. InvalidState
-    // unless the update is in AwaitingConfirmation (ADR-0014).
+    // unless the update is in AwaitingConfirmation (ADR-0014). The approval
+    // is remembered: if the link or the answer is lost around the confirm,
+    // a ReconnectRequired may follow, and the device is read again and
+    // confirmed without a second ConfirmationRequired (ADR-0023).
     Result<void> confirm();
 
     void         cancel() noexcept;

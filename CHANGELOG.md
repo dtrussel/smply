@@ -70,6 +70,14 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **A lost link or answer around the confirm no longer fails the update**
+  ([ADR-0023](docs/decisions/ADR-0023-lost-link-around-the-confirm.md)). In
+  `Confirming` and `VerifyingConfirmed` a dropped link asks for a reconnect
+  (`ReconnectRequired`), and a lost answer is read again once. The device is
+  then re-inspected: a confirmed image completes, or goes on to wait for the
+  device's commit. One still on trial is confirmed again, without asking the
+  application twice. Before, both failed the update and reported a revert
+  that might not come. Applies to single-image updates too.
 - **`UpdateState` gains `AwaitingDeviceApply` and `AwaitingDeviceCommit`.**
   An exhaustive `switch` over it no longer compiles until it handles the new
   values. `0.x` allows this

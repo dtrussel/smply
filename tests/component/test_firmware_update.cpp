@@ -1584,3 +1584,108 @@ TEST_CASE("an update resumed after the confirm waits for the device's commit",
     CHECK(second.report->images[1].committed);
     CHECK(resets(fixture) == 1);
 }
+
+// --- A lost link or answer around the confirm (ADR-0023) --------------------
+
+TEST_CASE("a link lost before the confirm reconnects and confirms without asking again",
+          "[dfu][update][confirm]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport after_reset;
+    FakeTransport after_drop;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    const std::vector<FakeTransport*> spares{&after_reset, &after_drop};
+    REQUIRE(drive_until(application, fixture, spares, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingConfirmation;
+    }));
+    // The application approves on its next turn, and the confirm meets a link
+    // that is already gone.
+    after_reset.disconnect();
+
+    REQUIRE(application.run(fixture, spares, outcome));
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.report->revert_pending);
+    CHECK(outcome.reconnects == 2);
+    CHECK(outcome.confirmations == 1);
+    CHECK(resets(fixture) == 1);
+    CHECK(fixture.simulator.swap_type() == SwapType::None);
+}
+
+TEST_CASE("a confirm whose answer is lost is read back rather than failed",
+          "[dfu][update][confirm]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(drive_until(application, fixture, {&reconnected}, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingConfirmation;
+    }));
+    // The confirm lands; its answer does not.
+    fixture.simulator.drop_next_response();
+
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.report->revert_pending);
+    CHECK(fixture.simulator.dropped() == 1);
+    CHECK(outcome.confirmations == 1);
+    CHECK(outcome.reconnects == 1);
+    // The re-read went through VerifyingBooted a second time.
+    CHECK(std::count(outcome.visited.begin(), outcome.visited.end(),
+                     UpdateState::VerifyingBooted) == 2);
+}
+
+TEST_CASE("a confirm lost on the product still waits for the device's commit",
+          "[dfu][update][multi][confirm]")
+{
+    const bool drop_link = GENERATE(false, true);
+    CAPTURE(drop_link);
+
+    UpdateOutcome outcome;
+    FakeTransport after_reset;
+    FakeTransport after_drop;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 2);
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    const std::vector<FakeTransport*> spares{&after_reset, &after_drop};
+    REQUIRE(drive_until(application, fixture, spares, outcome, [&] {
+        return fixture.updater.state() == UpdateState::AwaitingConfirmation;
+    }));
+    if (drop_link) {
+        after_reset.disconnect();
+    } else {
+        fixture.simulator.drop_next_response();
+    }
+
+    REQUIRE(application.run(fixture, spares, outcome));
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.report->revert_pending);
+    CHECK(outcome.reached(UpdateState::AwaitingDeviceCommit));
+    CHECK(outcome.report->images[1].committed);
+    CHECK(outcome.confirmations == 1);
+    CHECK(outcome.reconnects == (drop_link ? 2 : 1));
+    CHECK(resets(fixture) == 1);
+}
