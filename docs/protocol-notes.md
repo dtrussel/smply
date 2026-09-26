@@ -67,6 +67,11 @@ earlier.
 | S39 | `include/zephyr/mgmt/mcumgr/grp/img_mgmt/img_mgmt_callbacks.h`, `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c` | `MGMT_EVT_OP_IMG_MGMT_DFU_CONFIRMED`, notified with `struct img_mgmt_image_confirmed { uint8_t image; }` after `img_mgmt_write_confirmed()` succeeds, both for a hashless confirm (image 0) and for a confirm by hash (`img_mgmt_slot_to_image(slot)`), under `CONFIG_MCUMGR_GRP_IMG_STATUS_HOOKS` | `zephyrproject-rtos/zephyr@main` (verified 2026-09-26 from source) |
 | S40 | `boot/bootutil/include/bootutil/boot_hooks.h` | MCUboot's image-access hooks under `MCUBOOT_IMAGE_ACCESS_HOOKS`: `boot_read_image_header_hook`, `boot_image_check_hook`, `boot_perform_update_hook`, `boot_copy_region_post_hook` and others. Each can return `BOOT_HOOK_REGULAR` to fall through, or take over the step for an image | `mcu-tools/mcuboot@main` (verified 2026-09-26 from source) |
 | S41 | `boot/bootutil/src/bootutil_loader.c`, `boot/bootutil/src/loader.c` | `boot_compare_version()` compares major, minor and revision, and the build number only under `MCUBOOT_VERSION_CMP_USE_BUILD_NUMBER`; `boot_verify_slot_dependency()` treats a dependency as satisfied when the depended-on image's version compares `>=` the minimum | `mcu-tools/mcuboot@main` (verified 2026-09-26 from source) |
+| S42 | `boot/zephyr/main.c`, `boot/zephyr/io.c`, `boot/zephyr/Kconfig.serial_recovery` | Serial recovery entry: `io_detect_pin()` reads the GPIO aliased `mcuboot-button0` (`BOOT_SERIAL_ENTRANCE_GPIO`, held for `BOOT_SERIAL_DETECT_DELAY`, default 0 ms) **before** `boot_go()` runs; `BOOT_SERIAL_PIN_RESET` also enters recovery whenever the reset cause is the reset pin (`io_detect_pin_reset()`) | `mcu-tools/mcuboot@main` (verified 2026-09-26 from source) |
+| S43 | `boot/zephyr/Kconfig.serial_recovery` (`MCUBOOT_SERIAL_DIRECT_IMAGE_UPLOAD`) | In serial recovery the upload's `image` names a **slot**: 0 = default (as 1), 1 = the primary slot of the first image, 2 = its secondary slot, 3 = image-2, 4 = image-3. Without the option every upload goes to the default, the primary slot | same |
+| S44 | `boot/boot_serial/src/boot_serial.c` (`bs_set`), `boot/bootutil/src/bootutil_public.c` (`boot_set_pending_multi`) | With `BOOT_SERIAL_IMG_GRP_IMAGE_STATE`, serial recovery's set-state finds the image by hash (`BOOT_SERIAL_IMG_GRP_HASH`, default y; optional with one image), then calls `boot_set_pending_multi(image_index, confirm)`, which always opens `FLASH_AREA_IMAGE_SECONDARY`: *test* and *confirm* both schedule the **secondary** slot, so neither can confirm the image running in the primary slot | same |
+| S45 | `boot/zephyr/serial_adapter.c` | Serial recovery uses the UART chosen as `zephyr,uart-mcumgr`, else `zephyr,console`, and never calls `uart_configure()`: baud rate and flow control are the devicetree node's | same |
+| S46 | `include/zephyr/mgmt/mcumgr/mgmt/callbacks.h`, `subsys/mgmt/mcumgr/smp/src/smp.c` | `MGMT_EVT_OP_CMD_RECV`, `MGMT_EVT_OP_CMD_STATUS` and `MGMT_EVT_OP_CMD_DONE`, each with `struct mgmt_evt_op_cmd_arg { group; id; op / err / status }`, under `CONFIG_MCUMGR_SMP_COMMAND_STATUS_HOOKS`; `smp.c` notifies `CMD_DONE` once a command has been processed: a device can learn when a given command is done | `zephyrproject-rtos/zephyr@main` (verified 2026-09-26 from source) |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -590,6 +595,30 @@ Read from source for ADR-0021. None of it has been observed on a device.
   other MCU's firmware, unvalidated and unswapped. The alternative is a
   single-image MCUboot, with the application owning image 1's slot and
   trailer.
+
+### MCUboot serial recovery is a different image server (S42-S46)
+
+Read from source for the dual-MCU design, where a coordinating MCU updates
+the second MCU through that MCU's own bootloader. smply does not talk to
+serial recovery (roadmap backlog); these facts bound what a device may do.
+
+* **Recovery is chosen before any image is.** The entrance GPIO is read before
+  `boot_go()` (S42), so it works whatever the application does, and an
+  unconfirmed trial is still reverted by the `boot_go()` that runs when
+  recovery resets. `BOOT_SERIAL_PIN_RESET` enters recovery on *every*
+  pin reset, which a device that resets the MCU for other reasons must avoid.
+* **The upload's `image` is a slot number** (S43), not the application's image
+  number: 2 is the first image's secondary slot, and the default is the
+  primary slot, overwritten in place with no trial.
+* **Set-state acts on the secondary slot only** (S44). Marking an uploaded
+  image for test works; confirming a trial running in the primary slot does
+  not, because after the test swap the secondary slot holds the *old* image.
+  A trial must be confirmed by the running application.
+* **Its UART settings are the devicetree node's** (S45), so recovery on a
+  shared UART runs at that node's baud rate and flow control.
+* **A device can wait for smply to read the confirm back** (S46):
+  `MGMT_EVT_OP_CMD_DONE` for group 1, command 0 marks the image-state read
+  that follows smply's confirm.
 
 ## 7. [BOOT] MCUboot image and update semantics (S12, S18-S20)
 

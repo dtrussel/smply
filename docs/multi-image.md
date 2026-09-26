@@ -105,6 +105,18 @@ In words:
    that rule, signed with the image. smply reads and reports it, and refuses a
    package whose own images do not satisfy it (ADR-0022), but it does not
    check the device.
+7. **Leave image 0's confirm to smply.** A Zephyr application that confirms
+   itself at boot breaks the order: image 0 is committed before the other
+   MCU runs the new image, and smply, which then reads image 0 confirmed,
+   cannot tell that from an image confirmed earlier.
+8. **Keep the link up from smply's confirm until it has read the confirm
+   back.** smply follows its confirm with an image-state read. Start the
+   other MCU's commit from a work item, once `MGMT_EVT_OP_CMD_DONE` reports
+   that read done (group 1, command 0; protocol-notes S46). smply treats a
+   drop between the two as a failed update.
+9. **After a failed apply, reset.** smply fails the update with
+   `revert_pending` and does not reset the device itself. Until something
+   does, image 0 stays on trial.
 
 **Keep the H5's own bootloader away from image `N`**, since it is not the
 H5's image and is signed with another key (protocol-notes S40). Either use
@@ -116,6 +128,25 @@ core, or build MCUboot for one image and let the H5 application own image
 report the other MCU's real state, not the H5's copy. Otherwise "applied, on
 trial" and "still applying" look the same, and smply would confirm image 0
 before the BL54L10 runs the new image.
+
+### One way to build the H5 side
+
+For the H5 and BL54L10, whose UART normally carries H4 HCI, with an update
+GPIO beside the BL54L10's reset line. It is a sketch of product firmware,
+which smply neither contains nor tests.
+* **Apply through the BL54L10's own bootloader.** Stop the BLE host, raise
+  the update GPIO and reset the BL54L10: its MCUboot enters serial recovery
+  before choosing an image (protocol-notes S42). Upload to its secondary slot
+  (`image` 2 in serial recovery's numbering, S43), mark it for test, lower the
+  GPIO and reset: the new controller boots on trial. Restart the BLE host.
+* **Commit through the running controller, not the bootloader.** Serial
+  recovery's set-state only schedules the secondary slot (S44), and leaving
+  recovery reverts an unconfirmed trial. A vendor-specific HCI command
+  handled by the controller application, which then calls
+  `boot_write_img_confirmed()`, confirms it at runtime. The link to smply
+  stays up.
+* **Never build the BL54L10's MCUboot with `BOOT_SERIAL_PIN_RESET`**: every
+  reset the H5 uses to revert a trial would then land in recovery (S42).
 
 ### The link can drop while the other MCU is being updated
 
@@ -135,7 +166,8 @@ device is fine.
 
 smply polls every `UpdatePlan::apply_poll_interval` and bounds each wait,
 the apply and the commit, with `UpdatePlan::apply_timeout`. Size it for the
-slowest apply.
+slowest apply, including a transfer through the other MCU's bootloader over
+its UART.
 
 ## The package
 
