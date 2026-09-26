@@ -23,6 +23,7 @@
 ///   stable, which on Linux is what `/dev/serial/by-id/` is for.
 
 #include "stub_device/demo_image.hpp"
+#include "stub_device/demo_package.hpp"
 #include "stub_device/stub_device.hpp"
 
 #ifndef _WIN32
@@ -33,6 +34,7 @@
 #include "serial_port/serial_port_transport.hpp"
 
 #include "dfu_app/file_image_source.hpp"
+#include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 
 #include "smply/clock.hpp"
@@ -62,6 +64,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -81,20 +84,42 @@ struct Options
     UpdateMode mode = UpdateMode::TestThenConfirm;
     bool stub_cdc = false; ///< The stub's reset shape: CDC (vanish) or UART (stay).
     bool quiet = false;
+
+    /// A multi-image DFU package instead of one image (docs/multi-image.md).
+    std::string package_path;
+    /// Without --port: invent the package, and give the stub a second image.
+    bool demo_package = false;
+    /// Without --port: the stub fails to apply image 1.
+    bool apply_fails = false;
+    std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+
+    [[nodiscard]] bool package_mode() const noexcept
+    {
+        return demo_package || !package_path.empty();
+    }
 };
 
 void usage()
 {
-    std::cerr << "usage: serial_dfu [--port PATH [--baud N] [--flow none|rtscts] --image PATH]\n"
+    std::cerr << "usage: serial_dfu [--port PATH [--baud N] [--flow none|rtscts]]\n"
+                 "                  [--image PATH | --package PATH | --demo-package]\n"
+                 "                  [--commit N=client|device] [--apply-fails]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--quiet]\n"
                  "  --port PATH   the device's serial port; prefer a stable name such as\n"
                  "                /dev/serial/by-id/... (a USB port may be renamed on reset)\n"
                  "  --baud N      line speed, default 115200 (ignored by USB CDC ACM)\n"
                  "  --flow F      none (default) or rtscts\n"
-                 "  --image PATH  the signed MCUboot image to install (required with --port)\n"
+                 "  --image PATH  the signed MCUboot image to install\n"
+                 "  --package PATH  a multi-image DFU package; image 0 is confirmed here and\n"
+                 "                every other image left to the device (docs/multi-image.md)\n"
+                 "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --demo-package  without --port: a generated two-image package\n"
+                 "  --apply-fails  without --port: the stub fails to apply image 1\n"
+
                  "  --stub SHAPE  without --port: the stub's reset, uart (default) or cdc\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
-                 "  --quiet       print only the outcome\n";
+                 "  --quiet       print only the outcome\n"
+                 "With --port, one of --image or --package is required.\n";
 }
 
 [[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
@@ -146,13 +171,34 @@ void usage()
             if (!parse_mode(args[++i], out.mode)) {
                 return false;
             }
+        } else if (arg == "--package" && has_value) {
+            out.package_path = args[++i];
+        } else if (arg == "--demo-package") {
+            out.demo_package = true;
+        } else if (arg == "--apply-fails") {
+            out.apply_fails = true;
+        } else if (arg == "--commit" && has_value) {
+            const auto commit = parse_commit(args[++i]);
+            if (!commit.has_value()) {
+                return false;
+            }
+            out.commits.push_back(*commit);
         } else {
             return false;
         }
     }
-    // A real device is updated with a real image; inventing one for it would
-    // put a stub's firmware on hardware.
-    return out.port.empty() || !out.image_path.empty();
+    const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
+                        (out.demo_package ? 1 : 0);
+    if (sources > 1 || (!out.package_mode() && (out.apply_fails || !out.commits.empty()))) {
+        return false;
+    }
+    // A real device is updated with a real image or package; inventing one for
+    // it would put a stub's firmware on hardware.
+    if (!out.port.empty()) {
+        return !out.demo_package && !out.apply_fails &&
+               (!out.image_path.empty() || !out.package_path.empty());
+    }
+    return true;
 }
 
 /// The generated image, as a temporary file, as in cli_dfu. Unique per run so
@@ -207,8 +253,8 @@ private:
 /// destroyed.
 struct StubRig
 {
-    explicit StubRig(ResetShape shape)
-        : device{build_demo_image(DemoVersion{.major = 1})}, pty{device, shape}
+    StubRig(ResetShape shape, std::optional<SecondImage> second)
+        : device{build_demo_image(DemoVersion{.major = 1}), std::move(second)}, pty{device, shape}
     {
         if (pty.ok()) {
             device.attach(pty);
@@ -293,6 +339,26 @@ int main(int argc, char** argv)
 
     // --- the device: a real port, or the stub behind a pseudo-terminal -------
 
+    // A package, when there is one: the images, and who commits each.
+    std::unique_ptr<PackageUpdate> package;
+    if (options.package_mode()) {
+        Result<std::unique_ptr<PackageUpdate>> read =
+            options.demo_package ? PackageUpdate::from_bytes(build_demo_two_image_package())
+                                 : PackageUpdate::load(options.package_path);
+        if (!read.has_value()) {
+            std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
+            return 1;
+        }
+        package = std::move(*read);
+        for (const auto& [image, commit] : options.commits) {
+            if (const Result<void> set = package->set_commit(image, commit); !set.has_value()) {
+                std::cerr << "serial_dfu: --commit " << image << ": " << to_string(set.error())
+                          << '\n';
+                return 1;
+            }
+        }
+    }
+
     std::string image_path = options.image_path;
     DemoImageFile demo_file;
 #ifndef _WIN32
@@ -301,13 +367,25 @@ int main(int argc, char** argv)
     std::string port = options.port;
     if (port.empty()) {
 #ifndef _WIN32
-        const StubRig& stub = rig.emplace(options.stub_cdc ? ResetShape::Cdc : ResetShape::Uart);
+        // With a package, the stub gets an image 1 it applies itself after the
+        // reset, as a coordinating MCU does with its partner's firmware.
+        std::optional<SecondImage> second;
+        if (options.package_mode()) {
+            second = SecondImage{
+                .running = options.demo_package
+                               ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
+                               : std::vector<std::byte>{},
+                .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+            };
+        }
+        const StubRig& stub =
+            rig.emplace(options.stub_cdc ? ResetShape::Cdc : ResetShape::Uart, std::move(second));
         if (!stub.pty.ok()) {
             std::cerr << "serial_dfu: cannot create a pseudo-terminal\n";
             return 1;
         }
         port = stub.pty.port_path();
-        if (image_path.empty()) {
+        if (image_path.empty() && !options.package_mode()) {
             const std::optional<std::string> written =
                 demo_file.write(build_demo_image(DemoVersion{.major = 2}));
             if (!written.has_value()) {
@@ -319,8 +397,12 @@ int main(int argc, char** argv)
 #endif
     }
 
-    Result<FileImageSource> source = FileImageSource::open(image_path);
-    if (!source.has_value()) {
+    // A package brings its own sources; only a single image is read from a file.
+    Result<FileImageSource> source =
+        options.package_mode()
+            ? Result<FileImageSource>{fail(ErrorCode::InvalidArgument, "serial_dfu: a package")}
+            : FileImageSource::open(image_path);
+    if (!options.package_mode() && !source.has_value()) {
         std::cerr << "serial_dfu: " << to_string(source.error()) << '\n';
         return 1;
     }
@@ -371,6 +453,11 @@ int main(int argc, char** argv)
     // A UART does not drop on reset, so this is how long the updater waits
     // before assuming the reset happened anyway (design.md section 13).
     plan.disconnect_grace = std::chrono::seconds{2};
+    // The stub applies image 1 within a few reads; a real second MCU needs a
+    // whole transfer, and the library's default interval suits that.
+    if (options.port.empty()) {
+        plan.apply_poll_interval = std::chrono::milliseconds{100};
+    }
 
     Pending pending;
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
@@ -408,8 +495,12 @@ int main(int argc, char** argv)
             pending.finished = true;
         },
     };
-    if (const Result<void> begun = updater.start(
-            *source, plan, [&](const UpdateEvent& event) { std::visit(on_event, event); });
+    // A package's image list, or the single image, with the same event handler.
+    const auto handler = [&] {
+        return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
+    };
+    if (const Result<void> begun = package ? updater.start(package->targets(), plan, handler())
+                                           : updater.start(*source, plan, handler());
         !begun.has_value()) {
         std::cerr << "serial_dfu: " << to_string(begun.error()) << '\n';
         return 1;
@@ -502,6 +593,10 @@ int main(int argc, char** argv)
         return 1;
     }
     const UpdateReport& report = *outcome;
+    std::size_t applied = 0;
+    for (const ImageReport& image : report.images) {
+        applied += image.applied ? 1U : 0U;
+    }
     // One line, so a ctest can match all of it with a single expression.
     std::cout << "serial_dfu: " << to_string(report.final_state) << " reset=" << reset_seen
               << " links=" << links.size() << " devices=" << devices.size()
@@ -509,6 +604,7 @@ int main(int argc, char** argv)
               << " dropped_lines=" << counters.dropped_lines
               << " framing_errors=" << counters.deframe.framing_errors
               << " crc_failures=" << counters.deframe.crc_failures
-              << " refused=" << counters.send.refused << '\n';
+              << " refused=" << counters.send.refused << " images=" << report.images.size()
+              << " applied=" << applied << '\n';
     return report.final_state == UpdateState::Completed ? 0 : 1;
 }

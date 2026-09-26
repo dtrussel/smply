@@ -37,7 +37,10 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # examples/winrt_ble_dfu/ cannot be run by CI, so the one part of a real
 # reconnect that is pure arithmetic is put somewhere cli_dfu can exercise it on
 # every push.
-add_library(smply_dfu_app STATIC dfu_app/file_image_source.cpp)
+add_library(smply_dfu_app STATIC
+    dfu_app/file_image_source.cpp
+    dfu_app/package_update.cpp
+)
 add_library(smply::dfu_app ALIAS smply_dfu_app)
 
 # The include root is support/, as for minicbor: a consumer writes
@@ -47,6 +50,7 @@ target_include_directories(smply_dfu_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(smply_dfu_app
     PUBLIC
         smply::smply     # ImageSource, Result, Duration
+        smply::dfu_package # PackageUpdate: a package into FirmwareUpdater targets
     PRIVATE
         smply_internal_options
 )

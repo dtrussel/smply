@@ -21,13 +21,18 @@
 ///   asks and waits.
 ///
 /// Run it with no arguments and it invents a device and an image to install.
+/// With `--demo-package` it invents a two-image device and a DFU package for it,
+/// the coordinating-MCU update of docs/multi-image.md: image 0 confirmed by this
+/// program, image 1 applied and committed by the device.
 
 #include "loopback_transport.hpp"
 
 #include "stub_device/demo_image.hpp"
+#include "stub_device/demo_package.hpp"
 #include "stub_device/stub_device.hpp"
 
 #include "dfu_app/file_image_source.hpp"
+#include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 
 #include "smply/clock.hpp"
@@ -50,11 +55,13 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ostream>
 #include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -79,6 +86,20 @@ struct Options
     /// policy's attempt budget exercises the give-up path, which ends the
     /// update through `FirmwareUpdater::reconnect_failed()`.
     unsigned flaky_reconnect = 0;
+
+    /// A multi-image DFU package to install instead of one image.
+    std::string package_path;
+    /// Invent the package, and a two-image device for it.
+    bool demo_package = false;
+    /// The stub device fails to apply image 1 (package modes only).
+    bool apply_fails = false;
+    /// `--commit N=client|device`, in the order given.
+    std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+
+    [[nodiscard]] bool package_mode() const noexcept
+    {
+        return demo_package || !package_path.empty();
+    }
 };
 
 [[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
@@ -100,9 +121,15 @@ struct Options
 
 void usage()
 {
-    std::cerr << "usage: cli_dfu [--image PATH] [--mode MODE] [--quiet]\n"
-                 "               [--flaky-reconnect N]\n"
+    std::cerr << "usage: cli_dfu [--image PATH | --package PATH | --demo-package] [--mode MODE]\n"
+                 "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
+                 "               [--apply-fails]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
+                 "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
+                 "                is confirmed here, every other image is left to the device\n"
+                 "  --demo-package  generate a two-image package, and a device to take it\n"
+                 "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
                  "  --quiet       print only the outcome\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
@@ -129,11 +156,46 @@ void usage()
                 return false;
             }
             out.flaky_reconnect = static_cast<unsigned>(std::stoul(count));
+        } else if (arg == "--package" && i + 1 < args.size()) {
+            out.package_path = args[++i];
+        } else if (arg == "--demo-package") {
+            out.demo_package = true;
+        } else if (arg == "--apply-fails") {
+            out.apply_fails = true;
+        } else if (arg == "--commit" && i + 1 < args.size()) {
+            const auto commit = parse_commit(args[++i]);
+            if (!commit.has_value()) {
+                return false;
+            }
+            out.commits.push_back(*commit);
         } else {
             return false;
         }
     }
-    return true;
+    // One thing to install, and the package-only options only with a package.
+    const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
+                        (out.demo_package ? 1 : 0);
+    return sources <= 1 && (out.package_mode() || (!out.apply_fails && out.commits.empty()));
+}
+
+/// One line per image of a multi-image update.
+void print_images(const UpdateReport& report, std::ostream& out)
+{
+    if (report.images.size() < 2) {
+        return;
+    }
+    for (const ImageReport& image : report.images) {
+        out << "  image " << image.image << " ("
+            << (image.commit == CommitBy::Client ? "client" : "device") << "): ";
+        if (image.commit == CommitBy::Device) {
+            out << (image.applied ? "applied" : "not applied");
+        } else if (image.rolled_back) {
+            out << "reverted";
+        } else {
+            out << image.bytes_transferred << " bytes transferred";
+        }
+        out << '\n';
+    }
 }
 
 /// The generated image, as a file: `FileImageSource` reads through a real file
@@ -217,7 +279,7 @@ int main(int argc, char** argv)
     const std::vector<std::byte> running = build_demo_image(DemoVersion{.major = 1});
     std::string image_path = options.image_path;
     DemoImageFile demo_file; // before `source`, which reads it
-    if (image_path.empty()) {
+    if (image_path.empty() && !options.package_mode()) {
         const std::vector<std::byte> update = build_demo_image(DemoVersion{.major = 2});
         const std::optional<std::string> written = demo_file.write(update);
         if (!written.has_value()) {
@@ -227,8 +289,42 @@ int main(int argc, char** argv)
         image_path = *written;
     }
 
-    Result<FileImageSource> source = FileImageSource::open(image_path);
-    if (!source.has_value()) {
+    // A package, when there is one: the images, and who commits each.
+    std::unique_ptr<PackageUpdate> package;
+    std::optional<SecondImage> second_image;
+    if (options.package_mode()) {
+        Result<std::unique_ptr<PackageUpdate>> read =
+            options.demo_package ? PackageUpdate::from_bytes(build_demo_two_image_package())
+                                 : PackageUpdate::load(options.package_path);
+        if (!read.has_value()) {
+            std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
+            return 1;
+        }
+        package = std::move(*read);
+        for (const auto& [image, commit] : options.commits) {
+            if (const Result<void> set = package->set_commit(image, commit); !set.has_value()) {
+                std::cerr << "cli_dfu: --commit " << image << ": " << to_string(set.error())
+                          << '\n';
+                return 1;
+            }
+        }
+        // The stub's image 1: another MCU's firmware, which it applies itself
+        // after the reset. The demo device runs radio 5.0.0; a real package's
+        // image 1 lands on a device with nothing applied yet.
+        second_image = SecondImage{
+            .running = options.demo_package
+                           ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
+                           : std::vector<std::byte>{},
+            .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+        };
+    }
+
+    // A package brings its own sources; only a single image is read from a file.
+    Result<FileImageSource> source =
+        options.package_mode()
+            ? Result<FileImageSource>{fail(ErrorCode::InvalidArgument, "cli_dfu: a package")}
+            : FileImageSource::open(image_path);
+    if (!options.package_mode() && !source.has_value()) {
         std::cerr << "cli_dfu: " << to_string(source.error()) << '\n';
         return 1;
     }
@@ -255,7 +351,7 @@ int main(int argc, char** argv)
     }};
 
     Pending pending;
-    StubDevice device{running};
+    StubDevice device{running, std::move(second_image)};
 
     // Deliberately brisk: these delays are waited for real, and this example
     // runs as a ctest with a timeout. A shipped tool would use the defaults
@@ -283,6 +379,9 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    // The stub applies image 1 within a few reads; a real second MCU takes a
+    // whole UART transfer, and the default interval suits that instead.
+    plan.apply_poll_interval = std::chrono::milliseconds{100};
 
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
     const auto started = std::chrono::steady_clock::now();
@@ -319,8 +418,12 @@ int main(int argc, char** argv)
             pending.finished = true;
         },
     };
-    const Result<void> begun = updater.start(
-        *source, plan, [&](const UpdateEvent& event) { std::visit(on_event, event); });
+    // A package's image list, or the single image, with the same event handler.
+    const auto handler = [&] {
+        return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
+    };
+    const Result<void> begun = package ? updater.start(package->targets(), plan, handler())
+                                       : updater.start(*source, plan, handler());
 
     if (!begun.has_value()) {
         std::cerr << "cli_dfu: " << to_string(begun.error()) << '\n';
@@ -434,6 +537,14 @@ int main(int argc, char** argv)
 
     if (!outcome.has_value()) {
         std::cerr << "cli_dfu: update failed: " << to_string(outcome.error()) << '\n';
+        // The report still says what happened to each image, and what the next
+        // reset will do.
+        // On stderr with the failure itself, so the lines keep their order.
+        print_images(updater.report(), std::cerr);
+        if (updater.report().revert_pending) {
+            std::cerr
+                << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
+        }
         return 1;
     }
 
@@ -447,6 +558,7 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    print_images(report, std::cout);
 
     return report.final_state == UpdateState::Completed ? 0 : 1;
 }

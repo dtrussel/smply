@@ -13,8 +13,8 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **three** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, and `cli_dfu_reconnect_gives_up` |
-| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **two** tests: `serial_dfu_pty_uart` and `serial_dfu_pty_cdc`. A whole update, reset included, over a pseudo-terminal |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **five** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package` and `cli_dfu_package_apply_fails` |
+| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **three** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc` and `serial_dfu_pty_package`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
@@ -331,6 +331,13 @@ size, and RFC 8259's edge cases; `image_index` as a string (what
 manifest's size and `version_MCUBOOT` checked against the file and its MCUboot
 header; and dependency TLVs from both areas, with a broken area refused.
 
+`support/dfu_app/`'s `PackageUpdate` (`test_package_update.cpp`), the few lines
+both examples share between a package file and `FirmwareUpdater::start()`: one
+target per image in index order, image 0 committed by the client and the rest by
+the device, the per-image override refused for an image the package lacks, the
+file read whole and a bad one refused, and `parse_commit()`'s accepted and
+refused forms.
+
 `support/dfu_app/`'s `FileImageSource`, the source every example reads firmware
 through (`test_file_image_source.cpp`): a missing or empty file is refused, reads
 are clamped at the end, end of file is zero bytes and later reads still work,
@@ -379,6 +386,16 @@ it covers ground no other suite does:
 * it exercises the **application's half of the reconnect protocol**: a dropped
   link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
 
+Two more run the multi-image update of ADR-0021 end to end, from a package
+built in memory (`--demo-package`) through `smply::dfu_package` and
+`PackageUpdate` to the image-list `start()`, against a stub with a second image
+it commits itself. Each passes on its output lines, never on the exit code:
+* `cli_dfu_package`: `update Completed`, and `image 1 (device): applied`;
+* `cli_dfu_package_apply_fails`: the stub fails to apply image 1, so the update
+  must fail with "device did not apply an image", report image 1 not applied,
+  and warn that the next reset reverts image 0. Both patterns were checked
+  against the other test's output, so neither passes on the wrong outcome.
+
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
 clean update needs and no more. Its one extension is a second image the device
@@ -400,6 +417,9 @@ question:
 * `serial_dfu_pty_cdc`: the port vanishes, and the adapter reports the
   hang-up. It returns as a different `/dev/pts/N` behind the same symlink. The
   example reopens the path, and `devices=2` proves it reached the new tty.
+* `serial_dfu_pty_package`: the UART shape, with the demo's two-image package
+  (ADR-0021). `images=2 applied=1` at the end of the summary line says both
+  were staged and image 1 was applied by the stub.
 
 Both pass on one summary line (`PASS_REGULAR_EXPRESSION`), never on the exit
 code alone: an update that completed with the wrong reset shape, a framing

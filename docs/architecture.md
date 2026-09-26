@@ -424,9 +424,10 @@ smply/
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
 │   ├── dfu_app/                what a DFU *application* needs and the library
-│   │                           deliberately does not ship: FileImageSource and
-│   │                           ReconnectPolicy. smply::dfu_app, used by both
-│   │                           examples and unit-tested
+│   │                           deliberately does not ship: FileImageSource,
+│   │                           ReconnectPolicy, and PackageUpdate (a package file
+│   │                           into FirmwareUpdater targets). smply::dfu_app, used
+│   │                           by both examples and unit-tested
 │   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
 │                               stored-zip lister, a bounded JSON reader and the
 │                               manifest cross-checks. smply::dfu_package, not
@@ -440,10 +441,11 @@ smply/
 │   │                           protocol reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           loopback_transport.* is the link to the stub device. Runs
-│   │                           in CI, --flaky-reconnect included
+│   │                           in CI, --flaky-reconnect and --demo-package included
 │   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
 │   │                           pty_stub.* — the stub device behind a pseudo-terminal, in
-│   │                           a UART and a USB CDC reset shape. Runs in CI; see README.md
+│   │                           a UART and a USB CDC reset shape. Runs in CI, a two-image
+│   │                           package included; see README.md
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
 │                               Compiled by CI; runs on the bench: see its README
 ├── tests/

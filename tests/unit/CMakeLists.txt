@@ -17,6 +17,7 @@ add_executable(smply_unit_tests
     test_narrow.cpp
     test_mgmt_error.cpp
     test_os_group.cpp
+    test_package_update.cpp
     test_reconnect_policy.cpp
     test_result.cpp
     test_send_queue.cpp

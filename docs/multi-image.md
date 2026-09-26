@@ -122,6 +122,21 @@ the one reset.
 Which images are `Device` images is the application's call, not the
 package's: nothing in the manifest says who commits an image.
 
+## Trying it
+
+```sh
+cli_dfu --demo-package                  # a generated two-image package
+cli_dfu --demo-package --apply-fails    # the device fails to apply image 1
+cli_dfu --package dfu_application.zip   # a real package, against the stub
+serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
+```
+
+Without `--port` both examples run against `examples/stub_device/`, given a
+second image it commits itself. `support/dfu_app/package_update.hpp`
+(`PackageUpdate`) is the few lines between a package file and
+`FirmwareUpdater::start()`: it reads the file, bounded before anything is
+allocated, and builds the target list with the default above.
+
 ## What is not supported
 
 * **Several devices in one update.** Each `FirmwareUpdater` updates one device.
@@ -134,4 +149,5 @@ package's: nothing in the manifest says who commits an image.
 
 The contract, the state machine and the package reader are tested against
 `ServerSimulator`'s device-committed image mode, the stub device, and the
-fuzzer. No H5 implements the contract yet.
+fuzzer; a package written by nRF Connect SDK's own `generate_zip.py` has been
+read and installed against the stub. No H5 implements the contract yet.

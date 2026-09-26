@@ -45,8 +45,8 @@ earlier work learned the hard way. This file is only the short version.
 `include/smply/` public headers · `src/` implementation · `transports/` the
 portable BLE helpers in `common/` and the platform adapters beside them ·
 `support/` code shared by the tests and the examples and part of neither
-(`smply::minicbor`, `smply::dfu_app` for `FileImageSource` and
-`ReconnectPolicy`, and `smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
+(`smply::minicbor`, `smply::dfu_app` for `FileImageSource`,
+`ReconnectPolicy` and `PackageUpdate`, and `smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
 `winrt_ble_dfu` (Windows) · `tests/` unit, component, fuzz, HIL · `docs/` living
 documentation and ADRs. Full description:
 [`docs/architecture.md`](docs/architecture.md) §10.
