@@ -62,7 +62,7 @@ jobs:
 
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
-        uses: seanmiddleditch/gha-setup-ninja@v5
+        uses: seanmiddleditch/gha-setup-ninja@v6
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
