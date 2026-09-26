@@ -34,8 +34,9 @@ simulator and the stub device only.
 **ADR-0022: a device-committed image commits after the client images, and the
 wait survives the link.** The decision, the device contract (`multi-image.md`) and its
 implementation are in: the simulator, the state machine and updater
-(`AwaitingDeviceCommit`, the verdicts, reconnecting during the waits), and the
-stub device and examples. Left: the package self-consistency check.
+(`AwaitingDeviceCommit`, the verdicts, reconnecting during the waits), the
+stub device and examples, and the package self-consistency check. Left: the
+close-out (CHANGELOG, backlog, coverage, the full gate run).
 
 ## Acceptance gaps that need the hardware bench
 

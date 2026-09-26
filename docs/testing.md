@@ -329,7 +329,10 @@ flipped byte of a real archive; the JSON bounds on depth, count, length and
 size, and RFC 8259's edge cases; `image_index` as a string (what
 `generate_zip.py` writes), as a number, absent, out of range and repeated; the
 manifest's size and `version_MCUBOOT` checked against the file and its MCUboot
-header; and dependency TLVs from both areas, with a broken area refused.
+header; dependency TLVs from both areas, with a broken area refused; and a
+package whose image depends on a newer version of another image it carries
+refused, by MCUboot's default comparison, so the build number does not count
+(ADR-0022).
 
 `support/dfu_app/`'s `PackageUpdate` (`test_package_update.cpp`), the few lines
 both examples share between a package file and `FirmwareUpdater::start()`: one
@@ -667,7 +670,7 @@ has quietly stopped holding.
 | `fuzz_cbor_image_state` | arbitrary CBOR, delivered as a correlated response to a real `get_state` | `kMaxImages`, `kMaxVersionStringLength` and `kMaxImageHashLength` all hold on the decoded result — no container or string sized by the device |
 | `fuzz_cbor_upload_response` | arbitrary CBOR, delivered into a live upload | the session never reports more transferred than the image holds, whatever offset the device claims (protocol-notes §6, rule 5) |
 | `fuzz_mcuboot_header` | arbitrary bytes | the trailer offset a parsed header implies is never below the header itself — the arithmetic that indexes the file cannot be made to point backwards |
-| `fuzz_dfu_package` | arbitrary bytes as a DFU package, and the same bytes as a JSON document | a package that reads has its images sorted by index, each index once and at most `kMaxImageIndex`, each image a view inside the input, and each dependency list within `kMaxImageTlvs`. The seed corpus holds a package written by nRF Connect SDK's own `generate_zip.py` (S38), so mutation starts from the real layout, plus its manifest alone, a one-image package and a deflated one |
+| `fuzz_dfu_package` | arbitrary bytes as a DFU package, and the same bytes as a JSON document | a package that reads has its images sorted by index, each index once and at most `kMaxImageIndex`, each image a view inside the input, each dependency list within `kMaxImageTlvs`, and no image depending on a newer version of another image in the package. The seed corpus holds a package written by nRF Connect SDK's own `generate_zip.py` (S38), so mutation starts from the real layout, plus its manifest alone, a one-image package, a deflated one, and one whose images disagree |
 | `fuzz_tlv_scan` | arbitrary bytes as a `MemoryImageSource` | the scan terminates, and any hash it returns is 32 or 64 bytes — `IMAGE_SHA_LEN`, not a length the file chose (protocol-notes §6) |
 | `fuzz_smp_client_rx` | an arbitrary stream fed to a live client with a request pending | a completed request is only ever completed by a response matching its `seq`, `group` and `command`; unmatched responses never exceed received ones |
 | `fuzz_serial_deframe` | a console stream, read in fuzzer-chosen chunks (the first byte is the read size) | neither the line buffer nor the packet buffer exceeds its bound, at every step; a framing error leaves nothing partial behind; a delivered packet is CRC-verified and within the cap. The only target over a transport, and the first whose input is *expected* to be mostly noise — a shared console carries far more shell and log output than frames |

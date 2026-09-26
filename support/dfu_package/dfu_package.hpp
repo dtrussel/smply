@@ -91,7 +91,10 @@ struct DfuPackage
 /// \return `MessageTooLarge` for an archive, manifest or entry count over a
 ///         bound; `InvalidArgument` for a package smply does not read (a
 ///         compressed zip, two files for one image as a direct-XIP build
-///         writes, an image index over `kMaxImageIndex`); `MalformedMessage`
+///         writes, an image index over `kMaxImageIndex`, or an image that
+///         depends on a newer version of another image than the package
+///         carries, compared as MCUboot does by default: major, minor and
+///         revision, never the build number); `MalformedMessage`
 ///         for anything structurally wrong, a manifest that disagrees with
 ///         the zip or with an image's header, or a broken TLV area.
 [[nodiscard]] Result<DfuPackage> read_package(ConstBytes archive);

@@ -159,6 +159,44 @@ constexpr std::size_t kDependencySize = 12;
     return image;
 }
 
+/// Whether \p version satisfies \p minimum, as MCUboot decides it by default:
+/// major, minor and revision, never the build number, which only counts under
+/// `MCUBOOT_VERSION_CMP_USE_BUILD_NUMBER` (protocol-notes S41).
+[[nodiscard]] bool satisfies(const ImageVersion& version, const ImageVersion& minimum) noexcept
+{
+    if (version.major != minimum.major) {
+        return version.major > minimum.major;
+    }
+    if (version.minor != minimum.minor) {
+        return version.minor > minimum.minor;
+    }
+    return version.revision >= minimum.revision;
+}
+
+/// Refuses a package whose own images disagree: an image that depends on
+/// another image the package carries, at a version the package does not
+/// carry. MCUboot would refuse to boot it anyway (S37); this says so before
+/// anything is sent. A dependency on an image outside the package is left to
+/// the device, which alone knows what it runs (ADR-0022).
+[[nodiscard]] Result<void> check_dependencies(const DfuPackage& package)
+{
+    for (const PackageImage& image : package.images) {
+        for (const ImageDependency& dependency : image.dependencies) {
+            const auto partner =
+                std::ranges::find_if(package.images, [&dependency](const PackageImage& other) {
+                    return other.image == dependency.image;
+                });
+            if (partner != package.images.end() &&
+                !satisfies(partner->header.version, dependency.minimum)) {
+                return fail(ErrorCode::InvalidArgument,
+                            "package: an image needs a newer version of another image than the "
+                            "package carries");
+            }
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 Result<std::vector<ImageDependency>> read_dependencies(ConstBytes image,
@@ -309,6 +347,9 @@ Result<DfuPackage> read_package(ConstBytes archive)
         package.images.push_back(std::move(*image));
     }
     std::ranges::sort(package.images, {}, &PackageImage::image);
+    if (Result<void> consistent = check_dependencies(package); !consistent.has_value()) {
+        return fail(consistent.error());
+    }
     return package;
 }
 

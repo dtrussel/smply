@@ -567,3 +567,43 @@ TEST_CASE("a broken TLV area is refused", "[dfu_package][tlv]")
     }
     CHECK(verdict(crowded) == ErrorCode::MalformedMessage);
 }
+
+TEST_CASE("a package whose own images disagree is refused", "[dfu_package][tlv]")
+{
+    // Image 0 needs image 1 at `minimum` or later; the package carries radio
+    // `radio_major`.0.0.`radio_build`. MCUboot compares without the build
+    // number by default (protocol-notes S41), and so does the check.
+    const auto verdict = [](std::uint8_t radio_major, std::uint32_t radio_build,
+                            const std::vector<std::byte>& dep) {
+        const std::vector<std::byte> app = ImageBuilder{}
+                                               .version(2, 0, 0, 0)
+                                               .body(64)
+                                               .protected_tlv(0x40, dep)
+                                               .tlv(0x10, std::vector<std::byte>(32))
+                                               .build();
+        const std::vector<std::byte> radio = ImageBuilder{}
+                                                 .version(radio_major, 0, 0, radio_build)
+                                                 .body(64)
+                                                 .tlv(0x10, std::vector<std::byte>(32))
+                                                 .build();
+        const std::vector<std::byte> archive =
+            ZipBuilder{}
+                .add("app.bin", app)
+                .add("radio.bin", radio)
+                .add("manifest.json",
+                     std::string_view{R"({"files": [{"file": "app.bin", "image_index": "0"},
+                                                    {"file": "radio.bin", "image_index": "1"}]})"})
+                .build();
+        return code_of(read_package(ConstBytes{archive}));
+    };
+
+    CHECK(verdict(6, 0, dependency(1, 6, 0, 0, 0)) == ErrorCode::Ok);
+    CHECK(verdict(7, 0, dependency(1, 6, 0, 0, 0)) == ErrorCode::Ok);
+    CHECK(verdict(5, 0, dependency(1, 6, 0, 0, 0)) == ErrorCode::InvalidArgument);
+    CHECK(verdict(6, 0, dependency(1, 6, 1, 0, 0)) == ErrorCode::InvalidArgument);
+    CHECK(verdict(6, 0, dependency(1, 6, 0, 1, 0)) == ErrorCode::InvalidArgument);
+    // The build number does not count: 6.0.0 build 0 satisfies 6.0.0 build 9.
+    CHECK(verdict(6, 0, dependency(1, 6, 0, 0, 9)) == ErrorCode::Ok);
+    // A dependency on an image outside the package is the device's to judge.
+    CHECK(verdict(5, 0, dependency(2, 9, 0, 0, 0)) == ErrorCode::Ok);
+}

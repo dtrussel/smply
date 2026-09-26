@@ -10,7 +10,8 @@
 //
 // Properties beyond "no crash": a package that reads has images sorted by
 // index, each index once and in range, each image a view inside the input,
-// and each dependency list within the TLV bound. The JSON reader is run over
+// each dependency list within the TLV bound, and no image depending on a
+// newer version of another image in the package (ADR-0022). The JSON reader is run over
 // the same bytes on its own as well, since the manifest reaches it only
 // inside a valid zip.
 
@@ -45,6 +46,20 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             assert(image.bytes.data() >= begin);
             assert(image.bytes.size() <= static_cast<std::size_t>(end - image.bytes.data()));
             assert(image.dependencies.size() <= smply::limits::kMaxImageTlvs);
+            for (const smply::dfu_package::ImageDependency& dependency : image.dependencies) {
+                for (const smply::dfu_package::PackageImage& partner : package->images) {
+                    if (partner.image != dependency.image) {
+                        continue;
+                    }
+                    // MCUboot's default comparison: no build number (S41).
+                    const smply::ImageVersion& have = partner.header.version;
+                    const smply::ImageVersion& need = dependency.minimum;
+                    assert(have.major > need.major ||
+                           (have.major == need.major &&
+                            (have.minor > need.minor ||
+                             (have.minor == need.minor && have.revision >= need.revision))));
+                }
+            }
         }
     }
 
