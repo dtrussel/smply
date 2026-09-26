@@ -1689,3 +1689,109 @@ TEST_CASE("a confirm lost on the product still waits for the device's commit",
     CHECK(outcome.reconnects == (drop_link ? 2 : 1));
     CHECK(resets(fixture) == 1);
 }
+
+// --- A coordinator with several targets (docs/multi-image.md) ---------------
+
+namespace {
+
+/// Image 0 is the coordinator's, committed by smply; images 1 and 2 are two
+/// targets behind it -- a radio and a second co-processor, say -- each
+/// committed by the device. Nothing about either target is specific: the
+/// contract is the same for every kind.
+struct AppAndTwoTargets
+{
+    std::vector<std::byte> app_running = make_firmware(kBodySize, 1, 0, 0, 1);
+    std::vector<std::byte> app_update = make_firmware(kBodySize, 2, 0, 0, 2);
+    std::vector<std::byte> first_running = make_firmware(kBodySize, 5, 0, 0, 5);
+    std::vector<std::byte> first_update = make_firmware(kBodySize, 6, 0, 0, 6);
+    // make_firmware()'s hash is 31 * major + fill, modulo 256: these stay
+    // clear of the four above.
+    std::vector<std::byte> second_running = make_firmware(kBodySize, 3, 0, 0, 3);
+    std::vector<std::byte> second_update = make_firmware(kBodySize, 4, 0, 0, 4);
+    MemoryImageSource app{ConstBytes{app_update}};
+    MemoryImageSource first{ConstBytes{first_update}};
+    MemoryImageSource second{ConstBytes{second_update}};
+    std::array<ImageTarget, 3> targets{
+        ImageTarget{.image = 0, .source = &app, .commit = CommitBy::Client},
+        ImageTarget{.image = 1, .source = &first, .commit = CommitBy::Device},
+        ImageTarget{.image = 2, .source = &second, .commit = CommitBy::Device}};
+
+    /// The second target takes longer to apply and to commit than the first.
+    void install(Fixture& fixture, ApplyOutcome second_outcome) const
+    {
+        fixture.simulator.load_slot(0, app_running);
+        fixture.simulator.load_slot(2, first_running);
+        fixture.simulator.load_slot(4, second_running);
+        fixture.simulator.device_commits(1, ApplyOutcome::Applied, 2, CommitOutcome::Commits, 1);
+        fixture.simulator.device_commits(2, second_outcome, 6, CommitOutcome::Commits, 4);
+    }
+};
+
+[[nodiscard]] ServerConfig three_image_device()
+{
+    ServerConfig config;
+    config.image_count = 3;
+    return config;
+}
+
+} // namespace
+
+TEST_CASE("two targets: image 0 waits for both to run on trial, and the update for both commits",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndTwoTargets images;
+    Fixture fixture{three_image_device(), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied);
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    const UpdateReport& report = *outcome.report;
+    CHECK(report.final_state == UpdateState::Completed);
+    CHECK_FALSE(report.revert_pending);
+    REQUIRE(report.images.size() == 3);
+    CHECK(report.images[1].committed);
+    CHECK(report.images[2].committed);
+    CHECK(outcome.reached(UpdateState::AwaitingDeviceApply));
+    CHECK(outcome.reached(UpdateState::AwaitingDeviceCommit));
+    CHECK(outcome.confirmations == 1);
+    CHECK(resets(fixture) == 1);
+    CHECK(same_bytes(fixture.simulator.slot_content(0), images.app_update));
+    CHECK(same_bytes(fixture.simulator.slot_content(2), images.first_update));
+    CHECK(same_bytes(fixture.simulator.slot_content(4), images.second_update));
+}
+
+TEST_CASE("two targets: one failed apply confirms nothing, though the other applied",
+          "[dfu][update][multi]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndTwoTargets images;
+    Fixture fixture{three_image_device(), v2_client()};
+    images.install(fixture, ApplyOutcome::Failed);
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{50};
+
+    REQUIRE(fixture.updater.start(images.targets, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.revert_pending);
+    REQUIRE(report.images.size() == 3);
+    CHECK(report.images[1].applied);
+    CHECK_FALSE(report.images[1].committed);
+    CHECK_FALSE(report.images[2].applied);
+    CHECK(outcome.confirmations == 0);
+    // Image 0 is still on trial, so the next reset takes it back, and the
+    // first target is never committed.
+    CHECK(fixture.simulator.swap_type(0) == SwapType::Revert);
+    CHECK(same_bytes(fixture.simulator.slot_content(4), images.second_running));
+}

@@ -396,7 +396,13 @@ two-image simulator, each asserting there was exactly one reset:
   reconnected; a lost read retried; and a resume after the confirm that
   waits for the commit;
 * for ADR-0023: a confirm whose answer is lost, and one sent into a
-  dropped link, each ending committed with one approval.
+  dropped link, each ending committed with one approval;
+* a coordinator with **two targets** (images 1 and 2, applying and
+  committing at different speeds): image 0 is confirmed only once both run
+  on trial, and the update completes only once both are committed. One
+  failed apply confirms nothing, though the other target applied. The
+  contract is the same for every kind of target (`multi-image.md`), so these
+  stand for any mix.
 
 Two single-image `[confirm]` cases run the same recoveries. A link lost
 before the confirm reconnects and confirms, and the application is asked

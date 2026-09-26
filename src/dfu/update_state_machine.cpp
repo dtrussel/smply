@@ -215,8 +215,8 @@ enum class Apply : std::uint8_t
 }
 
 /// A failed read while waiting on the device. The link may be down because the
-/// device is updating the MCU it runs through -- on a coordinating MCU the BLE
-/// controller is that MCU -- so a drop asks for a reconnect and a lost answer
+/// device is updating the target it runs through -- a Bluetooth controller
+/// module, for example -- so a drop asks for a reconnect and a lost answer
 /// is simply asked again (ADR-0022). The deadline keeps running either way.
 [[nodiscard]] Step wait_read_failed(UpdateState state, const Error& error, Context& context)
 {

@@ -49,10 +49,11 @@ None of these can be closed from a container.
   `find_package` consumer instead of in-tree. The install rules have changed
   since the last bench run, and the protocol path has not. So a pass is
   expected, but it has not been shown.
-* **Run a two-image package against a coordinating MCU** (ADR-0021). This
+* **Run a multi-image package against a coordinator MCU** (ADR-0021). This
   needs product firmware that implements the device contract in
-  `multi-image.md`, such as the STM32H5 that applies a BL54L10's image. That
-  firmware is outside smply. Until then, the contract is tested against the
+  `multi-image.md`: a coordinator that applies a target's image, such as an
+  application MCU updating its Bluetooth controller module. That firmware is
+  outside smply. Until then, the contract is tested against the
   simulator and the stub device only. `serial_dfu --port … --package …` is
   the tool for the run.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed

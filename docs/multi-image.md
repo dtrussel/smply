@@ -27,44 +27,75 @@ Each image is either:
   is the ordinary single-image update, image 0 of a typical device.
 * **`Device`**: the device commits it. smply stages and marks it. After the
   reset it waits, in `AwaitingDeviceApply`, for the device to report the image
-  applied: running on the other MCU, on trial. smply never confirms it. The
+  applied: running on its target, on trial. smply never confirms it. The
   device commits it when smply confirms the `Client` images, and smply waits
   for that too, in `AwaitingDeviceCommit`.
 
 **`Client` images are confirmed only after every `Device` image is running
 on trial, and `Device` images are committed only after that confirm.** So
-nothing is committed until the whole set has booted, and the pair is never
+nothing is committed until the whole set has booted, and the set is never
 committed half-validated. If a `Device` image fails to apply, the update
 fails, the `Client` images stay unconfirmed, and the device reverts them on
 its next reset.
 
-## Why "Device" exists: a coordinating MCU
+## Why "Device" exists: a coordinator in front of other processors
 
-The motivating product is an STM32H5 (Zephyr, MCUboot, BLE host) with an Ezurio
-BL54L10 (Zephyr, its own MCUboot, BLE controller) on its UART. The host
-application sends one package to the H5:
-* **image 0** is the H5's application, a `Client` image;
-* **image 1** is the BL54L10's application, staged in an H5 partition, a
-  `Device` image. After the reboot the H5 updates the BL54L10 over UART with
-  Zephyr's SMP client (`CONFIG_SMP_CLIENT`, `CONFIG_MCUMGR_GRP_IMG_CLIENT`),
-  which keeps the BL54L10's own test-and-revert.
+Some products have one MCU that smply talks to and one or more processors
+behind it that it updates. This document uses two words for them:
+* **the coordinator**: the MCU smply talks to. It runs the MCUmgr server,
+  usually owns image 0, and sees every target at every boot;
+* **a target**: a processor whose firmware arrives as a `Device` image, one
+  image number per target. It sits behind the coordinator on any link the
+  coordinator can drive: UART, SPI, I2C, CAN, a shared memory, an HCI
+  transport.
 
-The H5 is the only party that sees both MCUs at every boot, so it is the one
-that can keep the pair consistent without a PC present. smply's part is to
-deliver both images atomically enough: nothing is confirmed until both are in
-place.
+For example:
+* an application MCU with a Bluetooth controller module;
+* a main MCU with a motor-control or sensor-hub MCU;
+* a gateway with a cellular or Wi-Fi co-processor;
+* several of these at once, as images 1, 2 and so on.
+
+The host sends one package to the coordinator:
+* **image 0** is the coordinator's own application, a `Client` image;
+* **images 1 … N** are the targets' firmware, staged in coordinator
+  partitions, each a `Device` image. After the reset, the coordinator applies
+  each to its target in whatever way the target supports.
+
+The coordinator is the only party that sees every MCU at every boot, so it
+is the one that can keep the set consistent without a PC present. smply's
+part is to deliver every image with one reset, confirm nothing until each
+target runs its new image on trial, and report success only once each target
+is committed.
+
+**smply knows nothing about the targets.** It never talks to one, and it
+does not care how the coordinator reaches one or what bootloader it runs.
+It reads the coordinator's standard image-state listing. The contract below
+is everything smply needs, and it is the same for every kind of target.
+
+**What a target needs.**
+* **A way to run a new image on trial and fall back if it is not
+  committed.** MCUboot's test swap is one. Any bootloader with an equivalent
+  test / confirm / revert works. A target without one cannot honour "on
+  trial", and the coordinator would have to keep the old image and restore
+  it itself.
+* **Its firmware packaged as an MCUboot image**: an MCUboot header and a
+  hash TLV. smply identifies every image by that hash, and the package reader
+  checks each image's header. Signing it is the target's business, with the
+  target's own key; the coordinator's bootloader never has to validate it
+  (see below). A target that does not run MCUboot still gets its firmware in
+  that wrapper, and the coordinator unwraps it before applying it.
 
 ## The contract a device-committed image must honour
 
 smply reads nothing but the standard image-state listing (group 1, command 0).
-For an image `N` that smply treats as `Device`, the device must report the
-following. **Slot 0 of image `N` reports what the other MCU actually runs**,
-filled in through Zephyr's slot-state hook
-(`CONFIG_MCUMGR_GRP_IMG_IMAGE_SLOT_STATE_HOOK`) from what the BL54L10 itself
+For an image `N` that smply treats as `Device`, the coordinator must report
+the following. **Slot 0 of image `N` reports what the target actually
+runs**, filled in through Zephyr's slot-state hook
+(`CONFIG_MCUMGR_GRP_IMG_IMAGE_SLOT_STATE_HOOK`) from what the target itself
 reports.
 
-| When | Image `N`, slot 1 (staging) | Image `N`, slot 0 (what the other MCU runs) |
-| ---- | --------------------------- | ------------------------------------------ |
+| When | Image `N`, slot 1 (staging) | Image `N`, slot 0 (what the target runs) |
+| ---- | --------------------------- | ---------------------------------------- |
 | After upload, before the mark | the new image's hash, not pending | the old image's hash |
 | After the mark | the new hash, **`pending`** | unchanged |
 | After the reset, while applying | the new hash, still `pending` | unchanged |
@@ -72,17 +103,18 @@ reports.
 | **Committed** | anything | **the new hash, `confirmed`** |
 | **Apply failed** | the new hash, **no longer pending** | still the **old** hash |
 
-In words:
+In words, for each `Device` image:
 1. **Accept the upload and the mark** for image `N` like any MCUboot image.
    `CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER` covers it, and slot 1 is its
    staging area.
 2. **After the reset, apply it**, keeping slot 1 `pending` while doing so. The
-   other MCU boots it **on trial** (its own MCUboot's test swap). Report that as
-   the new hash in slot 0, not confirmed.
+   target boots it **on trial**. Report that as the new hash in slot 0, not
+   confirmed.
 3. **Commit it when smply confirms the `Client` images.** Enable
    `CONFIG_MCUMGR_GRP_IMG_STATUS_HOOKS` and handle
    `MGMT_EVT_OP_IMG_MGMT_DFU_CONFIRMED` for image 0 (protocol-notes S39). Then
-   confirm the BL54L10 through the SMP client, and report slot 0 confirmed.
+   confirm the target, through whatever it provides (an SMP client, a vendor
+   command, a register write), and report slot 0 confirmed.
    **If image 0 is not on trial when the apply finishes** (the update did not
    change it, so no confirm will come), commit right after the apply. smply
    waits for the commit either way, bounded by `UpdatePlan::apply_timeout`.
@@ -90,55 +122,90 @@ In words:
    still shows the old hash. smply then fails the update rather than waiting
    out the timeout.
 5. **Finish or roll back at every boot, on its own.** smply cannot do this.
-   The rules follow from the order above, and the H5 always still holds the
-   new image in staging:
-   * image 0 confirmed and the BL54L10 on trial (power failed between the two
-     commits): **commit** the BL54L10;
-   * image 0 confirmed and the BL54L10 back on the old image (its trial was
+   The rules follow from the order above, and the coordinator always still
+   holds the new image in staging:
+   * image 0 confirmed and the target on trial (power failed between the two
+     commits): **commit** the target;
+   * image 0 confirmed and the target back on its old image (its trial was
      reverted by a reset): **apply it again**;
-   * image 0 reverted (smply never confirmed it) and the BL54L10 on trial:
-     **reset the BL54L10**, and its MCUboot reverts it too. The pair is old and
-     old again.
-6. **Refuse to run with a mismatched partner**, e.g. do not start the BLE host
-   against a controller of the wrong version. An MCUboot dependency TLV in
-   image 0 (`IMAGE_TLV_DEPENDENCY`: image id and minimum version) can carry
+   * image 0 reverted (smply never confirmed it) and the target on trial:
+     **reset the target**, so its bootloader reverts it too. Every image is old
+     again.
+6. **Refuse to run with a mismatched partner.** Do not drive a target that
+   runs a version the coordinator cannot work with. An MCUboot dependency TLV
+   in image 0 (`IMAGE_TLV_DEPENDENCY`: image id and minimum version) can carry
    that rule, signed with the image. smply reads and reports it, and refuses a
    package whose own images do not satisfy it (ADR-0022), but it does not
    check the device.
 7. **Leave image 0's confirm to smply.** A Zephyr application that confirms
-   itself at boot breaks the order: image 0 is committed before the other
-   MCU runs the new image, and smply, which then reads image 0 confirmed,
+   itself at boot breaks the order: image 0 is committed before the targets
+   run their new images, and smply, which then reads image 0 confirmed,
    cannot tell that from an image confirmed earlier.
 8. **Keep the link up from smply's confirm until it has read the confirm
    back.** smply follows its confirm with an image-state read. Start the
-   other MCU's commit from a work item, once `MGMT_EVT_OP_CMD_DONE` reports
-   that read done (group 1, command 0; protocol-notes S46). smply recovers from a
-   drop between the two (ADR-0023), but it costs a reconnect.
+   targets' commits from a work item, once `MGMT_EVT_OP_CMD_DONE` reports
+   that read done (group 1, command 0; protocol-notes S46). smply recovers
+   from a drop between the two (ADR-0023), but it costs a reconnect.
 9. **After a failed apply, reset.** smply fails the update with
    `revert_pending` and does not reset the device itself. Until something
    does, image 0 stays on trial.
 
-**Keep the H5's own bootloader away from image `N`**, since it is not the
-H5's image and is signed with another key (protocol-notes S40). Either use
-MCUboot's image-access hooks, as nRF Connect SDK does for the nRF5340 network
-core, or build MCUboot for one image and let the H5 application own image
-`N`'s slot and trailer.
+**With several targets**, each image follows the table on its own. smply
+confirms image 0 only once every target runs on trial, and completes only
+once every target is committed.
 
-**If the H5's MCUboot does swap image `N` into H5 flash**, slot 0 must still
-report the other MCU's real state, not the H5's copy. Otherwise "applied, on
-trial" and "still applying" look the same, and smply would confirm image 0
-before the BL54L10 runs the new image.
+**Keep the coordinator's own bootloader away from image `N`**, since it is
+not the coordinator's image and is signed with another key (protocol-notes
+S40). Either use MCUboot's image-access hooks, as nRF Connect SDK does for
+the nRF5340 network core, or build MCUboot for one image and let the
+coordinator's application own image `N`'s slot and trailer.
 
-### One way to build the H5 side
+**If the coordinator's MCUboot does swap image `N` into its own flash**,
+slot 0 must still report the target's real state, not the coordinator's
+copy. Otherwise "applied, on trial" and "still applying" look the same, and
+smply would confirm image 0 before the target runs the new image.
 
-For the H5 and BL54L10, whose UART normally carries H4 HCI, with an update
-GPIO beside the BL54L10's reset line. It is a sketch of product firmware,
-which smply neither contains nor tests.
-* **Apply through the BL54L10's own bootloader.** Stop the BLE host, raise
+### The link can drop while a target is being updated
+
+If smply's link to the coordinator runs through a target, it is gone while
+that target is updated. A Bluetooth controller module is the usual case,
+and a cellular or Wi-Fi modem is another. smply expects that. In
+`AwaitingDeviceApply` and `AwaitingDeviceCommit`:
+* a read that fails with `Disconnected` asks the application to reconnect
+  (`ReconnectRequired`), as after the reset;
+* a read that times out is simply retried;
+* on the reconnect, smply reads the state again and carries on.
+
+**While the link is down, the application's reconnect policy bounds the wait,
+not `apply_timeout`.** Size it for the whole outage: the transfer of the
+target's image, plus the target's reboot, plus the link coming back (for
+Bluetooth, advertising). A policy that gives up after a few seconds fails the
+update even though the device is fine. If the link does not run through a
+target, none of this arises.
+
+smply polls every `UpdatePlan::apply_poll_interval` and bounds each wait,
+the apply and the commit, with `UpdatePlan::apply_timeout`. Size it for the
+slowest apply, including a transfer over the coordinator's link to the
+target, which may be slow (a UART, or a bootloader's recovery protocol).
+
+### Worked example: an application MCU with a Bluetooth controller module
+
+The product that motivated this design, kept here as one concrete case. It
+is a sketch of product firmware, which smply neither contains nor tests.
+* **The parts.** The coordinator is an STM32H5 (Zephyr, MCUboot, the BLE
+  host). The target is an Ezurio BL54L10 (Zephyr, its own MCUboot, the BLE
+  controller) on the H5's UART. That UART normally carries H4 HCI, and there
+  is an update GPIO beside the BL54L10's reset line.
+* **The images.** Image 0 is the H5's application (`Client`). Image 1 is the
+  BL54L10's application (`Device`), staged in an H5 partition. The BLE link
+  to smply runs through the BL54L10, so it drops while the controller is
+  updated (the section above).
+* **Apply through the target's own bootloader.** Stop the BLE host, raise
   the update GPIO and reset the BL54L10: its MCUboot enters serial recovery
   before choosing an image (protocol-notes S42). Upload to its secondary slot
-  (`image` 2 in serial recovery's numbering, S43), mark it for test, lower the
-  GPIO and reset: the new controller boots on trial. Restart the BLE host.
+  (`image` 2 in serial recovery's numbering, S43) with Zephyr's SMP client,
+  mark it for test, lower the GPIO and reset: the new controller boots on
+  trial. Restart the BLE host.
 * **Commit through the running controller, not the bootloader.** Serial
   recovery's set-state only schedules the secondary slot (S44), and leaving
   recovery reverts an unconfirmed trial. A vendor-specific HCI command
@@ -148,26 +215,9 @@ which smply neither contains nor tests.
 * **Never build the BL54L10's MCUboot with `BOOT_SERIAL_PIN_RESET`**: every
   reset the H5 uses to revert a trial would then land in recovery (S42).
 
-### The link can drop while the other MCU is being updated
-
-On the product, the BLE link runs through the BL54L10, so it is gone while
-the controller is being updated. smply expects that. In `AwaitingDeviceApply`
-and `AwaitingDeviceCommit`:
-* a read that fails with `Disconnected` asks the application to reconnect
-  (`ReconnectRequired`), as after the reset;
-* a read that times out is simply retried;
-* on the reconnect, smply reads the state again and carries on.
-
-**While the link is down, the application's reconnect policy bounds the wait,
-not `apply_timeout`.** Size it for the whole outage: the UART transfer of
-the controller image, plus the controller's reboot, plus advertising. A
-policy that gives up after a few seconds fails the update even though the
-device is fine.
-
-smply polls every `UpdatePlan::apply_poll_interval` and bounds each wait,
-the apply and the commit, with `UpdatePlan::apply_timeout`. Size it for the
-slowest apply, including a transfer through the other MCU's bootloader over
-its UART.
+Another kind of target changes only the last three points: how the
+coordinator reaches it, applies the image and commits it. The contract and
+smply's behaviour stay as they are.
 
 ## The package
 
@@ -213,12 +263,13 @@ Without `--port` both examples run against `examples/stub_device/`, given a
 second image it commits itself. `support/dfu_app/package_update.hpp`
 (`PackageUpdate`) is the few lines between a package file and
 `FirmwareUpdater::start()`: it reads the file, bounded before anything is
-allocated, and builds the target list with the default above.
+allocated, and builds the target list: image 0 `Client`, every other image `Device`,
+and `set_commit()` changes that per image.
 
 ## What is not supported
 
 * **Several devices in one update.** Each `FirmwareUpdater` updates one device.
-  A product without a coordinating MCU needs a host-side coordinator. That is
+  A product without a coordinator MCU needs a host-side coordinator. That is
   on the roadmap, and ADR-0021 records why it was not the choice here.
 * **A deflated package.** `support/dfu_package/` reads the stored zip that nRF
   Connect SDK's sysbuild writes, and refuses deflate with a clear error.
@@ -226,6 +277,7 @@ allocated, and builds the target list with the default above.
 ## Nothing here has run on hardware
 
 The contract, the state machine and the package reader are tested against
-`ServerSimulator`'s device-committed image mode, the stub device, and the
-fuzzer; a package written by nRF Connect SDK's own `generate_zip.py` has been
-read and installed against the stub. No H5 implements the contract yet.
+`ServerSimulator`'s device-committed image mode (one target, and two behind
+one coordinator), the stub device, and the fuzzer; a package written by nRF Connect SDK's own `generate_zip.py` has been
+read and installed against the stub. No coordinator firmware implements the
+contract yet.

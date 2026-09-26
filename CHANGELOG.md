@@ -101,6 +101,11 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Documented
 
+- `docs/multi-image.md` describes the device contract in general terms: a
+  *coordinator* MCU in front of one or more *targets*, each a `Device` image,
+  reached over whatever link the coordinator drives. The STM32H5 with a
+  BL54L10 Bluetooth module that motivated it is kept as a worked example.
+  Two targets behind one coordinator are now tested.
 - Over serial, a Zephyr device accepts at most `buf_size − 4` bytes per SMP
   message, because its netbuf also holds the serial length prefix and CRC
   (protocol-notes A25). The serial adapter's default cap of 256 keeps a
