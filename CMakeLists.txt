@@ -269,7 +269,7 @@ endif()
 # What is NOT installed, and deliberately (ADR-0016 has the reasoning per
 # target): smply::minicbor and every test target, which are development
 # scaffolding; smply::dfu_app, which is application policy rather than
-# protocol; and smply::winrt_ble, which ships as a reference adapter to read
+# protocol; smply::dfu_package, a file format the core stays free of (ADR-0021); and smply::winrt_ble, which ships as a reference adapter to read
 # and copy.
 #
 # Note on the interface. smply links smply_internal_options as

@@ -9,6 +9,7 @@
 add_library(smply_example_stub STATIC
     stub_device.cpp
     demo_image.cpp
+    demo_package.cpp
 )
 
 # The include root is examples/, so a user writes "stub_device/stub_device.hpp"

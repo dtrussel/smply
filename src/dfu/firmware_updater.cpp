@@ -10,11 +10,14 @@
 #include "smply/mcuboot_image.hpp"
 #include "smply/result.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
+#include <vector>
 
 namespace smply {
 namespace {
@@ -73,12 +76,16 @@ std::string_view to_string(UpdateState state) noexcept
         return "AwaitingReconnect";
     case UpdateState::VerifyingBooted:
         return "VerifyingBooted";
+    case UpdateState::AwaitingDeviceApply:
+        return "AwaitingDeviceApply";
     case UpdateState::AwaitingConfirmation:
         return "AwaitingConfirmation";
     case UpdateState::Confirming:
         return "Confirming";
     case UpdateState::VerifyingConfirmed:
         return "VerifyingConfirmed";
+    case UpdateState::AwaitingDeviceCommit:
+        return "AwaitingDeviceCommit";
     case UpdateState::Completed:
         return "Completed";
     case UpdateState::Failed:
@@ -104,7 +111,7 @@ public:
         : client_{&client}, image_{&image}, os_{&os}
     {}
 
-    [[nodiscard]] Result<void> start(ImageSource& source, const UpdatePlan& plan,
+    [[nodiscard]] Result<void> start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
                                      UpdateEventCallback on_event)
     {
         if (running_) {
@@ -113,21 +120,33 @@ public:
         if (!on_event) {
             return fail(ErrorCode::InvalidArgument, "updater: no event callback");
         }
+        if (Result<void> valid = validate(targets, plan); !valid.has_value()) {
+            return valid;
+        }
 
-        // The image-state hash of the file: what the device will report for the
-        // slot holding it, and therefore how every later step recognises it.
-        // Read before anything goes on the wire, so a file that is not an
-        // MCUboot image fails here rather than half way through an update.
-        const Result<ImageHash> target = read_target_hash(source);
-        if (!target.has_value()) {
-            return fail(target.error());
+        std::vector<dfu::Target> decided;
+        std::vector<ImageSource*> sources;
+        decided.reserve(targets.size());
+        sources.reserve(targets.size());
+        for (const ImageTarget& target : targets) {
+            // The image-state hash of the file: what the device will report
+            // for the slot holding it, and therefore how every later step
+            // recognises it. Read before anything goes on the wire, so a file
+            // that is not an MCUboot image fails here rather than half way
+            // through an update.
+            const Result<ImageHash> hash = read_target_hash(*target.source);
+            if (!hash.has_value()) {
+                return fail(hash.error());
+            }
+            decided.push_back(
+                dfu::Target{.image = target.image, .commit = target.commit, .hash = *hash});
+            sources.push_back(target.source);
         }
 
         plan_ = plan;
-        source_ = &source;
+        sources_ = std::move(sources);
         on_event_ = std::move(on_event);
-        context_ = dfu::Context{};
-        context_.target = *target;
+        context_ = dfu::make_context(std::move(decided));
         report_ = UpdateReport{};
         state_ = UpdateState::Idle;
         running_ = true;
@@ -185,6 +204,11 @@ public:
         if (!running_) {
             return;
         }
+        if (state_ == UpdateState::AwaitingDeviceApply ||
+            state_ == UpdateState::AwaitingDeviceCommit) {
+            poll_apply(now);
+            return;
+        }
         if (state_ != UpdateState::AwaitingDisconnect) {
             return;
         }
@@ -203,7 +227,8 @@ public:
 
     [[nodiscard]] std::optional<TimePoint> next_deadline() const noexcept
     {
-        return grace_deadline_;
+        // At most one is armed: they belong to different states.
+        return grace_deadline_.has_value() ? grace_deadline_ : apply_poll_;
     }
 
     [[nodiscard]] UpdateState state() const noexcept
@@ -229,6 +254,51 @@ public:
     }
 
 private:
+    /// The plan and targets `start()` refuses, before anything is read.
+    [[nodiscard]] static Result<void> validate(std::span<const ImageTarget> targets,
+                                               const UpdatePlan& plan)
+    {
+        if (targets.empty()) {
+            return fail(ErrorCode::InvalidArgument, "updater: no image to update");
+        }
+        bool device_commits = false;
+        for (std::size_t index = 0; index < targets.size(); ++index) {
+            const ImageTarget& target = targets[index];
+            if (target.source == nullptr) {
+                return fail(ErrorCode::InvalidArgument, "updater: image target without a source");
+            }
+            const auto same_image = [&target](const ImageTarget& other) {
+                return other.image == target.image;
+            };
+            if (std::ranges::any_of(targets.subspan(index + 1), same_image)) {
+                return fail(ErrorCode::InvalidArgument, "updater: an image is given twice");
+            }
+            device_commits = device_commits || target.commit == CommitBy::Device;
+        }
+        if (targets.size() > 1 && plan.upload.sha.has_value()) {
+            // It is the hash of one file, and there is more than one.
+            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several images");
+        }
+        if (device_commits && plan.apply_poll_interval <= Duration::zero()) {
+            return fail(ErrorCode::InvalidArgument, "updater: apply_poll_interval not positive");
+        }
+        return {};
+    }
+
+    /// `AwaitingDeviceApply`: read the state again once the interval is up.
+    ///
+    /// The timeout is judged only when a poll falls due, never while a read is
+    /// outstanding, so no answer can arrive after the update has ended on it.
+    void poll_apply(TimePoint now)
+    {
+        if (!apply_poll_.has_value() || now < *apply_poll_) {
+            return;
+        }
+        apply_poll_.reset();
+        const bool timed_out = apply_deadline_.has_value() && now >= *apply_deadline_;
+        dispatch(plain(timed_out ? Event::Kind::ApplyTimedOut : Event::Kind::ApplyPollDue));
+    }
+
     /// Queues an event for the next `poll()`.
     ///
     /// Every externally triggered event goes through here, so that no callback
@@ -318,7 +388,7 @@ private:
             return;
 
         case Effect::MarkForTest:
-            set_state(SetStateRequest{.hash = context_.target, .confirm = false},
+            set_state(SetStateRequest{.hash = current_target().hash, .confirm = false},
                       Event::Kind::MarkedForTest);
             return;
 
@@ -349,14 +419,28 @@ private:
             return;
         }
 
+        case Effect::AwaitApply: {
+            // The timeout runs from the first poll of each wait -- the apply,
+            // then the commit -- not from each poll, and not again after a
+            // reconnect that returns to the same wait (ADR-0022).
+            if (apply_phase_ != state_) {
+                apply_phase_ = state_;
+                apply_deadline_ = last_poll_ + plan_.apply_timeout;
+            }
+            apply_poll_ = last_poll_ + plan_.apply_poll_interval;
+            return;
+        }
+
         case Effect::RequestConfirmation: {
             emit(ConfirmationRequired{});
             return;
         }
 
         case Effect::Confirm:
-            // No hash: the running image is the target.
-            set_state(SetStateRequest{.hash = std::nullopt, .confirm = true},
+            // By hash, always. A hashless confirm names the device's *running*
+            // image, so it can never confirm image >= 1; for image 0 the hash
+            // names the same slot (protocol-notes section 6, ADR-0021).
+            set_state(SetStateRequest{.hash = current_target().hash, .confirm = true},
                       Event::Kind::Confirmed);
             return;
 
@@ -383,15 +467,24 @@ private:
             })));
     }
 
+    /// The target the machine is working on. `dfu::advance()` checks the
+    /// index before it asks for an effect that uses it.
+    [[nodiscard]] const dfu::Target& current_target() const
+    {
+        return context_.targets[context_.current];
+    }
+
     void start_upload()
     {
         UploadOptions options = plan_.upload;
+        options.image = current_target().image;
         if (!options.server_buf_size.has_value() && context_.buf_size != 0) {
             options.server_buf_size = context_.buf_size;
         }
 
         upload_ = image_->upload(
-            *source_, options, [this](UploadProgress progress) { emit(progress); }, upload_done());
+            *sources_[context_.current], options,
+            [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
         // callback still reports why, on the next poll, so there is nothing to
@@ -417,10 +510,13 @@ private:
     {
         running_ = false;
         grace_deadline_.reset();
+        apply_poll_.reset();
+        apply_deadline_.reset();
+        apply_phase_.reset();
 
         report_ = context_.report;
         report_.final_state = state_;
-        report_.target_hash = context_.target;
+        report_.target_hash = context_.targets.front().hash;
         report_.final_device_state = context_.device;
 
         Result<UpdateReport> outcome = report_;
@@ -433,7 +529,7 @@ private:
 
         // Nothing may reach the application after `Finished`.
         on_event_ = {};
-        source_ = nullptr;
+        sources_.clear();
         upload_ = UploadHandle{};
     }
 
@@ -494,7 +590,8 @@ private:
     OsManagement* os_;
 
     UpdatePlan plan_;
-    ImageSource* source_ = nullptr;
+    /// Parallel to `context_.targets`.
+    std::vector<ImageSource*> sources_;
     UpdateEventCallback on_event_;
     UploadHandle upload_;
 
@@ -504,6 +601,11 @@ private:
     bool running_ = false;
 
     std::optional<TimePoint> grace_deadline_;
+    /// `AwaitingDeviceApply`: when to read the state next, and when to give up.
+    std::optional<TimePoint> apply_poll_;
+    std::optional<TimePoint> apply_deadline_;
+    /// The wait `apply_deadline_` was armed for.
+    std::optional<UpdateState> apply_phase_;
     TimePoint last_poll_;
 
     /// Kept alive only while this object is; every callback holds a weak
@@ -524,7 +626,15 @@ FirmwareUpdater::~FirmwareUpdater()
 Result<void> FirmwareUpdater::start(ImageSource& source, const UpdatePlan& plan,
                                     UpdateEventCallback on_event)
 {
-    return impl_->start(source, plan, std::move(on_event));
+    // One image, committed by smply: the update this class always ran.
+    const ImageTarget target{.image = plan.upload.image, .source = &source};
+    return impl_->start(std::span{&target, 1}, plan, std::move(on_event));
+}
+
+Result<void> FirmwareUpdater::start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
+                                    UpdateEventCallback on_event)
+{
+    return impl_->start(targets, plan, std::move(on_event));
 }
 
 Result<void> FirmwareUpdater::confirm()

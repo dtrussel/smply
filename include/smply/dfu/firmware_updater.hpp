@@ -43,8 +43,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace smply {
 
@@ -82,9 +84,11 @@ enum class UpdateState : std::uint8_t
     AwaitingDisconnect,   ///< The link should drop; a grace timer bounds the wait.
     AwaitingReconnect,    ///< The application's turn.
     VerifyingBooted,      ///< Get-state: did it boot ours, or revert?
+    AwaitingDeviceApply,  ///< Polling get-state until the device runs its images on trial.
     AwaitingConfirmation, ///< `TestThenConfirm` only: waiting for `confirm()`.
     Confirming,           ///< Set-state{confirm}.
     VerifyingConfirmed,   ///< Get-state: is it confirmed?
+    AwaitingDeviceCommit, ///< Polling get-state until the device committed its images.
     Completed,
     Failed,
     Cancelled,
@@ -100,6 +104,32 @@ enum class UpdateState : std::uint8_t
            state == UpdateState::Cancelled;
 }
 
+/// Who commits an image once it is in place (ADR-0021).
+enum class CommitBy : std::uint8_t
+{
+    /// smply: it is marked for test, verified after the reset, and confirmed
+    /// by hash after the confirmation window. The ordinary update.
+    Client,
+
+    /// The device: smply stages and marks it, then waits in
+    /// `AwaitingDeviceApply` until the device reports it running on trial, and
+    /// never confirms it. The device commits it when smply confirms the
+    /// `Client` images, and smply waits for that in `AwaitingDeviceCommit`
+    /// (ADR-0022). What each state looks like is the device contract in
+    /// docs/multi-image.md.
+    Device,
+};
+
+/// One image of a multi-image update.
+struct ImageTarget
+{
+    /// The image number on the device: 0 is the running application.
+    std::uint32_t image = 0;
+    /// The firmware file. Not owned; must outlive the update.
+    ImageSource* source = nullptr;
+    CommitBy commit = CommitBy::Client;
+};
+
 /// What to do, and how.
 struct UpdatePlan
 {
@@ -109,9 +139,14 @@ struct UpdatePlan
     /// are filled in by the updater when absent -- it computes the first from
     /// the source and learns the second from the device.
     ///
-    /// `upload.image` is also the image the rest of the update inspects, marks
-    /// and confirms: there is one image number for the whole update, not one
-    /// for the transfer and another for everything after it.
+    /// For the single-image `start()`, `upload.image` is also the image the
+    /// rest of the update inspects, marks and confirms: there is one image
+    /// number for the whole update, not one for the transfer and another for
+    /// everything after it. The image-list `start()` replaces it with each
+    /// target's `image`. The confirm names
+    /// the image by hash, because a hashless confirm reaches only the device's
+    /// running image. Confirming image >= 1 is refused unless the device is
+    /// built to allow it (docs/protocol-notes.md section 9, A27).
     UploadOptions upload{};
 
     /// Skip the transfer when the device already holds this image, recognised
@@ -129,18 +164,52 @@ struct UpdatePlan
     /// Passed to the application in `ReconnectRequired`, as a hint about how
     /// long to wait before its first attempt.
     Duration reconnect_hint = std::chrono::seconds{3};
+
+    /// How long to wait, after the reset, for the device to apply every
+    /// `CommitBy::Device` image -- and, separately, after the confirm, for it
+    /// to commit them. While the link is down the application's reconnect
+    /// policy bounds the wait instead, so size that for the same outage. Size it for the slowest
+    /// apply: on a coordinating MCU that is a whole image sent to the second MCU over its link,
+    /// plus that MCU's reboot (docs/multi-image.md).
+    Duration apply_timeout = std::chrono::minutes{5};
+
+    /// How often to read the device's image state while waiting for it to
+    /// apply. Must be positive when any image is `CommitBy::Device`.
+    Duration apply_poll_interval = std::chrono::seconds{2};
+};
+
+/// What an update did to one of its images.
+struct ImageReport
+{
+    std::uint32_t image = 0;
+    CommitBy commit = CommitBy::Client;
+    /// The image-state hash of this image's file.
+    ImageHash target_hash;
+    std::uint64_t bytes_transferred = 0;
+    /// The device already held the image, so nothing was transferred.
+    bool upload_skipped = false;
+    /// `Client` only: MCUboot reverted this image to the old one.
+    bool rolled_back = false;
+    /// `Device` only: the device reported the image applied, running on trial.
+    bool applied = false;
+    /// `Device` only: the device reported the image committed.
+    bool committed = false;
 };
 
 /// What an update did, however it ended.
+///
+/// Every field but `images` sums up all the images of the update, and for a
+/// single-image update describes that image.
 struct UpdateReport
 {
     UpdateState final_state = UpdateState::Idle;
+    /// Bytes transferred, over every image.
     std::uint64_t bytes_transferred = 0;
-    /// True when the transfer was skipped because the device already held the
-    /// image -- by the pre-flight check or by the server's own (rule 9a).
+    /// True when every transfer was skipped because the device already held
+    /// the image -- by the pre-flight check or by the server's own (rule 9a).
     bool upload_skipped = false;
 
-    /// The image-state hash of the file, once it has been read.
+    /// The image-state hash of the first image's file, once it has been read.
     std::optional<ImageHash> target_hash;
     /// The last slot table read from the device.
     std::optional<ImageState> final_device_state;
@@ -149,7 +218,7 @@ struct UpdateReport
     std::optional<Error> cause;
 
     /// MCUboot reverted: the device booted the **old** image
-    /// (docs/protocol-notes.md section 7).
+    /// (docs/protocol-notes.md section 7), for at least one image.
     bool rolled_back = false;
 
     /// The device holds a swapped-in image that nobody confirmed, so it will
@@ -159,7 +228,13 @@ struct UpdateReport
     /// or refused by the device. It is the difference between "nothing
     /// happened" and "something will happen when this device next restarts",
     /// which a caller must be able to tell apart.
+    ///
+    /// A multi-image update whose `Device` image was not applied ends here
+    /// too: its `Client` images are left unconfirmed, so they revert.
     bool revert_pending = false;
+
+    /// One entry per image, in the order the update was given them.
+    std::vector<ImageReport> images;
 };
 
 /// The update moved from one state to another.
@@ -259,6 +334,27 @@ public:
     ///         is emitted from inside this call; the first arrives on the next
     ///         `poll()`.
     [[nodiscard]] Result<void> start(ImageSource& source, const UpdatePlan& plan,
+                                     UpdateEventCallback on_event);
+
+    /// Begins an update of several images of one device, with one reset
+    /// (ADR-0021).
+    ///
+    /// Every image is uploaded and marked for test in the order given, then
+    /// the device is reset once. `Client` images must then be running their
+    /// target; `Device` images are waited for until the device reports them
+    /// applied (docs/multi-image.md). Only then are the `Client` images
+    /// confirmed -- after the confirmation window, as for a single image. If a
+    /// `Device` image is not applied, nothing is confirmed and the update
+    /// fails with `revert_pending`.
+    ///
+    /// Each target's `image` replaces `plan.upload.image`. The list is copied.
+    ///
+    /// \return `InvalidArgument` for an empty list, a null source, an image
+    ///         number given twice, a `plan.upload.sha` with more than one
+    ///         image (it describes one file), or a `Device` image with a
+    ///         non-positive `apply_poll_interval`; otherwise as the
+    ///         single-image `start()`.
+    [[nodiscard]] Result<void> start(std::span<const ImageTarget> targets, const UpdatePlan& plan,
                                      UpdateEventCallback on_event);
 
     /// Approves the new image after `ConfirmationRequired`.

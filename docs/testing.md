@@ -13,8 +13,8 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **three** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, and `cli_dfu_reconnect_gives_up` |
-| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **two** tests: `serial_dfu_pty_uart` and `serial_dfu_pty_cdc`. A whole update, reset included, over a pseudo-terminal |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **five** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package` and `cli_dfu_package_apply_fails` |
+| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **three** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc` and `serial_dfu_pty_package`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
@@ -131,7 +131,11 @@ struct ServerConfig {
     bool supports_mcumgr_params = true;      // else ENOTSUP
     bool supports_slot_info     = false;     // CONFIG_MCUMGR_GRP_IMG_SLOT_INFO
     bool image_check_enabled    = true;      // emits "match"; enables rule 9a
-    bool single_image           = true;      // omits "image" in state
+    bool single_image           = true;      // omits "image" in state (one image only)
+    std::uint32_t image_count   = 1;         // CONFIG_MCUMGR_GRP_IMG_UPDATABLE_IMAGE_NUMBER
+    bool allow_confirm_non_active_image_secondary = false;  // the three A27
+    bool allow_confirm_non_active_image_any       = false;  // Kconfigs, off
+    bool allow_confirm_non_active_slot            = false;  // as in Zephyr
     bool translate_v1_errors    = true;      // the A16 rebuild for a v1 request
     std::uint32_t slot_size     = 0;         // 0 = unbounded
     Duration response_delay{0};
@@ -147,7 +151,7 @@ what `translate_v1_errors` models.
 Scripted misbehaviour lives in methods rather than in the config, so that a
 config stays a description and does not become a script:
 `answer_offset_once()`, `fail_next()`, `drop_next_response()`,
-`reset_busy_once()`, plus `load_slot()`, `reboot()` and
+`reset_busy_once()`, `device_commits()`, plus `load_slot()`, `reboot()` and
 `rebind_transport()` for the device's own state. `answer_offset_once()` changes
 only the *answer*, never the flash: a client that follows the correction is put
 right on the next round trip, and one that computes its own offsets flashes a
@@ -155,9 +159,24 @@ corrupt image -- which is exactly the asymmetry the acceptance test relies on.
 
 `ServerSimulator` is how the update state machine gets end-to-end coverage
 without hardware. It is **not** a reference implementation and is never linked
-into the library. It models **one image and two slots**, and refuses an upload naming any other
-image with `NoFreeSlot` rather than quietly writing slot 1; a second image pair
-is follow-up work, recorded in the roadmap.
+into the library.
+
+**It models `image_count` image pairs**, numbered globally as Zephyr does:
+image `n` owns slots `2n` and `2n + 1`. The multi-image rules are
+[`protocol-notes.md`](protocol-notes.md) §6 ("Several images on one device"),
+each with a `[multi]` test in `test_simulator.cpp`:
+* each image's primary is listed `active`;
+* set-state finds a hash in any image;
+* a hashless confirm names the running image (0) only;
+* confirming a non-running image is denied unless the A27 knobs allow it;
+* the upload's first-packet `image` picks that image's secondary, and an
+  image the device lacks gets `NoFreeSlot`;
+* every image swaps at the same reboot.
+
+`device_commits(image, outcome, reads)` makes one image **device-committed**,
+the staged image of a second MCU in `docs/multi-image.md`. A reboot swaps it in
+as an unconfirmed trial. After `reads` more state reads, the device finishes:
+confirmed, or the old image swapped back with nothing pending.
 
 ## 3. Required unit coverage
 
@@ -301,6 +320,27 @@ past the end *before* asking the source, passes on a source's failure, and
 refuses a short read; the little-endian loads use bytes with the high bit set,
 so a load that sign-extends shows up as a wrong value.
 
+`support/dfu_package/` (`test_dfu_package.cpp`), the multi-image package reader
+of ADR-0021, over archives written byte by byte by `tests/support/zip_builder.hpp`
+and images by `image_builder.hpp`, neither sharing code with the reader. Most
+cases are refusals, because the package is untrusted: deflate, encryption and
+zip64 refused by name; a CRC, size or name mismatch; every truncation and every
+flipped byte of a real archive; the JSON bounds on depth, count, length and
+size, and RFC 8259's edge cases; `image_index` as a string (what
+`generate_zip.py` writes), as a number, absent, out of range and repeated; the
+manifest's size and `version_MCUBOOT` checked against the file and its MCUboot
+header; dependency TLVs from both areas, with a broken area refused; and a
+package whose image depends on a newer version of another image it carries
+refused, by MCUboot's default comparison, so the build number does not count
+(ADR-0022).
+
+`support/dfu_app/`'s `PackageUpdate` (`test_package_update.cpp`), the few lines
+both examples share between a package file and `FirmwareUpdater::start()`: one
+target per image in index order, image 0 committed by the client and the rest by
+the device, the per-image override refused for an image the package lacks, the
+file read whole and a bad one refused, and `parse_commit()`'s accepted and
+refused forms.
+
 `support/dfu_app/`'s `FileImageSource`, the source every example reads firmware
 through (`test_file_image_source.cpp`): a missing or empty file is refused, reads
 are clamped at the end, end of file is zero bytes and later reads still work,
@@ -323,6 +363,30 @@ cancellation from every non-terminal state; and an illegal event in **every**
 state, because "this one silently swallows a stray event" is precisely the hole
 a spot check leaves.
 
+The `[multi]` cases cover the image list (ADR-0021): every image staged before
+the one reset; the mark recovery spent once per image; the three answers of
+the device contract (applied, still applying in either variant, failed); the
+timeout and a failed read while waiting; a revert of one `Client` image; a
+resume after the reset that stages nothing; each `Client` image confirmed in
+turn and all read back confirmed; `UploadOnly` over two images; and a context
+with no image to work on. ADR-0022 added:
+* a device image on trial counts as applied;
+* the commit wait after the confirm: its success, a trial the other MCU
+  reverts, and the timeout;
+* the commit wait reached directly when no client image is on trial, after
+  the reset or on resume;
+* in both waits: a dropped link asks for a reconnect, a lost read is
+  retried, and anything else is fatal.
+
+`test_firmware_update.cpp`'s `[multi]` cases drive the same against the
+two-image simulator, each asserting there was exactly one reset:
+* a resume in the wait, and a resume in the confirmation window;
+* an image-1 upload interrupted after image 0 finished;
+* for ADR-0022: the commit observed after the confirm; a commit that never
+  comes (`Timeout`, nothing to revert); the link dropped mid-apply and
+  reconnected; a lost read retried; and a resume after the confirm that
+  waits for the commit.
+
 ### The example as a test (`examples/cli_dfu/`)
 
 `cli_dfu_demo` runs the example with `--quiet` and checks its exit code, which is
@@ -338,9 +402,21 @@ it covers ground no other suite does:
 * it exercises the **application's half of the reconnect protocol**: a dropped
   link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
 
+Two more run the multi-image update of ADR-0021 end to end, from a package
+built in memory (`--demo-package`) through `smply::dfu_package` and
+`PackageUpdate` to the image-list `start()`, against a stub with a second image
+it commits itself. Each passes on its output lines, never on the exit code:
+* `cli_dfu_package`: `update Completed`, and `image 1 (device): committed`;
+* `cli_dfu_package_apply_fails`: the stub fails to apply image 1, so the update
+  must fail with "device did not apply an image", report image 1 not applied,
+  and warn that the next reset reverts image 0. Both patterns were checked
+  against the other test's output, so neither passes on the wrong outcome.
+
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
-clean update needs and no more. If the two ever disagree, the simulator is right;
+clean update needs and no more. Its one extension is a second image the device
+commits itself, the simulator's device-committed mode cut down to success and
+one failure, so the multi-image examples have a device to take a package. If the two ever disagree, the simulator is right;
 growing the stub to match it would be building a second test double outside
 `tests/`.
 
@@ -357,6 +433,10 @@ question:
 * `serial_dfu_pty_cdc`: the port vanishes, and the adapter reports the
   hang-up. It returns as a different `/dev/pts/N` behind the same symlink. The
   example reopens the path, and `devices=2` proves it reached the new tty.
+* `serial_dfu_pty_package`: the UART shape, with the demo's two-image package
+  (ADR-0021). `images=2 applied=1 committed=1` at the end of the summary line
+  says both were staged, and image 1 was applied and then committed by the
+  stub.
 
 Both pass on one summary line (`PASS_REGULAR_EXPRESSION`), never on the exit
 code alone: an update that completed with the wrong reset shape, a framing
@@ -590,6 +670,7 @@ has quietly stopped holding.
 | `fuzz_cbor_image_state` | arbitrary CBOR, delivered as a correlated response to a real `get_state` | `kMaxImages`, `kMaxVersionStringLength` and `kMaxImageHashLength` all hold on the decoded result — no container or string sized by the device |
 | `fuzz_cbor_upload_response` | arbitrary CBOR, delivered into a live upload | the session never reports more transferred than the image holds, whatever offset the device claims (protocol-notes §6, rule 5) |
 | `fuzz_mcuboot_header` | arbitrary bytes | the trailer offset a parsed header implies is never below the header itself — the arithmetic that indexes the file cannot be made to point backwards |
+| `fuzz_dfu_package` | arbitrary bytes as a DFU package, and the same bytes as a JSON document | a package that reads has its images sorted by index, each index once and at most `kMaxImageIndex`, each image a view inside the input, each dependency list within `kMaxImageTlvs`, and no image depending on a newer version of another image in the package. The seed corpus holds a package written by nRF Connect SDK's own `generate_zip.py` (S38), so mutation starts from the real layout, plus its manifest alone, a one-image package, a deflated one, and one whose images disagree |
 | `fuzz_tlv_scan` | arbitrary bytes as a `MemoryImageSource` | the scan terminates, and any hash it returns is 32 or 64 bytes — `IMAGE_SHA_LEN`, not a length the file chose (protocol-notes §6) |
 | `fuzz_smp_client_rx` | an arbitrary stream fed to a live client with a request pending | a completed request is only ever completed by a response matching its `seq`, `group` and `command`; unmatched responses never exceed received ones |
 | `fuzz_serial_deframe` | a console stream, read in fuzzer-chosen chunks (the first byte is the read size) | neither the line buffer nor the packet buffer exceeds its bound, at every step; a framing error leaves nothing partial behind; a delivered packet is CRC-verified and within the cap. The only target over a transport, and the first whose input is *expected* to be mostly noise — a shared console carries far more shell and log output than frames |

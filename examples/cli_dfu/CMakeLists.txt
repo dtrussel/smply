@@ -54,4 +54,22 @@ if(SMPLY_BUILD_TESTS)
         PASS_REGULAR_EXPRESSION "update failed: disconnected \\(at cli_dfu: could not reconnect\\)"
         TIMEOUT 60
     )
+
+    # The multi-image update of ADR-0021 end to end: a generated package read
+    # by smply::dfu_package, both images staged before one reset, image 1
+    # applied by the device, image 0 confirmed only after that, and image 1
+    # committed by the device only after image 0 (ADR-0022).
+    add_test(NAME cli_dfu_package COMMAND cli_dfu --quiet --demo-package)
+    set_tests_properties(cli_dfu_package PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*image 1 \\(device\\): committed"
+        TIMEOUT 60
+    )
+    # The device fails to apply image 1, so image 0 must be left unconfirmed:
+    # the update fails for that reason, and says the next reset will revert.
+    add_test(NAME cli_dfu_package_apply_fails COMMAND cli_dfu --quiet --demo-package --apply-fails)
+    set_tests_properties(cli_dfu_package_apply_fails PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "update failed: firmware update failed \\(at dfu: device did not apply an image\\).*image 1 \\(device\\): not applied.*will revert on the next reset"
+        TIMEOUT 60
+    )
 endif()

@@ -5,6 +5,7 @@ add_executable(smply_unit_tests
     test_ble_framing.cpp
     test_cbor.cpp
     test_clock.cpp
+    test_dfu_package.cpp
     test_dispatcher.cpp
     test_error.cpp
     test_file_image_source.cpp
@@ -16,6 +17,7 @@ add_executable(smply_unit_tests
     test_narrow.cpp
     test_mgmt_error.cpp
     test_os_group.cpp
+    test_package_update.cpp
     test_reconnect_policy.cpp
     test_result.cpp
     test_send_queue.cpp
@@ -46,6 +48,8 @@ target_link_libraries(smply_unit_tests
         # The application-side helpers the examples share: the reconnect policy
         # is tested here because examples/winrt_ble_dfu/ cannot be run at all.
         smply::dfu_app
+        # The multi-image package reader (ADR-0021): support code, tested here.
+        smply::dfu_package
         smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain

@@ -27,8 +27,10 @@ the full contract.
   §10. `WinRtBleTransport`'s absence below is a decision, not an omission: it
   is an example of implementing `Transport`, not a second `Transport` to
   program against.
-* `support/` — `minicbor` and `dfu_app`, shared by the tests and the examples
-  and part of neither. Not installed, not promised.
+* `support/` — `minicbor`, `dfu_app` and `dfu_package`, shared by the tests
+  and the examples and part of neither. Not installed, not promised.
+  `dfu_package`'s `read_package()` is described in
+  [`multi-image.md`](multi-image.md).
 
 | Header | Target |
 | ------ | ------ |
@@ -599,7 +601,7 @@ namespace smply {
 // --- smply/groups/image_upload.hpp ---
 
 struct UploadOptions {
-    std::uint32_t image = 0;
+    std::uint32_t image = 0;                 // sent on first packets only (protocol-notes §6)
     bool          upgrade_only = false;      // protocol-notes §9 A11 — off by default
     std::optional<Hash> sha;                 // computed from the source when absent
     std::uint32_t chunk_size = 0;            // 0 => negotiate (design §6)
@@ -810,16 +812,32 @@ enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, Uplo
 enum class UpdateState : std::uint8_t {
     Idle, QueryingParameters, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
-    AwaitingReconnect, VerifyingBooted, AwaitingConfirmation, Confirming,
-    VerifyingConfirmed, Completed, Failed, Cancelled,
+    AwaitingReconnect, VerifyingBooted, AwaitingDeviceApply, AwaitingConfirmation,
+    Confirming, VerifyingConfirmed, AwaitingDeviceCommit, Completed, Failed, Cancelled,
 };
 std::string_view to_string(UpdateState) noexcept;
 constexpr bool   is_terminal(UpdateState) noexcept;
 
+// Who commits an image once it is in place (ADR-0021). Device: smply stages
+// and marks it, waits for the device to run it on trial, confirms the Client
+// images, then waits for the device to commit it (ADR-0022,
+// docs/multi-image.md). smply never confirms it.
+enum class CommitBy : std::uint8_t { Client, Device };
+
+struct ImageTarget {                  // one image of a multi-image update
+    std::uint32_t image = 0;
+    ImageSource*  source = nullptr;   // not owned; outlives the update
+    CommitBy      commit = CommitBy::Client;
+};
+
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
-    // upload.image is the image the whole update works on: transferred,
-    // inspected, marked and confirmed. There is no second image number.
+    // For the single-image start(), upload.image is the image the whole update
+    // works on: transferred, inspected, marked and confirmed (by hash). The
+    // image-list start() replaces it with each target's image. Image >= 1
+    // works; confirming it needs the device to allow it
+    // (CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*, protocol-notes
+    // A27), and an image the device lacks fails the first packet (NoFreeSlot).
     UploadOptions upload{};
     // Skip the upload when the device already holds this image (by TLV hash).
     bool          skip_if_already_present = true;
@@ -827,17 +845,35 @@ struct UpdatePlan {
     Duration      disconnect_grace = std::chrono::seconds{10};
     // Hint passed to the application in ReconnectRequired.
     Duration      reconnect_hint   = std::chrono::seconds{3};
+    // Device images: how long to wait for the device to apply them, and again
+    // for it to commit them, and how often to read its state meanwhile (must be
+    // positive). While the link is down the application's reconnect policy
+    // bounds the wait instead.
+    Duration      apply_timeout       = std::chrono::minutes{5};
+    Duration      apply_poll_interval = std::chrono::seconds{2};
 };
 
-struct UpdateReport {
+struct ImageReport {                  // one per target, in the order given
+    std::uint32_t image = 0;
+    CommitBy      commit = CommitBy::Client;
+    ImageHash     target_hash;
+    std::uint64_t bytes_transferred = 0;
+    bool upload_skipped = false;
+    bool rolled_back = false;         // Client: MCUboot reverted it
+    bool applied = false;             // Device: the device runs it, on trial
+    bool committed = false;           // Device: the device committed it
+};
+
+struct UpdateReport {                 // the summary fields cover every image
     UpdateState  final_state{};
-    std::uint64_t bytes_transferred{};
-    bool upload_skipped = false;    // the device already held the image
-    std::optional<ImageHash> target_hash;
+    std::uint64_t bytes_transferred{};  // summed
+    bool upload_skipped = false;    // the device already held every image
+    std::optional<ImageHash> target_hash;  // the first image's
     std::optional<ImageState> final_device_state;
     std::optional<Error> cause;     // set iff the update failed
-    bool rolled_back = false;       // MCUboot reverted (protocol-notes §7)
+    bool rolled_back = false;       // MCUboot reverted an image (protocol-notes §7)
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
+    std::vector<ImageReport> images;
 };
 
 // Exactly one of these per event. A variant, so a handler cannot read another
@@ -866,6 +902,14 @@ public:
     // and outlive the client and both groups, all of which finish outstanding
     // work in their destructors.
     Result<void> start(ImageSource&, const UpdatePlan&, UpdateEventCallback);
+
+    // Several images of one device, one reset (ADR-0021): each is staged in
+    // order, the device is reset once, Client images are verified, Device
+    // images are waited for, and only then are the Client images confirmed,
+    // each by hash. InvalidArgument for an empty list, a null source, an image
+    // given twice, upload.sha with more than one image, or a Device image with
+    // a non-positive apply_poll_interval. The list is copied.
+    Result<void> start(std::span<const ImageTarget>, const UpdatePlan&, UpdateEventCallback);
 
     // Approves the running image after ConfirmationRequired. InvalidState
     // unless the update is in AwaitingConfirmation (ADR-0014).

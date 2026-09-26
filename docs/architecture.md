@@ -423,20 +423,29 @@ smply/
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
-│   └── dfu_app/                what a DFU *application* needs and the library
-│                               deliberately does not ship: FileImageSource and
-│                               ReconnectPolicy. smply::dfu_app, used by both
-│                               examples and unit-tested
+│   ├── dfu_app/                what a DFU *application* needs and the library
+│   │                           deliberately does not ship: FileImageSource,
+│   │                           ReconnectPolicy, and PackageUpdate (a package file
+│   │                           into FirmwareUpdater targets). smply::dfu_app, used
+│   │                           by both examples and unit-tested
+│   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
+│                               stored-zip lister, a bounded JSON reader and the
+│                               manifest cross-checks. smply::dfu_package, not
+│                               installed, unit-tested and fuzzed
 ├── examples/
-│   ├── stub_device/            stub_device.hpp  demo_image.hpp  device_link.hpp — the
-│   │                           pretend device both portable examples drive, behind a
-│   │                           DeviceLink. Scaffolding, not a protocol reference
+│   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp
+│   │                           device_link.hpp — the pretend device both portable
+│   │                           examples drive, behind a DeviceLink, optionally with a
+│   │                           second image it commits itself; and the demo image and
+│   │                           two-image package it is given. Scaffolding, not a
+│   │                           protocol reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           loopback_transport.* is the link to the stub device. Runs
-│   │                           in CI, --flaky-reconnect included
+│   │                           in CI, --flaky-reconnect and --demo-package included
 │   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
 │   │                           pty_stub.* — the stub device behind a pseudo-terminal, in
-│   │                           a UART and a USB CDC reset shape. Runs in CI; see README.md
+│   │                           a UART and a USB CDC reset shape. Runs in CI, a two-image
+│   │                           package included; see README.md
 │   └── winrt_ble_dfu/          the same loop over a real radio, on Windows.
 │                               Compiled by CI; runs on the bench: see its README
 ├── tests/
@@ -494,9 +503,14 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 * SMP v1 by default; v2 opt-in (protocol-notes §9 A1).
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).
-* Multi-image (image ≥ 1) upload is representable — `UploadOptions::image` —
-  but nothing yet exercises it. O5 tracks whether to exercise it or document it
-  as untested.
+* **Image ≥ 1** is updated like image 0, and several images of one device
+  go in one update with one reset (`start()` over an `ImageTarget` list,
+  ADR-0021). Both are exercised against a two-image `ServerSimulator`,
+  including an image the device commits itself. Confirming image ≥ 1 from
+  smply needs the device's `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*`
+  (protocol-notes A27). One device per update: several devices need a
+  coordinator smply does not have. None of it has run against a multi-image
+  device.
 * **Serial: a reference adapter exists, and has not met a device.**
   `transports/serial/` implements MCUmgr's console encapsulation in both
   directions. `transports/serial_port/` opens a port (POSIX `termios`, or
@@ -515,8 +529,7 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 
 ## 12. Planned future extensions
 
-Ordered by expected value, none scheduled: multi-image (`UploadOptions::image`
-is representable; O5) · FS (group 8) and Shell (group 9) · real transfer
+Ordered by expected value, none scheduled: FS (group 8) and Shell (group 9) · real transfer
 telemetry in `UpdateReport` — bytes actually sent, retries, restarts · raw-UART
 transport · UDP transport · SMP v2 by default once the fleet supports it ·
 request pipelining driven by `buf_count` (O3) · `std::error_code` interop for
