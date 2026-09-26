@@ -432,9 +432,12 @@ smply/
 │                               manifest cross-checks. smply::dfu_package, not
 │                               installed, unit-tested and fuzzed
 ├── examples/
-│   ├── stub_device/            stub_device.hpp  demo_image.hpp  device_link.hpp — the
-│   │                           pretend device both portable examples drive, behind a
-│   │                           DeviceLink. Scaffolding, not a protocol reference
+│   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp
+│   │                           device_link.hpp — the pretend device both portable
+│   │                           examples drive, behind a DeviceLink, optionally with a
+│   │                           second image it commits itself; and the demo image and
+│   │                           two-image package it is given. Scaffolding, not a
+│   │                           protocol reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
 │   │                           loopback_transport.* is the link to the stub device. Runs
 │   │                           in CI, --flaky-reconnect included

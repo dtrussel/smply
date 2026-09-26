@@ -15,6 +15,14 @@
 /// growing this one; a device worth trusting is a test double, and belongs
 /// under `tests/`.
 ///
+/// The one extension is a **second image that the device commits itself**
+/// (`SecondImage`), because the multi-image examples need a device to take a
+/// package (ADR-0021). It is the simulator's device-committed mode cut down to
+/// the happy path and one failure: the same five commands, with an `image`
+/// number on uploads and in the listing, and an apply that finishes after a
+/// few state reads. It does not model the confirm-denial rules for image 1
+/// (protocol-notes A27); the simulator does.
+///
 /// What it *is* for is the thread. A single-threaded example would demonstrate
 /// nothing about the arrangement that actually catches people out -- a driver
 /// delivering on a thread the library does not own -- and would leave
@@ -53,6 +61,25 @@ enum class SwapType : std::uint8_t
     Revert ///< A trial was not confirmed: swap back.
 };
 
+/// How a device-committed image's apply ends (docs/multi-image.md).
+enum class ApplyOutcome : std::uint8_t
+{
+    Applied, ///< The second MCU committed it: slot 0 new, confirmed.
+    Failed,  ///< It could not: slot 0 back on the old image, nothing pending.
+};
+
+/// A second image, which the device commits itself: the staged firmware of
+/// another MCU, as an STM32H5 holds a BLE module's (ADR-0021). After the reset
+/// that swaps it in, the device takes `apply_reads` image-state reads to
+/// finish applying it, then reports `outcome`.
+struct SecondImage
+{
+    /// What image 1 runs now. May be empty: nothing applied yet.
+    std::vector<std::byte> running;
+    ApplyOutcome outcome = ApplyOutcome::Applied;
+    unsigned apply_reads = 3;
+};
+
 /// One flash slot.
 struct Slot
 {
@@ -66,12 +93,16 @@ struct Slot
     }
 };
 
-/// A device with one image and two slots, answering on a background thread.
+/// A device with one image and two slots -- or two images, the second
+/// committed by the device -- answering on a background thread.
 class StubDevice
 {
 public:
     /// \param primary The image the device is already running.
-    explicit StubDevice(std::vector<std::byte> primary);
+    /// \param second  An image 1 the device commits itself, or nothing for the
+    ///                ordinary one-image device.
+    explicit StubDevice(std::vector<std::byte> primary,
+                        std::optional<SecondImage> second = std::nullopt);
 
     StubDevice(const StubDevice&) = delete;
     StubDevice(StubDevice&&) = delete;
@@ -107,6 +138,9 @@ private:
     [[nodiscard]] std::optional<std::vector<std::byte>> answer(const std::vector<std::byte>& raw);
 
     [[nodiscard]] std::vector<std::byte> encode_state() const;
+    /// One step of every device-committed apply in progress: each state read
+    /// is "a while" passing.
+    void advance_applies();
     void reboot();
     /// Re-reads a slot's version and hash from the image it now holds.
     static void describe(Slot& slot);
@@ -121,10 +155,24 @@ private:
     bool reboot_pending_ = false;
 
     // --- Device state, touched only on the device thread --------------------
-    std::vector<Slot> slots_{2};
-    SwapType swap_ = SwapType::None;
-    /// The upload in progress: the bytes accepted so far, and the total the
-    /// client declared.
+
+    /// One image: its two slots, what the next boot does with them, and --
+    /// for a device-committed image -- how its apply goes.
+    struct ImagePair
+    {
+        std::vector<Slot> slots{2};
+        SwapType swap = SwapType::None;
+        std::optional<ApplyOutcome> device_commits;
+        unsigned apply_reads = 0;
+        /// State reads left before an apply in progress finishes.
+        std::optional<unsigned> applying;
+    };
+
+    std::vector<ImagePair> images_;
+
+    /// The upload in progress: the image it is for, the bytes accepted so far,
+    /// and the total the client declared.
+    std::uint32_t staging_image_ = 0;
     std::vector<std::byte> staging_;
     std::uint64_t declared_size_ = 0;
 

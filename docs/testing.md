@@ -381,7 +381,9 @@ it covers ground no other suite does:
 
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
-clean update needs and no more. If the two ever disagree, the simulator is right;
+clean update needs and no more. Its one extension is a second image the device
+commits itself, the simulator's device-committed mode cut down to success and
+one failure, so the multi-image examples have a device to take a package. If the two ever disagree, the simulator is right;
 growing the stub to match it would be building a second test double outside
 `tests/`.
 

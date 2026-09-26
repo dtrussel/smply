@@ -78,10 +78,18 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
 
 } // namespace
 
-StubDevice::StubDevice(std::vector<std::byte> primary)
+StubDevice::StubDevice(std::vector<std::byte> primary, std::optional<SecondImage> second)
 {
-    slots_[0].content = std::move(primary);
-    describe(slots_[0]);
+    images_.emplace_back();
+    images_[0].slots[0].content = std::move(primary);
+    describe(images_[0].slots[0]);
+    if (second.has_value()) {
+        ImagePair& pair = images_.emplace_back();
+        pair.slots[0].content = std::move(second->running);
+        describe(pair.slots[0]);
+        pair.device_commits = second->outcome;
+        pair.apply_reads = second->apply_reads;
+    }
     thread_ = std::thread{[this] { run(); }};
 }
 
@@ -156,70 +164,107 @@ void StubDevice::describe(Slot& slot)
 
 std::vector<std::byte> StubDevice::encode_state() const
 {
-    // Flags are *derived from the swap type*, not stored (protocol-notes
-    // section 7). After a test swap the running image reports `active` with no
-    // `confirmed`, and the fallback slot reports `confirmed` -- which reads
-    // backwards until you know it is the fallback being described.
-    const bool trial = swap_ == SwapType::Revert;
-
     std::size_t present = 0;
-    for (const Slot& slot : slots_) {
-        if (!slot.empty()) {
-            ++present;
+    for (const ImagePair& pair : images_) {
+        for (const Slot& slot : pair.slots) {
+            if (!slot.empty()) {
+                ++present;
+            }
         }
     }
 
     cbor::Writer out;
     out.map(1).text("images").array(present);
-    for (std::size_t index = 0; index < slots_.size(); ++index) {
-        const Slot& slot = slots_[index];
-        if (slot.empty()) {
-            continue;
-        }
-        const bool primary = index == 0;
-        const bool pending = !primary && swap_ == SwapType::Test;
+    for (std::size_t image = 0; image < images_.size(); ++image) {
+        // Flags are *derived from the swap type*, not stored (protocol-notes
+        // section 7). After a test swap the running image reports `active` with
+        // no `confirmed`, and the fallback slot reports `confirmed` -- which
+        // reads backwards until you know it is the fallback being described.
+        const ImagePair& pair = images_[image];
+        const bool trial = pair.swap == SwapType::Revert;
+        for (std::size_t index = 0; index < pair.slots.size(); ++index) {
+            const Slot& slot = pair.slots[index];
+            if (slot.empty()) {
+                continue;
+            }
+            const bool primary = index == 0;
+            const bool pending = !primary && pair.swap == SwapType::Test;
 
-        // Nine pairs with a hash, eight without. Count them against the block
-        // below before changing either: a definite-length CBOR map that lies
-        // about its size decodes as garbage from that point on, and the error
-        // surfaces somewhere else entirely ("array element not a map"). The
-        // simulator has had this exact off-by-one.
-        out.map(slot.hash.has_value() ? 9 : 8);
-        out.text("image").uint(0);
-        out.text("slot").uint(index);
-        out.text("version").text(slot.version);
-        if (slot.hash.has_value()) {
-            out.text("hash").blob(slot.hash->bytes());
+            // Nine pairs with a hash, eight without. Count them against the
+            // block below before changing either: a definite-length CBOR map
+            // that lies about its size decodes as garbage from that point on,
+            // and the error surfaces somewhere else entirely ("array element
+            // not a map"). The simulator has had this exact off-by-one.
+            out.map(slot.hash.has_value() ? 9 : 8);
+            out.text("image").uint(image);
+            out.text("slot").uint(index);
+            out.text("version").text(slot.version);
+            if (slot.hash.has_value()) {
+                out.text("hash").blob(slot.hash->bytes());
+            }
+            out.text("bootable").boolean(true);
+            out.text("pending").boolean(pending);
+            out.text("confirmed").boolean(primary ? !trial : trial);
+            out.text("active").boolean(primary);
+            out.text("permanent").boolean(false);
         }
-        out.text("bootable").boolean(true);
-        out.text("pending").boolean(pending);
-        out.text("confirmed").boolean(primary ? !trial : trial);
-        out.text("active").boolean(primary);
-        out.text("permanent").boolean(false);
     }
     return out.bytes();
 }
 
+void StubDevice::advance_applies()
+{
+    // The device-committed image's MCU finishes its update in the background;
+    // each state read is one step of "a while". What it then reports is the
+    // device contract in docs/multi-image.md.
+    for (ImagePair& pair : images_) {
+        if (!pair.applying.has_value()) {
+            continue;
+        }
+        if (*pair.applying > 0) {
+            --*pair.applying;
+            continue;
+        }
+        pair.applying.reset();
+        if (pair.device_commits == ApplyOutcome::Failed) {
+            // Rolled back: the old image returns to slot 0, and the new one sits
+            // in slot 1 with nothing pending.
+            std::swap(pair.slots[0], pair.slots[1]);
+        }
+        // Either way the trial is over and nothing is scheduled.
+        pair.swap = SwapType::None;
+    }
+}
+
 void StubDevice::reboot()
 {
-    switch (swap_) {
-    case SwapType::None:
-        break;
-    case SwapType::Test:
-        std::swap(slots_[0], slots_[1]);
-        swap_ = SwapType::Revert; // unconfirmed: the next reset undoes it
-        break;
-    case SwapType::Perm:
-    case SwapType::Revert:
-        // Identical *here* and not in general: Perm installs the secondary for
-        // good, Revert puts the original back. Both are "swap the slots and
-        // stop swapping", because this device holds two slots and models no
-        // difference between them. A real bootloader distinguishes them by
-        // which trailer it writes.
-        std::swap(slots_[0], slots_[1]);
-        swap_ = SwapType::None;
-        break;
+    // MCUboot runs every image's swap at the same boot.
+    for (ImagePair& pair : images_) {
+        switch (pair.swap) {
+        case SwapType::None:
+            break;
+        case SwapType::Test:
+            std::swap(pair.slots[0], pair.slots[1]);
+            pair.swap = SwapType::Revert; // unconfirmed: the next reset undoes it
+            if (pair.device_commits.has_value()) {
+                // The device now starts applying it to the other MCU.
+                pair.applying = pair.apply_reads;
+            }
+            break;
+        case SwapType::Perm:
+        case SwapType::Revert:
+            // Identical *here* and not in general: Perm installs the secondary
+            // for good, Revert puts the original back. Both are "swap the slots
+            // and stop swapping", because this device holds two slots and
+            // models no difference between them. A real bootloader
+            // distinguishes them by which trailer it writes.
+            std::swap(pair.slots[0], pair.slots[1]);
+            pair.swap = SwapType::None;
+            pair.applying.reset();
+            break;
+        }
     }
+
     // A reboot forgets any upload session, which is the `area_id == -1` case in
     // protocol-notes section 6 rule 5.
     staging_.clear();
@@ -255,6 +300,7 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
     }
 
     if (header->command == kImageState && header->op == Operation::Read) {
+        advance_applies();
         return respond(*header, ConstBytes{encode_state()});
     }
 
@@ -266,29 +312,34 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
         const cbor::Value* hash = request->find("hash");
 
         if (confirm && hash == nullptr) {
-            // Confirm the running image: the trial, if any, is now permanent.
-            swap_ = SwapType::None;
+            // Confirm the *running* image, image 0: the trial, if any, is now
+            // permanent. Never another image (protocol-notes section 6).
+            images_[0].swap = SwapType::None;
             return respond(*header, ConstBytes{encode_state()});
         }
         if (hash == nullptr || !hash->is(cbor::Value::Kind::Bytes)) {
             return respond(*header, ConstBytes{error_map(3)});
         }
-        // Mark the slot holding that hash for the next boot.
-        for (std::size_t index = 0; index < slots_.size(); ++index) {
-            const Slot& slot = slots_[index];
-            if (!slot.hash.has_value() ||
-                !std::equal(hash->bytes.begin(), hash->bytes.end(), slot.hash->bytes().begin(),
-                            slot.hash->bytes().end())) {
-                continue;
-            }
-            if (index == 0) {
-                // Already running it. A real device refuses to confirm a slot
-                // that is not the running one, and this is the mirror case.
-                swap_ = confirm ? SwapType::None : swap_;
+        // Mark the slot holding that hash for the next boot, in whichever
+        // image holds it: the device finds a hash in any image.
+        for (ImagePair& pair : images_) {
+            for (std::size_t index = 0; index < pair.slots.size(); ++index) {
+                const Slot& slot = pair.slots[index];
+                if (!slot.hash.has_value() ||
+                    !std::equal(hash->bytes.begin(), hash->bytes.end(), slot.hash->bytes().begin(),
+                                slot.hash->bytes().end())) {
+                    continue;
+                }
+                if (index == 0) {
+                    // Already running it. A real device refuses to confirm a
+                    // slot that is not the running one, and this is the mirror
+                    // case.
+                    pair.swap = confirm ? SwapType::None : pair.swap;
+                    return respond(*header, ConstBytes{encode_state()});
+                }
+                pair.swap = confirm ? SwapType::Perm : SwapType::Test;
                 return respond(*header, ConstBytes{encode_state()});
             }
-            swap_ = confirm ? SwapType::Perm : SwapType::Test;
-            return respond(*header, ConstBytes{encode_state()});
         }
         return respond(*header, ConstBytes{error_map(3)});
     }
@@ -315,6 +366,15 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
                      .has_value()) {
                 return respond(*header, ConstBytes{error_map(3)}); // bad magic
             }
+            // Read on first packets only, where it picks the image whose
+            // secondary slot receives the upload (protocol-notes section 6).
+            const std::uint64_t image = request->get_uint("image").value_or(0);
+            if (image >= images_.size()) {
+                return respond(*header, ConstBytes{error_map(3)}); // no such image
+            }
+            staging_image_ = static_cast<std::uint32_t>(image);
+            // The first chunk erases the slot it is about to fill.
+            images_[staging_image_].slots[1] = Slot{};
             declared_size_ = *len;
             staging_.clear();
         }
@@ -329,17 +389,18 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
             return respond(*header, ConstBytes{out.bytes()});
         }
 
+        Slot& target = images_[staging_image_].slots[1];
         staging_.insert(staging_.end(), data->bytes.begin(), data->bytes.end());
         if (staging_.size() >= declared_size_ && declared_size_ != 0) {
-            slots_[1].content = staging_;
-            describe(slots_[1]);
+            target.content = staging_;
+            describe(target);
             staging_.clear();
         }
 
         cbor::Writer out;
         // No "match": this device is built without CONFIG_IMG_ENABLE_IMAGE_CHECK
         // (A6). Absence is a successful answer, not a missing one.
-        out.map(1).text("off").uint(slots_[1].empty() ? staging_.size() : declared_size_);
+        out.map(1).text("off").uint(target.empty() ? staging_.size() : declared_size_);
         return respond(*header, ConstBytes{out.bytes()});
     }
 
