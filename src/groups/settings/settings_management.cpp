@@ -82,7 +82,7 @@ constexpr const char* kInvalidName = "settings: invalid setting name";
         if (!narrowed.has_value()) {
             return fail(ErrorCode::CborDecode, "settings: max_size out of range");
         }
-        result.max_size = *narrowed;
+        result.max_size = narrowed;
     }
     // The view points into the assembler's buffer, valid only for this
     // callback. The copy is what the caller keeps.

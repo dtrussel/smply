@@ -1413,3 +1413,50 @@ TEST_CASE("an over-long key is refused by both visitors", "[cbor][limits]")
     CHECK_FALSE(entries.run(second, key, 8).has_value());
     CHECK_FALSE(second.ok());
 }
+
+TEST_CASE("an unreadable item is refused wherever the visitors meet it", "[cbor][hostile]")
+{
+    // 0x1C is a head with reserved additional information (RFC 8949 section
+    // 3): not well-formed, so the peek itself fails rather than the type check.
+    constexpr std::uint8_t kReserved = 0x1C;
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+
+    SECTION("an array element")
+    {
+        Shape doc{encoding};
+        doc.map(1).text("stat_list").array(2).text("a");
+        doc.raw().raw({kReserved});
+        doc.end().end();
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        TextVisit visit;
+        CHECK_FALSE(visit.run(reader, "stat_list", 8).has_value());
+        CHECK_FALSE(reader.ok());
+    }
+    SECTION("a sibling entry before the map")
+    {
+        Shape doc{encoding};
+        doc.map(2).text("x");
+        doc.raw().raw({kReserved});
+        doc.text("fields").map(0).end().end();
+        Reader reader{doc.view()};
+        if (reader.enter_map().has_value()) {
+            EntryVisit visit;
+            CHECK_FALSE(visit.run(reader, "fields", 8).value_or(false));
+        }
+        CHECK_FALSE(reader.ok());
+    }
+    SECTION("an entry inside the map")
+    {
+        Shape doc{encoding};
+        doc.map(1).text("fields").map(1).text("a");
+        doc.raw().raw({kReserved});
+        doc.end().end();
+        Reader reader{doc.view()};
+        if (reader.enter_map().has_value()) {
+            EntryVisit visit;
+            CHECK_FALSE(visit.run(reader, "fields", 8).value_or(false));
+        }
+        CHECK_FALSE(reader.ok());
+    }
+}
