@@ -21,7 +21,7 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 * SMP framing and streaming reassembly;
 * a bounded CBOR façade;
 * request correlation with timeouts and cancellation;
-* the OS and image management groups;
+* the OS, image, statistics and settings management groups;
 * MCUboot image parsing with SHA-256;
 * the image upload state machine;
 * `FirmwareUpdater`, which drives the whole update: upload, reset, reconnect,
@@ -80,6 +80,22 @@ while (busy) {                       // the application owns the pump
     client.poll(now);
     updater.poll(now);
 }
+```
+
+The other groups are single requests over the same client, each completing on
+a later `poll()`. A setting's value is bytes, in whatever encoding the device
+application gave it:
+
+```cpp
+smply::StatisticsManagement stats{client};
+stats.read_group("smp_svr_stats", [](smply::Result<smply::StatisticsGroup> group) { /* ... */ });
+
+smply::SettingsManagement settings{client};
+settings.write("app/level", level_bytes, [&](smply::Result<void> written) {
+    if (written.has_value()) {
+        settings.save("app", [](smply::Result<void>) { /* persisted */ });
+    }
+});
 ```
 
 ## Building

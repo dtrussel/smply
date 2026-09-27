@@ -85,6 +85,8 @@ target_sources(smply
         src/groups/image/upload_driver.cpp
         src/groups/image/upload_session.cpp
         src/groups/os/os_management.cpp
+        src/groups/settings/settings_management.cpp
+        src/groups/statistics/statistics_management.cpp
         src/image/image_source.cpp
         src/image/image_values.cpp
         src/image/mcuboot_header.cpp

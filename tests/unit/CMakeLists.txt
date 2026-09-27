@@ -23,10 +23,12 @@ add_executable(smply_unit_tests
     test_send_queue.cpp
     test_serial_framing.cpp
     test_serial_port_config.cpp
+    test_settings_group.cpp
     test_sha256.cpp
     test_smp_client.cpp
     test_smp_codec.cpp
     test_source_reader.cpp
+    test_statistics_group.cpp
     test_tlv.cpp
     test_update_state_machine.cpp
     test_upload_driver.cpp

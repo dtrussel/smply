@@ -46,7 +46,7 @@ smply is a **library**, not a service. It owns protocol state only.
 | G5 | New MCUmgr groups and transports are additive | A group is a leaf module depending only on `SmpClient` + the CBOR façade. A transport implements one interface. |
 | G6 | A new contributor can continue from the repo alone | Living docs, a backlog roadmap and ADRs, enforced by the documentation gate and the Definition of Done (ADR-0013, ADR-0018). |
 
-Explicit non-goals: server-side SMP, MCUmgr groups other than 0 and 1,
+Explicit non-goals: server-side SMP, MCUmgr groups other than 0 to 3,
 image signing/verification, BLE connection management, an async framework.
 
 ## 3. Components and dependency direction
@@ -97,6 +97,12 @@ enforces this, for the public headers and for the directories under `src/`
                  └─────────────┘   └──────────────┘  └─────────────┘
 ```
 
+**Two more groups sit beside OsManagement**, left out of the drawing for the
+same reason: `StatisticsManagement` (`groups/statistics/`, group 2) and
+`SettingsManagement` (`groups/settings/`, group 3). Each is a leaf over
+`SmpClient` and the CBOR façade, like `OsManagement`, and nothing above them
+uses them: `FirmwareUpdater` needs neither.
+
 **ImageManagement also depends on ImageFile**, an edge the drawing leaves out
 to stay legible. It computes the upload `sha` with `sha256()`, and the two
 values a device reports about an image, `ImageHash` and `ImageVersion`, are
@@ -119,6 +125,8 @@ pseudo-terminal in CI and never against a device. UDP is not implemented.
 | **cbor façade** (`src/cbor/`) | bounded encode/decode of the CBOR shapes smply uses; `MgmtError` extraction | SMP header, groups' meaning |
 | **SmpClient** (`src/smp/client.*`) | sequence allocation, pending-request table, per-request deadlines, cancellation, retired-seq set, dispatch of decoded responses, transport binding | firmware, images, files |
 | **OsManagement** (`src/groups/os/`) | reset, mcumgr params, echo | DFU policy |
+| **StatisticsManagement** (`src/groups/statistics/`) | list statistics groups, read one group's counters | what a counter means |
+| **SettingsManagement** (`src/groups/settings/`) | read, write, erase one setting; commit, load, save | a setting's type or encoding: values are bytes |
 | **ImageManagement** (`src/groups/image/`) | image state get/set, upload request/response encoding, the upload state machine, erase, slot info | files on disk, reconnection |
 | **ImageFile** (`src/image/`) | MCUboot header parse, TLV scan for `IMAGE_TLV_SHA256`, streaming SHA-256 of the file, chunk supply, the `ImageHash` and `ImageVersion` values | SMP, CBOR, transports, the image group |
 | **FirmwareUpdater** (`src/dfu/`) | the update state machine, reset/disconnect/reconnect protocol with the application, progress reporting | GATT, WinRT, threads, sockets |
@@ -337,6 +345,11 @@ smply will accept from a device or a file.
 | `kMaxImageHashLength` | 64 B | a device-reported image hash (SHA-512 case) | — |
 | `kMaxReasonLength` | 128 B | a device-supplied `rsn` string | — |
 | `kMaxEchoLength` | 128 B | echo, in both directions | — |
+| `kMaxStatisticsNameLength` | 64 B | a statistics group or field name, both directions | — |
+| `kMaxStatisticsGroups` | 128 | names in a statistics list | — |
+| `kMaxStatisticsFields` | 256 | fields in one statistics group | — |
+| `kMaxSettingNameLength` | 64 B | a setting name sent (`SETTINGS_MAX_NAME_LEN`) | — |
+| `kMaxSettingValueLength` | 256 B | a setting value, both directions, and a read's `max_size` (`SETTINGS_MAX_VAL_LEN`) | — |
 | `kMaxImageSize` | 16 MiB | sanity bound on a firmware file | — |
 | `kMaxImageTlvs` | 256 | TLV entries scanned in an image trailer | — |
 | `kUploadChunkMin` | 32 B | the MCUboot header must fit the first chunk (A7) | — |
@@ -374,6 +387,9 @@ smply/
 │   │                           SetStateRequest, SlotInfo
 │   ├── groups/image_upload.hpp UploadOptions, UploadProgress, UploadResult,
 │   │                           UploadHandle, ProgressCallback
+│   ├── groups/statistics.hpp   StatisticsManagement, StatisticsGroup, StatisticsField,
+│   │                           StatisticsError
+│   ├── groups/settings.hpp     SettingsManagement, SettingValue, SettingsError
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
 │   ├── mcuboot_image.hpp       ImageHash, ImageVersion, McubootImageInfo,
 │   │                           parse_mcuboot_header, sha256, find_image_tlv_hash
@@ -392,6 +408,8 @@ smply/
 │   ├── groups/                 common.hpp — what every group shares: send(), reject(),
 │   │                           the decode plumbing (namespace smply::groups)
 │   ├── groups/os/              os_management.cpp
+│   ├── groups/statistics/      statistics_management.cpp
+│   ├── groups/settings/        settings_management.cpp
 │   ├── groups/image/           image_management.cpp  decode.{hpp,cpp}  upload_session.{hpp,cpp}
 │   │                           upload_driver.{hpp,cpp}
 │   ├── image/                  image_source.cpp  mcuboot_header.cpp  tlv.cpp
@@ -451,7 +469,7 @@ smply/
 ├── tests/
 │   ├── support/                fake_transport.*  manual_clock.hpp  message_builder.hpp
 │   │                           image_builder.hpp  fake_image_source.hpp
-│   │                           server_simulator.*
+│   │                           cbor_shapes.hpp  server_simulator.*
 │   │                           — built as smply_test_support, shared by both suites
 │   ├── unit/                   per-component
 │   ├── serial_port/            test_serial_port.cpp — the serial adapter on a pseudo-terminal:
@@ -499,7 +517,10 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
 
 ## 11. Known limitations
 
-* Groups other than OS and Image are not implemented.
+* Groups other than OS, image, statistics and settings are not implemented.
+* **Statistics and settings have not met a device.** Both are traced to
+  Zephyr's source (protocol-notes §10, §11) and tested over `FakeTransport` in
+  both CBOR encodings, but the bench peer builds neither group.
 * SMP v1 by default; v2 opt-in (protocol-notes §9 A1).
 * One outstanding request; no pipelining (A10).
 * Encrypted MCUboot images are not supported end-to-end (A13).

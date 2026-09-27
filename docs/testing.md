@@ -236,6 +236,22 @@ the single-image "absent image ⇒ 0" rule; hostile responses (`images` not an
 array, 10 000 entries, 4 KiB version string, 200-byte hash) ⇒ bounded error;
 `set_state` encoding with and without `hash`; reset with/without `force`.
 
+Statistics and settings (`test_statistics_group.cpp`, `test_settings_group.cpp`):
+every request's operation, command and bytes, hand-derived from the grammar --
+settings in particular, where two command IDs are shared between a read and a
+write handler; every response built once with `tests/support/cbor_shapes.hpp`
+and run **definite and indefinite**; lists and groups of zero, one and many
+entries; names, counts and values at their limit and one over; statistic values
+up to `UINT64_MAX`; a repeated field, a negative value, a nested `err` inside
+`fields` (A30), missing required keys and wrong types; every truncation of a
+response; settings values with embedded zeros, an empty value, a reply longer
+than its `max_size`, and a reported `max_size` over 32 bits; name rejection for
+every name-taking command, never inline; SMP v1 flat codes, v2 group codes,
+another group's code (A32) and future codes through `statistics_error()` and
+`settings_error()`; and timeout, cancellation and a dropped link, inherited
+from the client. The façade visitors they rely on are pinned in both encodings
+by `test_cbor.cpp`, with the container first, last and between other entries.
+
 ### UploadSession (pure function — the densest suite)
 Table-driven over `(state, response) → step`, with no client, transport or
 clock:
@@ -690,6 +706,7 @@ has quietly stopped holding.
 | `fuzz_header` | 8+ bytes | decoding is *faithful*: anything accepted re-encodes to the bytes it came from, and decodes again to the same header. A client and a device that disagree about what was on the wire is how a response reaches the wrong request. |
 | `fuzz_assembler` | a stream, split at fuzzer-chosen points (the first byte is the fragment size) | buffering never exceeds `max_buffer`, at every step and at the peak; a completed message's payload length equals its header's; the buffer returns to empty between messages |
 | `fuzz_cbor_image_state` | arbitrary CBOR, delivered as a correlated response to a real `get_state` | `kMaxImages`, `kMaxVersionStringLength` and `kMaxImageHashLength` all hold on the decoded result — no container or string sized by the device |
+| `fuzz_cbor_statistics` | arbitrary CBOR, delivered as a correlated response to a real `list_groups` or `read_group` (the first byte chooses) | `kMaxStatisticsGroups`, `kMaxStatisticsFields` and `kMaxStatisticsNameLength` hold on anything decoded, and field names are unique. The first decoders over containers keyed by the device, read by the façade's scalar visitors beside QCBOR's consecutive-break defect (A18). **Settings has no target of its own**: its one device-sized item is a byte string read by `Reader::bytes()` and bounded before the copy, the same getter `fuzz_cbor_image_state` already drives through image hashes, and the rest of its path is `fuzz_smp_client_rx`'s |
 | `fuzz_cbor_upload_response` | arbitrary CBOR, delivered into a live upload | the session never reports more transferred than the image holds, whatever offset the device claims (protocol-notes §6, rule 5) |
 | `fuzz_mcuboot_header` | arbitrary bytes | the trailer offset a parsed header implies is never below the header itself — the arithmetic that indexes the file cannot be made to point backwards |
 | `fuzz_dfu_package` | arbitrary bytes as a DFU package, and the same bytes as a JSON document | a package that reads has its images sorted by index, each index once and at most `kMaxImageIndex`, each image a view inside the input, each dependency list within `kMaxImageTlvs`, and no image depending on a newer version of another image in the package. The seed corpus holds a package written by nRF Connect SDK's own `generate_zip.py` (S38), so mutation starts from the real layout, plus its manifest alone, a one-image package, a deflated one, and one whose images disagree |
@@ -697,7 +714,7 @@ has quietly stopped holding.
 | `fuzz_smp_client_rx` | an arbitrary stream fed to a live client with a request pending | a completed request is only ever completed by a response matching its `seq`, `group` and `command`; unmatched responses never exceed received ones |
 | `fuzz_serial_deframe` | a console stream, read in fuzzer-chosen chunks (the first byte is the read size) | neither the line buffer nor the packet buffer exceeds its bound, at every step; a framing error leaves nothing partial behind; a delivered packet is CRC-verified and within the cap. The only target over a transport, and the first whose input is *expected* to be mostly noise — a shared console carries far more shell and log output than frames |
 
-Three of these — the two CBOR targets and `fuzz_smp_client_rx` — go through a
+Four of these — the three CBOR targets and `fuzz_smp_client_rx` — go through a
 real `SmpClient` rather than calling a decoder directly, because the decoders
 are file-local. That is the better target anyway: it fuzzes framing,
 correlation, error extraction and the group decode together, which is the path

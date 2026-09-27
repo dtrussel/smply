@@ -92,6 +92,47 @@ inline constexpr std::size_t kMaxReasonLength = 128;
 /// silently truncated.
 inline constexpr std::size_t kMaxEchoLength = 128;
 
+/// Longest statistics name accepted, in bytes: a group name in either
+/// direction, and a field name in a response.
+///
+/// One constant for both because one Kconfig bounds both on the server:
+/// `CONFIG_MCUMGR_GRP_STAT_MAX_NAME_LEN` (default 32) sizes the buffer a
+/// requested group name must fit, and caps every group and field name the
+/// server encodes (docs/protocol-notes.md section 10). Twice the default leaves
+/// room for a device that raises it, and still bounds each copy.
+inline constexpr std::size_t kMaxStatisticsNameLength = 64;
+
+/// Largest number of group names accepted in a statistics list.
+///
+/// The server does not cap the list; its SMP buffer does. A default
+/// 384-byte buffer holds about thirty names, so this is far above a real
+/// device while bounding what a hostile one can make smply store.
+inline constexpr std::size_t kMaxStatisticsGroups = 128;
+
+/// Largest number of fields accepted in one statistics group.
+///
+/// As for the list, only the buffer bounds it on the server. With names
+/// bounded by `kMaxStatisticsNameLength`, this caps what one response can make
+/// smply hold at a few tens of kilobytes.
+inline constexpr std::size_t kMaxStatisticsFields = 256;
+
+/// Longest setting name smply will send, in bytes.
+///
+/// Zephyr's `SETTINGS_MAX_NAME_LEN` (`include/zephyr/settings/settings.h`):
+/// no setting the subsystem can hold has a longer name. The MCUmgr server's own
+/// bound, `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN`, is usually lower (31 usable
+/// bytes by default), and a name over it is refused by the device with
+/// `SettingsError::KeyTooLong` (docs/protocol-notes.md section 11).
+inline constexpr std::size_t kMaxSettingNameLength = 64;
+
+/// Largest setting value smply will send or accept, in bytes.
+///
+/// Zephyr's `SETTINGS_MAX_VAL_LEN`. It bounds a written value, the `max_size`
+/// a read may ask for, and the value a read may return. A device returns at
+/// most `CONFIG_MCUMGR_GRP_SETTINGS_VALUE_LEN` bytes (default 32) whatever is
+/// asked for (docs/protocol-notes.md section 11).
+inline constexpr std::size_t kMaxSettingValueLength = 256;
+
 /// Default per-request deadline.
 inline constexpr Duration kDefaultTimeout = std::chrono::seconds{5};
 

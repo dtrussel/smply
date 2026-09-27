@@ -25,6 +25,8 @@
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/groups/os.hpp"
+#include "smply/groups/settings.hpp"
+#include "smply/groups/statistics.hpp"
 #include "smply/image_source.hpp"
 #include "smply/limits.hpp"
 #include "smply/mcuboot_image.hpp"
@@ -469,6 +471,168 @@ TEST_CASE("kMaxEchoLength bounds echo in both directions", "[limits]")
     tcbor::Writer out;
     out.map(1).text("r").text(std::string(limits::kMaxEchoLength + 1, 'e'));
     fixture.answer(out.view());
+    CHECK(rejected == ErrorCode::CborDecode);
+}
+
+TEST_CASE("kMaxStatisticsNameLength bounds statistics names in both directions", "[limits]")
+{
+    // Declared before the fixture; see kMaxInFlight.
+    std::optional<ErrorCode> refused;
+    std::optional<ErrorCode> rejected;
+    std::optional<std::vector<std::string>> listed;
+    Fixture fixture;
+    smply::StatisticsManagement stats{fixture.client};
+
+    // Outbound: a group name one over the limit is caller misuse.
+    static_cast<void>(stats.read_group(std::string(limits::kMaxStatisticsNameLength + 1, 's'),
+                                       [&refused](Result<smply::StatisticsGroup> result) {
+                                           if (!result.has_value()) {
+                                               refused = result.error().code();
+                                           }
+                                       }));
+    fixture.client.poll(fixture.clock.now());
+    CHECK(refused == ErrorCode::InvalidArgument);
+    CHECK(fixture.transport.sent().empty());
+
+    // Inbound: a listed name at the limit is kept, one over is refused.
+    for (const std::size_t length :
+         {limits::kMaxStatisticsNameLength, limits::kMaxStatisticsNameLength + 1}) {
+        static_cast<void>(stats.list_groups([&](Result<std::vector<std::string>> result) {
+            if (result.has_value()) {
+                listed = *result;
+            } else {
+                rejected = result.error().code();
+            }
+        }));
+        tcbor::Writer out;
+        out.map(1).text("stat_list").array(1).text(std::string(length, 's'));
+        fixture.answer(out.view());
+    }
+    REQUIRE(listed.has_value());
+    CHECK(listed->front().size() == limits::kMaxStatisticsNameLength);
+    CHECK(rejected == ErrorCode::CborDecode);
+}
+
+TEST_CASE("kMaxStatisticsGroups bounds a statistics list", "[limits]")
+{
+    std::vector<std::size_t> accepted; // before the fixture; see kMaxInFlight
+    std::optional<ErrorCode> rejected;
+    Fixture fixture;
+    smply::StatisticsManagement stats{fixture.client};
+
+    for (const std::size_t count :
+         {limits::kMaxStatisticsGroups, limits::kMaxStatisticsGroups + 1}) {
+        static_cast<void>(stats.list_groups([&](Result<std::vector<std::string>> result) {
+            if (result.has_value()) {
+                accepted.push_back(result->size());
+            } else {
+                rejected = result.error().code();
+            }
+        }));
+        tcbor::Writer out;
+        out.map(1).text("stat_list").array(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            out.text("g");
+        }
+        fixture.answer(out.view());
+    }
+    CHECK(accepted == std::vector<std::size_t>{limits::kMaxStatisticsGroups});
+    CHECK(rejected == ErrorCode::CborDecode);
+}
+
+TEST_CASE("kMaxStatisticsFields bounds a statistics group", "[limits]")
+{
+    std::vector<std::size_t> accepted; // before the fixture; see kMaxInFlight
+    std::optional<ErrorCode> rejected;
+    Fixture fixture;
+    smply::StatisticsManagement stats{fixture.client};
+
+    for (const std::size_t count :
+         {limits::kMaxStatisticsFields, limits::kMaxStatisticsFields + 1}) {
+        static_cast<void>(stats.read_group("g", [&](Result<smply::StatisticsGroup> result) {
+            if (result.has_value()) {
+                accepted.push_back(result->fields.size());
+            } else {
+                rejected = result.error().code();
+            }
+        }));
+        tcbor::Writer out;
+        out.map(2).text("name").text("g").text("fields").map(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            out.text("f" + std::to_string(i)).uint(i);
+        }
+        fixture.answer(out.view());
+    }
+    CHECK(accepted == std::vector<std::size_t>{limits::kMaxStatisticsFields});
+    CHECK(rejected == ErrorCode::CborDecode);
+}
+
+TEST_CASE("kMaxSettingNameLength bounds a setting name", "[limits]")
+{
+    std::optional<ErrorCode> refused; // before the fixture; see kMaxInFlight
+    Fixture fixture;
+    smply::SettingsManagement settings{fixture.client};
+
+    static_cast<void>(settings.erase(std::string(limits::kMaxSettingNameLength + 1, 'n'),
+                                     [&refused](Result<void> result) {
+                                         if (!result.has_value()) {
+                                             refused = result.error().code();
+                                         }
+                                     }));
+    fixture.client.poll(fixture.clock.now());
+    CHECK(refused == ErrorCode::InvalidArgument);
+    CHECK(fixture.transport.sent().empty());
+
+    static_cast<void>(settings.erase(std::string(limits::kMaxSettingNameLength, 'n'), nullptr));
+    CHECK(fixture.transport.sent().size() == 1);
+}
+
+TEST_CASE("kMaxSettingValueLength bounds a setting value in both directions", "[limits]")
+{
+    // Declared before the fixture; see kMaxInFlight.
+    std::optional<ErrorCode> refused_write;
+    std::optional<ErrorCode> refused_size;
+    std::optional<ErrorCode> rejected;
+    std::optional<std::size_t> read_size;
+    Fixture fixture;
+    smply::SettingsManagement settings{fixture.client};
+
+    // Outbound: a value, or a max_size, one over the limit.
+    const std::vector<std::byte> too_long(limits::kMaxSettingValueLength + 1);
+    static_cast<void>(
+        settings.write("n", ConstBytes{too_long}, [&refused_write](Result<void> result) {
+            if (!result.has_value()) {
+                refused_write = result.error().code();
+            }
+        }));
+    static_cast<void>(settings.read("n",
+                                    static_cast<std::uint32_t>(limits::kMaxSettingValueLength + 1),
+                                    [&refused_size](Result<smply::SettingValue> result) {
+                                        if (!result.has_value()) {
+                                            refused_size = result.error().code();
+                                        }
+                                    }));
+    fixture.client.poll(fixture.clock.now());
+    CHECK(refused_write == ErrorCode::InvalidArgument);
+    CHECK(refused_size == ErrorCode::InvalidArgument);
+    CHECK(fixture.transport.sent().empty());
+
+    // Inbound: a reply at the limit is kept, one over is refused.
+    for (const std::size_t length :
+         {limits::kMaxSettingValueLength, limits::kMaxSettingValueLength + 1}) {
+        static_cast<void>(settings.read("n", [&](Result<smply::SettingValue> result) {
+            if (result.has_value()) {
+                read_size = result->value.size();
+            } else {
+                rejected = result.error().code();
+            }
+        }));
+        const std::vector<std::byte> value(length);
+        tcbor::Writer out;
+        out.map(1).text("val").blob(ConstBytes{value});
+        fixture.answer(out.view());
+    }
+    CHECK(read_size == limits::kMaxSettingValueLength);
     CHECK(rejected == ErrorCode::CborDecode);
 }
 
