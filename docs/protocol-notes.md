@@ -10,7 +10,9 @@ sections 5 to 9 extended and in places **corrected by hardware** on
 **2026-09-08** and **2026-09-09** — see S24 and S25 for the peer that
 produced those facts, and §9 A18 to A24 for what it found. Where a §9 entry
 carries a measurement, the device is the NUCLEO-WB55RG described in
-`tests/hil/README.md` and the finding is dated in the entry.
+`tests/hil/README.md` and the finding is dated in the entry. Sections 10 and 11
+(statistics and settings, S47 to S55) were read from source on **2026-09-27**
+and have **not** met a device: the bench peer builds neither group.
 
 A note on what "verified" means per layer, because the two dates are not the
 same kind of evidence: 2026-09-04/05 means *read from primary sources* —
@@ -71,6 +73,15 @@ earlier.
 | S43 | `boot/zephyr/Kconfig.serial_recovery` (`MCUBOOT_SERIAL_DIRECT_IMAGE_UPLOAD`) | In serial recovery the upload's `image` names a **slot**: 0 = default (as 1), 1 = the primary slot of the first image, 2 = its secondary slot, 3 = image-2, 4 = image-3. Without the option every upload goes to the default, the primary slot | same |
 | S44 | `boot/boot_serial/src/boot_serial.c` (`bs_set`), `boot/bootutil/src/bootutil_public.c` (`boot_set_pending_multi`) | With `BOOT_SERIAL_IMG_GRP_IMAGE_STATE`, serial recovery's set-state finds the image by hash (`BOOT_SERIAL_IMG_GRP_HASH`, default y; optional with one image), then calls `boot_set_pending_multi(image_index, confirm)`, which always opens `FLASH_AREA_IMAGE_SECONDARY`: *test* and *confirm* both schedule the **secondary** slot, so neither can confirm the image running in the primary slot | same |
 | S45 | `boot/zephyr/serial_adapter.c` | Serial recovery uses the UART chosen as `zephyr,uart-mcumgr`, else `zephyr,console`, and never calls `uart_configure()`: baud rate and flow control are the devicetree node's | same |
+| S47 | `doc/services/device_mgmt/smp_groups/smp_group_2.rst` | Statistics management group: group data (cmd 0) and list groups (cmd 1) | `zephyrproject-rtos/zephyr@main` (read 2026-09-27) |
+| S48 | `include/zephyr/mgmt/mcumgr/grp/stat_mgmt/stat_mgmt.h` | `STAT_MGMT_ID_SHOW`/`_LIST`, `stat_mgmt_err_code_t` | same |
+| S49 | `subsys/mgmt/mcumgr/grp/stat_mgmt/src/stat_mgmt.c` | Server handlers: request decode, name-length check, response encoding (`zcbor_uint32_put` for every value), the read-only handler table, `stat_mgmt_translate_error_code()` | same (verified 2026-09-27 **from source**) |
+| S50 | `subsys/mgmt/mcumgr/grp/stat_mgmt/Kconfig` | `CONFIG_MCUMGR_GRP_STAT_MAX_NAME_LEN` (default 32): the request's name buffer and the cap on every name encoded | same |
+| S51 | `doc/services/device_mgmt/smp_groups/smp_group_3.rst` | Settings management group: read/write (cmd 0), delete (1), commit (2), load/save (3) | same |
+| S52 | `include/zephyr/mgmt/mcumgr/grp/settings_mgmt/settings_mgmt.h` | `SETTINGS_MGMT_ID_*`, `settings_mgmt_ret_code_t` | same |
+| S53 | `subsys/mgmt/mcumgr/grp/settings_mgmt/src/settings_mgmt.c` | Server handlers for all six operations, the `max_size` capping, the access hook, the handler table, `settings_mgmt_translate_error_code()` | same (verified 2026-09-27 **from source**) |
+| S54 | `subsys/mgmt/mcumgr/grp/settings_mgmt/Kconfig` | `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN` and `_VALUE_LEN` (both default 32), stack or heap buffers, `CONFIG_MCUMGR_GRP_SETTINGS_ACCESS_HOOK` | same |
+| S55 | `include/zephyr/settings/settings.h` | `SETTINGS_MAX_NAME_LEN` (64, from `SETTINGS_MAX_DIR_DEPTH` 8) and `SETTINGS_MAX_VAL_LEN` (256) | same |
 | S46 | `include/zephyr/mgmt/mcumgr/mgmt/callbacks.h`, `subsys/mgmt/mcumgr/smp/src/smp.c` | `MGMT_EVT_OP_CMD_RECV`, `MGMT_EVT_OP_CMD_STATUS` and `MGMT_EVT_OP_CMD_DONE`, each with `struct mgmt_evt_op_cmd_arg { group; id; op / err / status }`, under `CONFIG_MCUMGR_SMP_COMMAND_STATUS_HOOKS`; `smp.c` notifies `CMD_DONE` once a command has been processed: a device can learn when a given command is done | `zephyrproject-rtos/zephyr@main` (verified 2026-09-26 from source) |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
@@ -139,8 +150,8 @@ can always be resynchronised on message boundaries without transport framing
 (unused) · `6` Split (unused) · `7` Run (unused) · `8` FS · `9` Shell ·
 `10` Enum · `11` Transport · `63` Zephyr basic · `64+` user-defined.
 
-smply implements groups **0** and **1** only; the rest are representable as
-opaque group IDs.
+smply implements groups **0** to **3**: OS, image, statistics (§10) and
+settings (§11). The rest are representable as opaque group IDs.
 
 ---
 
@@ -221,6 +232,29 @@ exposes an opt-in v2 mode. Rationale in [ADR-0010](decisions/ADR-0010-request-co
 `0` OK · `1` UNKNOWN · `2` INVALID_FORMAT · `3` QUERY_YIELDS_NO_ANSWER ·
 `4` RTC_NOT_SET · `5` RTC_COMMAND_FAILED · `6` QUERY_RESPONSE_VALUE_NOT_VALID ·
 `7` HEAP_STATS_FETCH_FAILED
+
+### `stat_mgmt_err_code_t` (S48) — group 2, SMP v2
+
+`0` OK · `1` UNKNOWN · `2` INVALID_GROUP · `3` INVALID_STAT_NAME ·
+`4` INVALID_STAT_SIZE · `5` WALK_ABORTED
+
+An unknown group is reported as `3`, not `2` (A29). Over v1 with
+`CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, `stat_mgmt_translate_error_code()`
+(S49) maps `2` and `3` to `ENOENT`, `4` to `EINVAL`, and everything else to
+`EUNKNOWN` (A34).
+
+### `settings_mgmt_ret_code_t` (S52) — group 3, SMP v2
+
+`0` OK · `1` UNKNOWN · `2` KEY_TOO_LONG · `3` KEY_NOT_FOUND ·
+`4` READ_NOT_SUPPORTED · `5` ROOT_KEY_NOT_FOUND · `6` WRITE_NOT_SUPPORTED ·
+`7` DELETE_NOT_SUPPORTED · `8` SAVE_NOT_SUPPORTED ·
+`9` SAVE_FAILED_VALUE_TOO_LONG_TO_READ
+
+Over v1 with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`,
+`settings_mgmt_translate_error_code()` (S53) maps `2` to `EINVAL`, `3` and `4`
+to `ENOENT`, and **everything else** -- a missing root key, every
+not-supported refusal, a failed save -- to `EUNKNOWN` (A34). A settings
+command may also fail with another group's code (A32).
 
 ---
 
@@ -1013,6 +1047,13 @@ Recorded so future sessions do not rediscover them.
 | A24 | **On a server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, SMP v1 destroys image-group error codes many-to-one -- measured, not inferred.** The pinned peer sets that option. Two refusals provoked from an identical baseline, each issued once as v1 and once as v2 (bench, 2026-09-09): marking an absent image for test, which is `IMG_MGMT_ERR_HASH_NOT_FOUND` (8), and marking the *running* image for test, which is `IMAGE_SETTING_TEST_TO_ACTIVE_DENIED` (33). Under **v2** both arrive group-scoped and intact: `group=1 rc=8` and `group=1 rc=33`. Under **v1** both arrive as a flat `rc=1` (`EUNKNOWN`) with no group at all, so two distinct causes become one indistinguishable answer. This is A16's prediction confirmed on hardware, and the second data point is what makes it a demonstration of *loss* rather than of translation. | Confirms smply's position under A16 and answers the evidence half of open question **O2**: v1 stays the default and v2 stays an explicit application opt-in (`SmpClientConfig::smp_version`), because probing costs a round trip and a fallback path to learn what an integrator already knows, and defaulting to v2 fails outright against an older server. But the cost of v1 is **behavioural, not only diagnostic**: `src/dfu/update_state_machine.cpp` recovers a mark-for-test whose response was lost, and a recovery branching on `ImageError::ImageAlreadyPending` alone could never fire against this server under v1, where `image_error()` is always `nullopt`. That specific code was **not** provoked -- reaching it needs a pending swap plus a mark for a third image, and this bench holds two -- so it follows from the same measured mechanism rather than being measured itself. **Acted on** (2026-09-19): the recovery also accepts a group-less `SmpError::BadState`, which is what `img_mgmt_translate_error_code()` (S10) produces for `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` alike -- all three want the same re-read-and-replan. It is **not** extended to `EUNKNOWN`, the code this row actually measured, because the same table gives that to eighteen others including every flash failure. So the fix is traced to the translation table rather than to a provocation: code 28 has still never been seen on a bench. |
 | A25 | **Over serial, the device's receive buffer holds the length prefix and the CRC as well as the SMP message** (section 8, S27, S33, S34), so the largest message it accepts is `buf_size − 4`, not the `buf_size` that mcumgr params reports. A message between the two is dropped with no response. | smply sizes an upload's messages to `min(buf_size, transport max_message_size, cap)`, which is right over BLE and can be four bytes too large over serial. The serial adapter defaults `max_message_size` to 256, below the default netbuf's serial limit (380), so a default device is safe. A device whose `buf_size` is at or below the adapter's cap is **not** safe until the core subtracts a per-transport overhead. That is on the roadmap backlog, and not patched in the adapter, because the adapter cannot see `buf_size`. |
 | A26 | **The UART transport's driver holds at most `CONFIG_UART_MCUMGR_RX_BUF_COUNT` (default 2) undecoded lines** and drops a line that starts while both are held (S31). Inferred from the source, not observed. | smply writes a message's frames back to back, as the reference transmitter's peer would. If it were ever observed, the symptom would be a timeout with no response, and the remedy a pause between frames in the adapter. Not implemented, because nothing has shown it is needed. |
+| A28 | **A Zephyr server encodes every statistic as 32 bits.** `stat_mgmt_walk_cb()` (S49) widens a 16-, 32- or 64-bit counter into a `uint64_t`, and `stat_mgmt_cb_encode()` then writes it with `zcbor_uint32_put()`, so a 64-bit statistic above 2^32 − 1 arrives truncated to its low 32 bits. The specification (S47) says only `(uint)`. Inferred from source, not observed. | Decode the full CBOR unsigned range into `std::uint64_t`: a server that sends 64 bits is within the specification, and smply cannot undo a truncation it cannot see. Documented at `StatisticsField::value`. |
+| A29 | **An unknown statistics group is `INVALID_STAT_NAME`, not `INVALID_GROUP`.** `stat_mgmt_show()` (S49) first counts the group's entries, and a group that is not found fails that count, which it reports as `STAT_MGMT_ERR_INVALID_STAT_NAME` (3). `INVALID_GROUP` (2) is reachable only if the group disappears between the count and the walk. | `StatisticsError` names both, and its documentation says which one a caller will see. Over v1 both become `ENOENT` (A34), which is indistinguishable from any other missing entry. |
+| A30 | **A statistics walk that fails part-way writes its error *inside* `"fields"`.** `stat_mgmt_show()` (S49) opens the `fields` map and then walks the group; a walk failure calls `smp_add_cmd_err()`, which writes `"err": {...}` at the encoder's current position -- inside the map -- and the map is then closed. Over v2 the response is therefore `{"name": ..., "fields": {..., "err": {"group": 2, "rc": 5}}}`, with no top-level error. Over v1 with `ORIGINAL_PROTOCOL` the error is recorded on the side and the response rebuilt as a flat `rc` (S17), which is well-formed. The failure needs a statistic whose size is not 2, 4 or 8 bytes, which `STATS_SIZE_*` cannot declare, or a group vanishing mid-walk, so it is practically unreachable. Inferred from source. | smply's field decoder accepts only unsigned values, so a nested map in `fields` is `ErrorCode::CborDecode`, never a success with the error dropped. Recognising the nested `err` as a device error would mean a second error extractor inside a group, which ADR-0002's single extraction path rules out for a case this unlikely. Pinned by a unit test. |
+| A31 | **A settings read returns at most `CONFIG_MCUMGR_GRP_SETTINGS_VALUE_LEN` bytes, and says so only when asked for more.** `settings_mgmt_read()` (S53) defaults `max_size` to `VALUE_LEN` (default **32**) and lowers a larger request to it, adding `"max_size": VALUE_LEN` to the response only in that case. What happens to a value longer than the buffer is the application's `h_get` handler's choice (it may truncate or fail), so a read without `max_size` of a value over 32 bytes is not portable. **The documentation (S51) says the response `max_size` equals `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN`; the source uses `VALUE_LEN`.** The source wins. | `SettingValue::max_size` carries the reported limit, documented as "a value that filled it may be cut short". `read(name, max_size, ...)` exists for longer values. A reply longer than the size asked for is `CborDecode`. Reporting the documentation error upstream is an outward act, on the roadmap backlog. |
+| A32 | **A settings command may fail with another group's error code.** With `CONFIG_MCUMGR_GRP_SETTINGS_ACCESS_HOOK`, the application's `MGMT_EVT_OP_SETTINGS_MGMT_ACCESS` callback (S53) may refuse with any `(group, rc)` it chooses, written as `smp_add_cmd_err(zse, ret_group, ret_rc)`, or with a flat `rc`. | `settings_error()` returns a value only for a group-scoped code whose group is `Group::Settings`; anything else stays in `Error::mgmt()` for the caller. |
+| A33 | **Every name-taking command refuses an empty name, and silently shortens one containing a NUL.** Both groups' handlers (S49, S53) return `MGMT_ERR_EINVAL` for a zero-length name, and copy the name into a C string with `memcpy` and a terminator, so an embedded NUL makes the server act on the prefix -- a *different* setting or group -- with no error. A name of `..._NAME_LEN` bytes or more is refused: flat `EINVAL` for statistics, `KEY_TOO_LONG` for settings. Save distinguishes an **absent** `"name"` (save everything) from an **empty** one (`EINVAL`). | smply refuses an empty name and a name with a NUL as `InvalidArgument` before sending, and bounds names by its own limits (`kMaxStatisticsNameLength`, `kMaxSettingNameLength`), which are above the servers' defaults: the device's lower limit still refuses with its own code. `save()` with no argument omits the key rather than sending an empty string. |
+| A34 | **SMP v1 loses statistics and settings error codes many-to-one**, as it does image codes (A16). With `ORIGINAL_PROTOCOL`, statistics maps `INVALID_GROUP` and `INVALID_STAT_NAME` to `ENOENT` and `INVALID_STAT_SIZE` to `EINVAL`; settings maps `KEY_TOO_LONG` to `EINVAL`, `KEY_NOT_FOUND` and `READ_NOT_SUPPORTED` to `ENOENT`, and six others -- including `ROOT_KEY_NOT_FOUND` and every not-supported refusal -- to `EUNKNOWN` (S49, S53). Inferred from source; the image-group mechanism behind it was measured (A24). | `statistics_error()` and `settings_error()` return `nullopt` for a flat code, as `image_error()` does, and their documentation names the v1 translation. A caller that must tell a missing root key from a refused write needs SMP v2. |
 | A27 | **Image ≥ 1 cannot be confirmed the way image 0 can.** A hashless confirm names the running image, and a confirm of a non-running image is refused unless `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*` is set (§6, S35). | smply confirms by hash, always. An image the device commits itself -- the staged image of a second MCU -- is `CommitBy::Device`, and smply waits for the device to report it applied rather than confirming it (ADR-0021, `docs/multi-image.md`). |
 
 ### Test-method correction (not a protocol inference)
@@ -1064,3 +1105,144 @@ not implement a UART transport. The oracle role is unaffected and was exercised
 throughout — with the caveat that the **first** read after a baseline flash can
 come back empty while the device is still booting, which is why `oracle_state()`
 retries three times.
+
+---
+
+## 10. [MGMT] Statistics management group (group 2)
+
+Commands (S47, S48): `0` group data · `1` list groups. Both handlers are
+registered read-only (`{ stat_mgmt_show, NULL }`, `{ stat_mgmt_list, NULL }`,
+S49), so a write op on either yields `ENOTSUP`. The group needs
+`CONFIG_STATS` and `CONFIG_MCUMGR_GRP_STAT` on the device. Error codes are in
+§3.
+
+### Group data — op `0` (read), group `2`, cmd `0`
+
+Request: `{ "name": (str) }`. Response: op `1`,
+
+```
+{ "name": (str), "fields": { (str)<entry>: (uint), ... } }
+```
+
+* **Protocol-defined** (S47): the request names a group registered with
+  `STATS_INIT_AND_REG`; the response echoes the name and maps each entry to an
+  unsigned value.
+* **Zephyr-specific, from source** (S49, S50): the name must be
+  1 to `CONFIG_MCUMGR_GRP_STAT_MAX_NAME_LEN − 1` bytes (31 by default), or the
+  answer is flat `EINVAL` (A33). The response `name` is the request's, byte for
+  byte. Every group and field name the server encodes is cut at
+  `MAX_NAME_LEN` by `zcbor_tstr_put_term()`. Entries come in the order the
+  group's struct declares them (`stats_walk()`), and their names are that
+  struct's members, so a repeat is not something a device sends (inferred).
+* **Values are 32 bits on the wire from a Zephyr server** (A28), though a
+  statistic may be declared 64 bits wide.
+* An unknown group is `INVALID_STAT_NAME` (A29). A walk failure after `fields`
+  is opened nests the error inside it (A30).
+* The server caps neither the number of groups nor of entries: only the SMP
+  buffer does. A group that does not fit fails with `EMSGSIZE`.
+* With `CONFIG_MCUMGR_SMP_LEGACY_RC_BEHAVIOUR` a success also carries
+  `"rc": 0`.
+
+smply: `StatisticsManagement::read_group()`. Requires `name` and `fields`,
+bounds the entry count by `limits::kMaxStatisticsFields` and every name by
+`limits::kMaxStatisticsNameLength`, refuses a repeated field name, and ignores
+unknown keys.
+
+### List groups — op `0` (read), group `2`, cmd `1`
+
+Request: empty map. Response: op `1`, `{ "stat_list": [ (str), ... ] }`,
+possibly empty (S47). The server always writes the key (S49); names are in
+registration order and cut at `MAX_NAME_LEN`.
+
+smply: `StatisticsManagement::list_groups()`. A missing `stat_list` is a decode
+failure; the count is bounded by `limits::kMaxStatisticsGroups`.
+
+---
+
+## 11. [MGMT] Settings management group (group 3)
+
+Commands (S51, S52): `0` read/write · `1` delete · `2` commit · `3` load/save.
+Two IDs carry two handlers each, told apart only by the operation (S53):
+
+| cmd | read op (`0`) | write op (`2`) |
+| --- | ------------- | -------------- |
+| `0` | read one setting | write one setting |
+| `1` | — (`ENOTSUP`) | delete one setting |
+| `2` | — (`ENOTSUP`) | commit |
+| `3` | load | save |
+
+The group needs `CONFIG_SETTINGS`, `CONFIG_SETTINGS_RUNTIME` and
+`CONFIG_MCUMGR_GRP_SETTINGS`. The S51 documentation notes that the Zephyr group
+extends the original MCUmgr "config" group, whose clients should still work for
+read and write. Error codes are in §3.
+
+**Values are binary.** `"val"` is a CBOR byte string, and the documentation
+(S51) says the type *"cannot be specified through this and must be known by the
+client"*. smply never interprets it.
+
+### Read — op `0`, cmd `0`
+
+Request: `{ "name": (str), "max_size": (uint, opt) }`. Response:
+`{ "val": (bstr), "max_size": (uint, opt) }`.
+
+* `max_size` is decoded as 32 bits (`zcbor_uint32_decode`, S53). Without it the
+  server reads up to `CONFIG_MCUMGR_GRP_SETTINGS_VALUE_LEN` bytes (default 32);
+  a larger request is lowered to that and the response then carries
+  `"max_size": VALUE_LEN` (A31). The value is what `settings_runtime_get()`
+  returned, so it is never longer than the size read.
+* Name rules as in A33; a name of `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN` bytes or
+  more is `KEY_TOO_LONG`. A missing setting is `KEY_NOT_FOUND`, a name whose
+  first component no handler owns is `ROOT_KEY_NOT_FOUND`, a handler without
+  a getter is `READ_NOT_SUPPORTED`.
+* On a heap-buffer build the server allocates `max_size` bytes, so an
+  unreasonable size fails with `ENOMEM`.
+
+smply: `SettingsManagement::read()`, with or without a `max_size` of 1 to
+`limits::kMaxSettingValueLength`. A reply longer than the size asked for is a
+decode failure.
+
+### Write — op `2`, cmd `0`
+
+Request: `{ "name": (str), "val": (bstr) }`. Response: empty map. The server
+passes the bytes to `settings_runtime_set()` (S53), which calls the handler's
+`h_set`; nothing is written to storage (see save). The value's size is bounded
+only by the SMP buffer.
+
+smply: `SettingsManagement::write()`, bounded by
+`limits::kMaxSettingValueLength` (Zephyr's `SETTINGS_MAX_VAL_LEN`, S55).
+
+### Delete — op `2`, cmd `1`
+
+Request: `{ "name": (str) }`. Response: empty map. Calls `settings_delete()`,
+which removes the stored value (S53).
+
+smply: `SettingsManagement::erase()`.
+
+### Commit — op `2`, cmd `2`; load — op `0`, cmd `3`
+
+Request: empty map. Response: empty map. Commit calls `settings_commit()`, load
+calls `settings_load()` (S53). Neither reports the result of that call: only
+the access hook can make them fail.
+
+smply: `SettingsManagement::commit()` and `load()`.
+
+### Save — op `2`, cmd `3`
+
+Request: `{ "name": (str, opt) }`. Response: empty map.
+
+* An **absent** `name` saves everything (`settings_save()`); a present one saves
+  that subtree (`settings_save_subtree()`), or that single setting with
+  `CONFIG_SETTINGS_SAVE_SINGLE_SUBTREE_WITHOUT_MODIFICATION`. An **empty**
+  `name` is `EINVAL` (A33).
+* A failure is `SAVE_NOT_SUPPORTED` for `-ENOENT`/`-ENOTSUP` (and `-ENOSYS` with
+  the single-setting option), `SAVE_FAILED_VALUE_TOO_LONG_TO_READ` for `-EDOM`,
+  and `UNKNOWN` otherwise.
+
+smply: `SettingsManagement::save()` saves everything and sends the empty map;
+`save(name)` saves one subtree. There is no empty-string sentinel.
+
+### The access hook
+
+With `CONFIG_MCUMGR_GRP_SETTINGS_ACCESS_HOOK`, every command first notifies the
+application, which may refuse with a flat `rc` or with any group's code (A32),
+and for a write may inspect and change the value.
