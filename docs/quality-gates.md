@@ -265,8 +265,8 @@ silently ignored.
 
 | Gate | Threshold | Measured 2026-09-27 |
 | ---- | --------- | ------------------- |
-| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ (4359/4443, with the statistics and settings groups; 3920/3996 before them; 98.2 % before the multi-image update; see below) |
-| Branch coverage, whole core | **≥ 75 %** | 86.8 % ✓ (2325/2678, with the statistics and settings groups; 86.6 % before them; 86.5 % before ADR-0023's confirm recovery, 86.4 % before ADR-0022's commit wait, 86.7 % before the multi-image update, 86.9 % before the serial port adapter; see below) |
+| Line coverage, whole core | **≥ 85 %** | 98.1 % ✓ (4363/4447, with the statistics and settings groups; 3920/3996 before them; 98.2 % before the multi-image update; see below) |
+| Branch coverage, whole core | **≥ 75 %** | 86.8 % ✓ (2327/2680, with the statistics and settings groups; 86.6 % before them; 86.5 % before ADR-0023's confirm recovery, 86.4 % before ADR-0022's commit wait, 86.7 % before the multi-image update, 86.9 % before the serial port adapter; see below) |
 | Branch coverage, `src/smp/`, `src/cbor/`, `src/groups/image/upload_session.*`, `src/dfu/` | **≥ 90 %** | `src/cbor/` 93.9 % ✓ (215/229; 94.6 % before the two scalar visitors, whose misses are the out-of-bounds range guard and the unreachable consume-after-peek arms) · `src/smp/` 96.3 % ✓ · `upload_session.*` 91.0 % ✓ · `src/dfu/` 94.7 % ✓ (531/561) |
 | `transports/serial/` (no elevated gate; recorded) | — | line 100 % · branch 98.0 % |
 | `transports/serial_port/` (a platform adapter: **not** in the whole-core figure; recorded) | — | line 91.7 % (289/315) · branch 78.5 % (168/214). The POSIX half and the portable files only; the Win32 half is not built here. The misses are system-call failure arms (`pipe`, `fcntl`, `tcsetattr`, `poll`) that a pseudo-terminal cannot be made to take |
