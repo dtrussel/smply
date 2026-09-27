@@ -34,6 +34,7 @@ using smply::MgmtError;
 using smply::Operation;
 using smply::RequestHandle;
 using smply::Result;
+using smply::SaveOptions;
 using smply::SettingsError;
 using smply::SettingsManagement;
 using smply::SettingValue;
@@ -746,6 +747,86 @@ TEST_CASE("settings_error reads only the settings group's codes", "[settings][er
 // ---------------------------------------------------------------------------
 // Inherited from the client
 // ---------------------------------------------------------------------------
+
+TEST_CASE("a save's timeout reaches the client", "[settings][save][timeout]")
+{
+    const bool named = GENERATE(false, true);
+    VoidOutcome outcome;
+    Fixture fixture;
+
+    const SaveOptions options{.timeout = std::chrono::seconds{30}};
+    const RequestHandle handle = named ? fixture.settings.save("app", options, outcome.callback())
+                                       : fixture.settings.save(options, outcome.callback());
+    REQUIRE(handle.valid());
+
+    const auto deadline = fixture.client.next_deadline();
+    REQUIRE(deadline.has_value());
+    CHECK(*deadline == fixture.clock.now() + std::chrono::seconds{30});
+    // The payload is what the plain overload sends: options change no bytes.
+    CHECK(fixture.sent_payload() ==
+          (named ? concat({bytes_of({0xA1}), text_item("name"), text_item("app")})
+                 : bytes_of({0xA0})));
+}
+
+TEST_CASE("a save without options keeps the client's default deadline", "[settings][save][timeout]")
+{
+    const bool named = GENERATE(false, true);
+    const bool empty_options = GENERATE(false, true);
+    VoidOutcome outcome;
+    Fixture fixture;
+
+    if (empty_options) {
+        static_cast<void>(named ? fixture.settings.save("app", SaveOptions{}, outcome.callback())
+                                : fixture.settings.save(SaveOptions{}, outcome.callback()));
+    } else {
+        static_cast<void>(named ? fixture.settings.save("app", outcome.callback())
+                                : fixture.settings.save(outcome.callback()));
+    }
+
+    const auto deadline = fixture.client.next_deadline();
+    REQUIRE(deadline.has_value());
+    CHECK(*deadline == fixture.clock.now() + smply::limits::kDefaultTimeout);
+}
+
+TEST_CASE("a save with a longer timeout outlives the default deadline", "[settings][save][timeout]")
+{
+    VoidOutcome outcome;
+    Fixture fixture;
+    static_cast<void>(fixture.settings.save(SaveOptions{.timeout = std::chrono::seconds{30}},
+                                            outcome.callback()));
+
+    // Past the client's 5 s default, and still waiting.
+    fixture.clock.advance(std::chrono::seconds{10});
+    fixture.client.poll(fixture.clock.now());
+    CHECK(outcome.calls == 0);
+
+    SECTION("an answer in time completes it")
+    {
+        fixture.respond_empty();
+        CHECK(outcome.succeeded());
+    }
+    SECTION("its own deadline still ends it")
+    {
+        fixture.clock.advance(std::chrono::seconds{20});
+        fixture.client.poll(fixture.clock.now());
+        CHECK(outcome.calls == 1);
+        CHECK(outcome.code() == ErrorCode::Timeout);
+    }
+}
+
+TEST_CASE("a named save with options still refuses an invalid name", "[settings][save][arguments]")
+{
+    VoidOutcome outcome;
+    Fixture fixture;
+
+    const RequestHandle handle = fixture.settings.save(
+        "", SaveOptions{.timeout = std::chrono::seconds{30}}, outcome.callback());
+    CHECK_FALSE(handle.valid());
+    CHECK(fixture.transport.send_count() == 0);
+    CHECK(outcome.calls == 0);
+    fixture.client.poll(fixture.clock.now());
+    CHECK(outcome.code() == ErrorCode::InvalidArgument);
+}
 
 TEST_CASE("a settings request times out like any other", "[settings]")
 {

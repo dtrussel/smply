@@ -1239,7 +1239,10 @@ Request: `{ "name": (str, opt) }`. Response: empty map.
   and `UNKNOWN` otherwise.
 
 smply: `SettingsManagement::save()` saves everything and sends the empty map;
-`save(name)` saves one subtree. There is no empty-string sentinel.
+`save(name)` saves one subtree. There is no empty-string sentinel. Both take an
+optional `SaveOptions::timeout`: a save writes storage, and how long that takes
+is the backend's (a flash backend may garbage-collect first), which the
+protocol does not bound. Not measured.
 
 ### The access hook
 

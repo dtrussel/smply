@@ -768,6 +768,10 @@ struct SettingValue {
                                             // when it lowered the read (A31)
 };
 
+struct SaveOptions {
+    std::optional<Duration> timeout;        // absent => the client's default
+};
+
 // settings_mgmt_ret_code_t. Group-scoped: read it through settings_error().
 enum class SettingsError : std::uint16_t {
     Ok = 0, Unknown = 1, KeyTooLong = 2, KeyNotFound = 3, ReadNotSupported = 4,
@@ -797,8 +801,12 @@ public:
     RequestHandle erase(std::string_view name, Callback<void>);   // MCUmgr's "delete"
     RequestHandle commit(Callback<void>);
     RequestHandle load(Callback<void>);
-    RequestHandle save(Callback<void>);                           // everything
-    RequestHandle save(std::string_view name, Callback<void>);   // one subtree
+    // A save writes storage and may garbage-collect a flash sector first, so
+    // it alone takes a per-request timeout.
+    RequestHandle save(const SaveOptions&, Callback<void>);                        // everything
+    RequestHandle save(Callback<void>);
+    RequestHandle save(std::string_view name, const SaveOptions&, Callback<void>);  // one subtree
+    RequestHandle save(std::string_view name, Callback<void>);
 };
 
 } // namespace smply

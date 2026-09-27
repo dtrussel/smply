@@ -389,7 +389,8 @@ smply/
 │   │                           UploadHandle, ProgressCallback
 │   ├── groups/statistics.hpp   StatisticsManagement, StatisticsGroup, StatisticsField,
 │   │                           StatisticsError
-│   ├── groups/settings.hpp     SettingsManagement, SettingValue, SettingsError
+│   ├── groups/settings.hpp     SettingsManagement, SettingValue, SaveOptions,
+│   │                           SettingsError
 │   ├── image_source.hpp        ImageSource, MemoryImageSource
 │   ├── mcuboot_image.hpp       ImageHash, ImageVersion, McubootImageInfo,
 │   │                           parse_mcuboot_header, sha256, find_image_tlv_hash

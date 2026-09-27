@@ -24,8 +24,8 @@ git; commit `97f1647` is the last to carry the per-phase record in
 - **The statistics and settings management groups** (MCUmgr groups 2 and 3).
   `StatisticsManagement` lists statistics groups and reads one group's
   counters; `SettingsManagement` reads, writes and erases a setting and asks
-  the device to commit, load or save. Setting values are bytes, returned and
-  sent exactly. `statistics_error()` and `settings_error()` read each group's
+  the device to commit, load or save; `SaveOptions::timeout` gives a save its
+  own deadline. Setting values are bytes, returned and sent exactly. `statistics_error()` and `settings_error()` read each group's
   own codes, like `image_error()`. New bounds in `smply/limits.hpp`:
   `kMaxStatisticsNameLength`, `kMaxStatisticsGroups`, `kMaxStatisticsFields`,
   `kMaxSettingNameLength` and `kMaxSettingValueLength`. Traced to Zephyr's

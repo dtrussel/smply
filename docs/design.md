@@ -463,7 +463,9 @@ class SettingsManagement {                 // src/groups/settings/
     RequestHandle erase(std::string_view, Callback<void>);
     RequestHandle commit(Callback<void>);
     RequestHandle load(Callback<void>);
+    RequestHandle save(const SaveOptions&, Callback<void>);
     RequestHandle save(Callback<void>);
+    RequestHandle save(std::string_view, const SaveOptions&, Callback<void>);
     RequestHandle save(std::string_view, Callback<void>);
 };
 ```
@@ -515,6 +517,11 @@ file-local decoders. What is particular to each:
   which the server would silently shorten to a different name (A33). `save()`
   without an argument omits `name` altogether; there is no empty-string
   sentinel.
+* **Only `save()` takes a timeout.** It writes the device's storage, all of it
+  when no name is given, and a flash backend may garbage-collect a sector
+  first. `SaveOptions::timeout` passes straight into `RequestSpec`, exactly as
+  `ResetOptions::timeout` does. Absent keeps the client's default: unlike
+  `kEraseTimeout`, no measurement justifies a longer default of smply's own.
 * **Settings commands share IDs.** Command 0 is read or write and command 3 is
   load or save, told apart by the operation alone, so each call site names its
   operation explicitly and the tests check it for every command.

@@ -28,6 +28,7 @@
 /// client, so it must not outlive it either.
 
 #include "smply/bytes.hpp"
+#include "smply/clock.hpp"
 #include "smply/error.hpp"
 #include "smply/limits.hpp"
 #include "smply/result.hpp"
@@ -56,6 +57,19 @@ struct SettingValue
     std::optional<std::uint32_t> max_size;
 
     [[nodiscard]] friend bool operator==(const SettingValue&, const SettingValue&) = default;
+};
+
+/// What to ask for when saving settings.
+struct SaveOptions
+{
+    /// Overrides the client's default deadline for this request.
+    ///
+    /// A save writes to the device's storage -- every setting, when no name is
+    /// given -- and a flash backend may have to garbage-collect a sector first,
+    /// so it can take longer than an ordinary command. Absent keeps the
+    /// client's default: nothing has measured a slow save, so smply sets no
+    /// longer default of its own the way `EraseOptions` does.
+    std::optional<Duration> timeout;
 };
 
 /// The settings group's own error codes, `settings_mgmt_ret_code_t`
@@ -164,11 +178,17 @@ public:
     RequestHandle load(Callback<void> on_done);
 
     /// Asks the device to save every setting to storage.
+    RequestHandle save(const SaveOptions& options, Callback<void> on_done);
+
+    /// \overload Saves everything with default options.
     RequestHandle save(Callback<void> on_done);
 
     /// \overload Saves only the subtree named \p name, or the one setting of
     /// that name when the device is built with
     /// `CONFIG_SETTINGS_SAVE_SINGLE_SUBTREE_WITHOUT_MODIFICATION`.
+    RequestHandle save(std::string_view name, const SaveOptions& options, Callback<void> on_done);
+
+    /// \overload Saves one subtree with default options.
     RequestHandle save(std::string_view name, Callback<void> on_done);
 
 private:

@@ -227,7 +227,7 @@ RequestHandle SettingsManagement::load(Callback<void> on_done)
                         groups::decode_nothing, kBufferTooSmall);
 }
 
-RequestHandle SettingsManagement::save(Callback<void> on_done)
+RequestHandle SettingsManagement::save(const SaveOptions& options, Callback<void> on_done)
 {
     // No "name" at all is what asks for everything; an empty name would be
     // refused by the device (docs/protocol-notes.md section 11).
@@ -237,12 +237,13 @@ RequestHandle SettingsManagement::save(Callback<void> on_done)
                                     .group = Group::Settings,
                                     .command = command_id(SettingsCommand::LoadSave),
                                     .payload = {},
-                                    .timeout = {}},
+                                    .timeout = options.timeout},
                         groups::encode_empty(MutBytes{buffer}), std::move(on_done),
                         groups::decode_nothing, kBufferTooSmall);
 }
 
-RequestHandle SettingsManagement::save(std::string_view name, Callback<void> on_done)
+RequestHandle SettingsManagement::save(std::string_view name, const SaveOptions& options,
+                                       Callback<void> on_done)
 {
     if (!valid_name(name)) {
         return reject(*client_, std::move(on_done),
@@ -256,9 +257,19 @@ RequestHandle SettingsManagement::save(std::string_view name, Callback<void> on_
                                     .group = Group::Settings,
                                     .command = command_id(SettingsCommand::LoadSave),
                                     .payload = {},
-                                    .timeout = {}},
+                                    .timeout = options.timeout},
                         writer.open_map().put_text("name", name).close_map().finish(),
                         std::move(on_done), groups::decode_nothing, kBufferTooSmall);
+}
+
+RequestHandle SettingsManagement::save(Callback<void> on_done)
+{
+    return save(SaveOptions{}, std::move(on_done));
+}
+
+RequestHandle SettingsManagement::save(std::string_view name, Callback<void> on_done)
+{
+    return save(name, SaveOptions{}, std::move(on_done));
 }
 
 } // namespace smply
