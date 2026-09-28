@@ -37,6 +37,7 @@ the full contract.
 | `group.hpp` · `result.hpp` · `error.hpp` · `clock.hpp` · `bytes.hpp` · `limits.hpp` · `version.hpp` | `smply::smply` |
 | `smp/header.hpp` · `transport.hpp` · `smp_client.hpp` | `smply::smply` |
 | `groups/os.hpp` · `groups/image.hpp` · `groups/image_upload.hpp` | `smply::smply` |
+| `groups/statistics.hpp` · `groups/settings.hpp` | `smply::smply` |
 | `image_source.hpp` · `mcuboot_image.hpp` | `smply::smply` |
 | `dfu/firmware_updater.hpp` | `smply::smply` |
 | `util/dispatcher.hpp` | `smply::util`, a separate target the core does not link |
@@ -211,7 +212,8 @@ are grouped here so the whole defensive surface can be reviewed at once.
 | ------ | --------- |
 | Framing and buffering | `kMaxSmpPayload` · `kMaxAssemblyBuffer` · `kMaxCborNesting` |
 | Request lifecycle | `kMaxInFlight` · `kMaxRetiredSeqs` · `kDefaultTimeout` |
-| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` |
+| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` · `kMaxStatisticsNameLength` · `kMaxStatisticsGroups` · `kMaxStatisticsFields` |
+| Settings | `kMaxSettingNameLength` · `kMaxSettingValueLength` |
 | Image files | `kMaxImageSize` · `kMaxImageTlvs` |
 | Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kFinalChunkTimeout` · `kEraseTimeout` |
 
@@ -688,6 +690,146 @@ public:
 lives in it. Destroying it mid-upload cancels the outstanding request and
 completes the callback with `Cancelled`, inline — the same exception
 `~SmpClient` makes, and for the same reason: there is no later `poll()`.
+
+## `smply/groups/statistics.hpp`
+
+Group 2 ([`protocol-notes.md`](protocol-notes.md) §10).
+
+```cpp
+namespace smply {
+
+struct StatisticsField {
+    std::string   name;         // as the device reported it
+    std::uint64_t value = 0;    // a Zephyr server sends 32 bits (A28)
+};
+
+struct StatisticsGroup {
+    std::string                  name;
+    std::vector<StatisticsField> fields;   // device order; names unique; may be empty
+    const StatisticsField* find(std::string_view name) const noexcept;  // or nullptr
+};
+
+// stat_mgmt_err_code_t. Group-scoped: read it through statistics_error().
+enum class StatisticsError : std::uint16_t {
+    Ok = 0, Unknown = 1, InvalidGroup = 2,
+    InvalidStatName = 3,    // what an unknown group actually arrives as (A29)
+    InvalidStatSize = 4, WalkAborted = 5,
+};
+
+// nullopt unless the error is group-scoped AND the group is Stat. Over SMP v1
+// the server usually translates the code and drops the group: an unknown group
+// is then SmpError::NoEntry (A34).
+std::optional<StatisticsError> statistics_error(const Error&) noexcept;
+
+class StatisticsManagement {
+public:
+    explicit StatisticsManagement(SmpClient&) noexcept;
+
+    // Names in the device's order. An empty list is a success.
+    RequestHandle list_groups(Callback<std::vector<std::string>>);
+
+    // Rejects an empty name, one over limits::kMaxStatisticsNameLength, or one
+    // containing a NUL, with InvalidArgument (on the next poll). An unknown
+    // group is an ordinary ProtocolError.
+    RequestHandle read_group(std::string_view name, Callback<StatisticsGroup>);
+};
+
+} // namespace smply
+```
+
+Decoding bounds, enforced before anything is copied: `limits::kMaxStatisticsGroups`
+names in a list, `limits::kMaxStatisticsFields` fields in a group, and
+`limits::kMaxStatisticsNameLength` for every name. Exceeding one, a repeated
+field name, a value that is not an unsigned integer, or a missing `stat_list`,
+`name` or `fields` is `ErrorCode::CborDecode`. Unknown keys are ignored.
+
+```cpp
+smply::StatisticsManagement stats{client};
+stats.list_groups([](smply::Result<std::vector<std::string>> names) { /* ... */ });
+stats.read_group("smp_svr_stats", [](smply::Result<smply::StatisticsGroup> group) {
+    if (group.has_value()) {
+        if (const auto* ticks = group->find("ticks")) { /* ticks->value */ }
+    }
+});
+```
+
+## `smply/groups/settings.hpp`
+
+Group 3 ([`protocol-notes.md`](protocol-notes.md) §11). **A value is bytes**:
+its type and encoding belong to the device application, and smply neither
+knows nor interprets them.
+
+```cpp
+namespace smply {
+
+struct SettingValue {
+    std::vector<std::byte>       value;     // exactly as sent; may be empty
+    std::optional<std::uint32_t> max_size;  // the device's own limit, present only
+                                            // when it lowered the read (A31)
+};
+
+struct SaveOptions {
+    std::optional<Duration> timeout;        // absent => the client's default
+};
+
+// settings_mgmt_ret_code_t. Group-scoped: read it through settings_error().
+enum class SettingsError : std::uint16_t {
+    Ok = 0, Unknown = 1, KeyTooLong = 2, KeyNotFound = 3, ReadNotSupported = 4,
+    RootKeyNotFound = 5, WriteNotSupported = 6, DeleteNotSupported = 7,
+    SaveNotSupported = 8, SaveFailedValueTooLongToRead = 9,
+};
+
+// nullopt unless the error is group-scoped AND the group is Settings -- an
+// access hook may refuse with another group's code (A32). Over SMP v1 the
+// server usually translates the code and drops the group (A34).
+std::optional<SettingsError> settings_error(const Error&) noexcept;
+
+class SettingsManagement {
+public:
+    explicit SettingsManagement(SmpClient&) noexcept;
+
+    // Every name: non-empty, at most limits::kMaxSettingNameLength, no NUL --
+    // else InvalidArgument on the next poll. The device's own limit is usually
+    // lower and answers SettingsError::KeyTooLong.
+
+    // Without max_size the device reads at most its VALUE_LEN (32 by default).
+    RequestHandle read(std::string_view name, Callback<SettingValue>);
+    // max_size in 1..limits::kMaxSettingValueLength; a longer reply is CborDecode.
+    RequestHandle read(std::string_view name, std::uint32_t max_size, Callback<SettingValue>);
+    // value at most limits::kMaxSettingValueLength bytes; not persisted until saved.
+    RequestHandle write(std::string_view name, ConstBytes value, Callback<void>);
+    RequestHandle erase(std::string_view name, Callback<void>);   // MCUmgr's "delete"
+    RequestHandle commit(Callback<void>);
+    RequestHandle load(Callback<void>);
+    // A save writes storage and may garbage-collect a flash sector first, so
+    // it alone takes a per-request timeout.
+    RequestHandle save(const SaveOptions&, Callback<void>);                        // everything
+    RequestHandle save(Callback<void>);
+    RequestHandle save(std::string_view name, const SaveOptions&, Callback<void>);  // one subtree
+    RequestHandle save(std::string_view name, Callback<void>);
+};
+
+} // namespace smply
+```
+
+| Method | Op | Cmd | Request |
+| ------ | -- | --- | ------- |
+| `read` | read | 0 | `{"name", "max_size"?}` |
+| `write` | write | 0 | `{"name", "val"}` |
+| `erase` | write | 1 | `{"name"}` |
+| `commit` | write | 2 | `{}` |
+| `load` | read | 3 | `{}` |
+| `save` | write | 3 | `{}` or `{"name"}` |
+
+```cpp
+smply::SettingsManagement settings{client};
+const std::array<std::byte, 2> level{std::byte{0x10}, std::byte{0x00}};  // the app's encoding
+settings.write("app/level", level, [&](smply::Result<void> written) {
+    if (written.has_value()) {
+        settings.save("app", [](smply::Result<void>) { /* persisted */ });
+    }
+});
+```
 
 ## `smply/image_source.hpp`
 

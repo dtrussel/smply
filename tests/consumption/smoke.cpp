@@ -19,6 +19,8 @@
 #include <smply/async/future.hpp>
 #include <smply/async/task.hpp>
 #include <smply/error.hpp>
+#include <smply/groups/settings.hpp>
+#include <smply/groups/statistics.hpp>
 #include <smply/smp/header.hpp>
 #include <smply/util/dispatcher.hpp>
 #include <smply/version.hpp>
@@ -64,6 +66,17 @@ int main()
     // Also out of the archive: to_string(ErrorCode) is defined in core.cpp.
     if (smply::to_string(smply::ErrorCode::Timeout).empty()) {
         std::cerr << "consumption check: to_string returned nothing\n";
+        return EXIT_FAILURE;
+    }
+
+    // The newest group translation units, also out of the archive: a prefix
+    // that installed their headers and an archive built without them fails
+    // to link here.
+    const smply::Error missing{smply::ErrorCode::ProtocolError,
+                               smply::MgmtError::scoped(smply::Group::Settings, 3)};
+    if (smply::settings_error(missing) != smply::SettingsError::KeyNotFound ||
+        smply::statistics_error(missing).has_value()) {
+        std::cerr << "consumption check: group error helpers disagree\n";
         return EXIT_FAILURE;
     }
 

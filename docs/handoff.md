@@ -218,9 +218,11 @@ true.
     `ExitMap()`. Sometimes it silently reads the parent map's entries as array
     elements.
   * So `cbor::Reader::for_each_map_in_array` decodes each element from its own
-    byte range, in a child reader. Do not "tidy" it back into enter/exit.
-  * Build any new response golden in **both** encodings. `test_cbor.cpp` shows
-    the shape, and the `[hardware-golden]` cases carry a device's exact bytes.
+    byte range, in a child reader, and `for_each_uint_in_map` does the same
+    with the map it visits. Do not "tidy" either back into enter/exit.
+  * Build any new response golden in **both** encodings.
+    `tests/support/cbor_shapes.hpp` writes one document either way, and the
+    `[hardware-golden]` cases in `test_cbor.cpp` carry a device's exact bytes.
 * **The final upload chunk is slow to answer, and a retransmission can hide
   it** (A19). With the image check on, the device hashes the whole image before
   replying: 5.57 s for 134 KiB on the bench board. Here is what happens with a

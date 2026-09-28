@@ -165,6 +165,39 @@ public:
     for_each_map_in_array(std::string_view key, std::size_t max_elements,
                           const std::function<Result<void>(Reader&)>& visit) noexcept;
 
+    /// Visits each text string of the array held under \p key.
+    ///
+    /// The view passed to \p visit points into the input and is valid only
+    /// for the call. An element that is not a text string is a decode failure.
+    ///
+    /// \param max_elements Hard cap, tested once a further element has been
+    ///                     seen, so an array of exactly this many is accepted.
+    /// \return Whether the key was present. Unlike `for_each_map_in_array`,
+    ///         absence is reported rather than read as an empty array: the
+    ///         caller knows whether its container is required, this layer does
+    ///         not.
+    [[nodiscard]] Result<bool>
+    for_each_text_in_array(std::string_view key, std::size_t max_elements,
+                           const std::function<Result<void>(std::string_view)>& visit) noexcept;
+
+    /// Visits each entry of the map held under \p key, whose keys must be text
+    /// strings and whose values must be unsigned integers.
+    ///
+    /// This is the shape of a map whose keys are data rather than field names,
+    /// such as a statistics group's `fields`. A negative value, a non-text key
+    /// or a nested container is a decode failure. Entries are visited in wire
+    /// order; the view is valid only for the call.
+    ///
+    /// The map is decoded from its own byte range in a child reader and never
+    /// left with `ExitMap()`, for the reason `for_each_map_in_array` gives
+    /// (docs/protocol-notes.md section 9, A18).
+    ///
+    /// \param max_entries Hard cap, tested once a further entry has been seen.
+    /// \return Whether the key was present, as for `for_each_text_in_array`.
+    [[nodiscard]] Result<bool> for_each_uint_in_map(
+        std::string_view key, std::size_t max_entries,
+        const std::function<Result<void>(std::string_view, std::uint64_t)>& visit) noexcept;
+
     /// The first decode failure, if any. Absent keys are not failures.
     [[nodiscard]] Result<void> status() const noexcept;
 
@@ -176,6 +209,16 @@ public:
 
 private:
     [[nodiscard]] const char* label(std::string_view key) noexcept;
+
+    /// For a child reader over one map entry, `label, map`: skips the label and
+    /// enters the map.
+    [[nodiscard]] Result<void> enter_labelled_map() noexcept;
+
+    /// Visits the entries of the map this reader has just entered, for
+    /// `for_each_uint_in_map`, which runs it in a child reader.
+    [[nodiscard]] Result<void> visit_uint_entries(
+        std::size_t max_entries,
+        const std::function<Result<void>(std::string_view, std::uint64_t)>& visit) noexcept;
 
     /// Maps QCBOR's error state onto ours, treating a missing label as absence
     /// rather than failure.

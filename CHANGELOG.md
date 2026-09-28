@@ -21,6 +21,17 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Added
 
+- **The statistics and settings management groups** (MCUmgr groups 2 and 3).
+  `StatisticsManagement` lists statistics groups and reads one group's
+  counters; `SettingsManagement` reads, writes and erases a setting and asks
+  the device to commit, load or save; `SaveOptions::timeout` gives a save its
+  own deadline. Setting values are bytes, returned and sent exactly. `statistics_error()` and `settings_error()` read each group's
+  own codes, like `image_error()`. New bounds in `smply/limits.hpp`:
+  `kMaxStatisticsNameLength`, `kMaxStatisticsGroups`, `kMaxStatisticsFields`,
+  `kMaxSettingNameLength` and `kMaxSettingValueLength`. Traced to Zephyr's
+  source (`docs/protocol-notes.md` §10, §11); neither group has run against a
+  device yet. A new fuzz target, `fuzz_cbor_statistics`, covers the
+  statistics decoders.
 - **A reference serial port adapter**, `smply::serial_port`
   (`transports/serial_port/`). It is a `Transport` over a UART, a USB CDC ACM
   port or any tty, carrying MCUmgr's console framing. It has POSIX (`termios`)

@@ -178,6 +178,12 @@ public:
 
     Result<void> for_each_map_in_array(std::string_view key, std::size_t max_elements,
                                        const std::function<Result<void>(Reader&)>&);
+    // Scalar containers. Result<bool>: false when the key is absent.
+    Result<bool> for_each_text_in_array(std::string_view key, std::size_t max_elements,
+                                        const std::function<Result<void>(std::string_view)>&);
+    Result<bool> for_each_uint_in_map(std::string_view key, std::size_t max_entries,
+                                      const std::function<Result<void>(std::string_view,
+                                                                       std::uint64_t)>&);
     Result<void> status() const;     // first decode failure, if any
 };
 }
@@ -224,6 +230,22 @@ Design points:
   back into enter/exit**, and build any new response golden in *both* encodings:
   `test_cbor.cpp` pins both shapes, and its `[hardware-golden]` cases carry a
   device's exact bytes.
+* **Two more visitors, for containers of scalars.** Statistics responses carry
+  a list of names (`stat_list`) and a map whose *keys are data*
+  (`fields: {"rx_bytes": 12, ...}`), which no field-name getter can read.
+  `for_each_text_in_array` and `for_each_uint_in_map` visit them under a hard
+  cap, like `for_each_map_in_array`, with two differences. They return
+  `Result<bool>`, `false` meaning the key was absent: whether a container is
+  required is the group's call, and both statistics containers are. And the
+  map visitor never enters the map in the parent's context: it rewinds the
+  parent map, walks its entries with peek, `Tell` and `VGetNextConsume` to find
+  the labelled one's byte range, and reads it in a child reader. `fields` is
+  normally the last entry, so an indefinite-length response closes it with two
+  consecutive breaks, which is exactly what `ExitMap()` mishandles (A18). The
+  text visitor needs no such care: its elements are scalars, and leaving the
+  array is the `ExitArray()` path the map-array visitor already relies on. Both
+  shapes, with the container first, last and between other entries, are pinned
+  in both encodings by `test_cbor.cpp`.
 * **Keys are null-terminated behind the façade.** QCBOR's map API takes a C
   string; copying into a fixed buffer avoids assuming a `string_view` is
   terminated, which is the sort of assumption that works until one call site
@@ -428,6 +450,24 @@ class ImageManagement {                    // src/groups/image/
     UploadHandle resume(const UploadHandle&, Callback<UploadResult>);  // invalid if refused
     void         cancel(const UploadHandle&) noexcept;
 };
+
+class StatisticsManagement {               // src/groups/statistics/
+    RequestHandle list_groups(Callback<std::vector<std::string>>);
+    RequestHandle read_group(std::string_view, Callback<StatisticsGroup>);
+};
+
+class SettingsManagement {                 // src/groups/settings/
+    RequestHandle read(std::string_view, Callback<SettingValue>);
+    RequestHandle read(std::string_view, std::uint32_t max_size, Callback<SettingValue>);
+    RequestHandle write(std::string_view, ConstBytes, Callback<void>);
+    RequestHandle erase(std::string_view, Callback<void>);
+    RequestHandle commit(Callback<void>);
+    RequestHandle load(Callback<void>);
+    RequestHandle save(const SaveOptions&, Callback<void>);
+    RequestHandle save(Callback<void>);
+    RequestHandle save(std::string_view, const SaveOptions&, Callback<void>);
+    RequestHandle save(std::string_view, Callback<void>);
+};
 ```
 
 Decoding rules applied uniformly (PN §6): absent boolean ⇒ `false`, and a
@@ -450,6 +490,41 @@ classic MCUmgr client bug — passing the file hash where the image hash belongs
 fails to compile instead of failing on hardware. `ImageHash::from(const Hash&)`
 exists for the one legitimate crossing: comparing a hash read out of a file's
 TLVs against what a device reports.
+
+### Statistics and settings
+
+Both are `OsManagement`'s shape: a command enumeration, a stack buffer sized
+by a `static_assert` against the longest legal request, `groups::send()`, and
+file-local decoders. What is particular to each:
+
+* **Statistics owns device-sized containers.** A list is bounded by
+  `limits::kMaxStatisticsGroups`, a group's fields by `kMaxStatisticsFields`,
+  and every name by `kMaxStatisticsNameLength`, each checked before the copy.
+  `StatisticsGroup::fields` keeps the device's order, which is its struct's
+  declaration order, and a repeated field name is refused so that `find()` has
+  one answer. `stat_list`, `name` and `fields` are all required: the server
+  always writes them. A value is `std::uint64_t`, though a Zephyr server sends
+  32 bits (PN §9, A28).
+* **A setting's value is bytes.** `SettingValue::value` is the byte string
+  exactly as sent, and `write()` takes `ConstBytes`; the type belongs to the
+  device application. A read without `max_size` gets at most the device's
+  `CONFIG_MCUMGR_GRP_SETTINGS_VALUE_LEN` (32 by default), so `read(name,
+  max_size, ...)` exists for longer values, and a reply longer than what was
+  asked for is refused. `SettingValue::max_size` is the device's own limit,
+  present only when it lowered the request (A31).
+* **Names are checked before anything is sent.** `groups::is_valid_name()`
+  refuses an empty name, one over the group's limit, and one containing a NUL,
+  which the server would silently shorten to a different name (A33). `save()`
+  without an argument omits `name` altogether; there is no empty-string
+  sentinel.
+* **Only `save()` takes a timeout.** It writes the device's storage, all of it
+  when no name is given, and a flash backend may garbage-collect a sector
+  first. `SaveOptions::timeout` passes straight into `RequestSpec`, exactly as
+  `ResetOptions::timeout` does. Absent keeps the client's default: unlike
+  `kEraseTimeout`, no measurement justifies a longer default of smply's own.
+* **Settings commands share IDs.** Command 0 is read or write and command 3 is
+  load or save, told apart by the operation alone, so each call site names its
+  operation explicitly and the tests check it for every command.
 
 ### Four rules every group follows
 
@@ -499,6 +574,13 @@ there: over SMP v1 — smply's default — a server built with
 `mcumgr_err_t` and rebuilds the response, so `HashNotFound` reaches the client
 as `SmpError::Unknown` (PN §9, A16). Callers check both accessors, and treat an
 absent image code as normal rather than as a malformed reply.
+
+`statistics_error()` and `settings_error()` are the same helper for groups 2
+and 3, with the same rule: `nullopt` unless the code is group-scoped **and**
+the group is theirs. That second condition matters for settings in particular,
+whose access hook may refuse with another group's code (A32). Both groups'
+codes are translated many-to-one over v1 as well (A34), so the v1 caveat
+applies unchanged.
 
 ## 6. Upload state machine (`src/groups/image/upload_session.*`)
 

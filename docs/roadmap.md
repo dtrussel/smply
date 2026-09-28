@@ -15,6 +15,8 @@ bodies still cite those phase IDs.
 The library is feature-complete for what it exists to do:
 * SMP framing, reassembly and request correlation;
 * the OS and image management groups;
+* the statistics and settings management groups (groups 2 and 3), traced to
+  Zephyr's source and not yet run against a device;
 * MCUboot image handling;
 * the upload state machine and `FirmwareUpdater`;
 * a reference WinRT BLE adapter and a Windows DFU tool;
@@ -56,6 +58,13 @@ None of these can be closed from a container.
   outside smply. Until then, the contract is tested against the
   simulator and the stub device only. `serial_dfu --port … --package …` is
   the tool for the run.
+* **Run the statistics and settings groups against a device.** Both are traced
+  to Zephyr's source only (protocol-notes §10, §11). The bench peer's
+  `peer.conf` enables neither: it needs `CONFIG_STATS`, `CONFIG_MCUMGR_GRP_STAT`,
+  `CONFIG_SETTINGS`, `CONFIG_SETTINGS_RUNTIME` and `CONFIG_MCUMGR_GRP_SETTINGS`,
+  a registered statistics group, and a HIL case for each command. A28 (32-bit
+  values), A29 (the unknown-group code) and A31 (the read limit) are the
+  inferences a run would confirm.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed
   but no runner is registered, so the hardware suite has only ever run by hand.
   Its header carries the steps and the `schedule:` block to restore. The
@@ -93,7 +102,8 @@ doing.
 | **`Transport` has no `connected()` query**, so a transport that reconnects underneath the client cannot say so. `SmpClient` tracks link state itself, which is enough today. | if a self-healing transport is wanted |
 | **Two transport obligations are documented on `SmpClient`, not in the normative contract** (`transport.hpp`, `design.md` §9): `send()` must not deliver inbound bytes before it returns, and a transport must outlive every client bound to it. A transport that notified its listener on destruction would remove the second. | when the transport contract is next revised |
 | **`Result` has no monadic operations** (`and_then`, `transform`). `std::expected` has them and smply's C++20 subset does not, so using them would break the C++20 build. | if the same unwrap is hand-rolled repeatedly |
-| **`cbor::Writer` cannot write a nested map or array under a key**, and `for_each_map_in_array` visits maps only. No MCUmgr request or response in scope needs either. | when a new group needs it |
+| **`cbor::Writer` cannot write a nested map or array under a key.** No MCUmgr request in scope needs one; the reader side now visits maps, text and unsigned-valued maps. | when a new group's request needs it |
+| **Settings `commit()` and `load()` use the client's default deadline.** `save()` takes `SaveOptions::timeout`; the other two run every settings handler but write nothing, so they were left without one. Not observed. | if one is seen to outlast the default |
 | **`to_string(const Error&)` allocates.** The zero-allocation path is `to_string(ErrorCode)`. | when logging is profiled as hot |
 | **The upload driver copies each chunk once before encoding**, because `cbor::Writer` needs the bytes up front. A `put_bytes_from()` that fills in place would remove a 512-byte copy per chunk. | if a profile says so |
 | **The client-context assertion covers `SmpClient` only.** Using `ImageManagement` from a second thread without reaching the client (for example, by reading `transferred()`) does not trip it. Closing that needs the groups to use pimpl. | when the groups are next reworked |
@@ -114,6 +124,7 @@ doing.
 | **The TLV entry cap counts loop iterations**, so stepping over the unprotected area's header consumes one unit. This makes no difference at 256. | if the cap is tightened |
 | **A write that fails mid-message leaves the device's reassembler holding a partial message.** The adapter discards its waiting message, so the request times out. Whether Zephyr's `smp_bt` reassembler discards a partial message on a timeout of its own is unverified, and the answer decides whether the discard is always sufficient or only usually. | when the reassembler is next read |
 | **A `TransportBusy` seen again would need a clock-driven backoff, and that needs an ADR.** Nothing below `FirmwareUpdater` owns a clock (`design.md` §6), and giving one a clock touches ADR-0003 and ADR-0004. Do not patch it quietly. | if it is seen again |
+| **Zephyr's settings documentation names the wrong Kconfig for the read response's `max_size`** (protocol-notes §9, A31): it says `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN`, the source uses `_VALUE_LEN`. Reporting it upstream is an outward-facing act and needs the maintainer's go-ahead. | when the maintainer agrees |
 | **QCBOR mishandles consecutive indefinite-length breaks** (`dependencies.md`, protocol-notes §9 A18), in pinned 1.6.1 and `master` alike. It is worked around in `cbor::Reader`. Reporting it upstream is an outward-facing act and needs the maintainer's go-ahead. The minimal reproduction is `{"images": [_ {"slot": 0}], "x": 5}`, walked with `EnterArrayFromMapSZ` / `EnterMap` / `ExitMap` / `PeekNext`. | when the maintainer agrees |
 
 ### Transports and examples

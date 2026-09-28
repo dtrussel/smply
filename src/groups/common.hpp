@@ -25,7 +25,9 @@
 #include "smply/result.hpp"
 #include "smply/smp_client.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -38,6 +40,18 @@ template<class Command>
 [[nodiscard]] constexpr std::uint8_t command_id(Command command) noexcept
 {
     return static_cast<std::uint8_t>(command);
+}
+
+/// True when \p name is one a Zephyr server can act on as sent: non-empty, at
+/// most \p max_length bytes, and free of NUL bytes.
+///
+/// The server copies a name into a C string, so an embedded NUL would silently
+/// shorten it to a *different* name, and an empty one is refused outright
+/// (docs/protocol-notes.md sections 10 and 11). Both are caller errors that
+/// smply can see before anything is sent.
+[[nodiscard]] constexpr bool is_valid_name(std::string_view name, std::size_t max_length) noexcept
+{
+    return !name.empty() && name.size() <= max_length && name.find('\0') == std::string_view::npos;
 }
 
 /// The empty CBOR map, `{}`, the body of every request with no fields.

@@ -67,6 +67,18 @@ rather than a decode failure. Reaching a cap needs a document one level deeper
 than the cap, so only a strictly lower value routes the refusal through smply's
 `record()`. The reasoning is also written next to the constant.
 
+**A device may choose names as well as sizes.** The statistics group returns
+a map whose *keys* are the device's (`fields`) and a list of its names
+(`stat_list`), and the settings group returns a value of the device's choosing.
+Every one is bounded before it is copied: `kMaxStatisticsGroups`,
+`kMaxStatisticsFields` and `kMaxStatisticsNameLength` for statistics, and
+`kMaxSettingValueLength` -- or the smaller `max_size` the read asked for -- for
+a setting. A repeated field name is refused rather than kept, so a lookup by
+name has one answer. `fuzz_cbor_statistics` asserts all three statistics bounds
+over arbitrary responses. A setting's value is bytes the application
+interprets; smply hands them over exactly and says so, because the type is
+not the protocol's to state.
+
 **One case is deliberately not bounded.** `sha256()` streams an `ImageSource`
 that the **application** supplies, in fixed-size chunks. A large source costs
 time rather than memory, and there is no untrusted number to defend against.

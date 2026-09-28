@@ -12,6 +12,7 @@
 set(SMPLY_FUZZ_TARGETS
     fuzz_assembler
     fuzz_cbor_image_state
+    fuzz_cbor_statistics
     fuzz_cbor_upload_response
     fuzz_dfu_package
     fuzz_header

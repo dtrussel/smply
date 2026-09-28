@@ -2,6 +2,7 @@
 
 #include "cbor/cbor.hpp"
 
+#include "cbor_shapes.hpp"
 #include "message_builder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -12,7 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using smply::ConstBytes;
@@ -22,6 +25,8 @@ using smply::Result;
 using smply::cbor::Reader;
 using smply::cbor::Writer;
 using smply::test::bytes_of;
+using smply::test::Encoding;
+using smply::test::Shape;
 
 namespace {
 
@@ -926,4 +931,532 @@ TEST_CASE("a truncated document fails rather than reading past the end", "[cbor]
         CHECK(reader.bytes("hash") == std::nullopt);
     }
     CHECK_FALSE(reader.ok());
+}
+
+// ---------------------------------------------------------------------------
+// Text arrays and maps whose keys are data: the statistics group's
+// `stat_list` and `fields` (protocol-notes section 10). Every document here is
+// run in both container encodings, because a device sends indefinite ones.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Collects what a text-array visit saw.
+struct TextVisit
+{
+    std::vector<std::string> seen;
+
+    [[nodiscard]] Result<bool> run(Reader& reader, std::string_view key, std::size_t cap)
+    {
+        return reader.for_each_text_in_array(key, cap,
+                                             [this](std::string_view text) -> Result<void> {
+                                                 seen.emplace_back(text);
+                                                 return {};
+                                             });
+    }
+};
+
+/// Collects what a uint-map visit saw.
+struct EntryVisit
+{
+    std::vector<std::pair<std::string, std::uint64_t>> seen;
+
+    [[nodiscard]] Result<bool> run(Reader& reader, std::string_view key, std::size_t cap)
+    {
+        return reader.for_each_uint_in_map(
+            key, cap, [this](std::string_view name, std::uint64_t value) -> Result<void> {
+                seen.emplace_back(std::string{name}, value);
+                return {};
+            });
+    }
+};
+
+using Entries = std::vector<std::pair<std::string, std::uint64_t>>;
+
+} // namespace
+
+TEST_CASE("a text array is visited in order", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    // {"stat_list": ["ble", "net"], "x": 5} -- a key after the array too, so the
+    // walk is shown to leave the parent readable.
+    Shape doc{encoding};
+    doc.map(2).text("stat_list").array(2).text("ble").text("net").end().text("x").uint(5).end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    const auto present = visit.run(reader, "stat_list", 8);
+    REQUIRE(present.has_value());
+    CHECK(*present);
+    CHECK(visit.seen == std::vector<std::string>{"ble", "net"});
+    CHECK(reader.uint("x") == 5);
+    CHECK(reader.leave_map().has_value());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a text array as the last entry closes with consecutive breaks", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(2).text("x").uint(5).text("stat_list").array(1).text("ble").end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    REQUIRE(visit.run(reader, "stat_list", 8).value_or(false));
+    CHECK(visit.seen == std::vector<std::string>{"ble"});
+    CHECK(reader.uint("x") == 5);
+    CHECK(reader.leave_map().has_value());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("an empty text array is present and visits nothing", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("stat_list").array(0).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    const auto present = visit.run(reader, "stat_list", 8);
+    REQUIRE(present.has_value());
+    CHECK(*present);
+    CHECK(visit.seen.empty());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("an absent text array is reported as absent, not as an error", "[cbor]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(1).text("x").uint(5).end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    const auto present = visit.run(reader, "stat_list", 8);
+    REQUIRE(present.has_value());
+    CHECK_FALSE(*present);
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a text array is capped at exactly its limit", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("stat_list").array(3).text("a").text("b").text("c").end().end();
+
+    SECTION("an array of exactly the cap is accepted")
+    {
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        TextVisit visit;
+        CHECK(visit.run(reader, "stat_list", 3).has_value());
+        CHECK(visit.seen.size() == 3);
+    }
+    SECTION("one element over the cap is refused, and the reader is poisoned")
+    {
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        TextVisit visit;
+        CHECK_FALSE(visit.run(reader, "stat_list", 2).has_value());
+        CHECK(visit.seen.size() == 2);
+        CHECK_FALSE(reader.ok());
+    }
+}
+
+TEST_CASE("a text array element of another type is refused", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("stat_list").array(2).text("a").uint(7).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    CHECK_FALSE(visit.run(reader, "stat_list", 8).has_value());
+    CHECK(reader.status().error().code() == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a key holding something other than a text array is refused", "[cbor][hostile]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(1).text("stat_list").text("ble").end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    TextVisit visit;
+    CHECK_FALSE(visit.run(reader, "stat_list", 8).has_value());
+    CHECK_FALSE(reader.ok());
+}
+
+TEST_CASE("a text array visitor's error stops the walk and propagates", "[cbor]")
+{
+    Shape doc{Encoding::Indefinite};
+    doc.map(1).text("stat_list").array(2).text("a").text("b").end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    int calls = 0;
+    const auto outcome =
+        reader.for_each_text_in_array("stat_list", 8, [&calls](std::string_view) -> Result<void> {
+            ++calls;
+            return smply::fail(ErrorCode::CborDecode, "test: refused");
+        });
+    CHECK_FALSE(outcome.has_value());
+    CHECK(calls == 1);
+    // The visitor's refusal is its own; the document itself was well-formed.
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a poisoned reader visits no text array", "[cbor]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(2).text("n").text("not a number").text("stat_list").array(1).text("a").end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    CHECK_FALSE(reader.uint("n").has_value());
+    TextVisit visit;
+    CHECK_FALSE(visit.run(reader, "stat_list", 8).has_value());
+    CHECK(visit.seen.empty());
+}
+
+TEST_CASE("a map of unsigned values is visited in wire order", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    const bool map_last = GENERATE(false, true);
+    // {"name": "net", "fields": {"rx": 3, "tx": 1}} and the same with "fields"
+    // first: the map as the last entry is what closes with two breaks.
+    Shape doc{encoding};
+    doc.map(2);
+    if (!map_last) {
+        doc.text("fields").map(2).text("rx").uint(3).text("tx").uint(1).end();
+    }
+    doc.text("name").text("net");
+    if (map_last) {
+        doc.text("fields").map(2).text("rx").uint(3).text("tx").uint(1).end();
+    }
+    doc.end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    CHECK(reader.text("name") == "net");
+    EntryVisit visit;
+    const auto present = visit.run(reader, "fields", 8);
+    REQUIRE(present.has_value());
+    CHECK(*present);
+    CHECK(visit.seen == Entries{{"rx", 3}, {"tx", 1}});
+    // The parent is still readable afterwards, and leaves cleanly.
+    CHECK(reader.text("name") == "net");
+    CHECK(reader.leave_map().has_value());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a map visit finds its key among nested siblings", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    // A nested map and an array before the target: the walk must skip whole
+    // entries, not items.
+    Shape doc{encoding};
+    doc.map(3)
+        .text("err")
+        .map(1)
+        .text("rc")
+        .uint(0)
+        .end()
+        .text("list")
+        .array(1)
+        .map(0)
+        .end()
+        .end()
+        .text("fields")
+        .map(1)
+        .text("a")
+        .uint(1)
+        .end()
+        .end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    REQUIRE(visit.run(reader, "fields", 8).value_or(false));
+    CHECK(visit.seen == Entries{{"a", 1}});
+    CHECK(reader.leave_map().has_value());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("an empty map is present and visits nothing", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("fields").map(0).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    const auto present = visit.run(reader, "fields", 8);
+    REQUIRE(present.has_value());
+    CHECK(*present);
+    CHECK(visit.seen.empty());
+    CHECK(reader.ok());
+}
+
+TEST_CASE("an absent map is reported as absent, not as an error", "[cbor]")
+{
+    Shape doc{Encoding::Indefinite};
+    doc.map(1).text("name").text("net").end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    const auto present = visit.run(reader, "fields", 8);
+    REQUIRE(present.has_value());
+    CHECK_FALSE(*present);
+    CHECK(reader.ok());
+    CHECK(reader.text("name") == "net");
+}
+
+TEST_CASE("map values span the whole unsigned range", "[cbor]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    constexpr std::uint64_t kMax = std::numeric_limits<std::uint64_t>::max();
+    constexpr std::uint64_t kAboveInt64 = std::uint64_t{1} << 63U;
+    Shape doc{encoding};
+    doc.map(1)
+        .text("fields")
+        .map(4)
+        .text("zero")
+        .uint(0)
+        .text("u32")
+        .uint(0xFFFFFFFFU)
+        .text("above_int64")
+        .uint(kAboveInt64)
+        .text("max")
+        .uint(kMax)
+        .end()
+        .end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    REQUIRE(visit.run(reader, "fields", 8).value_or(false));
+    CHECK(visit.seen ==
+          Entries{{"zero", 0}, {"u32", 0xFFFFFFFFU}, {"above_int64", kAboveInt64}, {"max", kMax}});
+}
+
+TEST_CASE("a map value that is not unsigned is refused", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("fields").map(1).text("a");
+    const int variant = GENERATE(0, 1, 2, 3);
+    switch (variant) {
+    case 0:
+        doc.raw().nint(-1);
+        break;
+    case 1:
+        doc.text("seven");
+        break;
+    case 2:
+        // The shape a Zephyr server writes when a walk fails after "fields"
+        // was opened: the group error nested inside the map.
+        doc.map(2).text("group").uint(2).text("rc").uint(5).end();
+        break;
+    default:
+        doc.array(1).uint(1).end();
+        break;
+    }
+    doc.end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    CHECK_FALSE(visit.run(reader, "fields", 8).has_value());
+    CHECK(reader.status().error().code() == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a map key that is not text is refused", "[cbor][hostile]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(1).text("fields").map(1).uint(1).uint(2).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    CHECK_FALSE(visit.run(reader, "fields", 8).has_value());
+    CHECK_FALSE(reader.ok());
+}
+
+TEST_CASE("a key holding something other than a map is refused", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("fields").array(1).uint(1).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    EntryVisit visit;
+    CHECK_FALSE(visit.run(reader, "fields", 8).has_value());
+    CHECK_FALSE(reader.ok());
+}
+
+TEST_CASE("a map is capped at exactly its limit", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1)
+        .text("fields")
+        .map(3)
+        .text("a")
+        .uint(1)
+        .text("b")
+        .uint(2)
+        .text("c")
+        .uint(3)
+        .end()
+        .end();
+
+    SECTION("a map of exactly the cap is accepted")
+    {
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        EntryVisit visit;
+        CHECK(visit.run(reader, "fields", 3).has_value());
+        CHECK(visit.seen.size() == 3);
+        CHECK(reader.ok());
+    }
+    SECTION("one entry over the cap is refused, and the reader is poisoned")
+    {
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        EntryVisit visit;
+        CHECK_FALSE(visit.run(reader, "fields", 2).has_value());
+        CHECK(visit.seen.size() == 2);
+        CHECK_FALSE(reader.ok());
+    }
+}
+
+TEST_CASE("a map visitor's error stops the walk without poisoning the reader", "[cbor]")
+{
+    Shape doc{Encoding::Indefinite};
+    doc.map(1).text("fields").map(2).text("a").uint(1).text("b").uint(2).end().end();
+
+    Reader reader{doc.view()};
+    REQUIRE(reader.enter_map().has_value());
+    int calls = 0;
+    const auto outcome = reader.for_each_uint_in_map(
+        "fields", 8, [&calls](std::string_view, std::uint64_t) -> Result<void> {
+            ++calls;
+            return smply::fail(ErrorCode::CborDecode, "test: refused");
+        });
+    CHECK_FALSE(outcome.has_value());
+    CHECK(calls == 1);
+    CHECK(reader.ok());
+}
+
+TEST_CASE("a truncated map is refused rather than read past its end", "[cbor][hostile]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Shape doc{encoding};
+    doc.map(1).text("fields").map(2).text("a").uint(1).text("b").uint(2).end().end();
+    // Cut inside the second entry.
+    const ConstBytes truncated = doc.view().first(doc.view().size() - 3);
+
+    Reader reader{truncated};
+    if (reader.enter_map().has_value()) {
+        EntryVisit visit;
+        CHECK_FALSE(visit.run(reader, "fields", 8).value_or(false));
+    }
+    CHECK_FALSE(reader.ok());
+}
+
+TEST_CASE("the nesting budget bounds a map visit too", "[cbor][limits]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(1).text("fields").map(1).text("a").uint(1).end().end();
+
+    SECTION("a reader with no depth left cannot enter the map")
+    {
+        Reader reader{doc.view(), 1};
+        REQUIRE(reader.enter_map().has_value());
+        EntryVisit visit;
+        CHECK_FALSE(visit.run(reader, "fields", 8).has_value());
+        CHECK_FALSE(reader.ok());
+    }
+    SECTION("nor the array")
+    {
+        Reader reader{doc.view(), 1};
+        REQUIRE(reader.enter_map().has_value());
+        TextVisit visit;
+        CHECK_FALSE(visit.run(reader, "fields", 8).has_value());
+        CHECK_FALSE(reader.ok());
+    }
+}
+
+TEST_CASE("an over-long key is refused by both visitors", "[cbor][limits]")
+{
+    Shape doc{Encoding::Definite};
+    doc.map(0).end();
+    const std::string key(smply::cbor::kMaxKeyLength + 1, 'k');
+
+    Reader first{doc.view()};
+    REQUIRE(first.enter_map().has_value());
+    TextVisit texts;
+    CHECK_FALSE(texts.run(first, key, 8).has_value());
+    CHECK_FALSE(first.ok());
+
+    Reader second{doc.view()};
+    REQUIRE(second.enter_map().has_value());
+    EntryVisit entries;
+    CHECK_FALSE(entries.run(second, key, 8).has_value());
+    CHECK_FALSE(second.ok());
+}
+
+TEST_CASE("an unreadable item is refused wherever the visitors meet it", "[cbor][hostile]")
+{
+    // 0x1C is a head with reserved additional information (RFC 8949 section
+    // 3): not well-formed, so the peek itself fails rather than the type check.
+    constexpr std::uint8_t kReserved = 0x1C;
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+
+    SECTION("an array element")
+    {
+        Shape doc{encoding};
+        doc.map(1).text("stat_list").array(2).text("a");
+        doc.raw().raw({kReserved});
+        doc.end().end();
+        Reader reader{doc.view()};
+        REQUIRE(reader.enter_map().has_value());
+        TextVisit visit;
+        CHECK_FALSE(visit.run(reader, "stat_list", 8).has_value());
+        CHECK_FALSE(reader.ok());
+    }
+    SECTION("a sibling entry before the map")
+    {
+        Shape doc{encoding};
+        doc.map(2).text("x");
+        doc.raw().raw({kReserved});
+        doc.text("fields").map(0).end().end();
+        Reader reader{doc.view()};
+        if (reader.enter_map().has_value()) {
+            EntryVisit visit;
+            CHECK_FALSE(visit.run(reader, "fields", 8).value_or(false));
+        }
+        CHECK_FALSE(reader.ok());
+    }
+    SECTION("an entry inside the map")
+    {
+        Shape doc{encoding};
+        doc.map(1).text("fields").map(1).text("a");
+        doc.raw().raw({kReserved});
+        doc.end().end();
+        Reader reader{doc.view()};
+        if (reader.enter_map().has_value()) {
+            EntryVisit visit;
+            CHECK_FALSE(visit.run(reader, "fields", 8).value_or(false));
+        }
+        CHECK_FALSE(reader.ok());
+    }
 }

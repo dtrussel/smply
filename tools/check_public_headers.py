@@ -67,7 +67,7 @@ PUBLIC_LAYERS: dict[str, int] = {
     "smp/header": 1, "transport": 1, "image_source": 1, "groups/image_upload": 1,
     "mcuboot_image": 2,
     "smp_client": 3,
-    "groups/os": 4, "groups/image": 4,
+    "groups/os": 4, "groups/image": 4, "groups/statistics": 4, "groups/settings": 4,
     "dfu/firmware_updater": 5,
     # smply::util and smply::asyncutil are separate targets the core never
     # links (SEPARATE_TARGET_HEADERS below). They build on the core types.
@@ -94,11 +94,15 @@ SOURCE_DEPENDENCIES: dict[str, tuple[set[str], int]] = {
     "groups": ({"groups", "cbor"}, 3),
     "groups/os": ({"groups/os", "groups", "cbor", "detail"}, 4),
     "groups/image": ({"groups/image", "groups", "cbor", "detail"}, 4),
+    "groups/statistics": ({"groups/statistics", "groups", "cbor", "detail"}, 4),
+    "groups/settings": ({"groups/settings", "groups", "cbor", "detail"}, 4),
     "dfu": ({"dfu"}, 5),
     "util": ({"util"}, 0),
 }
 OWN_PUBLIC_HEADER = {"dfu": "dfu/firmware_updater", "util": "util/dispatcher",
-                     "groups/os": "groups/os", "groups/image": "groups/image"}
+                     "groups/os": "groups/os", "groups/image": "groups/image",
+                     "groups/statistics": "groups/statistics",
+                     "groups/settings": "groups/settings"}
 
 QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
 
