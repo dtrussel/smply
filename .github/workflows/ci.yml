@@ -173,7 +173,7 @@ jobs:
           exit $status
       - name: Upload crash reproducers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-smoke-artifacts
           path: fuzz-artifacts/
@@ -202,7 +202,7 @@ jobs:
       - name: Generate the SBOM
         run: python3 tools/sbom.py -o "${{ runner.temp }}/smply.spdx.json"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: ${{ runner.temp }}/smply.spdx.json
@@ -224,7 +224,7 @@ jobs:
       - run: tools/coverage.sh build/linux-gcc-coverage --enforce
       # coverage.sh writes both. `error`, not `ignore`: an artifact that is
       # silently empty is how this upload once matched nothing unnoticed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: |
