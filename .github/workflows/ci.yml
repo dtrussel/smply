@@ -48,7 +48,7 @@ jobs:
           # See the note at the top of this file for what it does not prove.
           - { os: windows-latest, preset: windows-winrt }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux toolchain
         if: runner.os == 'Linux'
@@ -81,7 +81,7 @@ jobs:
       matrix:
         preset: [linux-clang-asan-ubsan, linux-gcc-asan-ubsan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -100,7 +100,7 @@ jobs:
     name: linux-clang-tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -123,7 +123,7 @@ jobs:
     name: linux-clang-fuzz-smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -183,7 +183,7 @@ jobs:
     name: out-of-tree consumption
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -211,7 +211,7 @@ jobs:
     name: coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build lcov gcovr
@@ -236,7 +236,7 @@ jobs:
     name: gates (format, tidy, api, deps, docs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # check_docs.py R1 diffs against the base branch.
           fetch-depth: 0
@@ -275,7 +275,7 @@ jobs:
     name: gates actually fail on violations
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install tooling
         run: |
           sudo apt-get update
