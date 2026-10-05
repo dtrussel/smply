@@ -49,7 +49,7 @@ jobs:
       SMPLY_HIL_UART: ${{ vars.SMPLY_HIL_UART }}
       SMPLY_HIL_VENV: ${{ vars.SMPLY_HIL_VENV }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure and build (windows-hil)
         shell: cmd
