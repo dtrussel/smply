@@ -486,11 +486,14 @@ smply/
 │   │                           driven out of tree by tools/check_install.sh
 │   └── hil/                    hardware interoperability, opt-in (SMPLY_BUILD_HIL, preset
 │                               windows-hil): test_hil_cases.cpp over support/rig.* and
-│                               support/bench.*; test_hil_serial.cpp — the serial adapter
+│                               support/bench.*; test_hil_mgmt.cpp — statistics and
+│                               settings groups; test_hil_serial.cpp — the serial adapter
 │                               on the console UART, never run; run_hil.py supervises the case suite and
 │                               crosscheck.py the third-party comparison; firmware/ is the
-│                               reproducible peer (manifest, peer.conf, build and flash
-│                               scripts); tools/ are the bench instruments and the
+│                               reproducible peer per bench profile (build_peer.py and
+│                               flash_baseline.py take --profile; the WB55's manifest and
+│                               peer.conf; bl54l15/ with peer.conf, sysbuild.conf and a
+│                               bench-only settings_module/); tools/ are the bench instruments and the
 │                               capture/decode helpers; README.md is the bench itself.
 │                               Never a PR gate
 ├── .github/                    pull_request_template.md  dependabot.yml (Actions only)

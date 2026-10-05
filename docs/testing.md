@@ -751,10 +751,11 @@ today may find something tomorrow.
 ## 6. Hardware interoperability (`tests/hil/`)
 
 Opt-in target `smply_hil` (`SMPLY_BUILD_HIL=ON`, preset `windows-hil`), never
-part of the PR gate. Requires the bench in `tests/hil/README.md`: a NUCLEO-WB55RG
-running MCUboot + the pinned `smp_svr` over BLE, reachable from a Windows host,
-with the exact west manifest, Kconfig snapshots and coprocessor firmware recorded
-so results are reproducible.
+part of the PR gate. Requires one of the two benches in `tests/hil/README.md` —
+a NUCLEO-WB55RG (`--profile wb55`) or a BL54L15 DVK, nRF54L15 with nRF Connect
+SDK (`--profile bl54l15`) — running MCUboot + the pinned `smp_svr` over BLE,
+reachable from a Windows host, with the exact manifest, Kconfig snapshots and
+(for the WB55) coprocessor firmware recorded so results are reproducible.
 
 **The serial cases have never run.** `test_hil_serial.cpp` puts the serial
 port adapter (its Win32 half) on the bench's console UART. The `serial` group
@@ -775,7 +776,7 @@ operation at a time (connect, read state, upload, resume, drop the link, run a
 whole update, reconnect on a policy). Every case reads the bench from the
 environment and **SKIPs** without it; every case works out its own target (the
 image not currently running), so it can start from either of the two firmware
-images. `run_hil.py` supervises: a baseline reflash over ST-LINK and a UART
+images. `run_hil.py` supervises: a baseline reflash over the bench's probe and a UART
 capture per *group*, a hard deadline and a JUnit report per case, the case's
 timeline and `HIL-METRIC` lines kept as evidence, and a **pass / fail /
 unavailable** verdict — a skipped case, a missing probe or an unreadable report
@@ -814,6 +815,16 @@ into each case's `summary.json` entry: admission (`deferred_sends`,
 `give_up_ms`, `reboot_total_ms`), resume (`resumed_from`, `abandoned_at`), the
 trial-boot slot listing (`slots_listed_during_trial`) and the requested
 `smp_version`.
+
+**Statistics and settings** — `test_hil_mgmt.cpp`, five more `TEST_CASE`s in
+two groups, `stat` and `settings`, each to be run under SMP v1 and v2 like
+`o2`. They are where groups 2 and 3, written from Zephyr's source alone, meet
+a device: a counter that advances, an unknown group and an over-long name
+(§9 A29, A33, A34); a setting written, read back, committed, saved, reloaded
+and deleted; the read limit and when it is reported (A31); and each settings
+refusal under both versions (A34). The settings cases need the BL54L15
+recipe's bench-only handler, so `settings` is in `--cases all` on that
+profile only.
 
 Two of those are not diagnostics but the evidence a green run rests on. **A
 green sequential suite means nothing unless `deferred_sends > 0`**: zero

@@ -98,6 +98,8 @@ Result<void> Rig::connect()
                         SmpClientConfig{.smp_version = bench_.smp_version});
         images_.emplace(*client_);
         os_.emplace(*client_);
+        statistics_.emplace(*client_);
+        settings_.emplace(*client_);
     } else {
         client_->rebind_transport(*links_.back());
     }
@@ -307,6 +309,83 @@ Result<void> Rig::erase(std::optional<std::uint32_t> slot, Duration limit)
             static_cast<void>(images_->erase(options, std::move(cb)));
         },
         limit, "erase");
+}
+
+Result<std::vector<std::string>> Rig::stat_groups(Duration limit)
+{
+    return await<std::vector<std::string>>(
+        [this](Callback<std::vector<std::string>> cb) {
+            static_cast<void>(statistics_->list_groups(std::move(cb)));
+        },
+        limit, "stat list");
+}
+
+Result<StatisticsGroup> Rig::stat_read(std::string_view name, Duration limit)
+{
+    return await<StatisticsGroup>(
+        [this, name](Callback<StatisticsGroup> cb) {
+            static_cast<void>(statistics_->read_group(name, std::move(cb)));
+        },
+        limit, "stat read");
+}
+
+Result<SettingValue> Rig::setting_read(std::string_view name, std::optional<std::uint32_t> max_size,
+                                       Duration limit)
+{
+    return await<SettingValue>(
+        [this, name, max_size](Callback<SettingValue> cb) {
+            if (max_size.has_value()) {
+                static_cast<void>(settings_->read(name, *max_size, std::move(cb)));
+            } else {
+                static_cast<void>(settings_->read(name, std::move(cb)));
+            }
+        },
+        limit, "settings read");
+}
+
+Result<void> Rig::setting_write(std::string_view name, ConstBytes value, Duration limit)
+{
+    return await<void>(
+        [this, name, value](Callback<void> cb) {
+            static_cast<void>(settings_->write(name, value, std::move(cb)));
+        },
+        limit, "settings write");
+}
+
+Result<void> Rig::setting_erase(std::string_view name, Duration limit)
+{
+    return await<void>(
+        [this, name](Callback<void> cb) {
+            static_cast<void>(settings_->erase(name, std::move(cb)));
+        },
+        limit, "settings delete");
+}
+
+Result<void> Rig::settings_commit(Duration limit)
+{
+    return await<void>(
+        [this](Callback<void> cb) { static_cast<void>(settings_->commit(std::move(cb))); }, limit,
+        "settings commit");
+}
+
+Result<void> Rig::settings_load(Duration limit)
+{
+    return await<void>(
+        [this](Callback<void> cb) { static_cast<void>(settings_->load(std::move(cb))); }, limit,
+        "settings load");
+}
+
+Result<void> Rig::settings_save(std::optional<std::string_view> name, Duration limit)
+{
+    return await<void>(
+        [this, name](Callback<void> cb) {
+            if (name.has_value()) {
+                static_cast<void>(settings_->save(*name, std::move(cb)));
+            } else {
+                static_cast<void>(settings_->save(std::move(cb)));
+            }
+        },
+        limit, "settings save");
 }
 
 bool Rig::wait_disconnected(Duration limit)

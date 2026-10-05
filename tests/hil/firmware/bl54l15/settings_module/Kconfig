@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+config SMPLY_BENCH_SETTINGS
+	bool "smply bench-only settings handler (smply/...)"
+	depends on SETTINGS && SETTINGS_RUNTIME
+	help
+	  Registers the "smply" settings root the HIL settings cases read and
+	  write. Bench firmware only; see smply_bench_settings.c.

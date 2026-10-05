@@ -59,11 +59,11 @@ using namespace smply::transport; // NOLINT(google-build-using-namespace)
 /// The console port, or a SKIP.
 [[nodiscard]] std::string require_uart()
 {
-    const char* port = std::getenv("SMPLY_HIL_UART"); // NOLINT(concurrency-mt-unsafe)
-    if (port == nullptr || *port == '\0') {
+    auto port = hil::environment("SMPLY_HIL_UART");
+    if (!port) {
         SKIP("bench unavailable: SMPLY_HIL_UART is not set");
     }
-    return port;
+    return *port;
 }
 
 [[nodiscard]] SerialPortConfig console(const std::string& port)

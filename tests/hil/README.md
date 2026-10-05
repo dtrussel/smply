@@ -107,6 +107,63 @@ corrupted slot, a half-written upload — a reflash over ST-LINK undoes it. It
 exits 2 when there is no probe, which a supervisor must report as *bench
 unavailable*, never as a pass or a fail. CPU2 is not touched.
 
+## The second bench: BL54L15 DVK (`--profile bl54l15`)
+
+A second, independent peer on a different SoC, Bluetooth controller, SDK,
+flash technology and bootloader configuration. Everything above is the WB55
+(`--profile wb55`, the default for every script). The same `smply_hil` cases
+run on both; where this bench differs, the difference is recorded here and in
+`docs/protocol-notes.md`.
+
+| Item | Value |
+| ---- | ----- |
+| Board | **Ezurio BL54L15 DVK** (453-00001-K1), nRF54L15 (RRAM), Zephyr board `bl54l15_dvk/nrf54l15/cpuapp` |
+| Probe | on-board SEGGER J-Link OB (serial `1059920902` on this bench); two VCOMs |
+| Console | `uart20` → **VCOM1** (COM3 on this bench; VCOM0 is silent), 115200 8N1. MCUboot, the shell (with the MCUmgr shell transport) and the log share it |
+| Programmer | `nrfutil device` 2.17.5 from the NCS toolchain bundle (`C:\ncs\toolchains\936afb6332`), J-Link V9.24a. The bare `nrfutil` on `PATH` may have no `device` command; `flash_baseline.py` sets `NRFUTIL_HOME` to the bundle's |
+| Firmware | nRF Connect SDK **v3.3.0**: `nrf` `ba167d9f`, `zephyr` `fd9204a0` (4.3.99), `mcuboot` `fce4dac2`, `hal_nordic` `1acb428a` (checked by `build_peer.py`) |
+| Bootloader | MCUboot **swap-using-move**, ED25519 with NCS's public development key, key in the image (not the KMU), **SHA-512 image hash TLV**. Slots 0xAA000 each, from the partition manager (`evidence/partitions.yml`) |
+| Peer name | `smply-hil-bl54l15`, address `F0:71:FF:FF:4E:B1`; SMP UUID advertised, name in the scan response as on the WB55 |
+
+Three consequences for a reader of a run:
+
+* **The image-state hash is 64 bytes.** NCS defaults to SHA-512 on the
+  nRF54L, so every case's "which image is running" compares a 64-byte
+  `ImageHash` from the device against `find_image_tlv_hash()` of the file. On
+  the WB55 it is 32.
+* **The settings group is present, with a bench-only handler.** The stock
+  `smp_svr` registers no settings handler with a getter, so every settings
+  read would fail before reaching a value. `firmware/bl54l15/settings_module/`
+  is a ~100-line Zephyr module, added with `EXTRA_ZEPHYR_MODULES` (the sample
+  stays unmodified), that registers `smply/v` (read/write, 64 bytes),
+  `smply/ro` (read-only) and `smply/commits` (counts commits). The
+  `settings` group of cases needs it, which is why that group is part of
+  `--cases all` on this profile only.
+* **The statistics group is present on both benches.** The sample's own
+  `prj.conf` enables `CONFIG_MCUMGR_GRP_STAT` and registers `smp_svr_stats`;
+  the WB55's evidence shows it too.
+
+### Build, flash and run
+
+```powershell
+python tests/hil/firmware/build_peer.py --profile bl54l15 --workspace C:/ncs/v3.3.0 `
+  --toolchain C:/ncs/toolchains/936afb6332 --build-dir <out>
+python tests/hil/firmware/flash_baseline.py --profile bl54l15 --evidence <out>/evidence
+python tests/hil/run_hil.py --profile bl54l15 --settle 10 --exe build/windows-hil/tests/hil/smply_hil.exe `
+  --evidence <out>/evidence --address F0:71:FF:FF:4E:B1 --uart COM3 --out build/hil-evidence/bl54l15
+```
+
+Keep `<out>` outside this repository. The two builds take about four minutes
+each on this host; the baseline flash (erase all, MCUboot and image A with
+read-back, reset) about ten seconds. `evidence/west-list.txt` replaces the
+WB55's `west-frozen.yml`: an NCS install leaves some manifest projects
+uncloned, and `west manifest --freeze` refuses them.
+
+**`--settle 10`.** A connect three seconds after a reflash once failed with
+`service discovery failed` and passed on an immediate retry, the Windows-side
+settle `crosscheck.py`'s `POST_FLASH_SETTLE` already allows for. `run_hil.py`
+keeps 3 s as its default, which the WB55 runs used.
+
 ## Tools in `tools/`
 
 * `uart_log.py` — timestamps the console UART into a file for the duration of a

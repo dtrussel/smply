@@ -2,9 +2,10 @@
 """The HIL supervisor: baseline, capture, one case at a time, verdict.
 
 Runs the `smply_hil` cases against the bench described in tests/hil/README.md,
-wrapping each *group* of cases in a baseline reflash over ST-LINK and a console
-UART capture, giving every case a hard deadline, and keeping its stdout, the
-device's log and the Catch2 report under <out>/<run>/<case>/.
+wrapping each *group* of cases in a baseline reflash over the bench's debug probe
+(`--profile`) and a console UART capture, giving every case a hard deadline, and
+keeping its stdout, the device's log and the Catch2 report under
+<out>/<run>/<case>/.
 
 Verdicts are **pass**, **fail** or **unavailable** (ADR-0015): a case that
 SKIPped because it found no bench, a reflash that found no probe, or a run that
@@ -56,6 +57,16 @@ GROUPS = [
     # compare the two bundles (tests/hil/support/bench.hpp).
     {"name": "o2",
      "cases": ["hil: an image-group refusal carries what this server's SMP version allows"]},
+    # Groups 2 and 3 (test_hil_mgmt.cpp). Like o2, run them under both SMP
+    # versions. Settings needs the BL54L15 recipe's bench-only handler, so it
+    # is part of `all` on that profile only (`profiles`).
+    {"name": "stat",
+     "cases": ["hil: stat -- the device lists its groups and a counter advances",
+               "hil: stat -- an unknown group and an over-long name are refused as the source says"]},
+    {"name": "settings", "profiles": ["bl54l15"],
+     "cases": ["hil: settings -- a value is written, read back, committed, saved and reloaded",
+               "hil: settings -- the read limit is VALUE_LEN and is reported only when asked for more",
+               "hil: settings -- refusals carry what this server's SMP version allows"]},
     # The serial adapter on the console UART (ADR-0020). `holds_uart`: the case
     # opens the port itself, so the supervisor's logger must not -- only one
     # process may hold it. Needs --uart; without it the case SKIPs and is
@@ -157,7 +168,17 @@ def main() -> int:
                         help="'all', or a comma-separated list of group names or case names")
     parser.add_argument("--no-flash", action="store_true",
                         help="do not reflash the baseline between groups (debugging only)")
-    parser.add_argument("--cli", type=Path, default=CUBE_CLI, help="STM32CubeProgrammer CLI")
+    parser.add_argument("--profile", default="wb55", choices=["wb55", "bl54l15"],
+                        help="which bench board (firmware/flash_baseline.py; default wb55)")
+    parser.add_argument("--cli", "--programmer", dest="cli", type=Path, default=None,
+                        help=f"the profile's programmer; default {CUBE_CLI} for wb55, "
+                             "the NCS toolchain's nrfutil for bl54l15")
+    # 3 s was enough on the WB55. On the BL54L15 a connect 3 s after a reflash
+    # once failed in service discovery and passed on an immediate retry -- the
+    # Windows-side settle crosscheck.py's POST_FLASH_SETTLE (10 s) exists for.
+    parser.add_argument("--settle", type=float, default=3.0,
+                        help="seconds to wait after each baseline flash (default 3; "
+                             "10 on the BL54L15 bench)")
     parser.add_argument("--python", default=None, help="interpreter for the helper scripts")
     parser.add_argument("--case-timeout", type=int, default=600, help="seconds per case")
     args = parser.parse_args()
@@ -170,7 +191,9 @@ def main() -> int:
     wanted = None if args.cases == "all" else {x.strip() for x in args.cases.split(",")}
     catalogue = GROUPS + MANUAL_GROUPS
     groups = [g for g in (GROUPS if wanted is None else catalogue)
-              if wanted is None or g["name"] in wanted or any(c in wanted for c in g["cases"])]
+              if (wanted is None and args.profile in g.get("profiles", [args.profile]))
+              or (wanted is not None
+                  and (g["name"] in wanted or any(c in wanted for c in g["cases"])))]
     if wanted is not None:
         for g in groups:
             g["cases"] = [c for c in g["cases"] if g["name"] in wanted or c in wanted]
@@ -195,7 +218,7 @@ def main() -> int:
                 if flashed == "unavailable":
                     break
                 continue
-            time.sleep(3)  # let the peer boot and start advertising
+            time.sleep(args.settle)  # let the peer boot and start advertising
         # A group whose case holds the console itself gets no logger on it.
         uart = None if group.get("holds_uart") else bench.start_uart(group_dir / "uart.log")
         try:
@@ -214,7 +237,8 @@ def main() -> int:
         # case did -- including the give-up group, which erased it.
         bench.flash_baseline(run_dir / "final-baseline.log")
 
-    summary = {"run": run_dir.name, "address": args.address, "results": results,
+    summary = {"run": run_dir.name, "profile": args.profile, "address": args.address,
+               "results": results,
                "counts": {v: sum(1 for r in results if r["verdict"] == v)
                           for v in ("pass", "fail", "unavailable")}}
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
