@@ -207,6 +207,14 @@ private:
     [[nodiscard]] Result<T> await(const std::function<void(Callback<T>)>& issue, Duration limit,
                                   const char* what);
 
+    /// Records `chunk_ack_ms_*` metrics from the gaps between consecutive
+    /// progress reports since `begin_chunk_timing()`: how long each chunk took
+    /// from one acknowledgement to the next (the throughput investigation,
+    /// tests/hil/README.md).
+    void begin_chunk_timing();
+    void note_chunk_progress();
+    void record_chunk_timing();
+
     /// Drain the dispatcher and poll the client (and the updater, if any).
     void pump_step();
     /// Sleep until the next deadline, a wake from a WinRT thread, or `until`,
@@ -226,6 +234,8 @@ private:
     /// A callback registered by upload() may fire during a later resume(), so
     /// it must not reference a local that has since been returned and destroyed.
     std::vector<UploadProgress> progress_;
+    /// When each progress report arrived, in timeline milliseconds.
+    std::vector<std::int64_t> progress_ms_;
 
     std::mutex wake_mutex_;
     std::condition_variable wake_;

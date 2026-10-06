@@ -818,7 +818,8 @@ itself is covered deterministically on every push by `cli_dfu
 into each case's `summary.json` entry: admission (`deferred_sends`,
 `refused_sends`), the peer's buffering (`buf_size`, `buf_count`), timing
 (`close_ms`, `disconnect_seen_ms`, `upload_ms`, `update_ms`, `reconnect_ms`,
-`give_up_ms`, `reboot_total_ms`), resume (`resumed_from`, `abandoned_at`), the
+`give_up_ms`, `reboot_total_ms`), per-chunk acknowledgement timing
+(`chunk_ack_count`, `chunk_ack_ms_p50`, `_p95`, `_max`), resume (`resumed_from`, `abandoned_at`), the
 trial-boot slot listing (`slots_listed_during_trial`) and the requested
 `smp_version`.
 

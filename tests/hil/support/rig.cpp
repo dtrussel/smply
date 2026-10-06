@@ -5,6 +5,7 @@
 #include "smply/error.hpp"
 #include "smply/mcuboot_image.hpp"
 
+#include <algorithm>
 #include <array>
 #include <sstream>
 #include <thread>
@@ -182,6 +183,38 @@ const std::vector<UpdateState>& Rig::states() const noexcept
 const UpdateReport& Rig::last_report() const
 {
     return updater_->report();
+}
+
+// --- chunk timing --------------------------------------------------------------
+
+void Rig::begin_chunk_timing()
+{
+    progress_ms_.clear();
+}
+
+void Rig::note_chunk_progress()
+{
+    progress_ms_.push_back(timeline_.elapsed_ms());
+}
+
+void Rig::record_chunk_timing()
+{
+    if (progress_ms_.size() < 2) {
+        return;
+    }
+    std::vector<std::int64_t> gaps;
+    gaps.reserve(progress_ms_.size() - 1);
+    for (std::size_t i = 1; i < progress_ms_.size(); ++i) {
+        gaps.push_back(progress_ms_[i] - progress_ms_[i - 1]);
+    }
+    std::sort(gaps.begin(), gaps.end());
+    const auto at = [&gaps](std::size_t percent) {
+        return gaps[(gaps.size() - 1) * percent / 100];
+    };
+    timeline_.metric("chunk_ack_count", static_cast<std::int64_t>(gaps.size()));
+    timeline_.metric("chunk_ack_ms_p50", at(50));
+    timeline_.metric("chunk_ack_ms_p95", at(95));
+    timeline_.metric("chunk_ack_ms_max", gaps.back());
 }
 
 // --- the pump ----------------------------------------------------------------
@@ -416,8 +449,13 @@ UploadOutcome Rig::upload(ImageSource& source, const UploadOptions& options,
     std::optional<Result<UploadResult>> done;
     const auto t0 = timeline_.elapsed_ms();
     progress_.clear();
+    begin_chunk_timing();
     outcome.handle = images_->upload(
-        source, options, [this](UploadProgress progress) { progress_.push_back(progress); },
+        source, options,
+        [this](UploadProgress progress) {
+            progress_.push_back(progress);
+            note_chunk_progress();
+        },
         [&done](Result<UploadResult> result) { done = std::move(result); });
     timeline_.note("upload started");
 
@@ -457,6 +495,7 @@ UploadOutcome Rig::upload(ImageSource& source, const UploadOptions& options,
     outcome.result = std::move(*done);
     outcome.progress = progress_;
     timeline_.metric("upload_ms", timeline_.elapsed_ms() - t0);
+    record_chunk_timing();
     if (outcome.result.has_value()) {
         timeline_.note("upload complete: " + std::to_string(outcome.result->transferred) +
                        " bytes" + (outcome.result->already_present ? ", already present" : ""));
@@ -492,6 +531,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
                                  const UpdateHooks& hooks)
 {
     states_.clear();
+    begin_chunk_timing();
     updater_.emplace(*client_, *images_, *os_);
 
     struct Pending
@@ -510,6 +550,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
             timeline_.note(std::string{"update: "} + std::string{to_string(changed.to)});
         },
         [&](const smply::UploadProgress& progress) {
+            note_chunk_progress();
             if (hooks.on_progress) {
                 hooks.on_progress(progress);
             }
@@ -569,6 +610,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
         pump_wait(until);
     }
     timeline_.metric("update_ms", timeline_.elapsed_ms() - t0);
+    record_chunk_timing();
     return outcome;
 }
 

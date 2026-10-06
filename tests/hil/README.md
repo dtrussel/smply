@@ -232,8 +232,11 @@ Measurements that differ from the WB55 (protocol-notes §9 has the rows):
 
 * The final chunk's whole-image check answers within about 50 ms (A19 on the
   WB55: 5.0-5.6 s). The device reconnects 1.2-2.3 s after a reset.
-* Upload throughput depends on direction: about 11.5 KiB/s to B, 4.3-5.4 KiB/s
-  to A, unexplained (roadmap backlog).
+* Upload time varies about 2x between runs (20 s against 36 s for a clean
+  update): the connection interval in force during the upload is 7.5 ms or
+  45 ms, depending on whether the peer's one-shot fast-interval request or the
+  central's own update lands last (A36). `HIL-METRIC chunk_ack_ms_*` and the
+  bench module's `smply-bench:` console lines show which happened in a run.
 * An unknown statistics group comes back under group 63, not 2 (A35).
 * `deferred_sends` was non-zero once in the suite (`restart` part 1), so the
   send-admission slot (A22) was exercised on this bench but rarely; the A22
