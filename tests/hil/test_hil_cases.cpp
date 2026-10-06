@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -640,7 +641,13 @@ TEST_CASE("hil: reconnection gives up when the device does not come back",
     hooks.reconnect.max_delay = std::chrono::seconds{10};
     hooks.reconnect.max_attempts = 3;
     hooks.on_await_reconnect = [&] {
-        std::cout << "HIL-MARK: device-gone-now" << std::endl; // NOLINT(performance-avoid-endl)
+        // C stdio, not std::cout: with a JUnit reporter attached (run_hil.py
+        // always attaches one) Catch2 captures std::cout for the report and
+        // releases it only when the case ends, so a mark written there reached
+        // the supervisor as the case finished -- too late for anyone to act on.
+        // Catch2's default capture swaps the C++ streams' buffers only.
+        std::fputs("HIL-MARK: device-gone-now\n", stdout);
+        static_cast<void>(std::fflush(stdout));
         s.rig.timeline().note("asked the supervisor to remove the device");
     };
 

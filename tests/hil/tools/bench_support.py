@@ -151,6 +151,17 @@ class Bench:
             out += ["--serial", self.args.serial]
         return out
 
+    def erase(self, log: Path) -> str:
+        """Erases the whole chip and programs nothing: `"ok"`, `"unavailable"`
+        or `"failed"`, mapped as for `flash_baseline()`. The BL54L15's give-up
+        fault (run_hil.py `erase_on_mark`); not offered for the WB55."""
+        step = run_step([self.python, FLASH, "--evidence", self.args.evidence,
+                         "--profile", getattr(self.args, "profile", None) or "wb55",
+                         "--erase-only", *self._probe_args()], log, 60)
+        if step["timed_out"]:
+            return "failed"
+        return {0: "ok", 2: "unavailable"}.get(step["rc"], "failed")
+
     def start_uart(self, out: Path):
         """Starts the console logger, or returns None when no port was given.
 

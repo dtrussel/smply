@@ -808,10 +808,11 @@ return — **manual**: a person powers the board off when the case prints its
 earlier design had the supervisor erase the device with the programmer on that
 line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
 attach and the device re-advertises before the erase halts it. On the BL54L15
-no person is needed: `tests/hil/tools/recover_on_mark.py` runs the case and
-erases the chip with a J-Link `recover` on the mark (an empty nRF54L15 cannot
-advertise). The same recover from `run_hil.py` did not land in time, for a
-reason not found, which is why that instrument exists (roadmap backlog). The give-up path
+no person is needed: `run_hil.py` erases the chip with a J-Link `recover` on
+the mark (`erase_on_mark`; an empty nRF54L15 cannot advertise). That only works
+because the case writes the mark with C stdio: `run_hil.py` attaches a JUnit
+reporter, and Catch2 then captures `std::cout` and releases it when the case
+ends, so a mark written there arrived as the case finished. The give-up path
 itself is covered deterministically on every push by `cli_dfu
 --flaky-reconnect 99`. The cases record measurements as `HIL-METRIC` lines, which `run_hil.py` scrapes
 into each case's `summary.json` entry: admission (`deferred_sends`,
@@ -821,19 +822,19 @@ into each case's `summary.json` entry: admission (`deferred_sends`,
 trial-boot slot listing (`slots_listed_during_trial`) and the requested
 `smp_version`.
 
-**Statistics and settings** — `test_hil_mgmt.cpp`, five more `TEST_CASE`s in
-two groups, `stat` and `settings`, each to be run under SMP v1 and v2 like
-`o2`. They are where groups 2 and 3, written from Zephyr's source alone, meet
-a device: a counter that advances, an unknown group and an over-long name
-(§9 A29, A33, A34); a setting written, read back, committed, saved, reloaded
-and deleted; the read limit and when it is reported (A31); and each settings
-refusal under both versions (A34). The settings cases need the BL54L15
-recipe's bench-only handler, so `settings` is in `--cases all` on that
-profile only.
+**Statistics and settings** — `test_hil_mgmt.cpp`, six more `TEST_CASE`s in
+three groups, `stat`, `stat-64` and `settings`, each to be run under SMP v1
+and v2 like `o2`. They are where groups 2 and 3, written from Zephyr's source
+alone, meet a device: a counter that advances, a 64-bit counter that arrives
+truncated (§9 A28), an unknown group and an over-long name (A29, A33, A34,
+A35); a setting written, read back, committed, saved, reloaded and deleted;
+the read limit and when it is reported (A31); and each settings refusal under
+both versions (A34). `stat-64` and `settings` need the BL54L15 recipe's bench
+module, so they are in `--cases all` on that profile only.
 
-On the BL54L15 profile, `--cases all` is nineteen cases: the twelve
-unattended groups' thirteen, the five statistics and settings cases, and
-`serial`.
+On the BL54L15 profile, `--cases all` is twenty cases: the twelve
+unattended groups' thirteen, the six statistics and settings cases
+(`stat-64` included), and `serial`.
 
 Two of those are not diagnostics but the evidence a green run rests on. **A
 green sequential suite means nothing unless `deferred_sends > 0`**: zero

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-name: smply_bench_settings
+name: smply_bench
 build:
   cmake: .
   kconfig: Kconfig

@@ -16,6 +16,11 @@
 //                  which is what makes commit and load observable from outside
 //   anything else  -ENOENT (KEY_NOT_FOUND)
 //
+// The root "smplywo" has no getter at all: any read of it is
+// READ_NOT_SUPPORTED (settings_runtime_get() returns -ENOTSUP for a handler
+// without h_get), the one settings refusal A34 lists that a handler with a
+// getter cannot produce. Writes to it are accepted and discarded.
+//
 // A read into a buffer shorter than the value is truncated to the buffer: the
 // handler's choice, which A31 says a client cannot rely on in general.
 
@@ -105,6 +110,17 @@ static int bench_export(int (*export_func)(const char *name, const void *val, si
 
 SETTINGS_STATIC_HANDLER_DEFINE(smply_bench, "smply", bench_get, bench_set, bench_commit,
 			       bench_export);
+
+static int write_only_set(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg)
+{
+	ARG_UNUSED(key);
+	ARG_UNUSED(len);
+	ARG_UNUSED(read_cb);
+	ARG_UNUSED(cb_arg);
+	return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(smply_bench_wo, "smplywo", NULL, write_only_set, NULL, NULL);
 
 /*
  * The sample never initialises the settings subsystem, and without it no

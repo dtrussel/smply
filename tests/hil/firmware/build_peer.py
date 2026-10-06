@@ -53,7 +53,7 @@ PROFILES = {
         "conf": [FIRMWARE / "bl54l15" / "peer.conf"],
         "sysbuild_conf": FIRMWARE / "bl54l15" / "sysbuild.conf",
         # The bench-only settings handler; the sample itself stays unmodified.
-        "modules": [FIRMWARE / "bl54l15" / "settings_module"],
+        "modules": [FIRMWARE / "bl54l15" / "bench_module"],
         # An NCS install leaves some manifest projects uncloned, and
         # `west manifest --freeze` refuses those; `west list` records the
         # revision of every project that is there.

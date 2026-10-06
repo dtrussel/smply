@@ -459,10 +459,18 @@ true.
   * the console is VCOM**1**; VCOM0 is silent;
   * an erase that lands while MCUboot runs is refused (access port
     protected), so `flash_baseline.py` falls back to `nrfutil device recover`;
-  * the give-up case runs from `tools/recover_on_mark.py`; from `run_hil.py`
-    the same recover misses the case's window, cause unknown;
+  * `run_hil.py` runs the give-up case unattended, erasing the chip on its
+    HIL-MARK line;
   * after a host restart, scan once before connecting by address, or the
     first connect fails in milliseconds with "no device at that address".
+* **A HIL case that must be heard *during* the run writes with C stdio.**
+  `run_hil.py` attaches a JUnit reporter, and Catch2 then captures `std::cout`
+  and releases it when the case ends. The give-up case's HIL-MARK went out on
+  `std::cout` and reached the supervisor as the case finished, so every fault
+  injected on it was late -- a person pulling the cable included -- and it
+  cost an iteration to find. Use `std::fputs` and `std::fflush(stdout)`, as
+  `test_hil_cases.cpp` now does. Anything a case prints for the log alone can
+  stay on `std::cout`.
 * **Never put a comma in a HIL case name.** `run_hil.py` selects a case by
   name, and Catch2 reads a comma as "or": the case runs nothing and is
   reported `unavailable`. `run_hil.py` now escapes commas, but the name is

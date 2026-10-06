@@ -131,17 +131,27 @@ Three consequences for a reader of a run:
   nRF54L, so every case's "which image is running" compares a 64-byte
   `ImageHash` from the device against `find_image_tlv_hash()` of the file. On
   the WB55 it is 32.
-* **The settings group is present, with a bench-only handler.** The stock
-  `smp_svr` registers no settings handler with a getter, so every settings
-  read would fail before reaching a value. `firmware/bl54l15/settings_module/`
-  is a ~100-line Zephyr module, added with `EXTRA_ZEPHYR_MODULES` (the sample
-  stays unmodified), that registers `smply/v` (read/write, 64 bytes),
-  `smply/ro` (read-only) and `smply/commits` (counts commits), and calls
-  `settings_subsys_init()` at boot -- without it no storage back-end is
-  registered, and every save is refused as `SAVE_NOT_SUPPORTED` (seen on the
-  bench before it was added). It deliberately does not `settings_load()`, so
-  the MCUmgr `load` command is the only way a stored value comes back. The
-  `settings` group of cases needs it, which is why that group is part of
+* **A bench-only module adds what the stock sample cannot show.**
+  `firmware/bl54l15/bench_module/` is a small Zephyr module, added with
+  `EXTRA_ZEPHYR_MODULES` (the sample stays unmodified), in three parts, each
+  behind its own Kconfig switch:
+  * *settings* (`smply_bench_settings.c`): the stock `smp_svr` registers no
+    settings handler with a getter, so every settings read would fail. It
+    registers `smply/v` (read/write, 64 bytes), `smply/ro` (read-only),
+    `smply/commits` (counts commits) and a root `smplywo` with no getter at all
+    (`READ_NOT_SUPPORTED`). It calls `settings_subsys_init()` at boot -- without
+    it no storage back-end is registered, and every save is refused as
+    `SAVE_NOT_SUPPORTED` -- and deliberately not `settings_load()`, so the
+    MCUmgr `load` command is the only way a stored value comes back;
+  * *statistics* (`smply_bench_stats.c`): a `STATS_SIZE_64` group,
+    `smply_bench`, whose `big` counter starts at 2^32 + 5, so A28's 32-bit
+    encoding is observable (it reads 5);
+  * *BLE log* (`smply_bench_ble_log.c`): one `smply-bench:` console line per
+    connection-parameter, PHY, data-length or MTU change. It only observes; the
+    two `BT_USER_*` options it needs would otherwise switch automatic data
+    length update off, so `peer.conf` pins that.
+
+  The `stat-64` and `settings` groups need it, which is why they are part of
   `--cases all` on this profile only.
 * **The statistics group is present on both benches.** The sample's own
   `prj.conf` enables `CONFIG_MCUMGR_GRP_STAT` and registers `smp_svr_stats`;
@@ -156,12 +166,12 @@ python tests/hil/firmware/flash_baseline.py --profile bl54l15 --evidence <out>/e
 python tests/hil/run_hil.py --profile bl54l15 --serial 1059920902 --settle 10 `
   --exe build/windows-hil/tests/hil/smply_hil.exe --evidence <out>/evidence `
   --address F0:71:FF:FF:4E:B1 --uart COM3 --out build/hil-evidence/bl54l15
-python tests/hil/tools/recover_on_mark.py --exe build/windows-hil/tests/hil/smply_hil.exe `
-  --evidence <out>/evidence --address F0:71:FF:FF:4E:B1 --serial 1059920902   # give-up
 ```
 
-Run `o2`, `stat` and `settings` a second time with `$env:SMPLY_HIL_SMP_VERSION='2'`,
-and `serial-update` with `--cases serial-update`.
+Run `o2`, `stat`, `stat-64` and `settings` a second time with
+`$env:SMPLY_HIL_SMP_VERSION='2'`, and `serial-update` and `give-up` with
+`--cases`. Give-up is unattended here: the supervisor erases the chip on the
+case's HIL-MARK line.
 
 Keep `<out>` outside this repository. The two builds take about four minutes
 each on this host; the baseline flash (erase all, MCUboot and image A with
@@ -186,11 +196,14 @@ keeps 3 s as its default, which the WB55 runs used.
   falls back to `nrfutil device recover`, which erases through the control
   port regardless. That the application opens the port and MCUboot does not
   is an inference from this behaviour, not something read in the source.
-* **The give-up case runs from `tools/recover_on_mark.py`, not `run_hil.py`.**
-  It erases the chip with `recover` on the HIL-MARK line; an empty nRF54L15
-  cannot advertise. From `run_hil.py` the same recover did not land inside the
-  case's 10 s window in four runs, for a reason not found (roadmap backlog).
-  A person pulling the USB cable missed the window too, once.
+* **The supervisor removes the device for give-up** (`erase_on_mark`): a
+  `recover` on the HIL-MARK line, retried within 8 s, lands 1.3-1.4 s after
+  the mark. **A mark must bypass Catch2's output capture.** `run_hil.py`
+  attaches a JUnit reporter, which makes Catch2 capture `std::cout` and release
+  it when the case ends; a mark written there reached the supervisor as the
+  case finished, so every fault injected on it was too late, and a person
+  pulling the cable on it was too. The case writes it with `fputs` and
+  `fflush` instead, which Catch2's default capture does not touch.
 * **After a swap, slot 1 still holds the previous image** (swap-using-move),
   so an update back to it is not an upload: `FirmwareUpdater`'s pre-flight
   finds the image already there and only tests, resets and confirms. An
@@ -210,7 +223,8 @@ Evidence bundles under `build/hil-evidence/bl54l15/` (not in git).
 | Unattended suite, SMP v1 (`20261005-180334`) | **19 / 19 pass**: the twelve image groups, `stat`, `settings`, `serial` |
 | `o2`, `stat`, `settings` under SMP v2 (`20261005-181852`) | **6 / 6 pass** |
 | `serial-update`, four runs | **4 / 4 pass**, 40 s each, 1 188 SMP messages, 0 timeouts; reset seen as `grace` |
-| give-up via `recover_on_mark.py` | **pass** (14 assertions): three reconnects fail, `reconnect_failed()`, `Failed`, `Disconnected`, `revert_pending` |
+| give-up, unattended from `run_hil.py` (2026-10-06), three runs | **3 / 3 pass** (14 assertions each): chip erased 1.3-1.4 s after the mark, three reconnects fail, `reconnect_failed()`, `Failed`, `Disconnected`, `revert_pending` |
+| `stat-64` and `settings` on the bench module's second revision, v1 and v2 (2026-10-06) | **pass**: `smply_bench.big` = 2^32 + 5 reads **5** (A28); `READ_NOT_SUPPORTED` arrives as `(3, 4)` under v2 and flat `ENOENT` under v1 (A34) |
 | `winrt_ble_dfu` acceptance, 10 runs from alternating baselines | **10 / 10**, every one a full 205 272-byte upload, 409 messages, 0 timeouts |
 | `winrt_ble_dfu` built from a fresh clone, `find_package(smply)` from an install prefix, adapter and `dfu_app` compiled as the consumer's own sources (ADR-0016) | **pass**, A→B, then verified running B by `presence` |
 

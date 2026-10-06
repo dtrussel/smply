@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 CUBE_CLI = Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer"
@@ -105,6 +106,24 @@ def flash_bl54l15(args, mcuboot: Path, app: Path) -> int:
     # `recover` erases everything through the control port regardless, so it
     # is the fallback when a reflash lands while MCUboot is running.
     recover = device + ["recover", *select]
+    if args.erase_only:
+        # The give-up case's fault (run_hil.py `erase_on_mark`): an empty
+        # nRF54L15 cannot advertise, so "the device never comes back" holds by
+        # construction. Always `recover`, because the mark lands while MCUboot
+        # swaps. Retried within 8 s, inside the case's 10 s window: an attach
+        # mid-swap once failed in the J-Link DLL ("error code -1").
+        started = time.monotonic()
+        while True:
+            result = run(recover, env)
+            out = result.stdout + result.stderr
+            if result.returncode == 0:
+                print(f"flash_baseline: recovered after {time.monotonic() - started:.1f}s")
+                return 0
+            print(f"flash_baseline: recover failed:\n{out}", file=sys.stderr)
+            if NO_PROBE.search(out):
+                return 2
+            if time.monotonic() - started > 8:
+                return 1
     # A full erase first, then each hex with ERASE_NONE so the second program
     # does not undo the first. VERIFY_READ reads every programmed byte back.
     program = "chip_erase_mode=ERASE_NONE,verify=VERIFY_READ"
@@ -146,7 +165,12 @@ def main() -> int:
                         help="which signed image to place in slot 0 (default a)")
     parser.add_argument("--serial", default=None, help="probe serial, if several are attached")
     parser.add_argument("--no-reset", action="store_true", help="leave the core halted afterwards")
+    parser.add_argument("--erase-only", action="store_true",
+                        help="bl54l15 only: erase the whole chip and program nothing "
+                             "(the give-up case's fault)")
     args = parser.parse_args()
+    if args.erase_only and args.profile != "bl54l15":
+        parser.error("--erase-only is implemented for the bl54l15 profile only")
 
     mcuboot = args.evidence / "mcuboot.hex"
     app = args.evidence / f"{args.image}.signed.hex"
@@ -156,7 +180,9 @@ def main() -> int:
             return 1
 
     status = PROFILES[args.profile](args, mcuboot, app)
-    if status == 0:
+    if status == 0 and args.erase_only:
+        print(f"flash_baseline: {args.profile}: chip erased, nothing programmed")
+    elif status == 0:
         print(f"flash_baseline: {args.profile}: mcuboot + image {args.image.upper()} "
               "programmed and verified")
     return status

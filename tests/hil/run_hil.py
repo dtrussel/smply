@@ -63,6 +63,9 @@ GROUPS = [
     {"name": "stat",
      "cases": ["hil: stat -- the device lists its groups and a counter advances",
                "hil: stat -- an unknown group and an over-long name are refused as the source says"]},
+    # A28 needs the bench module's 64-bit statistics group.
+    {"name": "stat-64", "profiles": ["bl54l15"],
+     "cases": ["hil: stat -- a 64-bit counter above 2^32 arrives as its low 32 bits"]},
     {"name": "settings", "profiles": ["bl54l15"],
      "cases": ["hil: settings -- a value round-trips through write read commit save load and delete",
                "hil: settings -- the read limit is VALUE_LEN and is reported only when asked for more",
@@ -82,10 +85,11 @@ GROUPS = [
 # `erase-on-marker` fault the supervisor used to inject with the programmer,
 # which contradicted both this comment and testing.md and was dead code.
 MANUAL_GROUPS = [
-    # On the BL54L15, tools/recover_on_mark.py removes the device instead of a
-    # person (tests/hil/README.md); the same recover issued from this
-    # supervisor did not land inside the case's window, for a reason not found.
-    {"name": "give-up", "manual": True,
+    # On the BL54L15 the supervisor removes the device itself on the mark, by
+    # erasing the chip over the J-Link (`erase_on_mark`); on the WB55 it stays a
+    # person's job (CubeProgrammer resets on attach). It is still outside
+    # `--cases all`, because it erases the board.
+    {"name": "give-up", "manual": True, "erase_on_mark": ["bl54l15"],
      "cases": ["hil: reconnection gives up when the device does not come back"]},
     # Exploratory, so not in the unattended default either: the first whole
     # update over the console UART, and the first observation of a real reset
@@ -96,7 +100,7 @@ MANUAL_GROUPS = [
 ]
 
 
-def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
+def run_case(bench: Bench, case: str, case_dir: Path, on_mark=None) -> dict:
     case_dir.mkdir(parents=True, exist_ok=True)
     junit = case_dir / "report.xml"
     env = dict(os.environ,
@@ -121,6 +125,9 @@ def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
             # reads until the case is over. Echo it the moment it arrives.
             if line.startswith("HIL-MARK"):
                 print(f">>> {line.strip()}", flush=True)
+                if on_mark is not None:
+                    # Off this thread: the reader must keep draining the pipe.
+                    threading.Thread(target=on_mark, args=(case_dir,), daemon=True).start()
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
@@ -219,7 +226,16 @@ def main() -> int:
     for group in groups:
         group_dir = run_dir / group["name"]
         group_dir.mkdir(parents=True, exist_ok=True)
-        if group.get("manual"):
+        on_mark = None
+        if args.profile in group.get("erase_on_mark", []):
+            def on_mark(case_dir: Path) -> None:
+                started = time.monotonic()
+                outcome = bench.erase(case_dir / "erase-on-mark.log")
+                print(f">>> supervisor erased the board on the mark: {outcome} "
+                      f"in {time.monotonic() - started:.1f}s", flush=True)
+            print(f"run_hil: {group['name']}: the supervisor erases the board when the case "
+                  "prints its HIL-MARK line", flush=True)
+        elif group.get("manual"):
             print(f"run_hil: {group['name']} needs a person at the bench -- power the "
                   "board off when the case prints its HIL-MARK line", flush=True)
         if not args.no_flash:
@@ -236,7 +252,7 @@ def main() -> int:
         uart = None if group.get("holds_uart") else bench.start_uart(group_dir / "uart.log")
         try:
             for case in group["cases"]:
-                result = run_case(bench, case, group_dir / slug(case))
+                result = run_case(bench, case, group_dir / slug(case), on_mark)
                 results.append(result)
                 print(f"{result['verdict']:12} {result.get('seconds', 0):6}s  {case}"
                       + (f"  -- {result['detail']}" if result.get("detail") else ""), flush=True)

@@ -14,7 +14,7 @@
 /// * the sample's own statistics group, `smp_svr_stats`, with one 32-bit
 ///   counter, `ticks`, incremented once a second by its main loop;
 /// * the bench-only settings handler of the BL54L15 recipe
-///   (`firmware/bl54l15/settings_module/`): `smply/v` read/write up to 64
+///   (`firmware/bl54l15/bench_module/`): `smply/v` read/write up to 64
 ///   bytes, `smply/ro` read-only, `smply/commits` counting `h_commit` calls;
 /// * `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN` and `_VALUE_LEN` at their default
 ///   32, and `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` on (as on the WB55).
@@ -156,9 +156,9 @@ TEST_CASE("hil: stat -- the device lists its groups and a counter advances", "[h
     CHECK(first->name == "smp_svr_stats");
     const StatisticsField* ticks = first->find("ticks");
     REQUIRE(ticks != nullptr);
-    // A28: a Zephyr server writes every value as 32 bits. Only a 64-bit
-    // statistic above 2^32 - 1 could show the truncation, and the sample has
-    // none, so this is consistency with A28, not a demonstration of it.
+    // A28: a Zephyr server writes every value as 32 bits. The sample's group
+    // is 32-bit, so this is only consistency; the 64-bit case below is the
+    // demonstration.
     CHECK(ticks->value <= UINT32_MAX);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{2500});
@@ -170,6 +170,23 @@ TEST_CASE("hil: stat -- the device lists its groups and a counter advances", "[h
     s.rig.timeline().metric("stat_ticks_second", static_cast<std::int64_t>(later->value));
     // Once a second in the sample's main loop: 2.5 s is at least two ticks.
     CHECK(later->value >= ticks->value + 2);
+    CHECK(s.rig.stats().timeouts == 0);
+}
+
+TEST_CASE("hil: stat -- a 64-bit counter above 2^32 arrives as its low 32 bits", "[hil][stat]")
+{
+    // A28, demonstrated rather than inferred: the BL54L15 recipe's bench module
+    // registers `smply_bench` (STATS_SIZE_64) with `big` = 2^32 + 5. A server
+    // that encoded 64 bits would send 4294967301; Zephyr's zcbor_uint32_put()
+    // sends 5. smply decodes the full unsigned range, so whatever arrives is
+    // what the device wrote.
+    MgmtSession s;
+    const auto group = s.rig.stat_read("smply_bench");
+    REQUIRE(group.has_value());
+    const StatisticsField* big = group->find("big");
+    REQUIRE(big != nullptr);
+    s.rig.timeline().metric("stat_big", static_cast<std::int64_t>(big->value));
+    CHECK(big->value == 5);
     CHECK(s.rig.stats().timeouts == 0);
 }
 
@@ -342,6 +359,10 @@ TEST_CASE("hil: settings -- refusals carry what this server's SMP version allows
           {"unknown key", SettingsError::KeyNotFound, SmpError::NoEntry});
     check(s.rig.setting_write("smply/ro", ConstBytes{bytes_of("x")}),
           {"read-only key", SettingsError::WriteNotSupported, SmpError::Unknown});
+    // A handler with no getter at all (the bench's "smplywo" root): the one
+    // refusal a handler with a getter cannot produce. A34: v1 makes it ENOENT.
+    check(as_void(s.rig.setting_read("smplywo/x")),
+          {"root without a getter", SettingsError::ReadNotSupported, SmpError::NoEntry});
     // A33: NAME_LEN bytes or more is KEY_TOO_LONG, which v1 makes EINVAL.
     const std::string long_name = "smply/" + std::string(kDeviceNameLen - 6, 'x');
     REQUIRE(long_name.size() == kDeviceNameLen);
