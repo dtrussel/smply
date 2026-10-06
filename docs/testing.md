@@ -843,7 +843,9 @@ everywhere says the send-admission race did not occur that run, not that the
 mailbox absorbed it (§9 A22). And `buf_count` is the input open question O3 was
 waiting for.
 
-**Cross-check** — `tests/hil/crosscheck.py`. From the same baseline, the same
+**Cross-check** — `tests/hil/crosscheck.py`, on either bench (`--profile`;
+the expected post-confirm slot listing differs by bootloader mode, see
+`tests/hil/README.md`). From the same baseline, the same
 update is installed by smply, by `smpmgr` over BLE and by `mcumgr-client` over
 the UART shell transport. All three are third-party tools for behavioural
 comparison, never protocol references (ADR-0015 decision 3); every divergence is

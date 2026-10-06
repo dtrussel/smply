@@ -362,6 +362,20 @@ python tests/hil/crosscheck.py --evidence <out>/evidence --address 80:E1:26:00:6
     --mcumgr-client build/mcumgr-client/mcumgr-client-windows-x86/mcumgr-client.exe
 ```
 
+On the BL54L15, add `--profile bl54l15 --serial 1059920902` and use its
+evidence, address and `--uart COM3`. Two things differ there, both handled by
+the profile:
+* the image hash is the 64-byte SHA-512 TLV;
+* after the confirm (S2) slot 1 still lists the previous image with no flags,
+  because of swap-using-move, so S2 expects two slots.
+
+**Results on the BL54L15 (2026-10-06):**
+* The oracle self-test passes over the NCS console.
+* Both arms pass Tier A with 0 divergences; the run exits 2 because there is
+  no capture (Tier B unavailable).
+* The `--skip-confirm smpmgr` control diverges at S2 `active.confirmed` and
+  `fallback.confirmed`, and exits 1.
+
 Each *arm* is reflashed to the same baseline and installs image B by
 test-then-confirm, and device state is read through **`mcumgr-client` over
 UART** — a path neither BLE client touches — at three checkpoints: after the
