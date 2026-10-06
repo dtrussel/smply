@@ -757,11 +757,12 @@ SDK (`--profile bl54l15`) — running MCUboot + the pinned `smp_svr` over BLE,
 reachable from a Windows host, with the exact manifest, Kconfig snapshots and
 (for the WB55) coprocessor firmware recorded so results are reproducible.
 
-**The serial cases have never run.** `test_hil_serial.cpp` puts the serial
-port adapter (its Win32 half) on the bench's console UART. The `serial` group
-(echo and image state) is in the default run, and the exploratory
-`serial-update` group is not. Both were written without the bench.
-`tests/hil/README.md` says what their first run must show.
+**The serial cases.** `test_hil_serial.cpp` puts the serial port adapter (its
+Win32 half) on the bench's console UART. The `serial` group (echo and image
+state) is in the default run, and the exploratory `serial-update` group, a
+whole update over the console, is not. Both have run on the BL54L15 bench
+only; `tests/hil/README.md` has the counters, and what they measure for O7 and
+A26.
 
 **Shape.** `test_hil_cases.cpp` is a Catch2 suite over the public API **plus
 two headers no application consumer gets**: `support/dfu_app/reconnect_policy.hpp`
@@ -806,7 +807,11 @@ return — **manual**: a person powers the board off when the case prints its
 `HIL-MARK` line, which is why it is excluded from `--cases all`. An
 earlier design had the supervisor erase the device with the programmer on that
 line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
-attach and the device re-advertises before the erase halts it. The give-up path
+attach and the device re-advertises before the erase halts it. On the BL54L15
+no person is needed: `tests/hil/tools/recover_on_mark.py` runs the case and
+erases the chip with a J-Link `recover` on the mark (an empty nRF54L15 cannot
+advertise). The same recover from `run_hil.py` did not land in time, for a
+reason not found, which is why that instrument exists (roadmap backlog). The give-up path
 itself is covered deterministically on every push by `cli_dfu
 --flaky-reconnect 99`. The cases record measurements as `HIL-METRIC` lines, which `run_hil.py` scrapes
 into each case's `summary.json` entry: admission (`deferred_sends`,
@@ -825,6 +830,10 @@ and deleted; the read limit and when it is reported (A31); and each settings
 refusal under both versions (A34). The settings cases need the BL54L15
 recipe's bench-only handler, so `settings` is in `--cases all` on that
 profile only.
+
+On the BL54L15 profile, `--cases all` is nineteen cases: the twelve
+unattended groups' thirteen, the five statistics and settings cases, and
+`serial`.
 
 Two of those are not diagnostics but the evidence a green run rests on. **A
 green sequential suite means nothing unless `deferred_sends > 0`**: zero

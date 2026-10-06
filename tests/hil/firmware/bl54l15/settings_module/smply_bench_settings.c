@@ -19,6 +19,7 @@
 // A read into a buffer shorter than the value is truncated to the buffer: the
 // handler's choice, which A31 says a client cannot rely on in general.
 
+#include <zephyr/init.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
@@ -104,3 +105,19 @@ static int bench_export(int (*export_func)(const char *name, const void *val, si
 
 SETTINGS_STATIC_HANDLER_DEFINE(smply_bench, "smply", bench_get, bench_set, bench_commit,
 			       bench_export);
+
+/*
+ * The sample never initialises the settings subsystem, and without it no
+ * storage back-end is registered: every MCUmgr save then fails with
+ * SAVE_NOT_SUPPORTED (settings_save() returns -ENOENT with no destination),
+ * observed on the bench before this existed. A product would do this at boot.
+ * Deliberately no settings_load() here: the MCUmgr `load` command stays the
+ * only way a stored value reaches the handler, which is what lets the HIL case
+ * tell a load from a value that was never lost.
+ */
+static int smply_bench_settings_init(void)
+{
+	return settings_subsys_init();
+}
+
+SYS_INIT(smply_bench_settings_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);

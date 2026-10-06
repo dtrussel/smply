@@ -2,12 +2,13 @@
 //
 // The serial port adapter against the bench peer's console UART.
 //
-// **These cases have never run.** They were written without the bench, and the
-// first run is what will say whether they are right (roadmap O7). They are here
-// so that run is one command, and so that what it must show is written down
-// before anybody sees the answer.
+// They were written without a bench, with what a run must show written down
+// before anybody saw the answer. Their first runs were on the BL54L15 bench
+// (tests/hil/README.md): both pass, and serial-update is the measurement behind
+// roadmap O7's UART half and protocol-notes A26.
 //
-// The peer's console (USART1, the ST-LINK virtual COM port, 115200 8N1) carries
+// The peer's console (USART1 on the WB55, uart20 on the BL54L15 -- each a
+// probe's virtual COM port, 115200 8N1) carries
 // the MCUmgr **shell** transport, an echoing shell, and a UART log backend in
 // deferred mode -- the stream over which a third-party client could not
 // complete an upload (protocol-notes section 9). That is the point: it is the
@@ -265,6 +266,14 @@ TEST_CASE("hil: serial -- a whole update over the console UART (exploratory)",
     for (std::size_t i = 0; i < links.size(); ++i) {
         report(*links[i], i == 0 ? "serial_before_reset" : "serial_after_reset");
     }
+    // A26 is a question about frames lost on the device, and a lost frame shows
+    // up here as a timeout -- the update can still complete through a
+    // retransmission, so "Completed" alone does not answer it.
+    const SmpClientStats& smp = client.stats();
+    std::cout << "HIL-METRIC serial_smp_sent=" << smp.sent << '\n'
+              << "HIL-METRIC serial_smp_timeouts=" << smp.timeouts << '\n'
+              << "HIL-METRIC serial_smp_late=" << smp.late << '\n'
+              << "HIL-METRIC serial_smp_unmatched=" << smp.unmatched << '\n';
     REQUIRE(finished.has_value());
     REQUIRE(finished->has_value());
     CHECK((*finished)->final_state == UpdateState::Completed);

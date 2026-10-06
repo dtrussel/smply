@@ -16,7 +16,7 @@ The library is feature-complete for what it exists to do:
 * SMP framing, reassembly and request correlation;
 * the OS and image management groups;
 * the statistics and settings management groups (groups 2 and 3), traced to
-  Zephyr's source and not yet run against a device;
+  Zephyr's source and run against the BL54L15 bench;
 * MCUboot image handling;
 * the upload state machine and `FirmwareUpdater`;
 * a reference WinRT BLE adapter and a Windows DFU tool;
@@ -25,11 +25,13 @@ The library is feature-complete for what it exists to do:
   commits itself after the client images are confirmed, and a reader for
   nRF Connect SDK's multi-image package (ADR-0021, ADR-0022).
 
-Its released version is 0.2.0. The Windows side has updated a real device from
-a hardware bench. A reference serial port adapter (`transports/serial_port/`)
-has updated the stub device over a pseudo-terminal in CI. It has not yet been
-used against a device. Nor has the multi-image update: it runs against the
-simulator and the stub device only.
+Its released version is 0.2.0. The Windows side has updated real devices from
+two hardware benches, a NUCLEO-WB55RG and a BL54L15 DVK (nRF54L15, nRF Connect
+SDK), including from a fresh clone consumed out of tree. The reference serial
+port adapter (`transports/serial_port/`) has updated the stub device over a
+pseudo-terminal in CI and the BL54L15 over its console UART. The multi-image
+update has not met a device: it runs against the simulator and the stub device
+only.
 
 ## In progress
 
@@ -39,18 +41,6 @@ Nothing. Pick the next item from the backlog below, by its "When".
 
 None of these can be closed from a container.
 
-* **Run the serial HIL cases** (`--uart COM4 --cases serial,serial-update`).
-  The serial port adapter's Win32 half has only been compiled, and nothing
-  serial has met a device. The first run answers O7 and A26, and says whether
-  the adapter tolerates the bench console's shell and log traffic, which
-  defeated `mcumgr-client`. A failure there is a finding for protocol-notes.md.
-
-* **Re-run an update from a fresh clone consumed out of tree.** The
-  consumption half runs on every push (`tools/check_install.sh`, three modes).
-  The device half needs one run of `winrt_ble_dfu` built from a
-  `find_package` consumer instead of in-tree. The install rules have changed
-  since the last bench run, and the protocol path has not. So a pass is
-  expected, but it has not been shown.
 * **Run a multi-image package against a coordinator MCU** (ADR-0021). This
   needs product firmware that implements the device contract in
   `multi-image.md`: a coordinator that applies a target's image, such as an
@@ -58,13 +48,6 @@ None of these can be closed from a container.
   outside smply. Until then, the contract is tested against the
   simulator and the stub device only. `serial_dfu --port … --package …` is
   the tool for the run.
-* **Run the statistics and settings groups against a device.** Both are traced
-  to Zephyr's source only (protocol-notes §10, §11). The bench peer's
-  `peer.conf` enables neither: it needs `CONFIG_STATS`, `CONFIG_MCUMGR_GRP_STAT`,
-  `CONFIG_SETTINGS`, `CONFIG_SETTINGS_RUNTIME` and `CONFIG_MCUMGR_GRP_SETTINGS`,
-  a registered statistics group, and a HIL case for each command. A28 (32-bit
-  values), A29 (the unknown-group code) and A31 (the read limit) are the
-  inferences a run would confirm.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed
   but no runner is registered, so the hardware suite has only ever run by hand.
   Its header carries the steps and the `schedule:` block to restore. The
@@ -85,7 +68,7 @@ comment. The IDs are stable, because code and documents cite them, and
 | O4 | Is `MemoryImageSource` enough, or does the library want a `FileImageSource`? | **Resolved: `MemoryImageSource` only.** A file-backed source is a dozen lines in the application. The examples share one in `support/dfu_app/`. |
 | O5 | Multi-image (image ≥ 1) in `UpdatePlan`: exercise it, or document it as untested? | **Resolved: exercised, and extended** ([ADR-0021](decisions/ADR-0021-multi-image-update.md)). Every decision is scoped to one image, and every confirm names its image by hash. Several images of one device go in one update with one reset, each committed by smply (`Client`) or by the device (`Device`, per the contract in `multi-image.md`). `support/dfu_package/` reads nRF Connect SDK's multi-image package. Covered by `ServerSimulator`'s N image pairs and device-committed mode, the stub device, and the examples' package ctests. Not yet run against a multi-image device. |
 | O6 | Expose a `std::error_code` interop layer? | **Open.** Only if a consumer asks. |
-| O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | **Open: designed for, tested on a pseudo-terminal, not measured on hardware.** ADR-0020's answer needs no core change. A USB CDC port that vanishes is reported by the adapter as `on_disconnected`, so `AwaitingDisconnect` ends at once. A hardware UART that stays open reports nothing, so the updater moves on when `UpdatePlan::disconnect_grace` expires; a serial application sets that to a few seconds. On `ReconnectRequired` the application reopens by path in both cases, and a stable path such as `/dev/serial/by-id/…` covers a port that returns renamed. `examples/serial_dfu/`'s two ctests show both shapes against a pty stub, the renamed CDC case included. **Assumed, not measured:** that a real CDC port reports the hang-up at all, how long it is gone, and whether a real UART's boot output is only noise. The `serial-update` HIL case (`tests/hil/README.md`) is the measurement, and closing this needs one run of it. |
+| O7 | Does a device reset drop a serial link, and what should `FirmwareUpdater` assume? | **Open for USB CDC only.** ADR-0020's answer needs no core change. A USB CDC port that vanishes is reported by the adapter as `on_disconnected`, so `AwaitingDisconnect` ends at once. A hardware UART that stays open reports nothing, so the updater moves on when `UpdatePlan::disconnect_grace` expires; a serial application sets that to a few seconds. On `ReconnectRequired` the application reopens by path in both cases, and a stable path such as `/dev/serial/by-id/…` covers a port that returns renamed. `examples/serial_dfu/`'s two ctests show both shapes against a pty stub, the renamed CDC case included. **Measured for a UART that stays open** (BL54L15 bench, 2026-10-05): over the J-Link VCOM, four `serial-update` runs saw the reset as `grace`, reopened by path and completed with no SMP timeout, and the boot output was discarded as console noise. **Assumed, not measured:** that a real CDC port reports the hang-up at all, and how long it is gone. The nRF54L15 has no USB; closing this needs one `serial-update` run against a device on a USB CDC port. |
 
 ## Backlog
 
@@ -163,4 +146,8 @@ doing.
 | ---- | ---- |
 | **HCI capture does not work on this bench.** BTVS never opens its listener, and the manifest provider `Microsoft-Windows-BTH-BTHPORT` captured nothing. The untried lead is the WPP provider in Microsoft's own recording profile, converted with `BTETLParse.exe -pcap`. `tests/hil/README.md` has the commands. Until then the cross-check's Tier B is decode-verified, not live. | when a capture is wanted, or with the runner |
 | **The UART client arm cannot complete an upload**, so the cross-check is two clients and an oracle (protocol-notes §9). A third client needs the peer's logs moved off USART1, or the raw UART MCUmgr transport. | if a UART comparison is wanted |
+| **The BL54L15's give-up fault cannot be injected from `run_hil.py`.** `tools/recover_on_mark.py` erases the chip with `nrfutil device recover` on the HIL-MARK line and the case passes; the same recover started from the supervisor (directly or through `flash_baseline.py`) did not land inside the case's 10 s window in four runs, and was still running after it. The cause was not found; the VS Code nRF Connect extension's `nrfutil-device list --hotplug` watchers on the same probe are a suspect, not a finding. | with the runner, or when give-up should run unattended |
+| **`crosscheck.py` knows only the WB55.** It takes no `--profile`, and its expected slot listing and the 134 KiB timing budgets are the WB55's. | if a cross-check on the BL54L15 is wanted |
+| **BLE upload throughput on the BL54L15 depends on the direction**: about 11.5 KiB/s installing image B over a baseline of A, 4.3-5.4 KiB/s installing A over B, in every one of ten acceptance runs, with no timeouts either way. Same chunk size (512), same images. Not explained; it costs time, not correctness. | if throughput matters, or with O3 |
+| **Two inferences the BL54L15 bench could not reach**: A28's 32-bit truncation needs a 64-bit statistic above 2^32 − 1, and settings' `READ_NOT_SUPPORTED` needs a handler without a getter. Both are a few lines in `firmware/bl54l15/settings_module/`. | when that module is next touched |
 | **`smp_decode.py` is a second CBOR reader and SMP reassembler.** It exists so the decode is independent of the clients being compared (ADR-0015), but two decoders can drift. | if the cross-check grows |

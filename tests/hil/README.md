@@ -136,7 +136,11 @@ Three consequences for a reader of a run:
   read would fail before reaching a value. `firmware/bl54l15/settings_module/`
   is a ~100-line Zephyr module, added with `EXTRA_ZEPHYR_MODULES` (the sample
   stays unmodified), that registers `smply/v` (read/write, 64 bytes),
-  `smply/ro` (read-only) and `smply/commits` (counts commits). The
+  `smply/ro` (read-only) and `smply/commits` (counts commits), and calls
+  `settings_subsys_init()` at boot -- without it no storage back-end is
+  registered, and every save is refused as `SAVE_NOT_SUPPORTED` (seen on the
+  bench before it was added). It deliberately does not `settings_load()`, so
+  the MCUmgr `load` command is the only way a stored value comes back. The
   `settings` group of cases needs it, which is why that group is part of
   `--cases all` on this profile only.
 * **The statistics group is present on both benches.** The sample's own
@@ -149,9 +153,15 @@ Three consequences for a reader of a run:
 python tests/hil/firmware/build_peer.py --profile bl54l15 --workspace C:/ncs/v3.3.0 `
   --toolchain C:/ncs/toolchains/936afb6332 --build-dir <out>
 python tests/hil/firmware/flash_baseline.py --profile bl54l15 --evidence <out>/evidence
-python tests/hil/run_hil.py --profile bl54l15 --settle 10 --exe build/windows-hil/tests/hil/smply_hil.exe `
-  --evidence <out>/evidence --address F0:71:FF:FF:4E:B1 --uart COM3 --out build/hil-evidence/bl54l15
+python tests/hil/run_hil.py --profile bl54l15 --serial 1059920902 --settle 10 `
+  --exe build/windows-hil/tests/hil/smply_hil.exe --evidence <out>/evidence `
+  --address F0:71:FF:FF:4E:B1 --uart COM3 --out build/hil-evidence/bl54l15
+python tests/hil/tools/recover_on_mark.py --exe build/windows-hil/tests/hil/smply_hil.exe `
+  --evidence <out>/evidence --address F0:71:FF:FF:4E:B1 --serial 1059920902   # give-up
 ```
+
+Run `o2`, `stat` and `settings` a second time with `$env:SMPLY_HIL_SMP_VERSION='2'`,
+and `serial-update` with `--cases serial-update`.
 
 Keep `<out>` outside this repository. The two builds take about four minutes
 each on this host; the baseline flash (erase all, MCUboot and image A with
@@ -163,6 +173,57 @@ uncloned, and `west manifest --freeze` refuses them.
 `service discovery failed` and passed on an immediate retry, the Windows-side
 settle `crosscheck.py`'s `POST_FLASH_SETTLE` already allows for. `run_hil.py`
 keeps 3 s as its default, which the WB55 runs used.
+
+### What the bench knows that a case author needs
+
+* **Windows must have seen the peer since it booted.** Straight after a host
+  restart, a connect by address failed in 12 ms with `no device at that
+  address`; one active scan later it worked. Scan once (or run `presence`)
+  before a long run.
+* **The access port is protected while MCUboot runs.** An `nrfutil device
+  erase` that lands during the post-reset swap is refused (`access port is
+  protected`); once the application runs it succeeds. `flash_baseline.py`
+  falls back to `nrfutil device recover`, which erases through the control
+  port regardless. That the application opens the port and MCUboot does not
+  is an inference from this behaviour, not something read in the source.
+* **The give-up case runs from `tools/recover_on_mark.py`, not `run_hil.py`.**
+  It erases the chip with `recover` on the HIL-MARK line; an empty nRF54L15
+  cannot advertise. From `run_hil.py` the same recover did not land inside the
+  case's 10 s window in four runs, for a reason not found (roadmap backlog).
+  A person pulling the USB cable missed the window too, once.
+* **After a swap, slot 1 still holds the previous image** (swap-using-move),
+  so an update back to it is not an upload: `FirmwareUpdater`'s pre-flight
+  finds the image already there and only tests, resets and confirms. An
+  acceptance loop that alternates A and B without a reflash uploads once.
+* **`run_hil.py` echoes `HIL-MARK` lines to the console** (prefixed `>>>`);
+  everything else a case prints is only in its `stdout.log`.
+* **`--serial` skips enumerating the probes** in `flash_baseline.py`; the VS
+  Code nRF Connect extension, if open, polls the same J-Link with its own
+  `nrfutil-device list --hotplug`.
+
+### Results (2026-10-05/06)
+
+Evidence bundles under `build/hil-evidence/bl54l15/` (not in git).
+
+| Run | Outcome |
+| --- | ------- |
+| Unattended suite, SMP v1 (`20261005-180334`) | **19 / 19 pass**: the twelve image groups, `stat`, `settings`, `serial` |
+| `o2`, `stat`, `settings` under SMP v2 (`20261005-181852`) | **6 / 6 pass** |
+| `serial-update`, four runs | **4 / 4 pass**, 40 s each, 1 188 SMP messages, 0 timeouts; reset seen as `grace` |
+| give-up via `recover_on_mark.py` | **pass** (14 assertions): three reconnects fail, `reconnect_failed()`, `Failed`, `Disconnected`, `revert_pending` |
+| `winrt_ble_dfu` acceptance, 10 runs from alternating baselines | **10 / 10**, every one a full 205 272-byte upload, 409 messages, 0 timeouts |
+| `winrt_ble_dfu` built from a fresh clone, `find_package(smply)` from an install prefix, adapter and `dfu_app` compiled as the consumer's own sources (ADR-0016) | **pass**, A→B, then verified running B by `presence` |
+
+Measurements that differ from the WB55 (protocol-notes §9 has the rows):
+
+* The final chunk's whole-image check answers within about 50 ms (A19 on the
+  WB55: 5.0-5.6 s). The device reconnects 1.2-2.3 s after a reset.
+* Upload throughput depends on direction: about 11.5 KiB/s to B, 4.3-5.4 KiB/s
+  to A, unexplained (roadmap backlog).
+* An unknown statistics group comes back under group 63, not 2 (A35).
+* `deferred_sends` was non-zero once in the suite (`restart` part 1), so the
+  send-admission slot (A22) was exercised on this bench but rarely; the A22
+  evidence remains the WB55's.
 
 ## Tools in `tools/`
 
@@ -236,12 +297,13 @@ device over ST-LINK on that line; it never worked, because CubeProgrammer
 toggles reset to attach and the device re-advertises before the erase halts it.
 Exit status: 0 all pass, 1 any fail, 2 any unavailable.
 
-### The serial cases — never run
+### The serial cases
 
 `test_hil_serial.cpp` drives `smply::serial_port` (the Win32 half) over the
-same console port, `--uart COM4`, reached by the case as `SMPLY_HIL_UART`.
-**Neither case has run.** They were written without the bench (ADR-0020), and
-their first run is the first time smply's serial path meets a device.
+same console port (`--uart COM4` on the WB55, `COM3` on the BL54L15), reached
+by the case as `SMPLY_HIL_UART`. They were written without a bench
+(ADR-0020) and have run on the **BL54L15 only**; both pass (results above).
+On the WB55 they have still never run.
 
 | Group | In `--cases all`? | What it shows |
 | ----- | ----------------- | ------------- |
@@ -261,8 +323,11 @@ read the metrics, not only the verdict:
 * a non-zero `serial_framing_errors` or `serial_crc_failures` means frames
   were damaged on the way;
 * `serial-update` prints `HIL-NOTE serial reset seen as: grace|dropped`. For
-  the ST-LINK VCP, a UART that stays up across a target reset, `grace` is
-  expected, and that line is the first measurement for O7.
+  a probe's VCOM, a UART that stays up across a target reset, `grace` is
+  expected -- and was what the BL54L15's J-Link VCOM showed in every run;
+* `serial-update` also prints the client's `serial_smp_timeouts`: a frame the
+  device dropped (A26) shows as a timeout, and the update can still complete
+  through a retransmission, so a pass alone does not answer A26.
 
 A failure in `serial-update` is a finding to record in protocol-notes.md,
 not something to retry until it passes.

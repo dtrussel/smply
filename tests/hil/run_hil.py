@@ -64,7 +64,7 @@ GROUPS = [
      "cases": ["hil: stat -- the device lists its groups and a counter advances",
                "hil: stat -- an unknown group and an over-long name are refused as the source says"]},
     {"name": "settings", "profiles": ["bl54l15"],
-     "cases": ["hil: settings -- a value is written, read back, committed, saved and reloaded",
+     "cases": ["hil: settings -- a value round-trips through write read commit save load and delete",
                "hil: settings -- the read limit is VALUE_LEN and is reported only when asked for more",
                "hil: settings -- refusals carry what this server's SMP version allows"]},
     # The serial adapter on the console UART (ADR-0020). `holds_uart`: the case
@@ -82,6 +82,9 @@ GROUPS = [
 # `erase-on-marker` fault the supervisor used to inject with the programmer,
 # which contradicted both this comment and testing.md and was dead code.
 MANUAL_GROUPS = [
+    # On the BL54L15, tools/recover_on_mark.py removes the device instead of a
+    # person (tests/hil/README.md); the same recover issued from this
+    # supervisor did not land inside the case's window, for a reason not found.
     {"name": "give-up", "manual": True,
      "cases": ["hil: reconnection gives up when the device does not come back"]},
     # Exploratory, so not in the unattended default either: the first whole
@@ -101,7 +104,9 @@ def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
                SMPLY_HIL_IMAGE_A=str(bench.args.evidence / "a.signed.bin"),
                SMPLY_HIL_IMAGE_B=str(bench.args.evidence / "b.signed.bin"),
                SMPLY_HIL_UART=bench.args.uart or "")
-    command = [str(bench.args.exe), case, "--reporter", f"junit::out={junit}",
+    # Catch2 reads an unescaped comma in a test spec as "or": a case name with
+    # one would run nothing and be reported unavailable.
+    command = [str(bench.args.exe), case.replace(",", "\\,"), "--reporter", f"junit::out={junit}",
                "--reporter", "console::out=-", "--success"]
     started = time.monotonic()
     proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -111,6 +116,11 @@ def run_case(bench: Bench, case: str, case_dir: Path) -> dict:
     def pump() -> None:
         for line in proc.stdout:
             lines.append(line)
+            # A manual case's cue to the person at the bench (give-up's
+            # "power the board off now") is useless in stdout.log, which nobody
+            # reads until the case is over. Echo it the moment it arrives.
+            if line.startswith("HIL-MARK"):
+                print(f">>> {line.strip()}", flush=True)
 
     reader = threading.Thread(target=pump, daemon=True)
     reader.start()
@@ -173,6 +183,9 @@ def main() -> int:
     parser.add_argument("--cli", "--programmer", dest="cli", type=Path, default=None,
                         help=f"the profile's programmer; default {CUBE_CLI} for wb55, "
                              "the NCS toolchain's nrfutil for bl54l15")
+    parser.add_argument("--serial", default=None,
+                        help="the debug probe's serial, passed to flash_baseline.py "
+                             "(bl54l15: the J-Link serial; skips enumerating the probes)")
     # 3 s was enough on the WB55. On the BL54L15 a connect 3 s after a reflash
     # once failed in service discovery and passed on an immediate retry -- the
     # Windows-side settle crosscheck.py's POST_FLASH_SETTLE (10 s) exists for.

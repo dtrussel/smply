@@ -623,7 +623,9 @@ TEST_CASE("hil: reconnection gives up when the device does not come back",
     // deterministically on every CI push by `cli_dfu --flaky-reconnect 99`;
     // this case is here for a bench operator who can pull the board and watch
     // reconnect_failed() fire with a pending revert. Run it with
-    // `run_hil.py --cases give-up` and remove power on the HIL-MARK line.
+    // `run_hil.py --cases give-up` and remove power on the HIL-MARK line. On
+    // the BL54L15 profile the supervisor does that itself, with a J-Link
+    // `recover` on the line (tests/hil/README.md).
     // The first reconnect attempt waits long enough that the supervisor's erase
     // -- which does not start instantly (STM32CubeProgrammer takes a second or
     // two to attach over SWD) -- has finished and the device is dead before the
@@ -642,13 +644,19 @@ TEST_CASE("hil: reconnection gives up when the device does not come back",
         s.rig.timeline().note("asked the supervisor to remove the device");
     };
 
-    const auto report = s.update_to_other(UpdateMode::TestThenConfirm, hooks);
-    REQUIRE(report.has_value());
-    if (report->final_state == UpdateState::Completed) {
-        FAIL("the device came back: run this case under run_hil.py, which removes it");
+    const auto result = s.update_to_other(UpdateMode::TestThenConfirm, hooks);
+    if (result.has_value() && result->final_state == UpdateState::Completed) {
+        FAIL("the device came back: it was not removed in time on the HIL-MARK line");
     }
-    CHECK(report->final_state == UpdateState::Failed);
-    REQUIRE(report->cause.has_value());
-    CHECK(report->cause->code() == ErrorCode::Disconnected);
-    CHECK(report->revert_pending);
+    // A failed update ends with its Error; the full report is the updater's
+    // (UpdateFinished). The first version of this case read a failure as a
+    // report with final_state Failed, and never reached a bench that could
+    // tell -- the BL54L15's first real give-up did.
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().code() == ErrorCode::Disconnected);
+    const UpdateReport& report = s.rig.last_report();
+    CHECK(report.final_state == UpdateState::Failed);
+    REQUIRE(report.cause.has_value());
+    CHECK(report.cause->code() == ErrorCode::Disconnected);
+    CHECK(report.revert_pending);
 }

@@ -33,6 +33,9 @@ CUBE_CONNECT = ["-c", "port=swd", "mode=UR", "reset=HWrst"]
 NCS_TOOLCHAIN = Path(r"C:\ncs\toolchains\936afb6332")
 NRFUTIL = NCS_TOOLCHAIN / "nrfutil" / "bin" / "nrfutil.exe"
 NRFUTIL_HOME = NCS_TOOLCHAIN / "nrfutil" / "home"
+# What nrfutil says when the named probe is not attached. Matched only on the
+# first step, so a probe that vanishes mid-flash is a failure, not "no bench".
+NO_PROBE = re.compile(r"no devices?\b[^\n]*\bfound|no matching device", re.I)
 
 
 def run(cmd: list, env=None) -> subprocess.CompletedProcess:
@@ -76,13 +79,14 @@ def flash_bl54l15(args, mcuboot: Path, app: Path) -> int:
 
     # Name the probe on every step. Without --serial-number nrfutil acts on
     # every attached device, and "no probe" must be decided before anything is
-    # erased, not inferred from an erase that touched nothing.
-    listing = run([nrfutil, "device", "list"], env)
-    serials = re.findall(r"^(\d{6,})\s*$", listing.stdout, re.M)
+    # erased, not inferred from an erase that touched nothing. With --serial
+    # the listing is skipped; a serial that is not attached then fails the
+    # first step, which is reported as "no probe" below.
+    serials = []
+    if not args.serial:
+        listing = run([nrfutil, "device", "list"], env)
+        serials = re.findall(r"^(\d{6,})\s*$", listing.stdout, re.M)
     if args.serial:
-        if args.serial not in serials:
-            print(f"flash_baseline: J-Link {args.serial} not found (have {serials})", file=sys.stderr)
-            return 2
         serial = args.serial
     elif len(serials) == 1:
         serial = serials[0]
@@ -95,6 +99,12 @@ def flash_bl54l15(args, mcuboot: Path, app: Path) -> int:
 
     device = [nrfutil, "device"]
     select = ["--serial-number", serial]
+    # The application core's access port is protected while MCUboot runs (seen
+    # on this bench: an erase issued during the post-reset swap was refused
+    # with "access port is protected"), and opened once the application runs.
+    # `recover` erases everything through the control port regardless, so it
+    # is the fallback when a reflash lands while MCUboot is running.
+    recover = device + ["recover", *select]
     # A full erase first, then each hex with ERASE_NONE so the second program
     # does not undo the first. VERIFY_READ reads every programmed byte back.
     program = "chip_erase_mode=ERASE_NONE,verify=VERIFY_READ"
@@ -105,10 +115,17 @@ def flash_bl54l15(args, mcuboot: Path, app: Path) -> int:
         steps.append(device + ["reset", *select])
     for step in steps:
         result = run(step, env)
+        out = result.stdout + result.stderr
+        if result.returncode != 0 and step is steps[0] and re.search(r"protected", out, re.I):
+            # The erase was refused because the access port is protected; see
+            # `recover` above.
+            print("flash_baseline: access port protected; recovering instead", file=sys.stderr)
+            result = run(recover, env)
+            out = result.stdout + result.stderr
         if result.returncode != 0:
-            print(result.stdout + result.stderr, file=sys.stderr)
+            print(out, file=sys.stderr)
             print(f"flash_baseline: step failed: {' '.join(str(s) for s in step)}", file=sys.stderr)
-            return 1
+            return 2 if step is steps[0] and NO_PROBE.search(out) else 1
     return 0
 
 

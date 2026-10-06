@@ -197,6 +197,10 @@ public:
                                               const UpdateHooks& hooks);
     /// The states the last `update()` passed through, in order.
     [[nodiscard]] const std::vector<UpdateState>& states() const noexcept;
+    /// The last `update()`'s full report. A failed update returns its `Error`
+    /// from `update()`; the report -- final state, cause, revert pending --
+    /// is here (`UpdateFinished`'s contract). Call only after an `update()`.
+    [[nodiscard]] const UpdateReport& last_report() const;
 
 private:
     template<class T>

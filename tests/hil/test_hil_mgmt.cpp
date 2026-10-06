@@ -178,17 +178,34 @@ TEST_CASE("hil: stat -- an unknown group and an over-long name are refused as th
 {
     MgmtSession s;
 
-    // A29: an unknown group is INVALID_STAT_NAME, not INVALID_GROUP. A34: over
-    // v1 with ORIGINAL_PROTOCOL it is a flat ENOENT.
+    // A29: an unknown group is INVALID_STAT_NAME (3), not INVALID_GROUP. Which
+    // *group* the server files it under depends on the Zephyr revision (A35):
+    // upstream (the WB55's pin) says MGMT_GROUP_ID_STAT, so v2 sees a
+    // statistics error and v1 a flat ENOENT (A34); NCS v3.3.0's fork (the
+    // BL54L15) says ZEPHYR_MGMT_GRP_BASIC, so v2 sees (63, 3) -- no statistics
+    // error at all -- and v1 group 63's translation, a flat EUNKNOWN. Either is
+    // accepted; anything else is a new finding. The variant seen is recorded.
     const auto unknown = s.rig.stat_read("smply-no-such-group");
     REQUIRE_FALSE(unknown.has_value());
     s.note_refusal("unknown group", unknown.error());
     CHECK(unknown.error().code() == ErrorCode::ProtocolError);
+    REQUIRE(unknown.error().mgmt().has_value());
+    const MgmtError& m = *unknown.error().mgmt();
     if (s.v2()) {
-        CHECK(statistics_error(unknown.error()) == StatisticsError::InvalidStatName);
+        const bool upstream = statistics_error(unknown.error()) == StatisticsError::InvalidStatName;
+        const bool ncs_basic = m.group_scoped && m.group == Group::ZephyrBasic && m.rc == 3;
+        s.rig.timeline().note(upstream    ? "A35 variant: statistics group (upstream)"
+                              : ncs_basic ? "A35 variant: Zephyr basic group (NCS v3.3.0)"
+                                          : "A35 variant: neither -- a new finding");
+        CHECK((upstream || ncs_basic));
     } else {
         CHECK_FALSE(statistics_error(unknown.error()).has_value());
-        CHECK(smp_error(unknown.error()) == SmpError::NoEntry);
+        const auto flat = smp_error(unknown.error());
+        s.rig.timeline().note(flat == SmpError::NoEntry ? "A35 variant: flat ENOENT (upstream)"
+                              : flat == SmpError::Unknown
+                                  ? "A35 variant: flat EUNKNOWN (NCS v3.3.0)"
+                                  : "A35 variant: neither -- a new finding");
+        CHECK((flat == SmpError::NoEntry || flat == SmpError::Unknown));
     }
 
     // A33: a name of MAX_NAME_LEN bytes or more is a flat EINVAL, in both
@@ -204,7 +221,10 @@ TEST_CASE("hil: stat -- an unknown group and an over-long name are refused as th
 // Settings
 // ---------------------------------------------------------------------------
 
-TEST_CASE("hil: settings -- a value is written, read back, committed, saved and reloaded",
+// No commas in a case name: run_hil.py selects a case by its name, and Catch2
+// reads a comma in a test spec as "or", splitting the name into four filters
+// that match nothing.
+TEST_CASE("hil: settings -- a value round-trips through write read commit save load and delete",
           "[hil][settings]")
 {
     MgmtSession s;

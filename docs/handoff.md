@@ -279,9 +279,11 @@ true.
   against a real device only from the bench, by hand. So a green badge means
   "it builds", and any change to that code is unproven until someone runs the
   bench again.
-* **The serial adapter's Win32 half has never opened a port either.**
+* **The serial adapter's Win32 half opens a port only on the bench.**
   `windows-msvc` compiles `transports/serial_port/win32/` and runs
-  `smply_serial_port_tests`, whose only Windows cases open no port. Before
+  `smply_serial_port_tests`, whose only Windows cases open no port; the
+  BL54L15 bench's `serial` and `serial-update` groups are its only run
+  against a device. Before
   pushing a change there, a MinGW cross-build catches most of what MSVC
   would: `apt-get install g++-mingw-w64-x86-64-posix`, then configure with
   `-DCMAKE_SYSTEM_NAME=Windows` and the `x86_64-w64-mingw32-*-posix`
@@ -448,6 +450,23 @@ true.
 
 **The hardware bench**
 
+* **There are two benches, and every bench script takes `--profile`.**
+  `wb55` (the default) and `bl54l15`. A result from one says nothing about the
+  other's Zephyr revision: the same server code files an unknown statistics
+  group under group 2 upstream and under group 63 in NCS v3.3.0 (A35). Record
+  which bench a finding came from.
+* **On the BL54L15** (`tests/hil/README.md` has the rest):
+  * the console is VCOM**1**; VCOM0 is silent;
+  * an erase that lands while MCUboot runs is refused (access port
+    protected), so `flash_baseline.py` falls back to `nrfutil device recover`;
+  * the give-up case runs from `tools/recover_on_mark.py`; from `run_hil.py`
+    the same recover misses the case's window, cause unknown;
+  * after a host restart, scan once before connecting by address, or the
+    first connect fails in milliseconds with "no device at that address".
+* **Never put a comma in a HIL case name.** `run_hil.py` selects a case by
+  name, and Catch2 reads a comma as "or": the case runs nothing and is
+  reported `unavailable`. `run_hil.py` now escapes commas, but the name is
+  also what a person types.
 * **Read `tests/hil/README.md` before touching the board.**
   * The NUCLEO-WB55RG's Bluetooth controller runs on a second core, whose
     firmware Zephyr does not build.

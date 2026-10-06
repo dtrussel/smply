@@ -436,7 +436,7 @@ smply/
 │   │                           serial_port_config.hpp  serial_link.hpp — configuration,
 │   │                           counters, and the byte-level halves both platforms share;
 │   │                           posix/ — termios and poll(); win32/ — CreateFile and
-│   │                           overlapped I/O, compiled by CI and never run on a port
+│   │                           overlapped I/O, compiled by CI, run on a port only on the bench
 │   └── winrt_ble/              Windows-only smply::winrt_ble, behind SMPLY_BUILD_WINRT.
 │                               Compiled by CI; exercised on the bench: see its README
 ├── support/                    shared by the tests and the examples, part of neither
@@ -488,7 +488,7 @@ smply/
 │                               windows-hil): test_hil_cases.cpp over support/rig.* and
 │                               support/bench.*; test_hil_mgmt.cpp — statistics and
 │                               settings groups; test_hil_serial.cpp — the serial adapter
-│                               on the console UART, never run; run_hil.py supervises the case suite and
+│                               on the console UART; run_hil.py supervises the case suite and
 │                               crosscheck.py the third-party comparison; firmware/ is the
 │                               reproducible peer per bench profile (build_peer.py and
 │                               flash_baseline.py take --profile; the WB55's manifest and

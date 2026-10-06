@@ -38,7 +38,6 @@ UART_LOG = HERE / "tools" / "uart_log.py"
 CUBE_CLI = Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer"
                 r"\bin\STM32_Programmer_CLI.exe")
 
-
 def slug(text: str) -> str:
     """A directory name from a case or arm name: lowercase, dashes, bounded."""
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:60]
@@ -137,12 +136,20 @@ class Bench:
         # flash_baseline.py picks each profile's default programmer itself.
         cmd = [self.python, FLASH, "--evidence", self.args.evidence,
                "--profile", getattr(self.args, "profile", None) or "wb55", "--image", image]
-        if getattr(self.args, "cli", None):
-            cmd += ["--programmer", self.args.cli]
+        cmd += self._probe_args()
         step = run_step(cmd, log, 300)
         if step["timed_out"]:
             return "failed"
         return {0: "ok", 2: "unavailable"}.get(step["rc"], "failed")
+
+    def _probe_args(self) -> list:
+        """The programmer and probe serial, when the supervisor was given them."""
+        out = []
+        if getattr(self.args, "cli", None):
+            out += ["--programmer", self.args.cli]
+        if getattr(self.args, "serial", None):
+            out += ["--serial", self.args.serial]
+        return out
 
     def start_uart(self, out: Path):
         """Starts the console logger, or returns None when no port was given.

@@ -179,6 +179,11 @@ const std::vector<UpdateState>& Rig::states() const noexcept
     return states_;
 }
 
+const UpdateReport& Rig::last_report() const
+{
+    return updater_->report();
+}
+
 // --- the pump ----------------------------------------------------------------
 
 void Rig::pump_step()

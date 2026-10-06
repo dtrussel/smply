@@ -1504,8 +1504,10 @@ tty: a hardware UART, a USB CDC ACM port, a pseudo-terminal. One header,
 two files mirror each other section by section, and should be reviewed side by
 side. The POSIX one runs in CI against a pseudo-terminal (`tests/serial_port/`).
 The Win32 one is compiled by `windows-msvc` and is outside clang-tidy and
-cppcheck (quality-gates.md §3). It **has never opened a port**: the only
-Windows test opens one that does not exist.
+cppcheck (quality-gates.md §3). CI never opens a port with it -- the only
+Windows test opens one that does not exist -- so its behaviour rests on the
+BL54L15 bench, where it has run whole updates over a J-Link VCOM
+(`tests/hil/README.md`).
 
 The Win32 differences are the ones the platform forces:
 * **The wake-up.** An auto-reset event, not a self-pipe, and
