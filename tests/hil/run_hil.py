@@ -97,6 +97,11 @@ MANUAL_GROUPS = [
     # failure is a finding for protocol-notes.md, not something to retry away.
     {"name": "serial-update", "holds_uart": True,
      "cases": ["hil: serial -- a whole update over the console UART (exploratory)"]},
+    # A25 / ADR-0024 on a device: needs the BL54L15's small-buffer variant
+    # (build_peer.py --variant smallbuf), so run it with that variant's
+    # evidence. Its negative control must time out.
+    {"name": "serial-smallbuf", "holds_uart": True,
+     "cases": ["hil: serial -- the device's buffer less its framing bounds a message (exploratory)"]},
 ]
 
 

@@ -187,10 +187,11 @@ UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& o
     if (options.chunk_size != 0) {
         config.chunk_size = options.chunk_size;
     } else {
-        const upload::ChunkBudget budget{.server_buf_size = options.server_buf_size,
-                                         .transport_max_message_size =
-                                             client_->transport_max_message_size(),
-                                         .configured_max = limits::kUploadChunkMax};
+        const upload::ChunkBudget budget{
+            .server_buf_size = options.server_buf_size,
+            .transport_max_message_size = client_->transport_max_message_size(),
+            .transport_message_overhead = client_->transport_message_overhead(),
+            .configured_max = limits::kUploadChunkMax};
         const auto chunk = upload::compute_chunk_size(budget, fields);
         if (!chunk.has_value()) {
             return refuse(chunk.error());

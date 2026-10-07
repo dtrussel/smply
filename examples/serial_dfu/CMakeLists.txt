@@ -50,6 +50,19 @@ if(SMPLY_BUILD_TESTS AND NOT WIN32)
             "serial_dfu: Completed reset=dropped links=2 devices=2 packets=[1-9][0-9]* ignored=0 dropped_lines=0 framing_errors=0 crc_failures=0 refused=0"
         TIMEOUT 60
     )
+    # The device's buffer as the binding limit (ADR-0024, protocol-notes A25):
+    # with the adapter's cap raised to the stub's 512-byte buffer, the core must
+    # keep every message to 512 - 4, because the stub, like Zephyr, buffers the
+    # frame's length and CRC with the packet and drops anything larger. Without
+    # the transport's overhead the first upload packet does not fit and the
+    # update never completes.
+    add_test(NAME serial_dfu_pty_device_buffer
+             COMMAND serial_dfu --quiet --stub uart --max-message 512)
+    set_tests_properties(serial_dfu_pty_device_buffer PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "serial_dfu: Completed reset=grace links=2 devices=1 packets=[1-9][0-9]* .*framing_errors=0 crc_failures=0 refused=0"
+        TIMEOUT 60
+    )
     # A two-image package over the UART shape (ADR-0021): both images staged
     # before the one reset, image 1 applied by the stub, image 0 confirmed.
     add_test(NAME serial_dfu_pty_package COMMAND serial_dfu --quiet --stub uart --demo-package)

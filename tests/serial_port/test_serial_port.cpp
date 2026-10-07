@@ -286,6 +286,9 @@ TEST_CASE("a pseudo-terminal opens at any baud rate, as a CDC ACM port does", "[
         const auto opened = SerialPortTransport::open(config, context.inbound);
         REQUIRE(opened.has_value());
         CHECK((*opened)->max_message_size() == config.max_message_size);
+        // ADR-0024: the device buffers the frame's length and CRC with every
+        // message, and the adapter says so.
+        CHECK((*opened)->message_overhead() == 4);
     }
 }
 

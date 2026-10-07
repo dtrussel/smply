@@ -26,7 +26,7 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0002](ADR-0002-result-and-error-type.md) | `Result<T>` + structured `Error` | Accepted |
 | [0003](ADR-0003-async-model.md) | Sans-IO callbacks with an application-driven pump | Accepted |
 | [0004](ADR-0004-threading-model.md) | Single client context, no internal threads | Accepted |
-| [0005](ADR-0005-transport-abstraction.md) | Abstract `Transport`: whole message out, byte stream in | Accepted, qualified on hardware |
+| [0005](ADR-0005-transport-abstraction.md) | Abstract `Transport`: whole message out, byte stream in | Accepted, qualified on hardware; amended by 0024 |
 | [0006](ADR-0006-reassembly-location.md) | SMP reassembly lives in the core | Accepted |
 | [0007](ADR-0007-cbor-library.md) | QCBOR behind a narrow façade | Accepted; QCBOR defect noted |
 | [0008](ADR-0008-upload-state-ownership.md) | Upload state as a pure function owned by `ImageManagement` | Accepted |
@@ -45,4 +45,4 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0021](ADR-0021-multi-image-update.md) | Several images on one device in one update, with per-image commit ownership | Accepted; decisions 2 and 3 superseded in part by 0022 |
 | [0022](ADR-0022-device-images-commit-after-client.md) | A device-committed image stays on trial until the client images are confirmed, and the wait survives the link | Accepted; decision 4 extended by 0023 |
 | [0023](ADR-0023-lost-link-around-the-confirm.md) | A lost link or answer around the confirm is recovered by re-reading the device | Accepted |
-| [0024](ADR-0024-transport-message-overhead.md) | A transport reports what the device's buffer spends beyond the message | Proposed; amends 0005 |
+| [0024](ADR-0024-transport-message-overhead.md) | A transport reports what the device's buffer spends beyond the message | Accepted; amends 0005 |

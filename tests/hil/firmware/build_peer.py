@@ -128,8 +128,17 @@ def main() -> None:
     parser.add_argument("--sdk", type=Path, help="wb55: Zephyr SDK install dir")
     parser.add_argument("--toolchain", type=Path,
                         help="bl54l15: NCS toolchain bundle, e.g. C:/ncs/toolchains/936afb6332")
+    parser.add_argument("--variant", choices=["smallbuf"], default=None,
+                        help="bl54l15: build a variant of the peer, applying "
+                             "firmware/bl54l15/variant-<name>.conf after peer.conf; "
+                             "use a separate --build-dir for it")
     args = parser.parse_args()
-    profile = PROFILES[args.profile]
+    profile = dict(PROFILES[args.profile])
+    if args.variant:
+        if args.profile != "bl54l15":
+            parser.error("--variant is implemented for the bl54l15 profile only")
+        profile["conf"] = [*profile["conf"],
+                           FIRMWARE / "bl54l15" / f"variant-{args.variant}.conf"]
     workspace, root = args.workspace.resolve(), args.build_dir.resolve()
     check_pins(workspace, profile["pins"], parser)
 

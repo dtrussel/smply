@@ -536,17 +536,18 @@ a directory rather than a target of its own, which keeps ADR-0016's list intact
   (protocol-notes A27). One device per update: several devices need a
   coordinator smply does not have. None of it has run against a multi-image
   device.
-* **Serial: a reference adapter exists, and has not met a device.**
+* **Serial: a reference adapter, run on one device.**
   `transports/serial/` implements MCUmgr's console encapsulation in both
   directions. `transports/serial_port/` opens a port (POSIX `termios`, or
-  Win32, which is compile-only in CI) and implements `Transport` over it. It runs in CI against a pseudo-terminal
-  only, so **no serial byte has been on a wire to a real device**. The framing's
-  evidence is still agreement with a transcription of Zephyr's source (ADR-0017,
-  ADR-0020). Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not implemented;
-  it needs no framing, only a port.
-* **Over serial, `buf_size` overstates the device's limit by four bytes**
-  (protocol-notes A25). The adapter's 256-byte default cap keeps a default
-  device safe; the general fix is on the roadmap.
+  Win32) and implements `Transport` over it. CI runs it against a
+  pseudo-terminal only; the Win32 half has run whole updates against the
+  BL54L15 bench over its console (Zephyr's shell transport), and nothing else
+  (ADR-0017, ADR-0020). Raw UART (`CONFIG_MCUMGR_TRANSPORT_RAW_UART`) is not
+  implemented; it needs no framing, only a port.
+* **Over serial the device keeps four bytes of framing per message**
+  (protocol-notes A25), so it accepts `buf_size − 4`. The adapter reports them
+  from `Transport::message_overhead()` and the core subtracts them
+  (ADR-0024).
 * The core does not manage connections; reconnection is the application's job.
   A dropped link completes the upload with `Disconnected` and keeps the session,
   so `ImageManagement::resume()` can continue it once the application has

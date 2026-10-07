@@ -1,7 +1,8 @@
 # ADR-0005 — Abstract `Transport`: whole message out, byte stream in
 
 **Status:** Accepted (2026-09-04); qualified by P17b, re-read in P18's audit
-(2026-09-18)
+(2026-09-18); amended by [ADR-0024](ADR-0024-transport-message-overhead.md)
+(2026-10-07), which adds a fifth, defaulted member, `message_overhead()`
 
 *P18 note. The decision stands and the interface is unchanged. One sentence
 below needs reading carefully after A22: "with one request in flight the core

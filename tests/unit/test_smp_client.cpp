@@ -1343,6 +1343,21 @@ TEST_CASE("a timeout callback may cancel another expiring request", "[client][re
     REQUIRE(second.code == ErrorCode::Cancelled); // cancelled, not timed out
 }
 
+TEST_CASE("the client reports the bound transport's message overhead and follows a rebind",
+          "[client][overhead]")
+{
+    // Declared before the fixture, so it outlives the client that will be
+    // bound to it: ~SmpClient detaches from its transport.
+    FakeTransport serial_like;
+    serial_like.set_message_overhead(4);
+
+    Fixture fixture;
+    REQUIRE(fixture.client.transport_message_overhead() == 0);
+
+    fixture.client.rebind_transport(serial_like);
+    REQUIRE(fixture.client.transport_message_overhead() == 4);
+}
+
 TEST_CASE("rebinding while requests are still pending fails them", "[client][disconnect]")
 {
     // The application may rebind without a disconnect ever being reported --

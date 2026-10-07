@@ -130,7 +130,127 @@ void report(const SerialPortTransport& link, const char* prefix)
               << "HIL-METRIC " << prefix << "_refused=" << c.send.refused << '\n';
 }
 
+/// An adapter as it was before ADR-0024: everything forwarded to the real one
+/// except `message_overhead()`, which it does not override, so it reports 0.
+/// The negative control of the small-buffer case.
+class WithoutOverhead final : public Transport
+{
+public:
+    explicit WithoutOverhead(Transport& inner) noexcept : inner_{&inner} {}
+
+    [[nodiscard]] Result<void> send(ConstBytes message) override
+    {
+        return inner_->send(message);
+    }
+
+    [[nodiscard]] std::size_t max_message_size() const noexcept override
+    {
+        return inner_->max_message_size();
+    }
+
+    void set_listener(TransportListener* listener) noexcept override
+    {
+        inner_->set_listener(listener);
+    }
+
+    void close() noexcept override
+    {
+        inner_->close();
+    }
+
+private:
+    Transport* inner_;
+};
+
+/// One upload of \p image over \p transport, sized from \p buf_size, or a
+/// timeout. Short deadlines: the negative control is expected to time out.
+[[nodiscard]] Result<UploadResult> upload_over(Pump& pump, Transport& transport,
+                                               const std::vector<std::byte>& image,
+                                               std::uint32_t buf_size)
+{
+    SmpClient client{transport};
+    ImageManagement images{client};
+    MemoryImageSource source{ConstBytes{image}};
+    UploadOptions options;
+    options.server_buf_size = buf_size;
+    options.first_chunk_timeout = std::chrono::seconds{5};
+    options.max_chunk_retries = 1;
+    const auto digest = sha256(source);
+    REQUIRE(digest.has_value());
+    options.sha = *digest;
+    std::optional<Result<UploadResult>> done;
+    static_cast<void>(images.upload(
+        source, options, [](const UploadProgress&) {},
+        [&](Result<UploadResult> r) { done = std::move(r); }));
+    if (!pump.until(client, [&] { return done.has_value(); }, std::chrono::minutes{3})) {
+        return fail(ErrorCode::Timeout, "hil: the upload did not finish in time");
+    }
+    std::cout << "  messages sent " << client.stats().sent << ", timeouts "
+              << client.stats().timeouts << '\n';
+    return std::move(*done);
+}
+
 } // namespace
+
+TEST_CASE("hil: serial -- the device's buffer less its framing bounds a message (exploratory)",
+          "[hil][serial][exploratory]")
+{
+    // A25 / ADR-0024 on a device. Needs the BL54L15 peer's small-buffer variant
+    // (build_peer.py --variant smallbuf: a 384-byte netbuf), and an adapter
+    // cap above it, so that the device's buffer is the binding limit.
+    //
+    // 1. Negative control: the same adapter with its overhead hidden (an
+    //    adapter as it was before ADR-0024). smply sizes the first packet to
+    //    within a byte of buf_size; the device needs four more bytes for the
+    //    frame's length and CRC, drops it without a reply, and the upload times
+    //    out. If this *completes*, the bench is not showing A25 and the case
+    //    proves nothing -- it fails.
+    // 2. The real adapter: four bytes less, and the upload completes.
+    const std::string port = require_uart();
+    const hil::Bench bench = hil::require_bench();
+    const std::optional<std::vector<std::byte>> image = hil::read_file(bench.image_b);
+    REQUIRE(image.has_value());
+
+    Pump pump;
+    SerialPortConfig config = console(port);
+    config.max_message_size = 1024;
+    Result<std::unique_ptr<SerialPortTransport>> opened =
+        SerialPortTransport::open(config, pump.inbound);
+    REQUIRE(opened.has_value());
+    SerialPortTransport& link = **opened;
+    REQUIRE(link.message_overhead() == 4);
+
+    // What the device says its buffer is.
+    std::uint32_t buf_size = 0;
+    {
+        SmpClient client{link};
+        OsManagement os{client};
+        std::optional<Result<McumgrParameters>> params;
+        static_cast<void>(
+            os.mcumgr_parameters([&](const Result<McumgrParameters>& r) { params = r; }));
+        REQUIRE(pump.until(client, [&] { return params.has_value(); }, std::chrono::seconds{10}));
+        REQUIRE(params->has_value());
+        buf_size = (*params)->buf_size;
+    }
+    std::cout << "HIL-METRIC serial_buf_size=" << buf_size << '\n';
+    REQUIRE(buf_size < config.max_message_size); // the device's buffer must bind
+
+    WithoutOverhead hidden{link};
+    const Result<UploadResult> without = upload_over(pump, hidden, *image, buf_size);
+    std::cout << "HIL-NOTE without the overhead: "
+              << (without.has_value() ? "completed" : to_string(without.error())) << '\n';
+    CHECK_FALSE(without.has_value());
+    if (!without.has_value()) {
+        CHECK(without.error().code() == ErrorCode::Timeout);
+    }
+
+    const Result<UploadResult> with = upload_over(pump, link, *image, buf_size);
+    std::cout << "HIL-NOTE with the overhead: "
+              << (with.has_value() ? "completed" : to_string(with.error())) << '\n';
+    REQUIRE(with.has_value());
+    CHECK(with->transferred == image->size());
+    report(link, "serial_smallbuf");
+}
 
 TEST_CASE("hil: serial -- image state and echo over the console UART", "[hil][serial]")
 {

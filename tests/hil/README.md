@@ -224,6 +224,7 @@ Evidence bundles under `build/hil-evidence/bl54l15/` (not in git).
 | `o2`, `stat`, `settings` under SMP v2 (`20261005-181852`) | **6 / 6 pass** |
 | `serial-update`, four runs | **4 / 4 pass**, 40 s each, 1 188 SMP messages, 0 timeouts; reset seen as `grace` |
 | give-up, unattended from `run_hil.py` (2026-10-06), three runs | **3 / 3 pass** (14 assertions each): chip erased 1.3-1.4 s after the mark, three reconnects fail, `reconnect_failed()`, `Failed`, `Disconnected`, `revert_pending` |
+| `serial-smallbuf` on the small-buffer variant (`build_peer.py --variant smallbuf`, netbuf 384; 2026-10-07) | **pass**: sized to `buf_size` with the transport's overhead hidden, the first packet is dropped twice with no answer (the negative control); sized to `buf_size − 4` the upload completes in 702 messages with no timeout (A25, ADR-0024). Build the variant into its own `--build-dir` and run the group with its evidence |
 | `stat-64` and `settings` on the bench module's second revision, v1 and v2 (2026-10-06) | **pass**: `smply_bench.big` = 2^32 + 5 reads **5** (A28); `READ_NOT_SUPPORTED` arrives as `(3, 4)` under v2 and flat `ENOENT` under v1 (A34) |
 | `winrt_ble_dfu` acceptance, 10 runs from alternating baselines | **10 / 10**, every one a full 205 272-byte upload, 409 messages, 0 timeouts |
 | `winrt_ble_dfu` built from a fresh clone, `find_package(smply)` from an install prefix, adapter and `dfu_app` compiled as the consumer's own sources (ADR-0016) | **pass**, A→B, then verified running B by `presence` |

@@ -259,6 +259,12 @@ public:
     /// (docs/protocol-notes.md section 8).
     [[nodiscard]] std::size_t transport_max_message_size() const noexcept;
 
+    /// The current transport's `message_overhead()` (ADR-0024).
+    ///
+    /// Exposed for the same reason as `transport_max_message_size()`, and
+    /// follows `rebind_transport()` the same way.
+    [[nodiscard]] std::size_t transport_message_overhead() const noexcept;
+
     /// Requests currently outstanding.
     [[nodiscard]] std::size_t in_flight() const noexcept;
 

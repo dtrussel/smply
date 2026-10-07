@@ -84,6 +84,8 @@ struct Options
     UpdateMode mode = UpdateMode::TestThenConfirm;
     bool stub_cdc = false; ///< The stub's reset shape: CDC (vanish) or UART (stay).
     bool quiet = false;
+    /// The adapter's message cap (`SerialPortConfig::max_message_size`).
+    std::size_t max_message = kDefaultSerialMessageSize;
 
     /// A multi-image DFU package instead of one image (docs/multi-image.md).
     std::string package_path;
@@ -117,6 +119,9 @@ void usage()
                  "  --apply-fails  without --port: the stub fails to apply image 1\n"
 
                  "  --stub SHAPE  without --port: the stub's reset, uart (default) or cdc\n"
+                 "  --max-message N  the adapter's message cap, default 256; above the\n"
+                 "                device's buf_size, that buffer (less the frame's 4\n"
+                 "                bytes) becomes the limit\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
                  "  --quiet       print only the outcome\n"
                  "With --port, one of --image or --package is required.\n";
@@ -155,6 +160,13 @@ void usage()
                 return false;
             }
             out.baud = static_cast<std::uint32_t>(std::stoul(value));
+        } else if (arg == "--max-message" && has_value) {
+            const std::string& value = args[++i];
+            if (value.empty() || value.size() > 5 ||
+                value.find_first_not_of("0123456789") != std::string::npos) {
+                return false;
+            }
+            out.max_message = std::stoul(value); // at most five digits: fits any size_t
         } else if (arg == "--flow" && has_value) {
             const std::string& value = args[++i];
             if (value != "none" && value != "rtscts") {
@@ -411,6 +423,7 @@ int main(int argc, char** argv)
     config.path = port;
     config.baud = options.baud;
     config.flow = options.flow;
+    config.max_message_size = options.max_message;
 
     // Every link ever opened stays alive until the client is gone: ~SmpClient
     // and rebind_transport() both detach from the transport they hold.

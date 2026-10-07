@@ -46,6 +46,7 @@
 /// What the device prints while it boots arrives as ignored console lines and
 /// is counted, not delivered.
 
+#include "serial/serial_framing.hpp"
 #include "serial_port/serial_port_config.hpp"
 
 #include "smply/bytes.hpp"
@@ -116,6 +117,14 @@ public:
 
     /// `SerialPortConfig::max_message_size`, unchanged.
     [[nodiscard]] std::size_t max_message_size() const noexcept override;
+
+    /// `kSerialMessageOverhead` (4): the length prefix and CRC the device
+    /// buffers with every message, which the core takes off its `buf_size`
+    /// (ADR-0024, A25). Platform-independent, so defined here once.
+    [[nodiscard]] std::size_t message_overhead() const noexcept override
+    {
+        return kSerialMessageOverhead;
+    }
 
     void set_listener(TransportListener* listener) noexcept override;
 

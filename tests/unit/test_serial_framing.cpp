@@ -42,10 +42,13 @@ using smply::ConstBytes;
 using smply::MutBytes;
 using smply::transport::crc16_xmodem;
 using smply::transport::kFragmentMarker;
+using smply::transport::kMarkerSize;
 using smply::transport::kMaxBase64PerFrame;
 using smply::transport::kMaxFrame;
 using smply::transport::kMaxRawPerFrame;
 using smply::transport::kPacketMarker;
+using smply::transport::kSerialMessageOverhead;
+using smply::transport::kTerminatorSize;
 using smply::transport::LineSplitter;
 using smply::transport::SerialDeframer;
 using smply::transport::SerialFramer;
@@ -462,6 +465,30 @@ TEST_CASE("a short packet is one frame, byte for byte", "[serial][framing]")
     REQUIRE(frames.size() == 1);
     CHECK(frames[0] == std::string{"\x06\x09"} + "AAoAAAAAAAAqAOkt" + "\n");
     CHECK(frames[0].size() == 19);
+}
+
+TEST_CASE("the device keeps exactly kSerialMessageOverhead bytes beyond the packet",
+          "[serial][framing][overhead]")
+{
+    // What the device's netbuf holds is the decoded body, not the base64 or
+    // the markers: length prefix, packet, CRC (protocol-notes section 8, A25).
+    // Its size minus the packet is what the serial adapter reports from
+    // Transport::message_overhead() (ADR-0024).
+    for (const std::size_t size : {std::size_t{8}, std::size_t{93}, std::size_t{300}}) {
+        const std::vector<std::byte> packet = counted(size);
+        std::string base64;
+        for (const std::string& frame : frames_of(ConstBytes{packet})) {
+            base64 += frame.substr(kMarkerSize, frame.size() - kMarkerSize - kTerminatorSize);
+        }
+        std::vector<std::byte> body(base64.size());
+        const std::vector<std::byte> encoded = bytes_of(base64);
+        const std::optional<std::size_t> decoded =
+            base64_decode(ConstBytes{encoded}, MutBytes{body});
+        REQUIRE(decoded.has_value());
+        INFO("packet size " << size);
+        CHECK(*decoded - packet.size() == kSerialMessageOverhead);
+    }
+    CHECK(kSerialMessageOverhead == 4);
 }
 
 TEST_CASE("the encoder is byte-identical to the reference transmitter", "[serial][framing]")

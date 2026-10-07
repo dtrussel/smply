@@ -38,6 +38,12 @@ public:
 
     [[nodiscard]] Result<void> send(ConstBytes message) override;
     [[nodiscard]] std::size_t max_message_size() const noexcept override;
+
+    [[nodiscard]] std::size_t message_overhead() const noexcept override
+    {
+        return message_overhead_;
+    }
+
     void set_listener(TransportListener* listener) noexcept override;
     void close() noexcept override;
 
@@ -93,6 +99,13 @@ public:
         max_message_size_ = size;
     }
 
+    /// What `message_overhead()` reports (ADR-0024); 0 by default, like an
+    /// adapter that does not override it.
+    void set_message_overhead(std::size_t bytes) noexcept
+    {
+        message_overhead_ = bytes;
+    }
+
     // --- Injection ---------------------------------------------------------
 
     /// One `on_bytes()` call with everything.
@@ -141,6 +154,7 @@ private:
     std::vector<std::vector<std::byte>> sent_;
     std::optional<Error> next_send_failure_;
     std::size_t max_message_size_ = 0;
+    std::size_t message_overhead_ = 0;
     std::size_t suppressed_deliveries_ = 0;
     std::size_t on_bytes_calls_ = 0;
     bool busy_ = false;

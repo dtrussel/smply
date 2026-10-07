@@ -1,6 +1,6 @@
 # ADR-0024 — A transport reports what the device's buffer spends beyond the message
 
-**Status:** Proposed (2026-10-06). Amends [ADR-0005](ADR-0005-transport-abstraction.md):
+**Status:** Accepted (2026-10-07). Amends [ADR-0005](ADR-0005-transport-abstraction.md):
 adds one member to `Transport`. ADR-0005's other decisions stand.
 
 ## Context

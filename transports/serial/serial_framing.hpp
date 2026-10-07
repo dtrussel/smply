@@ -122,6 +122,15 @@ inline constexpr std::size_t kMaxRawPerFrame = (kMaxBase64PerFrame / 4) * 3;
 /// default, which is comfortably inside it.
 inline constexpr std::size_t kMaxSerialPacket = 65533;
 
+/// Bytes the **device** keeps beyond the packet: the 2-byte length prefix and
+/// the 2-byte CRC, which Zephyr's receiver decodes into the same netbuf as the
+/// packet before it checks and strips them (docs/protocol-notes.md section 8,
+/// A25). Base64, markers and newlines are not kept and do not count.
+///
+/// What a serial adapter reports from `Transport::message_overhead()`
+/// (ADR-0024), so that an upload's messages fit `buf_size - 4`.
+inline constexpr std::size_t kSerialMessageOverhead = 4;
+
 /// How the encoder splits one frame. Shared by `SerialFramer::next_frame()` and
 /// `SerialFramer::count()` so the two cannot drift -- the boundary rule is
 /// fiddly enough that two copies of it would eventually disagree.

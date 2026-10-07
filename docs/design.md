@@ -631,17 +631,23 @@ retransmission possible.
 ### Chunk sizing
 
 ```
-budget      = min(server_buf_size (OS params, PN §5) or kDefaultSmpMessageBudget (256),
-                  transport.max_message_size() when it is not 0)
+device      = (server_buf_size (OS params, PN §5) or kDefaultSmpMessageBudget (256))
+              - transport.message_overhead()            // ADR-0024; 4 over serial, else 0
+budget      = min(device, transport.max_message_size() when it is not 0)
 overhead    = 8 (SMP header) + first_packet_overhead(len, sha, image, upgrade)
 chunk_size  = min(budget - overhead, configured_max)   // configured_max defaults to kUploadChunkMax
-fail with MessageTooLarge if budget <= overhead or chunk_size < 32
+fail with MessageTooLarge if device <= 0, budget <= overhead or chunk_size < 32
 ```
 
 `compute_chunk_size()` in `src/groups/image/upload_session.cpp` is the whole
 rule. The three limits are separate inputs (`ChunkBudget`), each ignored when it
 has no opinion, and nothing is clamped *up*: a chunk under 32 bytes is an
-error, not a rounding.
+error, not a rounding. The transport's message overhead is not a fourth limit
+but a correction to the device's: the device's buffer also keeps the
+transport's framing (over serial, the length prefix and CRC; A25), so that comes
+off the device's term only. `max_message_size()` already limits the message
+itself and is not reduced. A device-supplied `buf_size` no larger than the
+overhead is refused rather than wrapped.
 
 **`server_buf_size` is supplied by the caller**, in `UploadOptions`, not fetched
 by the image group. It belongs to the OS group, and `SmpError::NotSupported`
@@ -1109,6 +1115,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
 | Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
 | Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "no opinion", and that limit is simply skipped; only the device's buffer size falls back to a default (`kDefaultSmpMessageBudget`, §6). |
+| Device-side framing? | `message_overhead()` — bytes the *device's* buffer keeps per message beyond the SMP message (ADR-0024). The core takes it off the device's buffer size, or the default standing in for it, and off nothing else. Defaulted to `0`, the one member an adapter need not implement; the serial adapter returns `4`. |
 
 ### The adapter's marshalling obligation, and `smply::Dispatcher`
 
@@ -1536,12 +1543,13 @@ be read as the start of the first response. On POSIX it asks for exclusive
 use (`TIOCEXCL`, best effort). On Windows the handle is opened unshared.
 
 **Why 256.** It is the Zephyr default of `CONFIG_MCUMGR_TRANSPORT_UART_MTU`
-and `..._SHELL_MTU`. It is also below the largest message a default device
-accepts *over serial*, which is `buf_size − 4`: the device decodes the serial
-length prefix and CRC into the same netbuf as the message (protocol-notes
-§9, A25). The upload sizes its chunks from `min(buf_size, max_message_size())`,
-so this cap is what keeps a default device from silently dropping a
-full-sized chunk. Raise it only for a device whose `buf_size` is known.
+and `..._SHELL_MTU`. A device accepts at most `buf_size − 4` *over serial*:
+it decodes the serial length prefix and CRC into the same netbuf as the
+message (protocol-notes §9, A25). The adapter reports those four bytes from
+`message_overhead()` (`kSerialMessageOverhead`), and the upload sizes its
+chunks from `min(buf_size − 4, max_message_size())` (ADR-0024), so raising
+the cap is safe: the device's own buffer then binds, less the four bytes. The
+`serial_dfu_pty_device_buffer` ctest runs an update in exactly that regime.
 
 ### One I/O thread
 
