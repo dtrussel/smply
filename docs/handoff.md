@@ -489,14 +489,23 @@ true.
   it got. A capture that is listening is not one that is recording: BTVS can
   produce a valid pcapng with zero packets. So `tools/hci_capture.py` gates on
   `capinfos` and reports `empty` as its own outcome.
-* **On the Windows bench, the Linux build runs in WSL, but the shell scripts
-  do not.**
-  * The working tree is CRLF (`core.autocrlf=true`), so the scripts fail with
-    `'bash\r': No such file or directory`. Run clang-tidy by hand from
-    `compile_commands.json` instead.
-  * Pass `-DFETCHCONTENT_SOURCE_DIR_CATCH2=…` and the same for `QCBOR`, so the
-    configure reuses the Windows build's downloads.
-  * There is no clang in that image, so the ASan and UBSan jobs stay with CI.
+* **On the Windows bench, run the Linux gates from an LF clone inside WSL.**
+  * The working tree is CRLF (`core.autocrlf=true`), so the shell scripts fail
+    there with `'bash\r': No such file or directory`. A
+    `git -c core.autocrlf=false clone` of the working tree into the WSL home
+    runs `format.sh`, `lint.sh` and every preset as CI does. Only committed
+    changes reach the clone.
+  * Pass `-DFETCHCONTENT_SOURCE_DIR_CATCH2=…` and the same for `QCBOR`,
+    pointing at `build/windows-winrt/_deps/*-src`, so nothing is downloaded.
+    **Then link those two directories into the clone's
+    `build/linux-clang/_deps/`**: `lint.sh` looks for Catch2 there, and
+    without it cppcheck reports a `syntaxError` at the first `TEST_CASE`, which
+    looks like a real defect.
+  * The WSL image now has clang, clang-tidy and cppcheck, so `linux-clang` and
+    `linux-clang-asan-ubsan` run locally. It has no `gcovr`, so enforced
+    coverage stays with CI.
+  * A command passed from PowerShell to `wsl -e bash -c` loses its `|`s; put
+    anything with a pipe in a script file.
 * **On Windows, build with the MSVC developer environment loaded**:
   `cmd /c "call VsDevCmd.bat -arch=x64 && cmake --build --preset windows-winrt"`.
   A shell that cannot find `cl` fails without building, and the stale binary is
