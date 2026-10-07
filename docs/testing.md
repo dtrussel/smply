@@ -751,16 +751,18 @@ today may find something tomorrow.
 ## 6. Hardware interoperability (`tests/hil/`)
 
 Opt-in target `smply_hil` (`SMPLY_BUILD_HIL=ON`, preset `windows-hil`), never
-part of the PR gate. Requires the bench in `tests/hil/README.md`: a NUCLEO-WB55RG
-running MCUboot + the pinned `smp_svr` over BLE, reachable from a Windows host,
-with the exact west manifest, Kconfig snapshots and coprocessor firmware recorded
-so results are reproducible.
+part of the PR gate. Requires one of the two benches in `tests/hil/README.md` —
+a NUCLEO-WB55RG (`--profile wb55`) or a BL54L15 DVK, nRF54L15 with nRF Connect
+SDK (`--profile bl54l15`) — running MCUboot + the pinned `smp_svr` over BLE,
+reachable from a Windows host, with the exact manifest, Kconfig snapshots and
+(for the WB55) coprocessor firmware recorded so results are reproducible.
 
-**The serial cases have never run.** `test_hil_serial.cpp` puts the serial
-port adapter (its Win32 half) on the bench's console UART. The `serial` group
-(echo and image state) is in the default run, and the exploratory
-`serial-update` group is not. Both were written without the bench.
-`tests/hil/README.md` says what their first run must show.
+**The serial cases.** `test_hil_serial.cpp` puts the serial port adapter (its
+Win32 half) on the bench's console UART. The `serial` group (echo and image
+state) is in the default run, and the exploratory `serial-update` group, a
+whole update over the console, is not. Both have run on the BL54L15 bench
+only; `tests/hil/README.md` has the counters, and what they measure for O7 and
+A26.
 
 **Shape.** `test_hil_cases.cpp` is a Catch2 suite over the public API **plus
 two headers no application consumer gets**: `support/dfu_app/reconnect_policy.hpp`
@@ -775,7 +777,7 @@ operation at a time (connect, read state, upload, resume, drop the link, run a
 whole update, reconnect on a policy). Every case reads the bench from the
 environment and **SKIPs** without it; every case works out its own target (the
 image not currently running), so it can start from either of the two firmware
-images. `run_hil.py` supervises: a baseline reflash over ST-LINK and a UART
+images. `run_hil.py` supervises: a baseline reflash over the bench's probe and a UART
 capture per *group*, a hard deadline and a JUnit report per case, the case's
 timeline and `HIL-METRIC` lines kept as evidence, and a **pass / fail /
 unavailable** verdict — a skipped case, a missing probe or an unreadable report
@@ -805,15 +807,35 @@ return — **manual**: a person powers the board off when the case prints its
 `HIL-MARK` line, which is why it is excluded from `--cases all`. An
 earlier design had the supervisor erase the device with the programmer on that
 line; that raced the reconnect, because STM32CubeProgrammer toggles reset to
-attach and the device re-advertises before the erase halts it. The give-up path
+attach and the device re-advertises before the erase halts it. On the BL54L15
+no person is needed: `run_hil.py` erases the chip with a J-Link `recover` on
+the mark (`erase_on_mark`; an empty nRF54L15 cannot advertise). That only works
+because the case writes the mark with C stdio: `run_hil.py` attaches a JUnit
+reporter, and Catch2 then captures `std::cout` and releases it when the case
+ends, so a mark written there arrived as the case finished. The give-up path
 itself is covered deterministically on every push by `cli_dfu
 --flaky-reconnect 99`. The cases record measurements as `HIL-METRIC` lines, which `run_hil.py` scrapes
 into each case's `summary.json` entry: admission (`deferred_sends`,
 `refused_sends`), the peer's buffering (`buf_size`, `buf_count`), timing
 (`close_ms`, `disconnect_seen_ms`, `upload_ms`, `update_ms`, `reconnect_ms`,
-`give_up_ms`, `reboot_total_ms`), resume (`resumed_from`, `abandoned_at`), the
+`give_up_ms`, `reboot_total_ms`), per-chunk acknowledgement timing
+(`chunk_ack_count`, `chunk_ack_ms_p50`, `_p95`, `_max`), resume (`resumed_from`, `abandoned_at`), the
 trial-boot slot listing (`slots_listed_during_trial`) and the requested
 `smp_version`.
+
+**Statistics and settings** — `test_hil_mgmt.cpp`, six more `TEST_CASE`s in
+three groups, `stat`, `stat-64` and `settings`, each to be run under SMP v1
+and v2 like `o2`. They are where groups 2 and 3, written from Zephyr's source
+alone, meet a device: a counter that advances, a 64-bit counter that arrives
+truncated (§9 A28), an unknown group and an over-long name (A29, A33, A34,
+A35); a setting written, read back, committed, saved, reloaded and deleted;
+the read limit and when it is reported (A31); and each settings refusal under
+both versions (A34). `stat-64` and `settings` need the BL54L15 recipe's bench
+module, so they are in `--cases all` on that profile only.
+
+On the BL54L15 profile, `--cases all` is twenty cases: the twelve
+unattended groups' thirteen, the six statistics and settings cases
+(`stat-64` included), and `serial`.
 
 Two of those are not diagnostics but the evidence a green run rests on. **A
 green sequential suite means nothing unless `deferred_sends > 0`**: zero
@@ -821,7 +843,9 @@ everywhere says the send-admission race did not occur that run, not that the
 mailbox absorbed it (§9 A22). And `buf_count` is the input open question O3 was
 waiting for.
 
-**Cross-check** — `tests/hil/crosscheck.py`. From the same baseline, the same
+**Cross-check** — `tests/hil/crosscheck.py`, on either bench (`--profile`;
+the expected post-confirm slot listing differs by bootloader mode, see
+`tests/hil/README.md`). From the same baseline, the same
 update is installed by smply, by `smpmgr` over BLE and by `mcumgr-client` over
 the UART shell transport. All three are third-party tools for behavioural
 comparison, never protocol references (ADR-0015 decision 3); every divergence is

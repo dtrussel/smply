@@ -9,7 +9,6 @@
 #include <iterator>
 
 namespace smply::hil {
-namespace {
 
 std::optional<std::string> environment(const char* name)
 {
@@ -28,8 +27,6 @@ std::optional<std::string> environment(const char* name)
     }
     return std::string{value};
 }
-
-} // namespace
 
 std::optional<std::uint64_t> parse_address(const std::string& text)
 {

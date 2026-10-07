@@ -731,6 +731,101 @@ TEST_CASE("a budget smaller than the overhead is refused", "[upload][sizing]")
     REQUIRE(size.error().code() == ErrorCode::MessageTooLarge);
 }
 
+// ADR-0024, protocol-notes section 9 A25: over serial the device's buffer holds
+// the 2-byte length prefix and 2-byte CRC as well as the message, so the
+// transport's per-message overhead comes off the device's buffer -- and only
+// off that.
+
+TEST_CASE("the transport's message overhead is taken from the device's buffer",
+          "[upload][sizing][overhead]")
+{
+    const FirstPacketFields fields{
+        .image_size = 1000, .image = 0, .sha = Hash{}, .upgrade_only = false};
+    ChunkBudget budget;
+    budget.server_buf_size = 200;
+    budget.transport_max_message_size = 4096;
+    budget.transport_message_overhead = 4;
+
+    const auto size = compute_chunk_size(budget, fields);
+
+    REQUIRE(size.has_value());
+    REQUIRE(*size == 200 - 4 - 8 - first_packet_overhead(fields));
+}
+
+TEST_CASE("the overhead also comes off the default that stands in for the device's buffer",
+          "[upload][sizing][overhead]")
+{
+    const FirstPacketFields fields{
+        .image_size = 1000, .image = 0, .sha = Hash{}, .upgrade_only = false};
+    ChunkBudget budget;
+    budget.transport_message_overhead = 4;
+
+    const auto size = compute_chunk_size(budget, fields);
+
+    REQUIRE(size.has_value());
+    REQUIRE(*size == 256 - 4 - 8 - first_packet_overhead(fields));
+}
+
+TEST_CASE("the overhead does not shrink a budget the transport itself bounds",
+          "[upload][sizing][overhead]")
+{
+    // max_message_size() is already a limit on the SMP message; taking the
+    // overhead off it too would double-count.
+    const FirstPacketFields fields{
+        .image_size = 1000, .image = 0, .sha = Hash{}, .upgrade_only = false};
+    ChunkBudget budget;
+    budget.server_buf_size = 4096;
+    budget.transport_max_message_size = 180;
+    budget.transport_message_overhead = 4;
+
+    const auto size = compute_chunk_size(budget, fields);
+
+    REQUIRE(size.has_value());
+    REQUIRE(*size == 180 - 8 - first_packet_overhead(fields));
+}
+
+TEST_CASE("a device buffer that fits 32 bytes only without the overhead is refused",
+          "[upload][sizing][overhead]")
+{
+    const FirstPacketFields fields{
+        .image_size = 1000, .image = 0, .sha = Hash{}, .upgrade_only = false};
+    const auto exactly_32 = 8 + static_cast<std::uint32_t>(first_packet_overhead(fields)) + 32;
+    ChunkBudget budget;
+    budget.transport_message_overhead = 4;
+
+    SECTION("four bytes more than 32 bytes of payload needs is enough")
+    {
+        budget.server_buf_size = exactly_32 + 4;
+        const auto size = compute_chunk_size(budget, fields);
+        REQUIRE(size.has_value());
+        REQUIRE(*size == smply::limits::kUploadChunkMin);
+    }
+    SECTION("one byte fewer is not")
+    {
+        budget.server_buf_size = exactly_32 + 3;
+        const auto size = compute_chunk_size(budget, fields);
+        REQUIRE_FALSE(size.has_value());
+        REQUIRE(size.error().code() == ErrorCode::MessageTooLarge);
+    }
+}
+
+TEST_CASE("an overhead larger than the device's buffer is refused, not wrapped",
+          "[upload][sizing][overhead]")
+{
+    // A device-supplied buf_size is untrusted; subtracting from it must not
+    // underflow into a huge budget.
+    const FirstPacketFields fields{
+        .image_size = 1000, .image = 0, .sha = Hash{}, .upgrade_only = false};
+    ChunkBudget budget;
+    budget.server_buf_size = 2;
+    budget.transport_message_overhead = 4;
+
+    const auto size = compute_chunk_size(budget, fields);
+
+    REQUIRE_FALSE(size.has_value());
+    REQUIRE(size.error().code() == ErrorCode::MessageTooLarge);
+}
+
 // ---------------------------------------------------------------------------
 // A whole upload, driven by hand
 // ---------------------------------------------------------------------------

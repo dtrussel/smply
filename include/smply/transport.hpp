@@ -138,6 +138,25 @@ public:
     /// 0 means "no opinion": the core then uses its configured default.
     [[nodiscard]] virtual std::size_t max_message_size() const noexcept = 0;
 
+    /// Bytes the **device's** receive buffer spends on each message beyond the
+    /// SMP message itself: framing it buffers before removing (ADR-0024).
+    ///
+    /// The core takes this off the device's `buf_size` when it sizes an
+    /// upload, and off nothing else -- `max_message_size()` is already a limit
+    /// on the message. It is a fact about the device's side of the medium, not
+    /// the wire: bytes the device never stores (base64 expansion, frame
+    /// markers, line breaks) do not count. Over Zephyr's serial transport it
+    /// is 4, the length prefix and the CRC (docs/protocol-notes.md section 9,
+    /// A25).
+    ///
+    /// The one member with a default: 0, right for any medium whose device
+    /// buffer holds the SMP message alone, such as BLE. An adapter written
+    /// before it existed needs no change.
+    [[nodiscard]] virtual std::size_t message_overhead() const noexcept
+    {
+        return 0;
+    }
+
     /// Sets the listener, or clears it with nullptr.
     ///
     /// **A transport must outlive every client bound to it.** `~SmpClient`

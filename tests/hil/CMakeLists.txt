@@ -3,8 +3,9 @@
 # smply_hil -- the hardware interoperability cases.
 #
 # Opt-in (SMPLY_BUILD_HIL=ON), Windows-only, and never part of a PR preset:
-# every case needs the bench in tests/hil/README.md -- a NUCLEO-WB55RG running
-# the pinned smp_svr, reachable over the host's Bluetooth radio. A case that
+# every case needs a bench in tests/hil/README.md -- a NUCLEO-WB55RG or a
+# BL54L15 DVK running the pinned smp_svr, reachable over the host's Bluetooth
+# radio. A case that
 # finds no bench SKIPs, which the supervisor (run_hil.py) reports as
 # "unavailable", never as a pass.
 #
@@ -16,7 +17,8 @@ add_executable(smply_hil
     support/bench.cpp
     support/rig.cpp
     test_hil_cases.cpp
-    test_hil_serial.cpp   # the serial adapter on the console UART; has never run
+    test_hil_mgmt.cpp     # statistics and settings groups (needs the BL54L15 recipe)
+    test_hil_serial.cpp   # the serial adapter on the console UART
 )
 
 target_link_libraries(smply_hil

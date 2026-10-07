@@ -279,9 +279,11 @@ true.
   against a real device only from the bench, by hand. So a green badge means
   "it builds", and any change to that code is unproven until someone runs the
   bench again.
-* **The serial adapter's Win32 half has never opened a port either.**
+* **The serial adapter's Win32 half opens a port only on the bench.**
   `windows-msvc` compiles `transports/serial_port/win32/` and runs
-  `smply_serial_port_tests`, whose only Windows cases open no port. Before
+  `smply_serial_port_tests`, whose only Windows cases open no port; the
+  BL54L15 bench's `serial` and `serial-update` groups are its only run
+  against a device. Before
   pushing a change there, a MinGW cross-build catches most of what MSVC
   would: `apt-get install g++-mingw-w64-x86-64-posix`, then configure with
   `-DCMAKE_SYSTEM_NAME=Windows` and the `x86_64-w64-mingw32-*-posix`
@@ -448,6 +450,31 @@ true.
 
 **The hardware bench**
 
+* **There are two benches, and every bench script takes `--profile`.**
+  `wb55` (the default) and `bl54l15`. A result from one says nothing about the
+  other's Zephyr revision: the same server code files an unknown statistics
+  group under group 2 upstream and under group 63 in NCS v3.3.0 (A35). Record
+  which bench a finding came from.
+* **On the BL54L15** (`tests/hil/README.md` has the rest):
+  * the console is VCOM**1**; VCOM0 is silent;
+  * an erase that lands while MCUboot runs is refused (access port
+    protected), so `flash_baseline.py` falls back to `nrfutil device recover`;
+  * `run_hil.py` runs the give-up case unattended, erasing the chip on its
+    HIL-MARK line;
+  * after a host restart, scan once before connecting by address, or the
+    first connect fails in milliseconds with "no device at that address".
+* **A HIL case that must be heard *during* the run writes with C stdio.**
+  `run_hil.py` attaches a JUnit reporter, and Catch2 then captures `std::cout`
+  and releases it when the case ends. The give-up case's HIL-MARK went out on
+  `std::cout` and reached the supervisor as the case finished, so every fault
+  injected on it was late -- a person pulling the cable included -- and it
+  cost an iteration to find. Use `std::fputs` and `std::fflush(stdout)`, as
+  `test_hil_cases.cpp` now does. Anything a case prints for the log alone can
+  stay on `std::cout`.
+* **Never put a comma in a HIL case name.** `run_hil.py` selects a case by
+  name, and Catch2 reads a comma as "or": the case runs nothing and is
+  reported `unavailable`. `run_hil.py` now escapes commas, but the name is
+  also what a person types.
 * **Read `tests/hil/README.md` before touching the board.**
   * The NUCLEO-WB55RG's Bluetooth controller runs on a second core, whose
     firmware Zephyr does not build.
@@ -462,14 +489,23 @@ true.
   it got. A capture that is listening is not one that is recording: BTVS can
   produce a valid pcapng with zero packets. So `tools/hci_capture.py` gates on
   `capinfos` and reports `empty` as its own outcome.
-* **On the Windows bench, the Linux build runs in WSL, but the shell scripts
-  do not.**
-  * The working tree is CRLF (`core.autocrlf=true`), so the scripts fail with
-    `'bash\r': No such file or directory`. Run clang-tidy by hand from
-    `compile_commands.json` instead.
-  * Pass `-DFETCHCONTENT_SOURCE_DIR_CATCH2=…` and the same for `QCBOR`, so the
-    configure reuses the Windows build's downloads.
-  * There is no clang in that image, so the ASan and UBSan jobs stay with CI.
+* **On the Windows bench, run the Linux gates from an LF clone inside WSL.**
+  * The working tree is CRLF (`core.autocrlf=true`), so the shell scripts fail
+    there with `'bash\r': No such file or directory`. A
+    `git -c core.autocrlf=false clone` of the working tree into the WSL home
+    runs `format.sh`, `lint.sh` and every preset as CI does. Only committed
+    changes reach the clone.
+  * Pass `-DFETCHCONTENT_SOURCE_DIR_CATCH2=…` and the same for `QCBOR`,
+    pointing at `build/windows-winrt/_deps/*-src`, so nothing is downloaded.
+    **Then link those two directories into the clone's
+    `build/linux-clang/_deps/`**: `lint.sh` looks for Catch2 there, and
+    without it cppcheck reports a `syntaxError` at the first `TEST_CASE`, which
+    looks like a real defect.
+  * The WSL image now has clang, clang-tidy and cppcheck, so `linux-clang` and
+    `linux-clang-asan-ubsan` run locally. It has no `gcovr`, so enforced
+    coverage stays with CI.
+  * A command passed from PowerShell to `wsl -e bash -c` loses its `|`s; put
+    anything with a pipe in a script file.
 * **On Windows, build with the MSVC developer environment loaded**:
   `cmd /c "call VsDevCmd.bat -arch=x64 && cmake --build --preset windows-winrt"`.
   A shell that cannot find `cl` fails without building, and the stale binary is

@@ -20,7 +20,8 @@ add_library(smply_serial_port STATIC serial_port_config.cpp)
 add_library(smply::serial_port ALIAS smply_serial_port)
 
 if(WIN32)
-    # Compiled by the windows-msvc job; never run against a port (ADR-0020).
+    # Compiled by the windows-msvc job; run against a port only on the bench
+    # (ADR-0020, tests/hil/README.md).
     target_sources(smply_serial_port PRIVATE win32/serial_port_win32.cpp)
 else()
     target_sources(smply_serial_port PRIVATE

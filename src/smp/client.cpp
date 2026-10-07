@@ -303,6 +303,11 @@ public:
         return transport_->max_message_size();
     }
 
+    [[nodiscard]] std::size_t transport_message_overhead() const noexcept
+    {
+        return transport_->message_overhead();
+    }
+
     [[nodiscard]] std::size_t in_flight() const noexcept
     {
         return static_cast<std::size_t>(std::count_if(
@@ -564,6 +569,11 @@ bool SmpClient::connected() const noexcept
 std::size_t SmpClient::transport_max_message_size() const noexcept
 {
     return impl_->transport_max_message_size();
+}
+
+std::size_t SmpClient::transport_message_overhead() const noexcept
+{
+    return impl_->transport_message_overhead();
 }
 
 std::size_t SmpClient::in_flight() const noexcept

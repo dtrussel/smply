@@ -107,6 +107,142 @@ corrupted slot, a half-written upload — a reflash over ST-LINK undoes it. It
 exits 2 when there is no probe, which a supervisor must report as *bench
 unavailable*, never as a pass or a fail. CPU2 is not touched.
 
+## The second bench: BL54L15 DVK (`--profile bl54l15`)
+
+A second, independent peer on a different SoC, Bluetooth controller, SDK,
+flash technology and bootloader configuration. Everything above is the WB55
+(`--profile wb55`, the default for every script). The same `smply_hil` cases
+run on both; where this bench differs, the difference is recorded here and in
+`docs/protocol-notes.md`.
+
+| Item | Value |
+| ---- | ----- |
+| Board | **Ezurio BL54L15 DVK** (453-00001-K1), nRF54L15 (RRAM), Zephyr board `bl54l15_dvk/nrf54l15/cpuapp` |
+| Probe | on-board SEGGER J-Link OB (serial `1059920902` on this bench); two VCOMs |
+| Console | `uart20` → **VCOM1** (COM3 on this bench; VCOM0 is silent), 115200 8N1. MCUboot, the shell (with the MCUmgr shell transport) and the log share it |
+| Programmer | `nrfutil device` 2.17.5 from the NCS toolchain bundle (`C:\ncs\toolchains\936afb6332`), J-Link V9.24a. The bare `nrfutil` on `PATH` may have no `device` command; `flash_baseline.py` sets `NRFUTIL_HOME` to the bundle's |
+| Firmware | nRF Connect SDK **v3.3.0**: `nrf` `ba167d9f`, `zephyr` `fd9204a0` (4.3.99), `mcuboot` `fce4dac2`, `hal_nordic` `1acb428a` (checked by `build_peer.py`) |
+| Bootloader | MCUboot **swap-using-move**, ED25519 with NCS's public development key, key in the image (not the KMU), **SHA-512 image hash TLV**. Slots 0xAA000 each, from the partition manager (`evidence/partitions.yml`) |
+| Peer name | `smply-hil-bl54l15`, address `F0:71:FF:FF:4E:B1`; SMP UUID advertised, name in the scan response as on the WB55 |
+
+Three consequences for a reader of a run:
+
+* **The image-state hash is 64 bytes.** NCS defaults to SHA-512 on the
+  nRF54L, so every case's "which image is running" compares a 64-byte
+  `ImageHash` from the device against `find_image_tlv_hash()` of the file. On
+  the WB55 it is 32.
+* **A bench-only module adds what the stock sample cannot show.**
+  `firmware/bl54l15/bench_module/` is a small Zephyr module, added with
+  `EXTRA_ZEPHYR_MODULES` (the sample stays unmodified), in three parts, each
+  behind its own Kconfig switch:
+  * *settings* (`smply_bench_settings.c`): the stock `smp_svr` registers no
+    settings handler with a getter, so every settings read would fail. It
+    registers `smply/v` (read/write, 64 bytes), `smply/ro` (read-only),
+    `smply/commits` (counts commits) and a root `smplywo` with no getter at all
+    (`READ_NOT_SUPPORTED`). It calls `settings_subsys_init()` at boot -- without
+    it no storage back-end is registered, and every save is refused as
+    `SAVE_NOT_SUPPORTED` -- and deliberately not `settings_load()`, so the
+    MCUmgr `load` command is the only way a stored value comes back;
+  * *statistics* (`smply_bench_stats.c`): a `STATS_SIZE_64` group,
+    `smply_bench`, whose `big` counter starts at 2^32 + 5, so A28's 32-bit
+    encoding is observable (it reads 5);
+  * *BLE log* (`smply_bench_ble_log.c`): one `smply-bench:` console line per
+    connection-parameter, PHY, data-length or MTU change. It only observes; the
+    two `BT_USER_*` options it needs would otherwise switch automatic data
+    length update off, so `peer.conf` pins that.
+
+  The `stat-64` and `settings` groups need it, which is why they are part of
+  `--cases all` on this profile only.
+* **The statistics group is present on both benches.** The sample's own
+  `prj.conf` enables `CONFIG_MCUMGR_GRP_STAT` and registers `smp_svr_stats`;
+  the WB55's evidence shows it too.
+
+### Build, flash and run
+
+```powershell
+python tests/hil/firmware/build_peer.py --profile bl54l15 --workspace C:/ncs/v3.3.0 `
+  --toolchain C:/ncs/toolchains/936afb6332 --build-dir <out>
+python tests/hil/firmware/flash_baseline.py --profile bl54l15 --evidence <out>/evidence
+python tests/hil/run_hil.py --profile bl54l15 --serial 1059920902 --settle 10 `
+  --exe build/windows-hil/tests/hil/smply_hil.exe --evidence <out>/evidence `
+  --address F0:71:FF:FF:4E:B1 --uart COM3 --out build/hil-evidence/bl54l15
+```
+
+Run `o2`, `stat`, `stat-64` and `settings` a second time with
+`$env:SMPLY_HIL_SMP_VERSION='2'`, and `serial-update` and `give-up` with
+`--cases`. Give-up is unattended here: the supervisor erases the chip on the
+case's HIL-MARK line.
+
+Keep `<out>` outside this repository. The two builds take about four minutes
+each on this host; the baseline flash (erase all, MCUboot and image A with
+read-back, reset) about ten seconds. `evidence/west-list.txt` replaces the
+WB55's `west-frozen.yml`: an NCS install leaves some manifest projects
+uncloned, and `west manifest --freeze` refuses them.
+
+**`--settle 10`.** A connect three seconds after a reflash once failed with
+`service discovery failed` and passed on an immediate retry, the Windows-side
+settle `crosscheck.py`'s `POST_FLASH_SETTLE` already allows for. `run_hil.py`
+keeps 3 s as its default, which the WB55 runs used.
+
+### What the bench knows that a case author needs
+
+* **Windows must have seen the peer since it booted.** Straight after a host
+  restart, a connect by address failed in 12 ms with `no device at that
+  address`; one active scan later it worked. Scan once (or run `presence`)
+  before a long run.
+* **The access port is protected while MCUboot runs.** An `nrfutil device
+  erase` that lands during the post-reset swap is refused (`access port is
+  protected`); once the application runs it succeeds. `flash_baseline.py`
+  falls back to `nrfutil device recover`, which erases through the control
+  port regardless. That the application opens the port and MCUboot does not
+  is an inference from this behaviour, not something read in the source.
+* **The supervisor removes the device for give-up** (`erase_on_mark`): a
+  `recover` on the HIL-MARK line, retried within 8 s, lands 1.3-1.4 s after
+  the mark. **A mark must bypass Catch2's output capture.** `run_hil.py`
+  attaches a JUnit reporter, which makes Catch2 capture `std::cout` and release
+  it when the case ends; a mark written there reached the supervisor as the
+  case finished, so every fault injected on it was too late, and a person
+  pulling the cable on it was too. The case writes it with `fputs` and
+  `fflush` instead, which Catch2's default capture does not touch.
+* **After a swap, slot 1 still holds the previous image** (swap-using-move),
+  so an update back to it is not an upload: `FirmwareUpdater`'s pre-flight
+  finds the image already there and only tests, resets and confirms. An
+  acceptance loop that alternates A and B without a reflash uploads once.
+* **`run_hil.py` echoes `HIL-MARK` lines to the console** (prefixed `>>>`);
+  everything else a case prints is only in its `stdout.log`.
+* **`--serial` skips enumerating the probes** in `flash_baseline.py`; the VS
+  Code nRF Connect extension, if open, polls the same J-Link with its own
+  `nrfutil-device list --hotplug`.
+
+### Results (2026-10-05/06)
+
+Evidence bundles under `build/hil-evidence/bl54l15/` (not in git).
+
+| Run | Outcome |
+| --- | ------- |
+| Unattended suite, SMP v1 (`20261005-180334`) | **19 / 19 pass**: the twelve image groups, `stat`, `settings`, `serial` |
+| `o2`, `stat`, `settings` under SMP v2 (`20261005-181852`) | **6 / 6 pass** |
+| `serial-update`, four runs | **4 / 4 pass**, 40 s each, 1 188 SMP messages, 0 timeouts; reset seen as `grace` |
+| give-up, unattended from `run_hil.py` (2026-10-06), three runs | **3 / 3 pass** (14 assertions each): chip erased 1.3-1.4 s after the mark, three reconnects fail, `reconnect_failed()`, `Failed`, `Disconnected`, `revert_pending` |
+| `serial-smallbuf` on the small-buffer variant (`build_peer.py --variant smallbuf`, netbuf 384; 2026-10-07) | **pass**: sized to `buf_size` with the transport's overhead hidden, the first packet is dropped twice with no answer (the negative control); sized to `buf_size − 4` the upload completes in 702 messages with no timeout (A25, ADR-0024). Build the variant into its own `--build-dir` and run the group with its evidence |
+| `stat-64` and `settings` on the bench module's second revision, v1 and v2 (2026-10-06) | **pass**: `smply_bench.big` = 2^32 + 5 reads **5** (A28); `READ_NOT_SUPPORTED` arrives as `(3, 4)` under v2 and flat `ENOENT` under v1 (A34) |
+| `winrt_ble_dfu` acceptance, 10 runs from alternating baselines | **10 / 10**, every one a full 205 272-byte upload, 409 messages, 0 timeouts |
+| `winrt_ble_dfu` built from a fresh clone, `find_package(smply)` from an install prefix, adapter and `dfu_app` compiled as the consumer's own sources (ADR-0016) | **pass**, A→B, then verified running B by `presence` |
+
+Measurements that differ from the WB55 (protocol-notes §9 has the rows):
+
+* The final chunk's whole-image check answers within about 50 ms (A19 on the
+  WB55: 5.0-5.6 s). The device reconnects 1.2-2.3 s after a reset.
+* Upload time varies about 2x between runs (20 s against 36 s for a clean
+  update): the connection interval in force during the upload is 7.5 ms or
+  45 ms, depending on whether the peer's one-shot fast-interval request or the
+  central's own update lands last (A36). `HIL-METRIC chunk_ack_ms_*` and the
+  bench module's `smply-bench:` console lines show which happened in a run.
+* An unknown statistics group comes back under group 63, not 2 (A35).
+* `deferred_sends` was non-zero once in the suite (`restart` part 1), so the
+  send-admission slot (A22) was exercised on this bench but rarely; the A22
+  evidence remains the WB55's.
+
 ## Tools in `tools/`
 
 * `uart_log.py` — timestamps the console UART into a file for the duration of a
@@ -179,12 +315,13 @@ device over ST-LINK on that line; it never worked, because CubeProgrammer
 toggles reset to attach and the device re-advertises before the erase halts it.
 Exit status: 0 all pass, 1 any fail, 2 any unavailable.
 
-### The serial cases — never run
+### The serial cases
 
 `test_hil_serial.cpp` drives `smply::serial_port` (the Win32 half) over the
-same console port, `--uart COM4`, reached by the case as `SMPLY_HIL_UART`.
-**Neither case has run.** They were written without the bench (ADR-0020), and
-their first run is the first time smply's serial path meets a device.
+same console port (`--uart COM4` on the WB55, `COM3` on the BL54L15), reached
+by the case as `SMPLY_HIL_UART`. They were written without a bench
+(ADR-0020) and have run on the **BL54L15 only**; both pass (results above).
+On the WB55 they have still never run.
 
 | Group | In `--cases all`? | What it shows |
 | ----- | ----------------- | ------------- |
@@ -204,8 +341,11 @@ read the metrics, not only the verdict:
 * a non-zero `serial_framing_errors` or `serial_crc_failures` means frames
   were damaged on the way;
 * `serial-update` prints `HIL-NOTE serial reset seen as: grace|dropped`. For
-  the ST-LINK VCP, a UART that stays up across a target reset, `grace` is
-  expected, and that line is the first measurement for O7.
+  a probe's VCOM, a UART that stays up across a target reset, `grace` is
+  expected -- and was what the BL54L15's J-Link VCOM showed in every run;
+* `serial-update` also prints the client's `serial_smp_timeouts`: a frame the
+  device dropped (A26) shows as a timeout, and the update can still complete
+  through a retransmission, so a pass alone does not answer A26.
 
 A failure in `serial-update` is a finding to record in protocol-notes.md,
 not something to retry until it passes.
@@ -222,6 +362,20 @@ python tests/hil/crosscheck.py --evidence <out>/evidence --address 80:E1:26:00:6
     --smpmgr build/hil-tools/Scripts/smpmgr.exe `
     --mcumgr-client build/mcumgr-client/mcumgr-client-windows-x86/mcumgr-client.exe
 ```
+
+On the BL54L15, add `--profile bl54l15 --serial 1059920902` and use its
+evidence, address and `--uart COM3`. Two things differ there, both handled by
+the profile:
+* the image hash is the 64-byte SHA-512 TLV;
+* after the confirm (S2) slot 1 still lists the previous image with no flags,
+  because of swap-using-move, so S2 expects two slots.
+
+**Results on the BL54L15 (2026-10-06):**
+* The oracle self-test passes over the NCS console.
+* Both arms pass Tier A with 0 divergences; the run exits 2 because there is
+  no capture (Tier B unavailable).
+* The `--skip-confirm smpmgr` control diverges at S2 `active.confirmed` and
+  `fallback.confirmed`, and exits 1.
 
 Each *arm* is reflashed to the same baseline and installs image B by
 test-then-confirm, and device state is read through **`mcumgr-client` over

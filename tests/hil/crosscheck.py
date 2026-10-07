@@ -56,6 +56,9 @@ non-empty capture.
       --smpmgr build/hil-tools/Scripts/smpmgr.exe \
       --mcumgr-client build/mcumgr-client/mcumgr-client-windows-x86/mcumgr-client.exe
 
+On the BL54L15 bench add `--profile bl54l15 --serial 1059920902` and use its
+evidence, address and console (COM3); tests/hil/README.md has the values.
+
 Exit status: 0 everything compared and agreed; 1 a client failed or the arms
 diverged; 2 nothing failed but something was unavailable.
 """
@@ -76,13 +79,15 @@ import smp_decode  # noqa: E402
 # MCUboot image TLV constants (docs/protocol-notes.md section 7).
 TLV_INFO_MAGIC = 0x6907
 TLV_PROT_INFO_MAGIC = 0x6908
-TLV_SHA256 = 0x10
+# The image-state hash TLVs and their lengths, as smply's own scanner takes them
+# (src/image/tlv.cpp): SHA-256 on the WB55 bench, SHA-512 on the BL54L15.
+HASH_TLVS = {0x10: 32, 0x11: 48, 0x12: 64}
 
 
 # --- inputs -------------------------------------------------------------------
 
 def image_hash(path: Path) -> str:
-    """The `IMAGE_TLV_SHA256` of a signed image, which is what the device reports.
+    """The image-state hash TLV of a signed image, which is what the device reports.
 
     Not the file's own digest: MCUboot reports the hash from the image's TLV
     trailer, and comparing the wrong one would make every arm look wrong.
@@ -100,10 +105,10 @@ def image_hash(path: Path) -> str:
             continue
         tlv_type = magic
         tlv_len = int.from_bytes(data[off + 2:off + 4], "little")
-        if tlv_type == TLV_SHA256 and tlv_len == 32:
-            return data[off + 4:off + 36].hex()
+        if HASH_TLVS.get(tlv_type) == tlv_len:
+            return data[off + 4:off + 4 + tlv_len].hex()
         off += 4 + tlv_len
-    raise RuntimeError(f"no SHA256 TLV in {path}")
+    raise RuntimeError(f"no image hash TLV in {path}")
 
 
 # --- the oracle ---------------------------------------------------------------
@@ -256,12 +261,26 @@ def diff(left_name: str, left: dict, right_name: str, right: dict,
     return divergences
 
 
-def expectation(checkpoint: str, target: str, source: str) -> dict:
+def expectation(checkpoint: str, target: str, source: str, profile: str = "wb55") -> dict:
     """The state a checkpoint should show, as a normalised form to diff against.
 
     Written out rather than asserted field by field so that a mismatch is
     reported by the same diff machinery as a cross-client one, in the same shape.
+
+    After the confirm (S2) the two benches differ, and it is the bootloader's
+    doing: under the BL54L15's swap-using-move the previous image stays in slot
+    1, listed with no flags, as the HIL cases' slot listings show
+    (tests/hil/README.md). That is a derived expectation per bench, not a
+    loosened one.
     """
+    if checkpoint == "S2" and profile == "bl54l15":
+        return {"slots": [], "slot_count": 2, "malformed": [],
+                "active": {"slot": 0, "hash_id": target, "version": None,
+                           "bootable": True, "pending": False, "confirmed": True,
+                           "active": True, "permanent": False},
+                "fallback": {"slot": 1, "hash_id": source, "version": None,
+                             "bootable": True, "pending": False, "confirmed": False,
+                             "active": False, "permanent": False}}
     if checkpoint == "S0":
         return {"slots": [], "slot_count": 1, "malformed": [],
                 "active": {"slot": 0, "hash_id": source, "version": None,
@@ -284,14 +303,14 @@ def expectation(checkpoint: str, target: str, source: str) -> dict:
 
 
 def against_expectation(arm: str, observed: dict, checkpoint: str, target: str,
-                        source: str) -> list[dict]:
+                        source: str, profile: str = "wb55") -> list[dict]:
     """Diffs an observation against the checkpoint's expected shape.
 
     `version` is excluded here (it is compared *across* arms instead) because
     the expected strings belong to the images, not to the protocol, and hard-
     coding them here would duplicate what the image files already say.
     """
-    want = expectation(checkpoint, target, source)
+    want = expectation(checkpoint, target, source, profile)
     return [d for d in diff(arm, observed, "expected", want, checkpoint, "expectation")
             if not d["path"].endswith(".version")]
 
@@ -531,7 +550,7 @@ def run_arm(args, bench: Bench, name: str, run_dir: Path, hashes: dict[str, str]
     expectation_divergences = []
     for checkpoint, observed in checkpoints.items():
         expectation_divergences += against_expectation(name, observed, checkpoint,
-                                                       target, source)
+                                                       target, source, args.profile)
     entry["divergences"] += expectation_divergences
     if not checkpoints:
         entry["tier_a"] = "unavailable"
@@ -633,7 +652,12 @@ def main() -> int:
     # perform an update, which it cannot do on this peer (see mcumgr_install).
     parser.add_argument("--clients", default="smply,smpmgr",
                         help="comma-separated; default the two BLE clients")
-    parser.add_argument("--cli", type=Path, default=CUBE_CLI)
+    # The bench, as in run_hil.py; Bench reads these by name.
+    parser.add_argument("--profile", default="wb55", choices=["wb55", "bl54l15"])
+    parser.add_argument("--serial", default=None, help="the debug probe's serial")
+    parser.add_argument("--cli", "--programmer", dest="cli", type=Path, default=None,
+                        help=f"the profile's programmer; default {CUBE_CLI} for wb55, "
+                             "the NCS toolchain's nrfutil for bl54l15")
     parser.add_argument("--python", default=None)
     parser.add_argument("--capture", default="auto",
                         choices=["auto", "attach", "spawn", "off"])
@@ -710,7 +734,9 @@ def main() -> int:
                            tshark=args.tshark, capinfos=args.capinfos).probe()
         print(json.dumps({"clients": clients, "hashes": hashes,
                           "capture": {"how": probe[0], "detail": probe[1]},
-                          "cli": str(args.cli), "cli_exists": args.cli.exists()},
+                          "profile": args.profile,
+                          "cli": str(args.cli) if args.cli else "(profile default)",
+                          "cli_exists": args.cli.exists() if args.cli else None},
                          indent=2))
         return 0
 

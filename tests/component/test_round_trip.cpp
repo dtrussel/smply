@@ -404,6 +404,37 @@ TEST_CASE("mcumgr parameters drive the chunk size", "[component][upload]")
     CHECK(upload_requests <= 3);
 }
 
+TEST_CASE("a transport's message overhead keeps every upload message inside the device's buffer",
+          "[component][upload][overhead]")
+{
+    // ADR-0024 / A25: over serial the device's 300-byte buffer also holds a
+    // 4-byte length-and-CRC frame, so no message may exceed 296 bytes. The
+    // first packet is sized to within a byte of the budget (its data header is
+    // reserved for a full-size chunk), so it is the one at the edge: without
+    // the overhead it is 299 bytes, which this device would drop.
+    const std::vector<std::byte> firmware = make_firmware(kBodySize);
+
+    UploadOutcome outcome;
+    Fixture fixture{ServerConfig{.buf_size = 300}};
+    fixture.transport.set_message_overhead(4);
+    MemoryImageSource source{ConstBytes{firmware}};
+
+    UploadOptions options = options_for(firmware);
+    options.server_buf_size = 300;
+    static_cast<void>(
+        fixture.management.upload(source, options, outcome.on_progress(), outcome.on_done()));
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+    REQUIRE(outcome.value.has_value());
+
+    std::size_t largest = 0;
+    for (const auto& message : fixture.transport.sent()) {
+        largest = std::max(largest, message.size());
+    }
+    CHECK(largest <= 300 - 4);
+    // ...and still at the edge, so the bound above is what is being tested.
+    CHECK(largest > 300 - 4 - 8);
+}
+
 TEST_CASE("a device without mcumgr parameters still uploads", "[component][upload]")
 {
     // ENOTSUP from an optional command is a normal answer to fall back from,

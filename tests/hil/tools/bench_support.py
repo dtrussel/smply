@@ -12,7 +12,8 @@ that mapping, here, is the fix.
 
 Nothing in this module knows what a case or a client *is*. It owns three things:
 
-* **`Bench`** -- the ST-LINK reflash and the console capture, with the exit-code
+* **`Bench`** -- the baseline reflash (per bench profile, `firmware/flash_baseline.py`)
+  and the console capture, with the exit-code
   mapping and the "stop the logger before anything else opens the port" rule.
 * **`run_step()`** -- a subprocess with a hard deadline that **never raises**.
   A caller that must retry cannot use a helper that throws past its loop, which
@@ -36,7 +37,6 @@ FLASH = HERE / "firmware" / "flash_baseline.py"
 UART_LOG = HERE / "tools" / "uart_log.py"
 CUBE_CLI = Path(r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer"
                 r"\bin\STM32_Programmer_CLI.exe")
-
 
 def slug(text: str) -> str:
     """A directory name from a case or arm name: lowercase, dashes, bounded."""
@@ -109,8 +109,9 @@ class Bench:
     """The board: reflash it, and capture its console.
 
     Constructed from a parsed argument namespace carrying `python`, `evidence`,
-    `cli` and `uart` -- both supervisors name them the same, and passing the
-    namespace keeps this module out of their argument definitions.
+    `uart` and optionally `profile` and `cli` -- both supervisors name them the
+    same, and passing the namespace keeps this module out of their argument
+    definitions.
     """
 
     def __init__(self, args) -> None:
@@ -130,8 +131,33 @@ class Bench:
         \\p image selects which of the two signed images lands in slot 0. The
         oracle self-test uses `"b"`; every other caller wants the default.
         """
+        # `profile` and `cli` are optional on the namespace: crosscheck.py
+        # knows only the WB55 bench and passes STM32CubeProgrammer's path, and
+        # flash_baseline.py picks each profile's default programmer itself.
+        cmd = [self.python, FLASH, "--evidence", self.args.evidence,
+               "--profile", getattr(self.args, "profile", None) or "wb55", "--image", image]
+        cmd += self._probe_args()
+        step = run_step(cmd, log, 300)
+        if step["timed_out"]:
+            return "failed"
+        return {0: "ok", 2: "unavailable"}.get(step["rc"], "failed")
+
+    def _probe_args(self) -> list:
+        """The programmer and probe serial, when the supervisor was given them."""
+        out = []
+        if getattr(self.args, "cli", None):
+            out += ["--programmer", self.args.cli]
+        if getattr(self.args, "serial", None):
+            out += ["--serial", self.args.serial]
+        return out
+
+    def erase(self, log: Path) -> str:
+        """Erases the whole chip and programs nothing: `"ok"`, `"unavailable"`
+        or `"failed"`, mapped as for `flash_baseline()`. The BL54L15's give-up
+        fault (run_hil.py `erase_on_mark`); not offered for the WB55."""
         step = run_step([self.python, FLASH, "--evidence", self.args.evidence,
-                         "--cli", self.args.cli, "--image", image], log, 300)
+                         "--profile", getattr(self.args, "profile", None) or "wb55",
+                         "--erase-only", *self._probe_args()], log, 60)
         if step["timed_out"]:
             return "failed"
         return {0: "ok", 2: "unavailable"}.get(step["rc"], "failed")

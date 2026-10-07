@@ -28,6 +28,8 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/groups/os.hpp"
+#include "smply/groups/settings.hpp"
+#include "smply/groups/statistics.hpp"
 #include "smply/image_source.hpp"
 #include "smply/result.hpp"
 #include "smply/smp_client.hpp"
@@ -159,6 +161,25 @@ public:
     [[nodiscard]] Result<void> erase(std::optional<std::uint32_t> slot,
                                      Duration limit = std::chrono::seconds{90});
 
+    // Statistics (group 2) and settings (group 3), for test_hil_mgmt.cpp.
+    [[nodiscard]] Result<std::vector<std::string>>
+    stat_groups(Duration limit = std::chrono::seconds{10});
+    [[nodiscard]] Result<StatisticsGroup> stat_read(std::string_view name,
+                                                    Duration limit = std::chrono::seconds{10});
+    /// Without \p max_size the read asks for no particular size.
+    [[nodiscard]] Result<SettingValue> setting_read(std::string_view name,
+                                                    std::optional<std::uint32_t> max_size = {},
+                                                    Duration limit = std::chrono::seconds{10});
+    [[nodiscard]] Result<void> setting_write(std::string_view name, ConstBytes value,
+                                             Duration limit = std::chrono::seconds{10});
+    [[nodiscard]] Result<void> setting_erase(std::string_view name,
+                                             Duration limit = std::chrono::seconds{10});
+    [[nodiscard]] Result<void> settings_commit(Duration limit = std::chrono::seconds{10});
+    [[nodiscard]] Result<void> settings_load(Duration limit = std::chrono::seconds{10});
+    /// Without \p name, saves everything.
+    [[nodiscard]] Result<void> settings_save(std::optional<std::string_view> name = {},
+                                             Duration limit = std::chrono::seconds{20});
+
     /// True once the client has seen the link drop, or false at the deadline.
     [[nodiscard]] bool wait_disconnected(Duration limit);
 
@@ -176,11 +197,23 @@ public:
                                               const UpdateHooks& hooks);
     /// The states the last `update()` passed through, in order.
     [[nodiscard]] const std::vector<UpdateState>& states() const noexcept;
+    /// The last `update()`'s full report. A failed update returns its `Error`
+    /// from `update()`; the report -- final state, cause, revert pending --
+    /// is here (`UpdateFinished`'s contract). Call only after an `update()`.
+    [[nodiscard]] const UpdateReport& last_report() const;
 
 private:
     template<class T>
     [[nodiscard]] Result<T> await(const std::function<void(Callback<T>)>& issue, Duration limit,
                                   const char* what);
+
+    /// Records `chunk_ack_ms_*` metrics from the gaps between consecutive
+    /// progress reports since `begin_chunk_timing()`: how long each chunk took
+    /// from one acknowledgement to the next (the throughput investigation,
+    /// tests/hil/README.md).
+    void begin_chunk_timing();
+    void note_chunk_progress();
+    void record_chunk_timing();
 
     /// Drain the dispatcher and poll the client (and the updater, if any).
     void pump_step();
@@ -201,6 +234,8 @@ private:
     /// A callback registered by upload() may fire during a later resume(), so
     /// it must not reference a local that has since been returned and destroyed.
     std::vector<UploadProgress> progress_;
+    /// When each progress report arrived, in timeline milliseconds.
+    std::vector<std::int64_t> progress_ms_;
 
     std::mutex wake_mutex_;
     std::condition_variable wake_;
@@ -212,11 +247,13 @@ private:
     std::optional<SmpClient> client_;
     std::optional<ImageManagement> images_;
     std::optional<OsManagement> os_;
+    std::optional<StatisticsManagement> statistics_;
+    std::optional<SettingsManagement> settings_;
     std::optional<FirmwareUpdater> updater_;
 };
 
-/// The MCUboot image-state hash of a file (`IMAGE_TLV_SHA256`), for comparing
-/// with what the device reports.
+/// The MCUboot image-state hash of a file (its hash TLV: SHA-256 on the WB55
+/// bench, SHA-512 on the BL54L15), for comparing with what the device reports.
 [[nodiscard]] Result<ImageHash> image_hash_of(ImageSource& source);
 
 } // namespace smply::hil

@@ -140,6 +140,48 @@ TEST_CASE("max_message_size is configurable and defaults to unknown", "[fake-tra
     REQUIRE(transport.max_message_size() == 252);
 }
 
+TEST_CASE("message_overhead is configurable and defaults to none", "[fake-transport]")
+{
+    FakeTransport transport;
+
+    REQUIRE(transport.message_overhead() == 0);
+
+    transport.set_message_overhead(4);
+    REQUIRE(transport.message_overhead() == 4);
+}
+
+namespace {
+
+/// An adapter written against the four-method contract, before ADR-0024: it
+/// overrides only the pure members.
+class FourMethodTransport final : public smply::Transport
+{
+public:
+    [[nodiscard]] smply::Result<void> send(smply::ConstBytes /*message*/) override
+    {
+        return {};
+    }
+
+    [[nodiscard]] std::size_t max_message_size() const noexcept override
+    {
+        return 0;
+    }
+
+    void set_listener(smply::TransportListener* /*listener*/) noexcept override {}
+
+    void close() noexcept override {}
+};
+
+} // namespace
+
+TEST_CASE("an adapter that does not override message_overhead reports none", "[transport]")
+{
+    // ADR-0024 decision 6: the member is defaulted so that an existing
+    // out-of-tree adapter compiles unchanged and sizes uploads as before.
+    const FourMethodTransport transport;
+    REQUIRE(transport.message_overhead() == 0);
+}
+
 // ---------------------------------------------------------------------------
 // Delivery patterns. These are what make the reassembler and, later, the
 // client testable against arbitrary fragmentation.

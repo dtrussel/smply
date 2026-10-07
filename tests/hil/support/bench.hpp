@@ -44,6 +44,11 @@ struct Bench
     Version smp_version = Version::V1;
 };
 
+/// One environment variable, or nothing if it is unset or empty. The only
+/// place a case reads the environment: MSVC's C4996 on `std::getenv` is
+/// silenced here, once, rather than at each call.
+[[nodiscard]] std::optional<std::string> environment(const char* name);
+
 /// Reads the three variables. On failure `why` says which one is missing.
 [[nodiscard]] std::optional<Bench> bench_from_environment(std::string& why);
 

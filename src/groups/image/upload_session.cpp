@@ -121,6 +121,14 @@ Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget, const FirstP
     if (budget.server_buf_size.has_value() && *budget.server_buf_size > 0) {
         message_budget = *budget.server_buf_size;
     }
+    // The device's buffer also holds the transport's own framing (ADR-0024,
+    // A25), so that comes off the device's term -- or the default standing in
+    // for it -- before the transport's limit, which is already a limit on the
+    // message. buf_size is device-supplied: never let the subtraction wrap.
+    if (message_budget <= budget.transport_message_overhead) {
+        return fail(ErrorCode::MessageTooLarge, "upload: no room for a chunk");
+    }
+    message_budget -= budget.transport_message_overhead;
     if (budget.transport_max_message_size > 0) {
         message_budget = std::min<std::uint64_t>(message_budget, budget.transport_max_message_size);
     }

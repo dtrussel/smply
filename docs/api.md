@@ -334,6 +334,12 @@ public:
     // NOT the MTU: a message may span many transport fragments.
     virtual std::size_t max_message_size() const noexcept = 0;
 
+    // Bytes the DEVICE's buffer keeps per message beyond the SMP message
+    // (its framing, before it strips it). Taken off the device's buf_size when
+    // an upload is sized, and off nothing else. The one defaulted member:
+    // 0 suits BLE; the serial adapter returns 4 (ADR-0024, PN §9 A25).
+    virtual std::size_t message_overhead() const noexcept { return 0; }
+
     // Exactly one listener; nullptr detaches. Called on the client context.
     virtual void set_listener(TransportListener*) noexcept = 0;
 
@@ -442,6 +448,8 @@ public:
     // Only the client knows which transport is bound; upload chunk sizing
     // needs it (protocol-notes §8).
     std::size_t transport_max_message_size() const noexcept;
+    // The bound transport's message_overhead() (ADR-0024); follows a rebind.
+    std::size_t transport_message_overhead() const noexcept;
     std::size_t in_flight() const noexcept;
 
     const SmpClientStats&  stats()  const noexcept;
@@ -1502,6 +1510,7 @@ public:
 
     [[nodiscard]] Result<void> send(ConstBytes) override;
     [[nodiscard]] std::size_t  max_message_size() const noexcept override;
+    [[nodiscard]] std::size_t  message_overhead() const noexcept override;  // 4
     void set_listener(TransportListener*) noexcept override;
     void close() noexcept override;
 
@@ -1511,9 +1520,11 @@ public:
 
 What a caller has to know:
 
-* **`max_message_size` is a whole SMP message, and 256 is deliberate.** Over
-  serial a device accepts at most `buf_size − 4` (protocol-notes §9, A25).
-  Raise it only for a device whose `buf_size` you know.
+* **`max_message_size` is a whole SMP message, and 256 is a cautious
+  default.** Over serial a device accepts at most `buf_size − 4`
+  (protocol-notes §9, A25); `message_overhead()` returns those four bytes, and
+  the core takes them off `buf_size` (ADR-0024), so a larger cap is safe
+  against a device that reports its `buf_size`.
 * **`SerialInbound`'s counters are cumulative** and survive `reset()`: they
   describe the link, not the packet in progress.
 * **`open()` is also how to reconnect.** It answers `Disconnected` for a port

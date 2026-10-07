@@ -29,9 +29,16 @@ git; commit `97f1647` is the last to carry the per-phase record in
   own codes, like `image_error()`. New bounds in `smply/limits.hpp`:
   `kMaxStatisticsNameLength`, `kMaxStatisticsGroups`, `kMaxStatisticsFields`,
   `kMaxSettingNameLength` and `kMaxSettingValueLength`. Traced to Zephyr's
-  source (`docs/protocol-notes.md` §10, §11); neither group has run against a
-  device yet. A new fuzz target, `fuzz_cbor_statistics`, covers the
+  source (`docs/protocol-notes.md` §10, §11) and run against the BL54L15 bench
+  under SMP v1 and v2. A new fuzz target, `fuzz_cbor_statistics`, covers the
   statistics decoders.
+- **`Transport::message_overhead()`**
+  ([ADR-0024](docs/decisions/ADR-0024-transport-message-overhead.md)): the
+  bytes a device's receive buffer spends per message beyond the SMP message.
+  The core takes it off the device's `buf_size` when it sizes an upload. It is
+  defaulted to 0, so an existing adapter compiles and behaves as before;
+  `SmpClient::transport_message_overhead()` forwards it.
+  `transport::kSerialMessageOverhead` (4) is the serial framing's value.
 - **A reference serial port adapter**, `smply::serial_port`
   (`transports/serial_port/`). It is a `Transport` over a UART, a USB CDC ACM
   port or any tty, carrying MCUmgr's console framing. It has POSIX (`termios`)
@@ -41,14 +48,17 @@ git; commit `97f1647` is the last to carry the per-phase record in
   `LineSplitter::dropped_lines()`. It is **not installed**: a reference adapter
   like `winrt_ble`, outside the stable surface
   ([ADR-0020](docs/decisions/ADR-0020-serial-port-reference-adapter.md)).
-  Tested over a pseudo-terminal. The Win32 half is compile-only, and nothing
-  serial has run against a device yet.
+  Tested over a pseudo-terminal in CI. The Win32 half is compiled by CI and
+  has run whole updates against the BL54L15 bench over a J-Link VCOM.
 - **`examples/serial_dfu/`**: the DFU loop over a serial port. With `--port`
   it drives a device. Without it, and on POSIX only, it runs a whole update,
   reset included, against the stub device behind a pseudo-terminal, as two
   ctests covering a UART that stays open and a USB port that vanishes and
-  returns renamed (roadmap O7).
-- Serial HIL cases for the bench's console UART, which have never run.
+  returns renamed (roadmap O7). `--max-message` raises the adapter's cap, and
+  a third ctest uses it to make the device's buffer the binding limit.
+- Serial HIL cases for the bench's console UART.
+- **A second hardware bench**, a BL54L15 DVK (nRF54L15, nRF Connect SDK), as
+  `--profile bl54l15` of every bench script (`tests/hil/README.md`).
 - **Several images of one device in one update**
   ([ADR-0021](docs/decisions/ADR-0021-multi-image-update.md),
   [`docs/multi-image.md`](docs/multi-image.md)).
@@ -81,6 +91,13 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **Over serial, upload messages now fit the device's buffer**
+  ([ADR-0024](docs/decisions/ADR-0024-transport-message-overhead.md),
+  protocol-notes A25). A Zephyr device's netbuf also holds the serial length
+  prefix and CRC, so it accepts `buf_size − 4`; the serial adapter reports
+  that overhead and the core subtracts it. Before, a device whose `buf_size`
+  was at or below the adapter's cap could be sent a message it silently
+  dropped. Over BLE nothing changes.
 - **A lost link or answer around the confirm no longer fails the update**
   ([ADR-0023](docs/decisions/ADR-0023-lost-link-around-the-confirm.md)). In
   `Confirming` and `VerifyingConfirmed` a dropped link asks for a reconnect
@@ -117,10 +134,9 @@ git; commit `97f1647` is the last to carry the per-phase record in
   reached over whatever link the coordinator drives. The STM32H5 with a
   BL54L10 Bluetooth module that motivated it is kept as a worked example.
   Two targets behind one coordinator are now tested.
-- Over serial, a Zephyr device accepts at most `buf_size − 4` bytes per SMP
-  message, because its netbuf also holds the serial length prefix and CRC
-  (protocol-notes A25). The serial adapter's default cap of 256 keeps a
-  default device safe. The general fix is on the roadmap.
+- Bench findings, in protocol-notes §9: an unknown statistics group is filed
+  under group 63 by NCS v3.3.0's Zephyr (A35), and BLE upload time depends on
+  which connection-interval update lands last (A36).
 
 ## [0.2.0] - 2026-09-25
 

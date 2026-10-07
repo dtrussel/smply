@@ -5,6 +5,7 @@
 #include "smply/error.hpp"
 #include "smply/mcuboot_image.hpp"
 
+#include <algorithm>
 #include <array>
 #include <sstream>
 #include <thread>
@@ -98,6 +99,8 @@ Result<void> Rig::connect()
                         SmpClientConfig{.smp_version = bench_.smp_version});
         images_.emplace(*client_);
         os_.emplace(*client_);
+        statistics_.emplace(*client_);
+        settings_.emplace(*client_);
     } else {
         client_->rebind_transport(*links_.back());
     }
@@ -175,6 +178,43 @@ bool Rig::connected() const noexcept
 const std::vector<UpdateState>& Rig::states() const noexcept
 {
     return states_;
+}
+
+const UpdateReport& Rig::last_report() const
+{
+    return updater_->report();
+}
+
+// --- chunk timing --------------------------------------------------------------
+
+void Rig::begin_chunk_timing()
+{
+    progress_ms_.clear();
+}
+
+void Rig::note_chunk_progress()
+{
+    progress_ms_.push_back(timeline_.elapsed_ms());
+}
+
+void Rig::record_chunk_timing()
+{
+    if (progress_ms_.size() < 2) {
+        return;
+    }
+    std::vector<std::int64_t> gaps;
+    gaps.reserve(progress_ms_.size() - 1);
+    for (std::size_t i = 1; i < progress_ms_.size(); ++i) {
+        gaps.push_back(progress_ms_[i] - progress_ms_[i - 1]);
+    }
+    std::sort(gaps.begin(), gaps.end());
+    const auto at = [&gaps](std::size_t percent) {
+        return gaps[(gaps.size() - 1) * percent / 100];
+    };
+    timeline_.metric("chunk_ack_count", static_cast<std::int64_t>(gaps.size()));
+    timeline_.metric("chunk_ack_ms_p50", at(50));
+    timeline_.metric("chunk_ack_ms_p95", at(95));
+    timeline_.metric("chunk_ack_ms_max", gaps.back());
 }
 
 // --- the pump ----------------------------------------------------------------
@@ -309,6 +349,83 @@ Result<void> Rig::erase(std::optional<std::uint32_t> slot, Duration limit)
         limit, "erase");
 }
 
+Result<std::vector<std::string>> Rig::stat_groups(Duration limit)
+{
+    return await<std::vector<std::string>>(
+        [this](Callback<std::vector<std::string>> cb) {
+            static_cast<void>(statistics_->list_groups(std::move(cb)));
+        },
+        limit, "stat list");
+}
+
+Result<StatisticsGroup> Rig::stat_read(std::string_view name, Duration limit)
+{
+    return await<StatisticsGroup>(
+        [this, name](Callback<StatisticsGroup> cb) {
+            static_cast<void>(statistics_->read_group(name, std::move(cb)));
+        },
+        limit, "stat read");
+}
+
+Result<SettingValue> Rig::setting_read(std::string_view name, std::optional<std::uint32_t> max_size,
+                                       Duration limit)
+{
+    return await<SettingValue>(
+        [this, name, max_size](Callback<SettingValue> cb) {
+            if (max_size.has_value()) {
+                static_cast<void>(settings_->read(name, *max_size, std::move(cb)));
+            } else {
+                static_cast<void>(settings_->read(name, std::move(cb)));
+            }
+        },
+        limit, "settings read");
+}
+
+Result<void> Rig::setting_write(std::string_view name, ConstBytes value, Duration limit)
+{
+    return await<void>(
+        [this, name, value](Callback<void> cb) {
+            static_cast<void>(settings_->write(name, value, std::move(cb)));
+        },
+        limit, "settings write");
+}
+
+Result<void> Rig::setting_erase(std::string_view name, Duration limit)
+{
+    return await<void>(
+        [this, name](Callback<void> cb) {
+            static_cast<void>(settings_->erase(name, std::move(cb)));
+        },
+        limit, "settings delete");
+}
+
+Result<void> Rig::settings_commit(Duration limit)
+{
+    return await<void>(
+        [this](Callback<void> cb) { static_cast<void>(settings_->commit(std::move(cb))); }, limit,
+        "settings commit");
+}
+
+Result<void> Rig::settings_load(Duration limit)
+{
+    return await<void>(
+        [this](Callback<void> cb) { static_cast<void>(settings_->load(std::move(cb))); }, limit,
+        "settings load");
+}
+
+Result<void> Rig::settings_save(std::optional<std::string_view> name, Duration limit)
+{
+    return await<void>(
+        [this, name](Callback<void> cb) {
+            if (name.has_value()) {
+                static_cast<void>(settings_->save(*name, std::move(cb)));
+            } else {
+                static_cast<void>(settings_->save(std::move(cb)));
+            }
+        },
+        limit, "settings save");
+}
+
 bool Rig::wait_disconnected(Duration limit)
 {
     const auto t0 = timeline_.elapsed_ms();
@@ -332,8 +449,13 @@ UploadOutcome Rig::upload(ImageSource& source, const UploadOptions& options,
     std::optional<Result<UploadResult>> done;
     const auto t0 = timeline_.elapsed_ms();
     progress_.clear();
+    begin_chunk_timing();
     outcome.handle = images_->upload(
-        source, options, [this](UploadProgress progress) { progress_.push_back(progress); },
+        source, options,
+        [this](UploadProgress progress) {
+            progress_.push_back(progress);
+            note_chunk_progress();
+        },
         [&done](Result<UploadResult> result) { done = std::move(result); });
     timeline_.note("upload started");
 
@@ -373,6 +495,7 @@ UploadOutcome Rig::upload(ImageSource& source, const UploadOptions& options,
     outcome.result = std::move(*done);
     outcome.progress = progress_;
     timeline_.metric("upload_ms", timeline_.elapsed_ms() - t0);
+    record_chunk_timing();
     if (outcome.result.has_value()) {
         timeline_.note("upload complete: " + std::to_string(outcome.result->transferred) +
                        " bytes" + (outcome.result->already_present ? ", already present" : ""));
@@ -408,6 +531,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
                                  const UpdateHooks& hooks)
 {
     states_.clear();
+    begin_chunk_timing();
     updater_.emplace(*client_, *images_, *os_);
 
     struct Pending
@@ -426,6 +550,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
             timeline_.note(std::string{"update: "} + std::string{to_string(changed.to)});
         },
         [&](const smply::UploadProgress& progress) {
+            note_chunk_progress();
             if (hooks.on_progress) {
                 hooks.on_progress(progress);
             }
@@ -485,6 +610,7 @@ Result<UpdateReport> Rig::update(ImageSource& source, const UpdatePlan& plan,
         pump_wait(until);
     }
     timeline_.metric("update_ms", timeline_.elapsed_ms() - t0);
+    record_chunk_timing();
     return outcome;
 }
 

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+config SMPLY_BENCH_SETTINGS
+	bool "smply bench-only settings handlers (smply/..., smplywo/...)"
+	depends on SETTINGS && SETTINGS_RUNTIME
+	help
+	  Registers the settings roots the HIL settings cases read and write.
+	  Bench firmware only; see smply_bench_settings.c.
+
+config SMPLY_BENCH_STATS
+	bool "smply bench-only 64-bit statistics group (smply_bench)"
+	depends on STATS
+	help
+	  Registers a STATS_SIZE_64 group whose counter starts above 2^32, so
+	  the server's 32-bit encoding of statistics is observable (A28).
+	  Bench firmware only; see smply_bench_stats.c.
+
+config SMPLY_BENCH_BLE_LOG
+	bool "smply bench-only BLE link parameter logging"
+	depends on BT_CONN && BT_USER_PHY_UPDATE && BT_USER_DATA_LEN_UPDATE
+	help
+	  Logs each connection's interval, latency, supervision timeout, PHY,
+	  data length and ATT MTU as they are set and changed, for the
+	  throughput investigation (roadmap). The two BT_USER_* options it needs
+	  change BT_AUTO_DATA_LEN_UPDATE's default, so the peer pins that
+	  explicitly. Bench firmware only; see smply_bench_ble_log.c.

@@ -160,6 +160,10 @@ struct ChunkBudget
     std::optional<std::uint32_t> server_buf_size;
     /// `Transport::max_message_size()`. Zero means "no opinion".
     std::size_t transport_max_message_size = 0;
+    /// `Transport::message_overhead()`: what the device's buffer spends per
+    /// message beyond the SMP message (ADR-0024). Taken off the device's
+    /// buffer -- or the default standing in for it -- and nothing else.
+    std::size_t transport_message_overhead = 0;
     /// smply's own cap.
     std::uint32_t configured_max = limits::kUploadChunkMax;
 };
