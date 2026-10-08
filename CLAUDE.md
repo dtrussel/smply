@@ -119,6 +119,10 @@ the built-ins of the same name; the built-in reviewer is still `/review`. In `/i
 "typechecking" means building a preset, and "the full test suite" means the
 checklist in `docs/handoff.md`.
 
+A PR body keeps the headings of `.github/pull_request_template.md`. The `pr`
+skill's Summary and Merge Danger go under "What changed, and why", and its
+Evidence under "Checks run locally".
+
 Personal agent output goes in the git-ignored `.local/`, never the repository
 root: `/teach` in `.local/teach/<topic>/`, `/to-questionnaire` in
 `.local/questionnaires/`, one-off wizards in `.local/wizards/`.
