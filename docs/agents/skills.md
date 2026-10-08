@@ -13,7 +13,7 @@ developer, and nothing updates itself.
 | `.claude/hooks/check_format.py` | PostToolUse hook: clang-format check of the one C++ file just edited |
 | `.claude/validate.py` | Validates all of the above; run it after any change here |
 | `skills-lock.json` | The `skills` CLI's record of what was installed, from which commit, with a content hash |
-| `docs/agents/issue-tracker.md`, `domain.md` | Where the skills read and write project state |
+| `docs/agents/issue-tracker.md`, `domain.md`, `triage-labels.md` | Where the skills read and write project state |
 
 ## The skills
 
@@ -24,18 +24,34 @@ byte-identical to that commit: the project's adaptations are in
 `docs/agents/` and `CLAUDE.md`, never in the skill files, so an update is a
 clean diff.
 
-User-invoked (type the name; the model cannot start them):
+All 27 of upstream's stable skills (its `engineering/` and `productivity/`
+buckets) are installed. Upstream's `misc/` (frozen) and `in-progress/` (beta)
+buckets are deliberately left out.
+
+User-invoked (type the name; the model cannot start them, and nor can another
+skill):
 
 | Skill | Use it to |
 | ----- | --------- |
+| `/ask-matt` | Ask which skill or flow fits the situation |
 | `/grill-with-docs` | Interview you about a plan until it is settled, recording terms and ADR candidates as they resolve |
+| `/grill-me` | The same interview, recording nothing |
+| `/wayfinder` | Chart work too big for one session as a map of decision tickets in a plan document |
 | `/to-spec` | Turn the conversation into a plan document, published per `issue-tracker.md` |
 | `/to-tickets` | Break a plan into stages with blocking edges, in that plan document |
 | `/implement` | Work a plan stage test-first, then review it, then commit |
+| `/implement-spec` | Work a whole plan's stages with parallel implementers, merged on one branch |
+| `/triage` | Move roadmap rows through triage states (`triage-labels.md`) |
+| `/improve-codebase-architecture` | Find deepening opportunities, as an HTML report in the temp directory, then grill one |
+| `/handoff` | Summarise the session into a file in the OS temp directory for another agent |
+| `/to-questionnaire` | Write a questionnaire for someone who holds the answer you lack |
+| `/teach` | Teach a topic over several sessions, in a `.local/` workspace |
+| `/wait-what` | Re-pitch a message that did not land |
 | `/retro` | Suggest improvements to this setup after a session |
 | `/setup-matt-pocock-skills` | Re-run the tracker and domain setup. Already done; edit `docs/agents/` instead |
 
-Model-invoked (Claude may also reach for these itself):
+Model-invoked (Claude may also reach for these itself, so each description is
+always in context):
 
 | Skill | Use it for |
 | ----- | ---------- |
@@ -44,43 +60,56 @@ Model-invoked (Claude may also reach for these itself):
 | `diagnosing-bugs` | Build a tight failing loop first, then hypothesise and fix |
 | `codebase-design` | Deep-module vocabulary for interface and seam decisions |
 | `domain-modeling` | Sharpen terms and decisions, writing to `GLOSSARY.md` and `docs/decisions/` |
-| `grilling` | The interview behind `/grill-with-docs` |
+| `grilling` | The interview behind `/grill-with-docs`, `/grill-me` and `/triage` |
 | `research` | Background read of primary sources into a cited note |
 | `writing-for-agents` | How to write CLAUDE.md, rules and skills |
+| `pr` | The content of a PR body, inside the repository's template |
+| `prototype` | Throwaway code that answers a design question. **Replaces the built-in `/prototype`** |
+| `wizard` | A bash script that walks a person through steps only they can take |
 
-`grilling`, `domain-modeling`, `tdd`, `code-review`, `codebase-design` and
-`writing-for-agents` are also dependencies: `grill-with-docs`, `implement`,
-`tdd` and `retro` call them through the Skill tool.
-
-### Left out, and why
-
-* **`triage`, `wayfinder`, `implement-spec`**: they run an issue queue (labels,
-  claims, parallel implementers on an integration branch). smply's backlog is
-  the roadmap, worked one item at a time (ADR-0018).
-* **`handoff`**: smply keeps no session log; state goes into the repository,
-  and `docs/handoff.md` already means something else here.
-* **`pr`**: the PR body shape is `.github/pull_request_template.md`.
-* **`ask-matt`**: a router over the whole upstream set, most of it not
-  installed.
-* **`improve-codebase-architecture`, `prototype`, `wizard`**: an HTML report,
-  throwaway UI prototypes and setup wizards; none fits a library whose
-  architecture is held by ADRs. Add one later if a need appears.
-* **`grill-me`, `teach`, `to-questionnaire`, `wait-what`**: general productivity,
-  not engineering workflow.
-* **`misc/` and `in-progress/`**: frozen or beta upstream.
+Several are also dependencies, called through the Skill tool:
+`grill-with-docs`, `grill-me`, `triage`, `wayfinder` and
+`improve-codebase-architecture` call `grilling` (and all but `grill-me` call
+`domain-modeling`); `wayfinder` also calls `prototype` and `research`;
+`implement` and `implement-spec` call `tdd` and `code-review`; `tdd` and
+`improve-codebase-architecture` call `codebase-design`; `retro` calls
+`writing-for-agents`. `.claude/validate.py` checks every such
+call resolves.
 
 ### Where the skills' assumptions differ from this project
 
-The skills were written for GitHub Issues, `GLOSSARY.md` and `docs/adr/`.
-`docs/agents/issue-tracker.md` and `docs/agents/domain.md` say what each of
-those means here, and `CLAUDE.md` tells every skill to read them first:
+The skills were written for GitHub Issues, `GLOSSARY.md`, `docs/adr/` and a
+writable working directory. `CLAUDE.md` tells every skill that these files
+win over its own text:
 
-* "the issue tracker" is `docs/roadmap.md` plus a plan document, never `gh`;
-* `ready-for-agent` is a plan's Status line, not a label;
+* "the issue tracker" is `docs/roadmap.md` plus a plan document, never `gh`
+  ([`issue-tracker.md`](issue-tracker.md)); `/wayfinder`'s map and
+  `/implement-spec`'s tickets live in a plan document too;
+* triage roles are recorded on roadmap rows, not as labels, and rejected
+  requests become resolved open questions, not `.out-of-scope/` files
+  ([`triage-labels.md`](triage-labels.md));
 * ADRs are `docs/decisions/ADR-NNNN-*.md` in the full format, superseded,
-  never edited;
+  never edited ([`domain.md`](domain.md)); `/wait-what` and the other
+  `GLOSSARY.md` readers fall back to the defining documents named there;
 * "type-check" in `/implement` means building a preset; "the full test suite"
-  means the checklist in `docs/handoff.md`.
+  means the checklist in `docs/handoff.md`;
+* `pr` fills `.github/pull_request_template.md`: its Summary and Merge Danger
+  go under "What changed, and why", its Evidence under "Checks run locally",
+  and the template's `Docs-Impact: none` rule stands;
+* `prototype` code goes on a `prototype/<slug>` branch, under a top-level
+  `prototypes/<slug>/` that no gate scans, and is never merged;
+* `/teach` uses `.local/teach/<topic>/` as its workspace and
+  `/to-questionnaire` writes to `.local/questionnaires/`, never the repository
+  root. `.local/` is git-ignored: personal agent output, never project state;
+* a `wizard` writes local values to `.local/<name>.env` (set `ENV_FILE`, since
+  the template defaults to `.env`) and GitHub secrets only after its `confirm`
+  step. It is ephemeral in `.local/` unless it becomes a repeatable bench
+  procedure, which is committed under `tests/hil/tools/`;
+* `/handoff` is unrelated to `docs/handoff.md`. Its file lives in the OS temp
+  directory; anything that must outlive the session still goes into the
+  repository;
+* `/improve-codebase-architecture` treats an accepted ADR as settled: a
+  candidate that contradicts one goes through the supersede process.
 
 ## Hook
 
@@ -134,7 +163,10 @@ plugin, which would install every skill a second time.
      -s setup-matt-pocock-skills -s grill-with-docs -s grilling \
      -s domain-modeling -s to-spec -s to-tickets -s implement -s tdd \
      -s code-review -s codebase-design -s diagnosing-bugs -s research \
-     -s retro -s writing-for-agents
+     -s retro -s writing-for-agents -s triage -s wayfinder \
+     -s implement-spec -s pr -s ask-matt -s improve-codebase-architecture \
+     -s prototype -s wizard -s handoff -s grill-me -s teach \
+     -s to-questionnaire -s wait-what
    ```
 
    `--copy` writes real files (symlinks break on Windows checkouts); `-a

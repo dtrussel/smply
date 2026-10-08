@@ -98,6 +98,11 @@ Work is tracked in the repository: `docs/roadmap.md`, plus a `docs/<slug>-plan.m
 for work too big for one row. Never `gh issue`, `glab` or `.scratch/`. See
 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
 
+### Triage labels
+
+None: triage roles are recorded on roadmap rows, and rejected requests become
+resolved open questions. See [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
 ### Domain docs
 
 Single-context. Terms are defined where they are used (`protocol-notes.md`,
@@ -109,10 +114,13 @@ superseded and never edited. See [`docs/agents/domain.md`](docs/agents/domain.md
 
 `code-review`'s standards are this file's Conventions, `docs/design.md` §11,
 the standing caveats in `docs/handoff.md`, `docs/quality-gates.md` and
-`CONTRIBUTING.md`. A project `code-review` skill replaces the built-in
-`/code-review`; the built-in reviewer is still `/review`. In `/implement`,
+`CONTRIBUTING.md`. The project's `code-review` and `prototype` skills replace
+the built-ins of the same name; the built-in reviewer is still `/review`. In `/implement`,
 "typechecking" means building a preset, and "the full test suite" means the
 checklist in `docs/handoff.md`.
+
+Personal agent output (`/teach`, `/to-questionnaire`, one-off wizards) goes in
+the git-ignored `.local/`, never the repository root.
 
 A hook reports clang-format differences in any C++ source Claude edits. Fix
 them in that file only.

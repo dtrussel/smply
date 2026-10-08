@@ -13,7 +13,8 @@ Checks, each reported PASS or FAIL:
             model-invocable, and no installed skill calls an uninstalled one;
   lock      each skill's files hash to the computedHash in skills-lock.json,
             the way the skills CLI computes it, so a local edit to a vendored
-            skill is visible;
+            skill is visible; every skill comes from one upstream commit and
+            from a stable bucket, never misc/ or in-progress/;
   rules     every .claude/rules/*.md has a paths list, and every repository
             path it names in backticks exists;
   settings  .claude/settings.json parses and its hook script exists;
@@ -22,7 +23,8 @@ Checks, each reported PASS or FAIL:
             (exit 2), ignores a non-source file, and notes a missing
             clang-format without blocking;
   docs      the files CLAUDE.md sends the skills to exist;
-  git       nothing under .claude/ is a symlink, and every file is tracked
+  git       nothing under .claude/ is a symlink, .local/ (the personal agent
+            workspace) is git-ignored, and every file is tracked
             (a warning before the first commit, not a failure).
 
 Usage: python3 .claude/validate.py
@@ -46,6 +48,8 @@ REPO = Path(__file__).resolve().parent.parent
 CLAUDE = REPO / ".claude"
 SKILLS = CLAUDE / "skills"
 HOOK = CLAUDE / "hooks" / "check_format.py"
+# Upstream's maintained buckets; misc/ is frozen and in-progress/ is beta.
+STABLE_BUCKETS = ("skills/engineering/", "skills/productivity/")
 
 # Frontmatter fields Claude Code reads (code.claude.com/docs/en/skills).
 KNOWN_FIELDS = {
@@ -55,7 +59,7 @@ KNOWN_FIELDS = {
     "metadata", "license", "compatibility",
 }
 NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
-SKILL_CALL = re.compile(r'Skill tool[^.\n]*?"([a-z0-9-]+)"(?:\s+and\s+"([a-z0-9-]+)")?')
+SKILL_CALL = re.compile(r'Skill tool[^.\n]*?["`]([a-z0-9-]+)["`](?:\s+and\s+["`]([a-z0-9-]+)["`])?')
 MD_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 
 results: list[tuple[str, bool, str]] = []
@@ -192,6 +196,12 @@ def check_lock() -> None:
                    f"{name}: " + ("matches " if ok else "DIFFERS from ")
                    + f"{entry.get('source')}@{str(entry.get('ref'))[:10]}"
                    + ("" if pinned else " (no pinned ref)"))
+    refs = {str(entry.get("ref")) for entry in lock.values()}
+    record("lock", len(refs) == 1, f"one upstream commit for every skill: {sorted(refs)}")
+    unstable = [name for name, entry in lock.items()
+                if not str(entry.get("skillPath", "")).startswith(STABLE_BUCKETS)]
+    record("lock", not unstable, "every skill is from a stable bucket" if not unstable
+           else f"from misc/, in-progress/ or elsewhere: {unstable}")
 
 
 def check_rules() -> None:
@@ -296,17 +306,21 @@ def check_hook() -> None:
 
 def check_docs() -> None:
     for rel in ("docs/agents/issue-tracker.md", "docs/agents/domain.md",
-                "docs/agents/skills.md", ".claude/skills/THIRD-PARTY-NOTICES.md"):
+                "docs/agents/triage-labels.md", "docs/agents/skills.md",
+                ".claude/skills/THIRD-PARTY-NOTICES.md"):
         ok = (REPO / rel).is_file()
         record("docs", ok, rel + (" exists" if ok else " is missing"))
     claude_md = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
-    ok = all(f"docs/agents/{n}" in claude_md for n in ("issue-tracker.md", "domain.md", "skills.md"))
+    ok = all(f"docs/agents/{n}" in claude_md for n in ("issue-tracker.md", "domain.md", "triage-labels.md", "skills.md"))
     record("docs", ok, "CLAUDE.md points the skills at docs/agents/")
 
 
 def check_git() -> None:
     links = [p for p in CLAUDE.rglob("*") if p.is_symlink()]
     record("git", not links, "no symlinks under .claude/" if not links else f"symlinks: {links}")
+    ignored = subprocess.run(["git", "check-ignore", "-q", ".local/teach/probe.md"], cwd=REPO,
+                             check=False).returncode == 0
+    record("git", ignored, ".local/ is git-ignored" if ignored else ".local/ is NOT git-ignored")
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard", ".claude", "skills-lock.json",
          "docs/agents"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split()

@@ -40,10 +40,40 @@ plan path and stage number, or open-question ID: there are no issue numbers.
 
 ## Triage states
 
-The `triage` skill is not installed, and there are no triage labels. Where a
-skill says to apply `ready-for-agent`, record it as the plan's Status line
-(`Status: ready for implementation`). Whether a human or an agent works an item
-is decided when it is picked up, not labelled in advance.
+There are no labels. `/triage` records its roles on roadmap rows, as
+[`triage-labels.md`](triage-labels.md) describes. Where a skill says to apply
+`ready-for-agent`, set the plan's Status line to
+`Status: ready for implementation`.
+
+## Wayfinding operations
+
+Used by `/wayfinder`. The map is a plan document; its tickets are entries in
+it, not separate files.
+
+* **Map**: `docs/<slug>-plan.md` with the sections Notes, Decisions so far and
+  Not yet specified, linked from the roadmap like any plan.
+* **Ticket**: a `### Ticket N: <question>` entry under `## Tickets`, numbered
+  from 1, with a `Type:` line (`research`, `prototype`, `grilling` or `task`),
+  a `Status:` line (`open`, `claimed` or `resolved`) and a
+  `Blocked by: N, N` line. The `Type:` line is what the skill calls the
+  `wayfinder:<type>` label; there are no labels.
+* **Frontier**: the open, unclaimed tickets whose blockers are all resolved;
+  the lowest number wins.
+* **Claim**: set `Status: claimed` and commit before any other work, so a
+  parallel session sees it.
+* **Resolve**: add the answer under the ticket as `#### Answer`, set
+  `Status: resolved`, and add a one-line pointer to Decisions so far. A
+  resolved decision that meets the ADR test in [`domain.md`](domain.md)
+  becomes an ADR; the ticket then points at it.
+
+## Implementing a whole plan
+
+Used by `/implement-spec`. The spec is a plan document, and its tickets are
+the plan's stages. The integration branch is the branch the work was assigned
+to. Each implementer's worktree builds in its own `build/` directory. Before
+merging a stage into the integration branch, run the finishing checklist in
+[`../handoff.md`](../handoff.md) on the merged result. Resolving a ticket means
+checking off its stage, in the commit that lands it.
 
 ## Closing work
 

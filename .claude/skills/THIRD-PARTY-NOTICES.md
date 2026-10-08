@@ -9,9 +9,13 @@ development tooling for Claude Code: they are not part of smply's library, are
 not built, installed or shipped, and are not covered by smply's Apache-2.0
 licence. They remain under the MIT licence below.
 
-Skills: code-review, codebase-design, diagnosing-bugs, domain-modeling,
-grill-with-docs, grilling, implement, research, retro,
-setup-matt-pocock-skills, tdd, to-spec, to-tickets, writing-for-agents.
+Skills: ask-matt, code-review, codebase-design, diagnosing-bugs,
+domain-modeling, grill-me, grill-with-docs, grilling, handoff, implement,
+implement-spec, improve-codebase-architecture, pr, prototype, research, retro,
+setup-matt-pocock-skills, tdd, teach, to-questionnaire, to-spec, to-tickets,
+triage, wait-what, wayfinder, wizard, writing-for-agents (27). The `pr` skill
+credits the source of part of its text (Dex Horthy's `show-me`,
+Humanlayer) in its frontmatter and `pr/CREDITS.md`.
 
 How they are configured for this project, and how to update them:
 `docs/agents/skills.md`.
