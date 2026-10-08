@@ -37,6 +37,13 @@ Without them the scripts skip what they cannot run, locally. CI runs with
 what CI will. What each gate enforces, and why, is in
 [`docs/quality-gates.md`](docs/quality-gates.md).
 
+## Claude Code
+
+The repository carries a shared Claude Code setup: `CLAUDE.md`, vendored skills
+in `.claude/skills/`, path-scoped rules and a formatting hook. Nothing needs
+installing per developer. [`docs/agents/skills.md`](docs/agents/skills.md) says
+what is there and how it is updated.
+
 ## Pull requests
 
 The template asks what changed and why, which docs changed, and which checks

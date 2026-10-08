@@ -496,6 +496,10 @@ smply/
 │                               bench-only bench_module/); tools/ are the bench instruments and the
 │                               capture/decode helpers; README.md is the bench itself.
 │                               Never a PR gate
+├── .claude/                    the shared Claude Code setup (docs/agents/skills.md):
+│                               settings.json  validate.py  hooks/  rules/
+│                               skills/ — vendored from mattpocock/skills, MIT
+├── skills-lock.json            what the skills CLI installed into .claude/skills/
 ├── .github/                    pull_request_template.md  dependabot.yml (Actions only)
 ├── .github/workflows/          ci.yml (the 15-job gate)  nightly-fuzz.yml
 │                               osv.yml — weekly dependency scan, advisory
@@ -505,7 +509,8 @@ smply/
 │                               check_public_headers.py  check_deps.py  check_docs.py
 │                               check_install.sh  sbom.py  cmake_deps.py (their shared parser)
 │                               verify_gates.sh  cppcheck-suppressions.txt
-└── docs/                       this documentation set + decisions/
+└── docs/                       this documentation set + decisions/ + agents/ (how the
+                                Claude Code skills map onto it)
 ```
 
 CMake is fully target-based: no `include_directories()`, no global

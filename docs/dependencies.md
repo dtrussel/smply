@@ -44,6 +44,17 @@ Windows application. The same rule applies to reference implementations: no code
 is copied from GPL or otherwise incompatible MCUmgr clients — they are consulted
 for behavioural comparison only ([`protocol-notes.md`](protocol-notes.md) §1).
 
+## Agent tooling (development only, never built or shipped)
+
+The shared Claude Code configuration ([`agents/skills.md`](agents/skills.md))
+vendors one set of skill files. They are Markdown instructions for the agent,
+plus one inert shell template, and are never compiled, linked or installed.
+
+| Name | Pin | Purpose / licence |
+| --- | --- | --- |
+| mattpocock/skills | `b0618bc436ad893b3c5e84e55fba86586d34a404`, 14 skills in `.claude/skills/` | Engineering workflow skills for Claude Code; MIT, notice in `.claude/skills/THIRD-PARTY-NOTICES.md` |
+| `skills` CLI (vercel-labs/skills) | 1.7.1, run with `npx` only to install or update | Copies the skills and writes `skills-lock.json`; MIT |
+
 ## Hardware bench only (never linked or shipped)
 
 [ADR-0015](decisions/ADR-0015-hardware-evidence.md) records this boundary: none

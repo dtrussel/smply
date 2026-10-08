@@ -138,6 +138,8 @@ doing.
 | **`osv.yml` is unproven on two counts.** It has never fired on its cron, and nothing shows that OSV has advisory coverage for QCBOR and Catch2 as `pkg:github` PURLs. An empty report looks the same either way. Put a package with a known advisory through `tools/sbom.py` once. | before a clean report is relied on |
 | **Nothing enforces that unit and component tests never read the real clock** (`testing.md` §2). A `lint.sh` grep for `steady_clock::now()` under `tests/unit/` and `tests/component/`, with a `verify_gates.sh` case proving it fires, would. | when a test is next found reading it |
 | **`-Wnull-dereference` is off for GCC** because of false positives inside libstdc++ under `-O2` (`cmake/warnings.cmake`). | when GCC stops false-positiving |
+| **`check_docs.py` R6 does not read a root `GLOSSARY.md`.** Its living-document list names the top-level files one by one, and the glossary `/domain-modeling` creates lazily (`docs/agents/domain.md`) is not among them. | when `GLOSSARY.md` is first created |
+| **`.claude/validate.py` is not run by CI**, so a skill update or a change to `tools/sources.sh` that breaks the Claude Code setup is caught only by whoever runs it. A step in the `docs` job would do; it needs only Python and clang-format. | if the setup drifts unnoticed |
 
 ### Hardware bench
 
