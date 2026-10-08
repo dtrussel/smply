@@ -118,9 +118,10 @@ session, or `/context` for the instruction files.
 
 ## Updating the skills
 
-Updates are manual and reviewed like any dependency bump. Do not use
-`npx skills update` (it takes upstream `HEAD`) or the self-updating
-`mattpocock-skills` plugin, which would install every skill a second time.
+Updates are manual and reviewed like any dependency bump: re-install at an
+explicit upstream commit someone has read. Do not use `npx skills update`,
+which chooses the version for you, or the self-updating `mattpocock-skills`
+plugin, which would install every skill a second time.
 
 1. Pick the upstream commit and read what changed:
    `git log b0618bc..<new-sha>` in a clone of mattpocock/skills, or its
