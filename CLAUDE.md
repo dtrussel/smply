@@ -119,8 +119,9 @@ the built-ins of the same name; the built-in reviewer is still `/review`. In `/i
 "typechecking" means building a preset, and "the full test suite" means the
 checklist in `docs/handoff.md`.
 
-Personal agent output (`/teach`, `/to-questionnaire`, one-off wizards) goes in
-the git-ignored `.local/`, never the repository root.
+Personal agent output goes in the git-ignored `.local/`, never the repository
+root: `/teach` in `.local/teach/<topic>/`, `/to-questionnaire` in
+`.local/questionnaires/`, one-off wizards in `.local/wizards/`.
 
 A hook reports clang-format differences in any C++ source Claude edits. Fix
 them in that file only.

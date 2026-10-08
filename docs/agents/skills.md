@@ -103,7 +103,7 @@ win over its own text:
   root. `.local/` is git-ignored: personal agent output, never project state;
 * a `wizard` writes local values to `.local/<name>.env` (set `ENV_FILE`, since
   the template defaults to `.env`) and GitHub secrets only after its `confirm`
-  step. It is ephemeral in `.local/` unless it becomes a repeatable bench
+  step. It is ephemeral in `.local/wizards/` unless it becomes a repeatable bench
   procedure, which is committed under `tests/hil/tools/`;
 * `/handoff` is unrelated to `docs/handoff.md`. Its file lives in the OS temp
   directory; anything that must outlive the session still goes into the
