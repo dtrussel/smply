@@ -39,6 +39,7 @@
 #include "smply/groups/image.hpp"
 #include "smply/mcuboot_image.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -139,6 +140,23 @@ struct Target
     ImageHash hash;
     /// The file's header version, `ih_ver`.
     ImageVersion version{};
+
+    /// One build of the image, linked for one of its two slots.
+    struct Build
+    {
+        ImageHash hash;
+        ImageVersion version;
+    };
+
+    /// Direct-XIP's one build per slot, primary then secondary
+    /// (`ImageTarget::secondary_source`). `hash` and `version` above are copied
+    /// from the chosen one once the slot table shows which slot is free.
+    std::optional<std::array<Build, 2>> builds = std::nullopt;
+    /// Which of `builds` is sent: 0 for the primary slot's, 1 for the
+    /// secondary's. Always 0 without builds.
+    std::size_t chosen = 0;
+    /// `builds` has been chosen from.
+    bool chosen_known = false;
     /// `Client` only: booted and not yet confirmed, so a confirm is owed.
     bool in_trial = false;
 };

@@ -1018,6 +1018,12 @@ struct ImageTarget {                  // one image of a multi-image update
     std::uint32_t image = 0;
     ImageSource*  source = nullptr;   // not owned; outlives the update
     CommitBy      commit = CommitBy::Client;
+    // Direct-XIP: the same image linked for the secondary slot (2n + 1), with
+    // `source` the primary slot's build. The one for the slot the device is
+    // not running is sent; either build already in its own slot counts as
+    // present. InvalidArgument, before anything is sent, on a device that
+    // does not report direct-XIP (ADR-0025).
+    ImageSource*  secondary_source = nullptr;
 };
 
 struct UpdatePlan {

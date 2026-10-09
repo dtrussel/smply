@@ -451,6 +451,65 @@ bool is_downgrade(const UpdatePlan& plan, const Context& context)
 /// application is restarted mid-update.
 [[nodiscard]] Step mark_or_skip(const UpdatePlan& plan, Context& context);
 
+/// The slot \p global of \p image in the last slot table, if listed.
+[[nodiscard]] const ImageSlot* listed_slot(const Context& context, std::uint32_t image,
+                                           std::uint32_t global)
+{
+    if (!context.device.has_value()) {
+        return nullptr;
+    }
+    const auto found = std::ranges::find_if(context.device->slots, [&](const ImageSlot& slot) {
+        return slot.image == image && slot.slot == global;
+    });
+    return found == context.device->slots.end() ? nullptr : &*found;
+}
+
+/// Picks which of a target's two builds this update is about (ADR-0025,
+/// decision 6): a build already in its own slot, the running one first, or
+/// else the build for the slot the device is not running from. Fails before
+/// anything is sent when the device is not direct-XIP, where a file linked
+/// for one slot is meaningless.
+[[nodiscard]] std::optional<Step> choose_build(Context& context)
+{
+    Target& target = context.targets[context.current];
+    if (!target.builds.has_value() || target.chosen_known) {
+        return std::nullopt;
+    }
+    // Bound once: the engaged state is then visible where it is read, to a
+    // reader and to static analysis alike.
+    const std::array<Target::Build, 2>& builds = *target.builds;
+    const McubootMode mode = context.report.bootloader_mode;
+    if (mode != McubootMode::DirectXip && mode != McubootMode::DirectXipWithRevert) {
+        return fail(context, ErrorCode::InvalidArgument,
+                    "dfu: one file per slot needs a direct-XIP device");
+    }
+    const std::uint32_t base = target.image * 2;
+    const ImageSlot* running = active_of(context, target.image);
+
+    // By default the free slot's build: the slot not running, or the secondary
+    // when nothing runs at all. A build already in its own slot wins, the
+    // running one first.
+    std::size_t chosen = running != nullptr && running->slot == base + 1 ? 0U : 1U;
+    bool present = false;
+    for (std::size_t index = 0; index < builds.size(); ++index) {
+        const ImageSlot* slot =
+            listed_slot(context, target.image, base + static_cast<std::uint32_t>(index));
+        if (slot == nullptr || slot->hash != builds[index].hash) {
+            continue;
+        }
+        if (!present || slot == running) {
+            chosen = index;
+            present = true;
+        }
+    }
+    target.chosen = chosen;
+    target.chosen_known = true;
+    target.hash = builds[chosen].hash;
+    target.version = builds[chosen].version;
+    context.report.images[context.current].target_hash = target.hash;
+    return std::nullopt;
+}
+
 [[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
 {
     // A `Client` image running its file on trial means the reset has already
@@ -469,6 +528,9 @@ bool is_downgrade(const UpdatePlan& plan, const Context& context)
     }
 
     for (; context.current < context.targets.size(); ++context.current) {
+        if (const std::optional<Step> failed = choose_build(context)) {
+            return *failed;
+        }
         const Target& target = context.targets[context.current];
         ImageReport& report = context.report.images[context.current];
         const ImageSlot* holder = slot_holding(context, target);

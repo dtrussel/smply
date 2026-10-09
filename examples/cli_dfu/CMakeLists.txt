@@ -83,6 +83,16 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # One build per slot (ADR-0025): the stub reports direct-XIP with revert,
+    # and the build for the free slot is the one sent. The stub swaps as usual,
+    # so this shows the choice and the image-list start(), not direct-XIP.
+    add_test(NAME cli_dfu_mode_two_builds
+        COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-builds)
+    set_tests_properties(cli_dfu_mode_two_builds PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: direct-xip-with-revert \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
     # The multi-image update of ADR-0021 end to end: a generated package read
     # by smply::dfu_package, both images staged before one reset, image 1
     # applied by the device, image 0 confirmed only after that, and image 1

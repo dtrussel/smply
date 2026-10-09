@@ -48,6 +48,7 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -80,6 +81,9 @@ struct Options
 {
     std::string port;       ///< Empty means "start the pty stub".
     std::string image_path; ///< Required with --port; otherwise a demo image.
+    /// `--image-secondary`: the same image linked for the secondary slot, for
+    /// a direct-XIP device; `image_path` is then the primary slot's build.
+    std::string image_secondary_path;
     std::uint32_t baud = 115200;
     FlowControl flow = FlowControl::None;
     UpdateMode mode = UpdateMode::TestThenConfirm;
@@ -116,12 +120,14 @@ void usage()
                  "                  [--commit N=client|device] [--apply-fails]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
                  "                  [--allow-no-revert] [--no-downgrade-check]\n"
-                 "                  [--quiet]\n"
+                 "                  [--image-secondary PATH] [--quiet]\n"
                  "  --port PATH   the device's serial port; prefer a stable name such as\n"
                  "                /dev/serial/by-id/... (a USB port may be renamed on reset)\n"
                  "  --baud N      line speed, default 115200 (ignored by USB CDC ACM)\n"
                  "  --flow F      none (default) or rtscts\n"
                  "  --image PATH  the signed MCUboot image to install\n"
+                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
+                 "                secondary slot (--image is then the primary slot's build)\n"
                  "  --package PATH  a multi-image DFU package; image 0 is confirmed here and\n"
                  "                every other image left to the device (docs/multi-image.md)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
@@ -170,6 +176,8 @@ void usage()
             out.port = args[++i];
         } else if (arg == "--image" && has_value) {
             out.image_path = args[++i];
+        } else if (arg == "--image-secondary" && has_value) {
+            out.image_secondary_path = args[++i];
         } else if (arg == "--baud" && has_value) {
             const std::string& value = args[++i];
             if (value.empty() || value.size() > 9 ||
@@ -228,6 +236,11 @@ void usage()
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
                         (out.demo_package ? 1 : 0);
     if (sources > 1 || (!out.package_mode() && (out.apply_fails || !out.commits.empty()))) {
+        return false;
+    }
+    // A second build goes with a first one named on the command line, and
+    // never with a package, which names its own files.
+    if (!out.image_secondary_path.empty() && (out.image_path.empty() || out.package_mode())) {
         return false;
     }
     // A real device is updated with a real image or package; inventing one for
@@ -444,6 +457,15 @@ int main(int argc, char** argv)
         std::cerr << "serial_dfu: " << to_string(source.error()) << '\n';
         return 1;
     }
+    std::optional<FileImageSource> secondary;
+    if (!options.image_secondary_path.empty()) {
+        Result<FileImageSource> opened = FileImageSource::open(options.image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "serial_dfu: " << to_string(opened.error()) << '\n';
+            return 1;
+        }
+        secondary.emplace(std::move(*opened));
+    }
 
     SerialPortConfig config;
     config.path = port;
@@ -541,9 +563,22 @@ int main(int argc, char** argv)
     const auto handler = [&] {
         return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
     };
-    if (const Result<void> begun = package ? updater.start(package->targets(), plan, handler())
-                                           : updater.start(*source, plan, handler());
-        !begun.has_value()) {
+    // One build per slot is an image list of one (ADR-0025).
+    const std::array<ImageTarget, 1> builds{ImageTarget{
+        .image = 0,
+        .source = source.has_value() ? &*source : nullptr,
+        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
+    }};
+    const auto begin = [&]() -> Result<void> {
+        if (package) {
+            return updater.start(package->targets(), plan, handler());
+        }
+        if (secondary) {
+            return updater.start(builds, plan, handler());
+        }
+        return updater.start(*source, plan, handler());
+    };
+    if (const Result<void> begun = begin(); !begun.has_value()) {
         std::cerr << "serial_dfu: " << to_string(begun.error()) << '\n';
         return 1;
     }

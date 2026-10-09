@@ -958,6 +958,14 @@ special case: its flags follow the ordinary table, and only the slot differs.
 Neither waits for a swap: smply never did, since reconnecting is the
 application's. Each image's `upload_slot` records where the device put it.
 
+**An image given as one build per slot** (`ImageTarget::secondary_source`) is
+resolved at the top of its `Planning` turn, before the four cases, by
+`choose_build()`: on a device that does not report direct-XIP it fails with
+`InvalidArgument`, nothing sent; otherwise it picks a build already in its own
+slot (the running one first), or else the build for the slot not running. That
+build's hash and version become the target's, so the four cases and every later
+step see one file, as they always have. The updater sends that build's source.
+
 Once every image is staged: `Completed` under `UploadOnly`; `Resetting` if a
 reset is owed; otherwise the device is judged as it stands, exactly as
 `VerifyingBooted` would judge it after a reset -- so a single image running

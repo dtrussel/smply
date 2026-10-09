@@ -1108,6 +1108,135 @@ TEST_CASE("several images on a direct-XIP device are refused before anything is 
     CHECK_FALSE(any_upload(fixture));
 }
 
+// --- One build per slot (ADR-0025, decision 6) -------------------------------
+
+namespace {
+
+/// The image-state hash a firmware built by make_firmware() carries.
+[[nodiscard]] smply::ImageHash hash_of_firmware(const std::vector<std::byte>& firmware)
+{
+    MemoryImageSource source{ConstBytes{firmware}};
+    const auto info = smply::parse_mcuboot_header(ConstBytes{firmware}.first(32));
+    REQUIRE(info.has_value());
+    const auto found = smply::find_image_tlv_hash(source, *info);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    return **found;
+}
+
+} // namespace
+
+TEST_CASE("the build for the free slot is the one sent", "[dfu][update][mode][xip][builds]")
+{
+    // The same version linked twice: fill 2 for slot 0, fill 3 for slot 1.
+    const std::size_t running_slot = GENERATE(std::size_t{0}, std::size_t{1});
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> for_primary = make_firmware(kBodySize, 2, 0, 0, 2);
+    const std::vector<std::byte> for_secondary = make_firmware(kBodySize, 2, 0, 0, 3);
+    const std::vector<std::byte>& expected = running_slot == 0 ? for_secondary : for_primary;
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXipWithRevert}};
+    fixture.simulator.load_slot(running_slot, running);
+    fixture.simulator.boot_from_slot(running_slot);
+    MemoryImageSource primary{ConstBytes{for_primary}};
+    MemoryImageSource secondary{ConstBytes{for_secondary}};
+    std::array<ImageTarget, 1> targets{
+        ImageTarget{.image = 0, .source = &primary, .secondary_source = &secondary}};
+
+    REQUIRE(fixture.updater.start(targets, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->upload_slot == 1 - running_slot);
+    CHECK(outcome.report->target_hash == hash_of_firmware(expected));
+    const ConstBytes written = fixture.simulator.slot_content(1 - running_slot);
+    CHECK(std::ranges::equal(written.first(expected.size()), ConstBytes{expected}));
+}
+
+TEST_CASE("either build already running means nothing to send", "[dfu][update][mode][xip][builds]")
+{
+    const std::vector<std::byte> for_primary = make_firmware(kBodySize, 2, 0, 0, 2);
+    const std::vector<std::byte> for_secondary = make_firmware(kBodySize, 2, 0, 0, 3);
+    const bool runs_secondary = GENERATE(false, true);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXipWithRevert}};
+    if (runs_secondary) {
+        fixture.simulator.load_slot(1, for_secondary);
+        fixture.simulator.boot_from_slot(1);
+    } else {
+        fixture.simulator.load_slot(0, for_primary);
+    }
+    MemoryImageSource primary{ConstBytes{for_primary}};
+    MemoryImageSource secondary{ConstBytes{for_secondary}};
+    std::array<ImageTarget, 1> targets{
+        ImageTarget{.image = 0, .source = &primary, .secondary_source = &secondary}};
+
+    REQUIRE(fixture.updater.start(targets, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->upload_skipped);
+    CHECK_FALSE(any_upload(fixture));
+}
+
+TEST_CASE("one file per slot on a device that is not direct-XIP fails before anything is sent",
+          "[dfu][update][mode][xip][builds]")
+{
+    // A swap device, and one that does not report its mode at all.
+    const ServerConfig config = GENERATE(ServerConfig{.bootloader_mode = 3}, ServerConfig{});
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> for_primary = make_firmware(kBodySize, 2, 0, 0, 2);
+    const std::vector<std::byte> for_secondary = make_firmware(kBodySize, 2, 0, 0, 3);
+
+    UpdateOutcome outcome;
+    Fixture fixture{config};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource primary{ConstBytes{for_primary}};
+    MemoryImageSource secondary{ConstBytes{for_secondary}};
+    std::array<ImageTarget, 1> targets{
+        ImageTarget{.image = 0, .source = &primary, .secondary_source = &secondary}};
+
+    REQUIRE(fixture.updater.start(targets, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::InvalidArgument);
+    CHECK_FALSE(any_upload(fixture));
+}
+
+TEST_CASE("a second build with upload.sha, or that is not an image, is refused at start",
+          "[dfu][update][builds]")
+{
+    const std::vector<std::byte> for_primary = make_firmware(kBodySize, 2, 0, 0, 2);
+    const std::vector<std::byte> junk(256, std::byte{0x00});
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXipWithRevert}};
+    MemoryImageSource primary{ConstBytes{for_primary}};
+    MemoryImageSource bad{ConstBytes{junk}};
+
+    std::array<ImageTarget, 1> not_an_image{
+        ImageTarget{.image = 0, .source = &primary, .secondary_source = &bad}};
+    const auto refused = fixture.updater.start(not_an_image, UpdatePlan{}, outcome.handler());
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().code() == ErrorCode::InvalidArgument);
+
+    MemoryImageSource secondary{ConstBytes{for_primary}};
+    std::array<ImageTarget, 1> with_sha{
+        ImageTarget{.image = 0, .source = &primary, .secondary_source = &secondary}};
+    UpdatePlan plan;
+    plan.upload.sha = smply::Hash{};
+    const auto sha = fixture.updater.start(with_sha, plan, outcome.handler());
+    REQUIRE_FALSE(sha.has_value());
+    CHECK(sha.error().code() == ErrorCode::InvalidArgument);
+    CHECK(fixture.simulator.requests().empty());
+}
+
 TEST_CASE("cancelling mid-update completes the callback exactly once", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);

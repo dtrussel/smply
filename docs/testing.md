@@ -478,8 +478,11 @@ printed as reported by the device; `cli_dfu_mode_fallback` gives the stub none
 and expects the plan's `--fallback-mode` printed as the fallback. Two more
 show a refusal: `cli_dfu_mode_refused` (an upgrade-only stub, refused, with the
 reason and the mode on the failure output) and `cli_dfu_mode_allow_no_revert`
-(the same stub with `--allow-no-revert`, completed). The stub only *reports* a
-mode; it swaps with revert whatever it claims.
+(the same stub with `--allow-no-revert`, completed). `cli_dfu_mode_two_builds`
+gives a direct-XIP-with-revert stub both builds of the demo image
+(`--demo-builds`) and expects it completed. The stub only *reports* a mode; it
+swaps with revert whatever it claims, so that test shows the build chosen and
+the image-list `start()`, not direct-XIP itself.
 
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
@@ -704,6 +707,11 @@ image is good. Shipped:
   running from the other slot; an image that is not newer is not booted and
   reads as a rollback; with revert, test-reset-confirm in the free slot, and
   an unconfirmed trial reverting; several images refused in both;
+* one build per slot: the build for the free slot sent, byte for byte, from
+  slot 0 and from slot 1; either build already running ⇒ nothing sent; two
+  builds on a device that is not direct-XIP, or that reports nothing ⇒
+  `InvalidArgument` before any upload; a second build that is not an image, or
+  with `upload.sha`, refused by `start()`;
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

@@ -42,6 +42,7 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -76,8 +77,11 @@ enum ExitCode : int
 struct Options
 {
     std::string image_path; ///< Required: see the note in main().
-    std::string name;       ///< --name: match a substring of the advertised name.
-    std::string address;    ///< --address: skip scanning entirely.
+    /// `--image-secondary`: the same image linked for the secondary slot, for
+    /// a direct-XIP device; `image_path` is then the primary slot's build.
+    std::string image_secondary_path;
+    std::string name;    ///< --name: match a substring of the advertised name.
+    std::string address; ///< --address: skip scanning entirely.
     UpdateMode mode = UpdateMode::TestThenConfirm;
     std::chrono::milliseconds scan_timeout{std::chrono::seconds{10}};
     bool quiet = false;
@@ -144,8 +148,10 @@ void usage()
     std::cerr << "usage: winrt_ble_dfu --image PATH [--name NAME | --address ADDR]\n"
                  "                     [--mode MODE] [--fallback-mode M] [--scan-timeout MS]\n"
                  "                     [--allow-no-revert] [--no-downgrade-check]\n"
-                 "                     [--quiet]\n"
+                 "                     [--image-secondary PATH] [--quiet]\n"
                  "  --image PATH   the firmware to install (required)\n"
+                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
+                 "                 secondary slot (--image is then the primary slot's build)\n"
                  "  --name NAME    connect to the first device whose advertised name\n"
                  "                 contains NAME; without it, the first device that\n"
                  "                 advertises the SMP service is used\n"
@@ -179,6 +185,8 @@ void usage()
             out.quiet = true;
         } else if (arg == "--image" && i + 1 < args.size()) {
             out.image_path = args[++i];
+        } else if (arg == "--image-secondary" && i + 1 < args.size()) {
+            out.image_secondary_path = args[++i];
         } else if (arg == "--name" && i + 1 < args.size()) {
             out.name = args[++i];
         } else if (arg == "--address" && i + 1 < args.size()) {
@@ -214,6 +222,7 @@ void usage()
     // make the caller name a file that is never opened -- and a file named but
     // unused is the sort of argument that goes stale without anyone noticing.
     return (out.confirm_only || !out.image_path.empty()) &&
+           (out.image_secondary_path.empty() || (!out.confirm_only && !out.image_path.empty())) &&
            !(!out.name.empty() && !out.address.empty());
 }
 
@@ -255,6 +264,15 @@ int main(int argc, char** argv)
         // `Result` is deliberately not assignable, so it cannot be the thing
         // that gets filled in conditionally.
         source.emplace(std::move(*opened));
+    }
+    std::optional<FileImageSource> secondary;
+    if (!options.image_secondary_path.empty()) {
+        Result<FileImageSource> opened = FileImageSource::open(options.image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
+            return kUpdateFailed;
+        }
+        secondary.emplace(std::move(*opened));
     }
 
     // --- find the device ----------------------------------------------------
@@ -415,8 +433,15 @@ int main(int argc, char** argv)
             pending.finished = true;
         },
     };
-    const Result<void> begun = updater.start(
-        *source, plan, [&](const UpdateEvent& event) { std::visit(on_event, event); });
+    // One build per slot is an image list of one (ADR-0025).
+    const std::array<ImageTarget, 1> builds{ImageTarget{
+        .image = 0,
+        .source = &*source,
+        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
+    }};
+    const auto handler = [&](const UpdateEvent& event) { std::visit(on_event, event); };
+    const Result<void> begun =
+        secondary ? updater.start(builds, plan, handler) : updater.start(*source, plan, handler);
 
     if (!begun.has_value()) {
         std::cerr << "winrt_ble_dfu: " << to_string(begun.error()) << '\n';

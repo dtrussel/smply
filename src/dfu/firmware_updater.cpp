@@ -142,7 +142,7 @@ public:
         }
 
         std::vector<dfu::Target> decided;
-        std::vector<ImageSource*> sources;
+        std::vector<std::array<ImageSource*, 2>> sources;
         decided.reserve(targets.size());
         sources.reserve(targets.size());
         for (const ImageTarget& target : targets) {
@@ -155,11 +155,22 @@ public:
             if (!file.has_value()) {
                 return fail(file.error());
             }
-            decided.push_back(dfu::Target{.image = target.image,
-                                          .commit = target.commit,
-                                          .hash = file->hash,
-                                          .version = file->version});
-            sources.push_back(target.source);
+            dfu::Target& decision = decided.emplace_back();
+            decision.image = target.image;
+            decision.commit = target.commit;
+            decision.hash = file->hash;
+            decision.version = file->version;
+            if (target.secondary_source != nullptr) {
+                // Both builds are read now, so a bad second file fails here too.
+                const Result<TargetFile> secondary = read_target(*target.secondary_source);
+                if (!secondary.has_value()) {
+                    return fail(secondary.error());
+                }
+                decision.builds = std::array<dfu::Target::Build, 2>{
+                    dfu::Target::Build{.hash = file->hash, .version = file->version},
+                    dfu::Target::Build{.hash = secondary->hash, .version = secondary->version}};
+            }
+            sources.push_back({target.source, target.secondary_source});
         }
 
         plan_ = plan;
@@ -294,9 +305,11 @@ private:
             }
             device_commits = device_commits || target.commit == CommitBy::Device;
         }
-        if (targets.size() > 1 && plan.upload.sha.has_value()) {
+        const bool any_builds = std::ranges::any_of(
+            targets, [](const ImageTarget& target) { return target.secondary_source != nullptr; });
+        if ((targets.size() > 1 || any_builds) && plan.upload.sha.has_value()) {
             // It is the hash of one file, and there is more than one.
-            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several images");
+            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several files");
         }
         if (device_commits && plan.apply_poll_interval <= Duration::zero()) {
             return fail(ErrorCode::InvalidArgument, "updater: apply_poll_interval not positive");
@@ -525,7 +538,7 @@ private:
         }
 
         upload_ = image_->upload(
-            *sources_[context_.current], options,
+            *sources_[context_.current][current_target().chosen], options,
             [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
@@ -642,7 +655,8 @@ private:
 
     UpdatePlan plan_;
     /// Parallel to `context_.targets`.
-    std::vector<ImageSource*> sources_;
+    /// Per target: the source, and the secondary slot's build when given.
+    std::vector<std::array<ImageSource*, 2>> sources_;
     UpdateEventCallback on_event_;
     UploadHandle upload_;
 

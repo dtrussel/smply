@@ -165,6 +165,15 @@ struct ImageTarget
     /// The firmware file. Not owned; must outlive the update.
     ImageSource* source = nullptr;
     CommitBy commit = CommitBy::Client;
+    /// Direct-XIP only: a second build of the same image, linked for the
+    /// image's secondary slot (`2n + 1`), with `source` then the build for its
+    /// primary slot (`2n`). The updater sends the one for the slot the device
+    /// is not running from, and counts the image as already present when
+    /// either build is in its own slot (ADR-0025). On a device that does not
+    /// report a direct-XIP mode, the update fails with
+    /// `ErrorCode::InvalidArgument` before anything is sent. Not owned; must
+    /// outlive the update.
+    ImageSource* secondary_source = nullptr;
 };
 
 /// What to do, and how.

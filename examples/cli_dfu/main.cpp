@@ -46,6 +46,7 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -72,9 +73,17 @@ using namespace smply;          // NOLINT(google-build-using-namespace) -- an ex
 using namespace smply::example; // NOLINT(google-build-using-namespace)
 using namespace smply::dfu_app; // NOLINT(google-build-using-namespace)
 
+/// The demo's second build differs from the first in size alone.
+constexpr std::size_t kDemoSecondaryBodySize = 4100;
+
 struct Options
 {
     std::string image_path; ///< Empty means "invent one".
+    /// `--image-secondary`: the same image linked for the secondary slot, for
+    /// a direct-XIP device; `image_path` is then the primary slot's build.
+    std::string image_secondary_path;
+    /// `--demo-builds`: invent both builds, one per slot.
+    bool demo_builds = false;
     UpdateMode mode = UpdateMode::TestThenConfirm;
     bool quiet = false;
 
@@ -137,7 +146,12 @@ void usage()
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
                  "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
                  "               [--allow-no-revert] [--no-downgrade-check]\n"
+                 "               [--image-secondary PATH | --demo-builds]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
+                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
+                 "                secondary slot (--image is then the primary slot's build);\n"
+                 "                the one for the slot the device is not running is sent\n"
+                 "  --demo-builds  generate both builds of the demo image, one per slot\n"
                  "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
                  "                is confirmed here, every other image is left to the device\n"
                  "  --demo-package  generate a two-image package, and a device to take it\n"
@@ -168,6 +182,10 @@ void usage()
             out.quiet = true;
         } else if (arg == "--image" && i + 1 < args.size()) {
             out.image_path = args[++i];
+        } else if (arg == "--image-secondary" && i + 1 < args.size()) {
+            out.image_secondary_path = args[++i];
+        } else if (arg == "--demo-builds") {
+            out.demo_builds = true;
         } else if (arg == "--mode" && i + 1 < args.size()) {
             if (!parse_mode(args[++i], out.mode)) {
                 return false;
@@ -207,7 +225,14 @@ void usage()
     // One thing to install, and the package-only options only with a package.
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
                         (out.demo_package ? 1 : 0);
-    return sources <= 1 && (out.package_mode() || (!out.apply_fails && out.commits.empty()));
+    // A second build goes with exactly one first build: a named file, or the
+    // demo's; and never with a package, which names its own files.
+    const bool one_image = !out.package_mode();
+    const bool builds_ok = (out.image_secondary_path.empty() || !out.image_path.empty()) &&
+                           (!out.demo_builds || out.image_path.empty()) &&
+                           (one_image || (out.image_secondary_path.empty() && !out.demo_builds));
+    return sources <= 1 && builds_ok &&
+           (out.package_mode() || (!out.apply_fails && out.commits.empty()));
 }
 
 /// How far the device took an image it commits itself (ADR-0022).
@@ -319,7 +344,9 @@ int main(int argc, char** argv)
 
     const std::vector<std::byte> running = build_demo_image(DemoVersion{.major = 1});
     std::string image_path = options.image_path;
-    DemoImageFile demo_file; // before `source`, which reads it
+    std::string image_secondary_path = options.image_secondary_path;
+    DemoImageFile demo_file;           // before `source`, which reads it
+    DemoImageFile demo_secondary_file; // and `secondary`, which reads this
     if (image_path.empty() && !options.package_mode()) {
         const std::vector<std::byte> update = build_demo_image(DemoVersion{.major = 2});
         const std::optional<std::string> written = demo_file.write(update);
@@ -328,6 +355,18 @@ int main(int argc, char** argv)
             return 1;
         }
         image_path = *written;
+    }
+    if (options.demo_builds) {
+        // The same version again, a different build: what a direct-XIP
+        // project links for its second slot. Here only the size differs.
+        const std::vector<std::byte> other_build =
+            build_demo_image(DemoVersion{.major = 2}, kDemoSecondaryBodySize);
+        const std::optional<std::string> written = demo_secondary_file.write(other_build);
+        if (!written.has_value()) {
+            std::cerr << "cli_dfu: cannot write the demo image\n";
+            return 1;
+        }
+        image_secondary_path = *written;
     }
 
     // A package, when there is one: the images, and who commits each.
@@ -368,6 +407,15 @@ int main(int argc, char** argv)
     if (!options.package_mode() && !source.has_value()) {
         std::cerr << "cli_dfu: " << to_string(source.error()) << '\n';
         return 1;
+    }
+    std::optional<FileImageSource> secondary;
+    if (!image_secondary_path.empty()) {
+        Result<FileImageSource> opened = FileImageSource::open(image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "cli_dfu: " << to_string(opened.error()) << '\n';
+            return 1;
+        }
+        secondary.emplace(std::move(*opened));
     }
 
     // --- the pump's wake-up, and the marshalling queue -----------------------
@@ -470,8 +518,23 @@ int main(int argc, char** argv)
     const auto handler = [&] {
         return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
     };
-    const Result<void> begun = package ? updater.start(package->targets(), plan, handler())
-                                       : updater.start(*source, plan, handler());
+    // One build per slot is an image list of one: the image-list start() is
+    // the one that takes it.
+    const std::array<ImageTarget, 1> builds{ImageTarget{
+        .image = 0,
+        .source = source.has_value() ? &*source : nullptr,
+        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
+    }};
+    const auto begin = [&]() -> Result<void> {
+        if (package) {
+            return updater.start(package->targets(), plan, handler());
+        }
+        if (secondary) {
+            return updater.start(builds, plan, handler());
+        }
+        return updater.start(*source, plan, handler());
+    };
+    const Result<void> begun = begin();
 
     if (!begun.has_value()) {
         std::cerr << "cli_dfu: " << to_string(begun.error()) << '\n';
