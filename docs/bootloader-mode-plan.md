@@ -234,10 +234,10 @@ before the first byte is sent, with one error code and a stated reason.
 **Delivers:** with downgrade prevention reported, an older image is refused
 before the transfer instead of erased by the bootloader after it.
 
-- [ ] With `no-downgrade`, an image whose `major.minor.revision` is strictly lower than the running image's is refused with `Downgrade`; an equal or higher version updates; the build number is ignored
-- [ ] `check_downgrade = false` turns the check off; the three tools take `--no-downgrade-check`
-- [ ] `ServerSimulator` reports the flag; component tests cover lower, equal and higher versions, and the opt-out
-- [ ] `security.md` T8's mitigation describes the check
+- [x] With `no-downgrade`, an image whose `major.minor.revision` is strictly lower than the running image's is refused with `Downgrade`; an equal or higher version updates; the build number is ignored
+- [x] `check_downgrade = false` turns the check off; the three tools take `--no-downgrade-check`
+- [x] `ServerSimulator` reports the flag; component tests cover lower, equal and higher versions, and the opt-out
+- [x] `security.md` T8's mitigation describes the check
 
 ### Stage 5: Direct-XIP with one file
 
