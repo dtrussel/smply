@@ -35,7 +35,7 @@ only.
 
 ## In progress
 
-Nothing. Pick the next item from the backlog below, by its "When".
+**MCUboot-mode-aware updates**: [`bootloader-mode-plan.md`](bootloader-mode-plan.md). smply asks the device for its MCUboot mode (OS command 8) and the updater never sends a command, or promises a revert, that the mode cannot honour.
 
 ## Acceptance gaps that need the hardware bench
 
