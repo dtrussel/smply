@@ -8,8 +8,8 @@ Written 2026-10-09. The roadmap's "In progress" section points here. Work the
 stages in order. Each stage is checked off in this file in the commit that
 lands it, and the file is deleted with the last one
 ([`agents/issue-tracker.md`](agents/issue-tracker.md)). The decisions below
-were settled in a `/grill-with-docs` session. The first stage writes them
-down as a new ADR, before any code changes.
+were settled in a `/grill-with-docs` session. They are recorded in
+[ADR-0025](decisions/ADR-0025-bootloader-mode-aware-update.md).
 
 ## Problem Statement
 
@@ -194,9 +194,9 @@ are independent once 3 has landed. Every stage from 2 to 6 changes
 **Delivers:** the decision and its facts written down before any code
 (CLAUDE.md rule 4). Documentation only.
 
-- [ ] A new ADR, `Status: Proposed`, records that the updater follows the device's reported mode, the per-mode behaviour, and the rejected alternatives; it names its consistency with ADR-0009 and ADR-0014, and is listed in the decisions index
-- [ ] `protocol-notes.md` gains the bootloader-information command, MCUboot's mode enum, the set-state gating, direct-XIP slot targeting, the downgrade comparison and the direct-XIP package keys, each with a new or existing source row
-- [ ] `tools/check_docs.py` passes
+- [x] A new ADR, `Status: Proposed`, records that the updater follows the device's reported mode, the per-mode behaviour, and the rejected alternatives; it names its consistency with ADR-0009 and ADR-0014, and is listed in the decisions index
+- [x] `protocol-notes.md` gains the bootloader-information command, MCUboot's mode enum, the set-state gating, direct-XIP slot targeting, the downgrade comparison and the direct-XIP package keys, each with a new or existing source row
+- [x] `tools/check_docs.py` passes
 
 ### Stage 2: Report the bootloader mode
 

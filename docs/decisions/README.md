@@ -46,3 +46,4 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0022](ADR-0022-device-images-commit-after-client.md) | A device-committed image stays on trial until the client images are confirmed, and the wait survives the link | Accepted; decision 4 extended by 0023 |
 | [0023](ADR-0023-lost-link-around-the-confirm.md) | A lost link or answer around the confirm is recovered by re-reading the device | Accepted |
 | [0024](ADR-0024-transport-message-overhead.md) | A transport reports what the device's buffer spends beyond the message | Accepted; amends 0005 |
+| [0025](ADR-0025-bootloader-mode-aware-update.md) | The updater follows the MCUboot mode the device reports | Proposed |
