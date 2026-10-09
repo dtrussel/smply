@@ -284,5 +284,5 @@ device.
 **Delivers:** the release, and the roadmap left describing only open work.
 
 - [ ] The version is 0.3.0, and `CHANGELOG.md` has a section for it
-- [ ] The roadmap gains backlog rows for the FS, Shell, Enum and Zephyr-basic groups, the RAM-load and firmware-loader update paths, and the QSPI split package, and an acceptance gap for a real direct-XIP device
+- [ ] The roadmap gains backlog rows for the FS, Shell, Enum and Zephyr-basic groups, the RAM-load and firmware-loader update paths, the QSPI split package, and a pre-upload refusal of a direct-XIP image that is not newer than the running one (the bootloader boots only a newer image, so today it uploads in full and fails after the reset as a rollback), and an acceptance gap for a real direct-XIP device
 - [ ] The ADR's status is set by a human (it stays Proposed until then); this plan file and its "In progress" line are deleted
