@@ -260,10 +260,10 @@ free slot, in both variants, where today the update fails after the upload.
 **Delivers:** an image can be given as one file per slot, and smply sends the
 one that matches the device's free slot.
 
-- [ ] An `ImageTarget` can carry one source per slot; with one source it behaves as before
-- [ ] Under direct-XIP the updater uploads the alternative for the free slot, and counts the image as already present when either alternative's hash is in its slot
-- [ ] Outside direct-XIP, a two-source target is refused as an invalid argument
-- [ ] The three tools accept a second file for the other slot
+- [x] An `ImageTarget` can carry one source per slot; with one source it behaves as before
+- [x] Under direct-XIP the updater uploads the alternative for the free slot, and counts the image as already present when either alternative's hash is in its slot
+- [x] Outside direct-XIP, a two-source target is refused as an invalid argument
+- [x] The three tools accept a second file for the other slot
 
 ### Stage 7: Direct-XIP packages
 
