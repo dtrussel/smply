@@ -31,3 +31,10 @@ distributed as part of this software:
 
 Catch2 — https://github.com/catchorg/Catch2
     Licensed under the Boost Software License 1.0.
+
+The following are development tooling for Claude Code, kept in the source
+tree under .claude/skills/ and never built or shipped:
+
+mattpocock/skills — https://github.com/mattpocock/skills
+    Copyright (c) 2026 Matt Pocock.
+    Licensed under the MIT License; see .claude/skills/THIRD-PARTY-NOTICES.md.

@@ -22,3 +22,9 @@ timeout-*
 # workspace, so they cannot live in the runner's temp directory.
 smply.spdx.json
 osv.sarif
+
+# Personal Claude Code settings and instructions; the shared ones are committed.
+.claude/settings.local.json
+CLAUDE.local.md
+# Personal agent workspace: /teach, /to-questionnaire, one-off wizards.
+.local/

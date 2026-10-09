@@ -48,7 +48,8 @@ portable BLE helpers in `common/` and the platform adapters beside them ·
 (`smply::minicbor`, `smply::dfu_app` for `FileImageSource`,
 `ReconnectPolicy` and `PackageUpdate`, and `smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
 `winrt_ble_dfu` (Windows) · `tests/` unit, component, fuzz, HIL · `docs/` living
-documentation and ADRs. Full description:
+documentation and ADRs · `.claude/` the shared Claude Code skills, rules and
+hook. Full description:
 [`docs/architecture.md`](docs/architecture.md) §10.
 
 ## Conventions
@@ -82,3 +83,49 @@ Three ways this has gone wrong before, all cheap to avoid:
 * **Build every preset, not just one.** GCC and Clang reject different things,
   in both directions, and Clang's ASan finds dangling callback captures that
   GCC's does not report at all.
+
+## Agent skills
+
+Shared skills from mattpocock/skills are vendored in `.claude/skills/`;
+[`docs/agents/skills.md`](docs/agents/skills.md) lists them, what each is for,
+and how they are updated. They were written for GitHub Issues, `GLOSSARY.md`
+and `docs/adr/`. **Where a skill's text and these files disagree, these
+files win.**
+
+### Issue tracker
+
+Work is tracked in the repository: `docs/roadmap.md`, plus a `docs/<slug>-plan.md`
+for work too big for one row. Never `gh issue`, `glab` or `.scratch/`. See
+[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+None: triage roles are recorded on roadmap rows, and rejected requests become
+resolved open questions. See [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context. Terms are defined where they are used (`protocol-notes.md`,
+`api.md`, `security.md`); a root `GLOSSARY.md` is created lazily and only
+points at them. ADRs are `docs/decisions/ADR-NNNN-*.md` in the full format,
+superseded and never edited. See [`docs/agents/domain.md`](docs/agents/domain.md).
+
+### Standards for review
+
+`code-review`'s standards are this file's Conventions, `docs/design.md` §11,
+the standing caveats in `docs/handoff.md`, `docs/quality-gates.md` and
+`CONTRIBUTING.md`. The project's `code-review` and `prototype` skills replace
+the built-ins of the same name; the built-in reviewer is still `/review`. In `/implement`,
+"typechecking" means building a preset, and "the full test suite" means the
+checklist in `docs/handoff.md`.
+
+A PR body keeps the headings of `.github/pull_request_template.md`. The `pr`
+skill's Summary and Merge Danger go under "What changed, and why", and its
+Evidence under "Checks run locally".
+
+Personal agent output goes in the git-ignored `.local/`, never the repository
+root: `/teach` in `.local/teach/<topic>/`, `/to-questionnaire` in
+`.local/questionnaires/`, one-off wizards in `.local/wizards/`.
+
+A hook reports clang-format differences in any C++ source Claude edits. Fix
+them in that file only.
