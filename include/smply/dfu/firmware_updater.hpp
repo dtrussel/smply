@@ -174,7 +174,7 @@ struct UpdatePlan
     /// query, or reports `-1` or a number smply does not know (ADR-0025). A
     /// mode the device does report always wins over this. `Unknown`, like no
     /// value, means "assume nothing".
-    std::optional<McubootMode> fallback_mode{};
+    std::optional<McubootMode> fallback_mode;
 
     /// Accept an update the bootloader cannot revert (ADR-0025). Without it,
     /// `TestThenConfirm` and `ConfirmImmediately` are refused on an

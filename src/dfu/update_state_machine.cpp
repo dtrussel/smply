@@ -102,7 +102,7 @@ void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& rep
     if (!refusal.has_value()) {
         return std::nullopt;
     }
-    context.report.refusal = *refusal;
+    context.report.refusal = refusal;
     return fail(context, ErrorCode::UpdateRefused, refusal_text(*refusal));
 }
 

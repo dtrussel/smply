@@ -1024,7 +1024,7 @@ struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
     // Used only when the device does not report a mode: no command, no answer,
     // -1, or a number smply does not know. A reported mode always wins.
-    std::optional<McubootMode> fallback_mode{};
+    std::optional<McubootMode> fallback_mode;
     // Accept an update the bootloader cannot revert: without it, an
     // upgrade-only device is refused (Refusal::RevertUnavailable). With it the
     // image is permanent at the reset, and nothing asks for a confirm.
