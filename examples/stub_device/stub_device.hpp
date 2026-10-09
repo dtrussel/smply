@@ -15,6 +15,10 @@
 /// growing this one; a device worth trusting is a test double, and belongs
 /// under `tests/`.
 ///
+/// It also answers the bootloader-information command with a mode it is given,
+/// so that the examples can show the mode being reported and an update being
+/// refused for it (ADR-0025). It reports the mode and models none of it.
+///
 /// The one extension is a **second image that the device commits itself**
 /// (`SecondImage`), because the multi-image examples need a device to take a
 /// package (ADR-0021). It is the simulator's device-committed mode cut down to
@@ -103,8 +107,14 @@ public:
     /// \param primary The image the device is already running.
     /// \param second  An image 1 the device commits itself, or nothing for the
     ///                ordinary one-image device.
+    /// \param bootloader_mode The number the device reports to the bootloader-
+    ///                information `mode` query, or nothing for a device without
+    ///                the command. **Reported only**: the device still swaps
+    ///                with revert whatever it claims, so a demo of a refusal
+    ///                is honest and a demo of any other mode is not.
     explicit StubDevice(std::vector<std::byte> primary,
-                        std::optional<SecondImage> second = std::nullopt);
+                        std::optional<SecondImage> second = std::nullopt,
+                        std::optional<std::int64_t> bootloader_mode = std::nullopt);
 
     StubDevice(const StubDevice&) = delete;
     StubDevice(StubDevice&&) = delete;
@@ -179,6 +189,9 @@ private:
     };
 
     std::vector<ImagePair> images_;
+
+    /// What the bootloader-information `mode` query answers, if anything.
+    std::optional<std::int64_t> bootloader_mode_;
 
     /// The upload in progress: the image it is for, the bytes accepted so far,
     /// and the total the client declared.

@@ -92,6 +92,11 @@ inline constexpr std::size_t kMaxReasonLength = 128;
 /// silently truncated.
 inline constexpr std::size_t kMaxEchoLength = 128;
 
+/// Longest bootloader name accepted from the bootloader-information command
+/// (docs/protocol-notes.md section 5). MCUboot answers `"MCUboot"`; the bound
+/// exists so that a device cannot make smply copy a string of its choosing.
+inline constexpr std::size_t kMaxBootloaderNameLength = 32;
+
 /// Longest statistics name accepted, in bytes: a group name in either
 /// direction, and a field name in a response.
 ///

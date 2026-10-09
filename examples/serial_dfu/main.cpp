@@ -33,6 +33,7 @@
 #include "serial_port/serial_port_config.hpp"
 #include "serial_port/serial_port_transport.hpp"
 
+#include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
@@ -94,6 +95,9 @@ struct Options
     /// Without --port: the stub fails to apply image 1.
     bool apply_fails = false;
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+    /// The MCUboot mode to assume when the device does not report one
+    /// (ADR-0025).
+    std::optional<McubootMode> fallback_mode;
 
     [[nodiscard]] bool package_mode() const noexcept
     {
@@ -106,7 +110,8 @@ void usage()
     std::cerr << "usage: serial_dfu [--port PATH [--baud N] [--flow none|rtscts]]\n"
                  "                  [--image PATH | --package PATH | --demo-package]\n"
                  "                  [--commit N=client|device] [--apply-fails]\n"
-                 "                  [--stub uart|cdc] [--mode MODE] [--quiet]\n"
+                 "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
+                 "                  [--quiet]\n"
                  "  --port PATH   the device's serial port; prefer a stable name such as\n"
                  "                /dev/serial/by-id/... (a USB port may be renamed on reset)\n"
                  "  --baud N      line speed, default 115200 (ignored by USB CDC ACM)\n"
@@ -123,6 +128,9 @@ void usage()
                  "                device's buf_size, that buffer (less the frame's 4\n"
                  "                bytes) becomes the limit\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
+                 "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
+                 "                report one, named as the report prints it (swap-using-move,\n"
+                 "                upgrade-only, direct-xip, ...)\n"
                  "  --quiet       print only the outcome\n"
                  "With --port, one of --image or --package is required.\n";
 }
@@ -189,6 +197,11 @@ void usage()
             out.demo_package = true;
         } else if (arg == "--apply-fails") {
             out.apply_fails = true;
+        } else if (arg == "--fallback-mode" && has_value) {
+            out.fallback_mode = parse_mcuboot_mode(args[++i]);
+            if (!out.fallback_mode.has_value()) {
+                return false;
+            }
         } else if (arg == "--commit" && has_value) {
             const auto commit = parse_commit(args[++i]);
             if (!commit.has_value()) {
@@ -463,6 +476,7 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    plan.fallback_mode = options.fallback_mode;
     // A UART does not drop on reset, so this is how long the updater waits
     // before assuming the reset happened anyway (design.md section 13).
     plan.disconnect_grace = std::chrono::seconds{2};
@@ -603,6 +617,7 @@ int main(int argc, char** argv)
     const SerialLinkCounters counters = total(links);
     if (!outcome.has_value()) {
         std::cerr << "serial_dfu: update failed: " << to_string(outcome.error()) << '\n';
+        std::cerr << "  " << describe_mode(updater.report()) << '\n';
         return 1;
     }
     const UpdateReport& report = *outcome;
@@ -621,5 +636,6 @@ int main(int argc, char** argv)
               << " crc_failures=" << counters.deframe.crc_failures
               << " refused=" << counters.send.refused << " images=" << report.images.size()
               << " applied=" << applied << " committed=" << committed << '\n';
+    std::cout << "  " << describe_mode(report) << '\n';
     return report.final_state == UpdateState::Completed ? 0 : 1;
 }

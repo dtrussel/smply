@@ -139,6 +139,9 @@ struct ServerConfig {
     bool translate_v1_errors    = true;      // the A16 rebuild for a v1 request
     std::uint32_t slot_size     = 0;         // 0 = unbounded
     Duration response_delay{0};
+    std::optional<std::int64_t> bootloader_mode{};  // OS command 8; none = ENOTSUP
+    bool no_downgrade           = false;     // "no-downgrade": true in the answer
+    std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
 ```
 
@@ -235,6 +238,11 @@ Every field of image-state decoded including the "absent means false" rule and
 the single-image "absent image ⇒ 0" rule; hostile responses (`images` not an
 array, 10 000 entries, 4 KiB version string, 200-byte hash) ⇒ bounded error;
 `set_state` encoding with and without `hash`; reset with/without `force`.
+Bootloader information (`test_os_group.cpp`): both requests' bytes; the name
+and every one of MCUboot's ten modes in both encodings; `-1` and numbers
+outside the enum kept as `Unknown` with their value; `no-downgrade` present and
+absent; a missing or wrong-typed mode or flag, a name one over its bound, the
+OS-group "no answer" error, and every truncation of a reply.
 
 Statistics and settings (`test_statistics_group.cpp`, `test_settings_group.cpp`):
 every request's operation, command and bytes, hand-derived from the grammar --
@@ -450,6 +458,12 @@ it commits itself. Each passes on its output lines, never on the exit code:
   and warn that the next reset reverts image 0. Both patterns were checked
   against the other test's output, so neither passes on the wrong outcome.
 
+Two show the MCUboot mode (ADR-0025), again on their output lines:
+`cli_dfu_mode_reported` gives the stub a mode (`--stub-mode`) and expects it
+printed as reported by the device; `cli_dfu_mode_fallback` gives the stub none
+and expects the plan's `--fallback-mode` printed as the fallback. The stub only
+*reports* a mode; it swaps with revert whatever it claims.
+
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
 clean update needs and no more. Its one extension is a second image the device
@@ -655,6 +669,11 @@ image is good. Shipped:
   and the flash still byte-exact;
 * `EBUSY` reset retried with `force`; a **lost** reset response treated as
   success (A3); a device that never drops the link released by the grace timer;
+* the MCUboot mode: queried between the parameters and the slot table and
+  reported; a device without the command, with a bootloader that is not
+  MCUboot, or reporting `-1` ⇒ the update unchanged, mode assumed; the plan's
+  fallback used only when the device reports none; a query that times out ⇒
+  failed before any upload (ADR-0025);
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

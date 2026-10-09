@@ -4,6 +4,7 @@
 
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/groups/os.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -26,6 +27,24 @@ namespace {
 [[nodiscard]] Step fail(Context& context, ErrorCode code, const char* where)
 {
     return fail(context, Error{code, where});
+}
+
+/// Records the mode the update runs under: the device's answer when it gave
+/// one, else the plan's fallback, else nothing (ADR-0025, decision 1).
+void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& report)
+{
+    if (reported != McubootMode::Unknown) {
+        report.bootloader_mode = reported;
+        report.mode_source = ModeSource::Reported;
+        return;
+    }
+    if (plan.fallback_mode.has_value() && *plan.fallback_mode != McubootMode::Unknown) {
+        report.bootloader_mode = *plan.fallback_mode;
+        report.mode_source = ModeSource::Supplied;
+        return;
+    }
+    report.bootloader_mode = McubootMode::Unknown;
+    report.mode_source = ModeSource::Assumed;
 }
 
 /// The slot of \p image that is running.
@@ -523,10 +542,28 @@ namespace {
         // than broken (docs/protocol-notes.md section 9, A8).
         if (event.kind == Event::Kind::ParametersRead) {
             context.buf_size = event.buf_size;
-            return Step{UpdateState::InspectingImages, Effect::ReadState};
+            return Step{UpdateState::QueryingBootloader, Effect::QueryBootloader};
         }
         if (event.kind == Event::Kind::ParametersUnavailable) {
+            return Step{UpdateState::QueryingBootloader, Effect::QueryBootloader};
+        }
+        break;
+
+    case UpdateState::QueryingBootloader:
+        // Optional too: no answer leaves the mode unknown, and the update runs
+        // as it always has. A lost link or a timeout is not "no answer", and a
+        // link that cannot answer one query is not given an upload (ADR-0025).
+        if (event.kind == Event::Kind::BootloaderRead) {
+            record_mode(event.bootloader.mode, plan, context.report);
             return Step{UpdateState::InspectingImages, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::BootloaderUnavailable) {
+            record_mode(McubootMode::Unknown, plan, context.report);
+            return Step{UpdateState::InspectingImages, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::Failed) {
+            // Nothing has been changed on the device yet.
+            return fail(context, event.error);
         }
         break;
 

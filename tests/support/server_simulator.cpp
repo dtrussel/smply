@@ -398,6 +398,34 @@ std::vector<std::byte> ServerSimulator::handle_os(const Header& header, ConstByt
         return out.bytes();
     }
 
+    case 8: { // Bootloader information: read-only, and optional.
+        if (header.op != Operation::Read || !config_.bootloader_mode.has_value()) {
+            return smp_failure(header.version, SmpError::NotSupported);
+        }
+        constexpr std::uint64_t kQueryYieldsNoAnswer = 3;
+        const tcbor::Value* query = request->find("query");
+        if (query == nullptr) {
+            tcbor::Writer out;
+            out.map(1).text("bootloader").text(config_.bootloader_name);
+            return out.bytes();
+        }
+        if (!query->is(tcbor::Value::Kind::Text) || query->text != "mode" ||
+            config_.bootloader_name != "MCUboot") {
+            return os_failure(kQueryYieldsNoAnswer);
+        }
+        tcbor::Writer out;
+        out.map(config_.no_downgrade ? 2 : 1).text("mode");
+        if (*config_.bootloader_mode < 0) {
+            out.nint(*config_.bootloader_mode);
+        } else {
+            out.uint(static_cast<std::uint64_t>(*config_.bootloader_mode));
+        }
+        if (config_.no_downgrade) {
+            out.text("no-downgrade").boolean(true);
+        }
+        return out.bytes();
+    }
+
     default:
         return smp_failure(header.version, SmpError::NotSupported);
     }
@@ -897,6 +925,15 @@ std::vector<std::byte> ServerSimulator::image_failure(Version version, ImageErro
     out.map(1).text("err").map(2);
     out.text("group").uint(static_cast<std::uint64_t>(Group::Image));
     out.text("rc").uint(static_cast<std::uint64_t>(code));
+    return out.bytes();
+}
+
+std::vector<std::byte> ServerSimulator::os_failure(std::uint64_t code)
+{
+    tcbor::Writer out;
+    out.map(1).text("err").map(2);
+    out.text("group").uint(static_cast<std::uint64_t>(Group::Os));
+    out.text("rc").uint(code);
     return out.bytes();
 }
 

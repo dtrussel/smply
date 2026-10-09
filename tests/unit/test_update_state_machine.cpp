@@ -18,6 +18,7 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/groups/os.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
@@ -37,7 +38,9 @@ using smply::ImageError;
 using smply::ImageHash;
 using smply::ImageSlot;
 using smply::ImageState;
+using smply::McubootMode;
 using smply::MgmtError;
+using smply::ModeSource;
 using smply::SmpError;
 using smply::UpdateMode;
 using smply::UpdatePlan;
@@ -188,9 +191,10 @@ struct SlotSpec
 }
 
 /// Every state an update can be in that is not terminal.
-constexpr std::array<UpdateState, 16> kNonTerminal{
+constexpr std::array<UpdateState, 17> kNonTerminal{
     UpdateState::Idle,
     UpdateState::QueryingParameters,
+    UpdateState::QueryingBootloader,
     UpdateState::InspectingImages,
     UpdateState::Planning,
     UpdateState::Uploading,
@@ -228,16 +232,96 @@ TEST_CASE("the buffer budget is remembered, and its absence is not fatal", "[dfu
     read.kind = Event::Kind::ParametersRead;
     read.buf_size = 512;
     const Step got = advance(UpdateState::QueryingParameters, read, UpdatePlan{}, context);
-    CHECK(got.next == UpdateState::InspectingImages);
-    CHECK(got.effect == Effect::ReadState);
+    CHECK(got.next == UpdateState::QueryingBootloader);
+    CHECK(got.effect == Effect::QueryBootloader);
     CHECK(context.buf_size == 512);
 
     Context without = fresh();
     const Step missing = advance(UpdateState::QueryingParameters,
                                  just(Event::Kind::ParametersUnavailable), UpdatePlan{}, without);
-    CHECK(missing.next == UpdateState::InspectingImages);
-    CHECK(missing.effect == Effect::ReadState);
+    CHECK(missing.next == UpdateState::QueryingBootloader);
+    CHECK(missing.effect == Effect::QueryBootloader);
     CHECK(without.buf_size == 0);
+}
+
+namespace {
+
+[[nodiscard]] Event bootloader_read(McubootMode mode)
+{
+    Event event;
+    event.kind = Event::Kind::BootloaderRead;
+    event.bootloader.mode = mode;
+    event.bootloader.raw_mode = static_cast<std::int64_t>(mode);
+    return event;
+}
+
+} // namespace
+
+TEST_CASE("a reported mode is recorded as reported, and the slot table is read next",
+          "[dfu][machine][mode]")
+{
+    // The device's answer wins over the plan's fallback (ADR-0025, decision 1).
+    Context context = fresh();
+    UpdatePlan plan;
+    plan.fallback_mode = McubootMode::UpgradeOnly;
+    const Step step = advance(UpdateState::QueryingBootloader,
+                              bootloader_read(McubootMode::SwapUsingMove), plan, context);
+    CHECK(step.next == UpdateState::InspectingImages);
+    CHECK(step.effect == Effect::ReadState);
+    CHECK(context.report.bootloader_mode == McubootMode::SwapUsingMove);
+    CHECK(context.report.mode_source == ModeSource::Reported);
+}
+
+TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machine][mode]")
+{
+    UpdatePlan supplied;
+    supplied.fallback_mode = McubootMode::SwapUsingScratch;
+
+    Context with = fresh();
+    const Step step = advance(UpdateState::QueryingBootloader,
+                              just(Event::Kind::BootloaderUnavailable), supplied, with);
+    CHECK(step.next == UpdateState::InspectingImages);
+    CHECK(step.effect == Effect::ReadState);
+    CHECK(with.report.bootloader_mode == McubootMode::SwapUsingScratch);
+    CHECK(with.report.mode_source == ModeSource::Supplied);
+
+    Context without = fresh();
+    static_cast<void>(advance(UpdateState::QueryingBootloader,
+                              just(Event::Kind::BootloaderUnavailable), UpdatePlan{}, without));
+    CHECK(without.report.bootloader_mode == McubootMode::Unknown);
+    CHECK(without.report.mode_source == ModeSource::Assumed);
+
+    // A fallback of Unknown is the same as none.
+    UpdatePlan unknown;
+    unknown.fallback_mode = McubootMode::Unknown;
+    Context nothing = fresh();
+    static_cast<void>(advance(UpdateState::QueryingBootloader,
+                              just(Event::Kind::BootloaderUnavailable), unknown, nothing));
+    CHECK(nothing.report.mode_source == ModeSource::Assumed);
+}
+
+TEST_CASE("a reported unknown mode is no answer, so the fallback applies", "[dfu][machine][mode]")
+{
+    // -1, or a number newer than smply: neither can drive a decision (A38).
+    UpdatePlan plan;
+    plan.fallback_mode = McubootMode::SwapUsingOffset;
+    Context context = fresh();
+    static_cast<void>(advance(UpdateState::QueryingBootloader,
+                              bootloader_read(McubootMode::Unknown), plan, context));
+    CHECK(context.report.bootloader_mode == McubootMode::SwapUsingOffset);
+    CHECK(context.report.mode_source == ModeSource::Supplied);
+}
+
+TEST_CASE("a failed bootloader query is fatal and changes nothing", "[dfu][machine][mode]")
+{
+    Context context = fresh();
+    const Step step =
+        advance(UpdateState::QueryingBootloader, failed(ErrorCode::Timeout), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Failed);
+    CHECK(step.effect == Effect::Finish);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(context.report.cause->code() == ErrorCode::Timeout);
+    CHECK_FALSE(context.report.revert_pending);
 }
 
 TEST_CASE("reading the slot table leads to a planning step", "[dfu][machine]")

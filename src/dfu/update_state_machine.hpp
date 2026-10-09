@@ -55,6 +55,7 @@ enum class Effect : std::uint8_t
     /// with a real transition rather than something invisible.
     Continue,
     QueryParameters,
+    QueryBootloader,
     ReadState,
     StartUpload,
     ResumeUpload,
@@ -86,6 +87,10 @@ struct Event
         ParametersRead,
         /// The optional parameters command failed. Not fatal (A8).
         ParametersUnavailable,
+        /// The device answered the bootloader-information `mode` query.
+        BootloaderRead,
+        /// It gave no answer: a device error, not a lost link (ADR-0025).
+        BootloaderUnavailable,
         StateRead,
         UploadFinished,
         MarkedForTest,
@@ -111,6 +116,8 @@ struct Event
     Kind kind{};
     /// `ParametersRead`.
     std::uint32_t buf_size = 0;
+    /// `BootloaderRead`.
+    BootloaderMode bootloader{};
     /// `StateRead`. Borrowed for the duration of the call.
     const ImageState* state = nullptr;
     /// `UploadFinished`.

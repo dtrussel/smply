@@ -3,6 +3,7 @@
 add_executable(smply_unit_tests
     test_assembler.cpp
     test_ble_framing.cpp
+    test_bootloader_mode_option.cpp
     test_cbor.cpp
     test_clock.cpp
     test_dfu_package.cpp

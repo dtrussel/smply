@@ -91,6 +91,21 @@ struct ServerConfig
     /// False makes MCUmgr parameters answer `ENOTSUP`, as older servers do.
     bool supports_mcumgr_params = true;
 
+    /// `CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO`, and the mode the build reports
+    /// to the `mode` query (protocol-notes sections 5 and 7). No value leaves
+    /// the command out, so it answers `ENOTSUP`, as Zephyr does by default.
+    /// The number is sent as given, so `-1` and numbers outside MCUboot's enum
+    /// can be tested.
+    std::optional<std::int64_t> bootloader_mode{};
+
+    /// `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`: the `mode` answer carries
+    /// `"no-downgrade": true`.
+    bool no_downgrade = false;
+
+    /// The name the empty query answers. Anything but `"MCUboot"` has no answer
+    /// to `mode`, which is an OS-group error, `QUERY_YIELDS_NO_ANSWER`.
+    std::string bootloader_name = "MCUboot";
+
     /// `CONFIG_MCUMGR_GRP_IMG_SLOT_INFO`. Off by default, as in Zephyr.
     bool supports_slot_info = false;
 
@@ -344,6 +359,9 @@ private:
     [[nodiscard]] std::vector<std::byte> image_failure(Version version, ImageError code) const;
     /// A flat SMP-level failure, which never carries a group.
     [[nodiscard]] static std::vector<std::byte> smp_failure(Version version, SmpError code);
+    /// An OS-group error, in the v2 `err` shape whatever the request's version:
+    /// the simulator does not model Zephyr's v1 translation of OS-group codes.
+    [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
 
     /// Which slot of \p image (0 or 1, within the pair) the next boot runs.
     [[nodiscard]] std::size_t next_boot_slot(std::uint32_t image) const noexcept;

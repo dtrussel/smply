@@ -31,6 +31,7 @@
 #include "stub_device/demo_package.hpp"
 #include "stub_device/stub_device.hpp"
 
+#include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
@@ -96,6 +97,13 @@ struct Options
     /// `--commit N=client|device`, in the order given.
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
 
+    /// `--fallback-mode`: the mode to assume when the device does not report
+    /// one (ADR-0025).
+    std::optional<McubootMode> fallback_mode;
+    /// `--stub-mode`: the mode the stub device reports. Without it, the stub
+    /// has no bootloader-information command, like most Zephyr builds.
+    std::optional<McubootMode> stub_mode;
+
     [[nodiscard]] bool package_mode() const noexcept
     {
         return demo_package || !package_path.empty();
@@ -123,7 +131,7 @@ void usage()
 {
     std::cerr << "usage: cli_dfu [--image PATH | --package PATH | --demo-package] [--mode MODE]\n"
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
-                 "               [--apply-fails]\n"
+                 "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
                  "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
                  "                is confirmed here, every other image is left to the device\n"
@@ -131,6 +139,11 @@ void usage()
                  "  --commit N=client|device  who commits image N (repeatable)\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
+                 "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
+                 "                report one: single-slot, swap-using-scratch, upgrade-only,\n"
+                 "                swap-using-move, direct-xip, direct-xip-with-revert, ram-load,\n"
+                 "                firmware-loader, single-slot-ram-load, swap-using-offset\n"
+                 "  --stub-mode M  the mode the demo device reports (it still swaps)\n"
                  "  --quiet       print only the outcome\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
@@ -162,6 +175,12 @@ void usage()
             out.demo_package = true;
         } else if (arg == "--apply-fails") {
             out.apply_fails = true;
+        } else if ((arg == "--fallback-mode" || arg == "--stub-mode") && i + 1 < args.size()) {
+            const std::optional<McubootMode> mode = parse_mcuboot_mode(args[++i]);
+            if (!mode.has_value()) {
+                return false;
+            }
+            (arg == "--fallback-mode" ? out.fallback_mode : out.stub_mode) = mode;
         } else if (arg == "--commit" && i + 1 < args.size()) {
             const auto commit = parse_commit(args[++i]);
             if (!commit.has_value()) {
@@ -360,7 +379,11 @@ int main(int argc, char** argv)
     }};
 
     Pending pending;
-    StubDevice device{running, std::move(second_image)};
+    const std::optional<std::int64_t> reported_mode =
+        options.stub_mode.has_value()
+            ? std::optional<std::int64_t>{static_cast<std::int64_t>(*options.stub_mode)}
+            : std::nullopt;
+    StubDevice device{running, std::move(second_image), reported_mode};
 
     // Deliberately brisk: these delays are waited for real, and this example
     // runs as a ctest with a timeout. A shipped tool would use the defaults
@@ -388,6 +411,7 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    plan.fallback_mode = options.fallback_mode;
     // The stub applies image 1 within a few reads; a real second MCU takes a
     // whole UART transfer, and the default interval suits that instead.
     plan.apply_poll_interval = std::chrono::milliseconds{100};
@@ -549,6 +573,7 @@ int main(int argc, char** argv)
         // The report still says what happened to each image, and what the next
         // reset will do.
         // On stderr with the failure itself, so the lines keep their order.
+        std::cerr << "  " << describe_mode(updater.report()) << '\n';
         print_images(updater.report(), std::cerr);
         if (updater.report().revert_pending) {
             std::cerr
@@ -567,6 +592,7 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    std::cout << "  " << describe_mode(report) << '\n';
     print_images(report, std::cout);
 
     return report.final_state == UpdateState::Completed ? 0 : 1;

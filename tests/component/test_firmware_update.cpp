@@ -13,6 +13,7 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/groups/os.hpp"
 #include "smply/mcuboot_image.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -35,7 +36,9 @@ using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageError;
 using smply::ImageTarget;
+using smply::McubootMode;
 using smply::MemoryImageSource;
+using smply::ModeSource;
 using smply::SmpClientConfig;
 using smply::UpdateEvent;
 using smply::UpdateMode;
@@ -652,6 +655,125 @@ TEST_CASE("a device without mcumgr parameters still updates", "[dfu][update]")
 
     REQUIRE(outcome.report.has_value());
     CHECK(outcome.report->final_state == UpdateState::Completed);
+}
+
+// --- The bootloader mode (ADR-0025) ----------------------------------------
+
+namespace {
+
+/// Whether any request the device processed was an image upload.
+[[nodiscard]] bool any_upload(const Fixture& fixture)
+{
+    return std::ranges::any_of(fixture.simulator.requests(), [](const smply::Header& header) {
+        return header.group == smply::Group::Image && header.command == 1;
+    });
+}
+
+} // namespace
+
+TEST_CASE("the device's MCUboot mode is queried after its parameters and reported",
+          "[dfu][update][mode]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = 3}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    // The device's answer wins over the fallback.
+    UpdatePlan plan;
+    plan.fallback_mode = McubootMode::UpgradeOnly;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->bootloader_mode == McubootMode::SwapUsingMove);
+    CHECK(outcome.report->mode_source == ModeSource::Reported);
+    REQUIRE(outcome.visited.size() >= 3);
+    CHECK(outcome.visited[0] == UpdateState::QueryingParameters);
+    CHECK(outcome.visited[1] == UpdateState::QueryingBootloader);
+    CHECK(outcome.visited[2] == UpdateState::InspectingImages);
+}
+
+TEST_CASE("a device without bootloader information updates as before, mode assumed",
+          "[dfu][update][mode]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+    // Without the command; with it but not MCUboot; and MCUboot reporting -1,
+    // as Zephyr does for a build it does not map (A38).
+    const ServerConfig config =
+        GENERATE(ServerConfig{}, ServerConfig{.bootloader_mode = 1, .bootloader_name = "other"},
+                 ServerConfig{.bootloader_mode = -1});
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{config};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->bootloader_mode == McubootMode::Unknown);
+    CHECK(outcome.report->mode_source == ModeSource::Assumed);
+}
+
+TEST_CASE("a device that does not report its mode takes the plan's fallback", "[dfu][update][mode]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.fallback_mode = McubootMode::SwapUsingScratch;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->bootloader_mode == McubootMode::SwapUsingScratch);
+    CHECK(outcome.report->mode_source == ModeSource::Supplied);
+}
+
+TEST_CASE("a bootloader query that times out fails the update before any upload",
+          "[dfu][update][mode]")
+{
+    // A link that cannot answer one query is not given an upload (ADR-0025).
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = 1}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] {
+        return !outcome.visited.empty() &&
+               outcome.visited.back() == UpdateState::QueryingBootloader;
+    }));
+    fixture.simulator.drop_next_response();
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }, smply::test::kDefaultBudget,
+                              std::chrono::milliseconds{10}));
+
+    CHECK(outcome.code == ErrorCode::Timeout);
+    CHECK(fixture.updater.report().final_state == UpdateState::Failed);
+    CHECK_FALSE(any_upload(fixture));
 }
 
 TEST_CASE("cancelling mid-update completes the callback exactly once", "[dfu][update]")

@@ -8,7 +8,7 @@
 ///
 /// Everything below this class is a single command or a single transfer.
 /// `FirmwareUpdater` is what decides the *order*: query the device's buffer
-/// budget, read its slot table, upload, mark the new image for test, reset,
+/// budget and its MCUboot mode, read its slot table, upload, mark the new image for test, reset,
 /// wait for the link to come back, check what booted, and confirm.
 ///
 /// **It never touches a connection** (ADR-0004). A reset drops the link by
@@ -75,6 +75,7 @@ enum class UpdateState : std::uint8_t
 {
     Idle,
     QueryingParameters, ///< OS mcumgr-params; `NotSupported` is fine (A8).
+    QueryingBootloader, ///< OS bootloader info, `mode`; no answer is fine (ADR-0025).
     InspectingImages,   ///< Image get-state: what does the device hold?
     Planning,           ///< Decide whether anything needs uploading at all.
     Uploading,
@@ -103,6 +104,18 @@ enum class UpdateState : std::uint8_t
     return state == UpdateState::Completed || state == UpdateState::Failed ||
            state == UpdateState::Cancelled;
 }
+
+/// Where `UpdateReport::bootloader_mode` came from (ADR-0025).
+enum class ModeSource : std::uint8_t
+{
+    /// The device answered the bootloader-information `mode` query.
+    Reported,
+    /// The device gave no answer, and the plan's `fallback_mode` was used.
+    Supplied,
+    /// Neither: the mode is unknown, and the update ran as it always has, as
+    /// for a device that swaps with revert.
+    Assumed,
+};
 
 /// Who commits an image once it is in place (ADR-0021).
 enum class CommitBy : std::uint8_t
@@ -134,6 +147,13 @@ struct ImageTarget
 struct UpdatePlan
 {
     UpdateMode mode = UpdateMode::TestThenConfirm;
+
+    /// The MCUboot mode to assume when the device does not report one: it
+    /// lacks the bootloader-information command, has no answer to the `mode`
+    /// query, or reports `-1` or a number smply does not know (ADR-0025). A
+    /// mode the device does report always wins over this. `Unknown`, like no
+    /// value, means "assume nothing".
+    std::optional<McubootMode> fallback_mode{};
 
     /// Passed through to `ImageManagement::upload`. `sha` and `server_buf_size`
     /// are filled in by the updater when absent -- it computes the first from
@@ -232,6 +252,11 @@ struct UpdateReport
     /// A multi-image update whose `Device` image was not applied ends here
     /// too: its `Client` images are left unconfirmed, so they revert.
     bool revert_pending = false;
+
+    /// The MCUboot mode the update ran under, and where it came from
+    /// (ADR-0025). `Unknown` exactly when `mode_source` is `Assumed`.
+    McubootMode bootloader_mode = McubootMode::Unknown;
+    ModeSource mode_source = ModeSource::Assumed;
 
     /// One entry per image, in the order the update was given them.
     std::vector<ImageReport> images;

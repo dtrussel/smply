@@ -437,6 +437,8 @@ class OsManagement {                       // src/groups/os/
     RequestHandle reset(Callback<void>);
     RequestHandle mcumgr_parameters(Callback<McumgrParameters>);
     RequestHandle echo(std::string_view, Callback<std::string>);
+    RequestHandle bootloader_name(Callback<std::string>);
+    RequestHandle bootloader_mode(Callback<BootloaderMode>);
 };
 
 class ImageManagement {                    // src/groups/image/
@@ -849,6 +851,10 @@ callbacks).
                     │ QueryingParameters │  OS mcumgr-params (optional; ENOTSUP ok)
                     └───────┬────────────┘
                             ▼
+                    ┌────────────────────┐
+                    │ QueryingBootloader │  OS bootloader info "mode" (optional;
+                    └───────┬────────────┘  no answer ok; ADR-0025)
+                            ▼
                     ┌──────────────────┐
                     │ InspectingImages │  IMG get-state  → learn active/pending/slots
                     └───────┬──────────┘
@@ -1056,6 +1062,8 @@ that forgets a kind does not compile:
 | State | Failure | Recovery |
 | ----- | ------- | -------- |
 | `QueryingParameters` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
+| `QueryingBootloader` | a device error (`ENOTSUP`, no answer, malformed reply) | **not fatal** — the mode is the plan's `fallback_mode`, or unknown and assumed (ADR-0025) |
+| `QueryingBootloader` | timeout, dropped link | fatal; nothing has been changed on the device. Unlike the parameters query: a link that cannot answer one query is not given an upload |
 | `InspectingImages` | any error | fatal; nothing has been changed on the device |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |

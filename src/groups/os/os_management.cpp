@@ -25,6 +25,7 @@ enum class OsCommand : std::uint8_t
     Echo = 0,
     Reset = 5,
     McumgrParameters = 6,
+    BootloaderInfo = 8,
 };
 
 /// Every request in this group is a small, flat map. The largest is echo's:
@@ -88,7 +89,83 @@ constexpr const char* kBufferTooSmall = "os: request buffer too small";
     return std::string{*echoed};
 }
 
+/// Decodes a bootloader-information response to the empty query.
+[[nodiscard]] Result<std::string> decode_bootloader_name(cbor::Reader& reader)
+{
+    const std::optional<std::string_view> name = reader.text("bootloader");
+    static_cast<void>(reader.leave_map());
+
+    if (const auto status = reader.status(); !status.has_value()) {
+        return fail(status.error());
+    }
+    if (!name.has_value()) {
+        return fail(ErrorCode::CborDecode, "os: bootloader info has no name");
+    }
+    if (name->size() > limits::kMaxBootloaderNameLength) {
+        // Bounded before the copy, as echo's reply is.
+        return fail(ErrorCode::CborDecode, "os: bootloader name too long");
+    }
+    return std::string{*name};
+}
+
+/// The mode for a number the device sent: one of MCUboot's ten, or `Unknown`.
+[[nodiscard]] McubootMode mode_from(std::int64_t raw) noexcept
+{
+    constexpr std::int64_t kFirst = 0;
+    constexpr auto kLast = static_cast<std::int64_t>(McubootMode::SwapUsingOffset);
+    if (raw < kFirst || raw > kLast) {
+        return McubootMode::Unknown;
+    }
+    return static_cast<McubootMode>(raw);
+}
+
+/// Decodes a bootloader-information response to the `mode` query.
+[[nodiscard]] Result<BootloaderMode> decode_bootloader_mode(cbor::Reader& reader)
+{
+    const std::optional<std::int64_t> mode = reader.integer("mode");
+    const std::optional<bool> no_downgrade = reader.boolean("no-downgrade");
+    static_cast<void>(reader.leave_map());
+
+    if (const auto status = reader.status(); !status.has_value()) {
+        return fail(status.error());
+    }
+    if (!mode.has_value()) {
+        return fail(ErrorCode::CborDecode, "os: bootloader info has no mode");
+    }
+    return BootloaderMode{
+        .mode = mode_from(*mode), .raw_mode = *mode, .no_downgrade = no_downgrade.value_or(false)};
+}
+
 } // namespace
+
+std::string_view to_string(McubootMode mode) noexcept
+{
+    switch (mode) {
+    case McubootMode::Unknown:
+        return "unknown";
+    case McubootMode::SingleSlot:
+        return "single-slot";
+    case McubootMode::SwapUsingScratch:
+        return "swap-using-scratch";
+    case McubootMode::UpgradeOnly:
+        return "upgrade-only";
+    case McubootMode::SwapUsingMove:
+        return "swap-using-move";
+    case McubootMode::DirectXip:
+        return "direct-xip";
+    case McubootMode::DirectXipWithRevert:
+        return "direct-xip-with-revert";
+    case McubootMode::RamLoad:
+        return "ram-load";
+    case McubootMode::FirmwareLoader:
+        return "firmware-loader";
+    case McubootMode::SingleSlotRamLoad:
+        return "single-slot-ram-load";
+    case McubootMode::SwapUsingOffset:
+        return "swap-using-offset";
+    }
+    return "unknown"; // LCOV_EXCL_LINE -- every enumerator is handled above
+}
 
 OsManagement::OsManagement(SmpClient& client) noexcept : client_{&client} {}
 
@@ -154,6 +231,33 @@ RequestHandle OsManagement::echo(std::string_view text, Callback<std::string> on
                                     .timeout = {}},
                         writer.open_map().put_text("d", text).close_map().finish(),
                         std::move(on_done), decode_echo, kBufferTooSmall);
+}
+
+RequestHandle OsManagement::bootloader_name(Callback<std::string> on_done)
+{
+    std::array<std::byte, kRequestBufferSize> buffer{};
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Read,
+                                    .group = Group::Os,
+                                    .command = command_id(OsCommand::BootloaderInfo),
+                                    .payload = {},
+                                    .timeout = {}},
+                        groups::encode_empty(MutBytes{buffer}), std::move(on_done),
+                        decode_bootloader_name, kBufferTooSmall);
+}
+
+RequestHandle OsManagement::bootloader_mode(Callback<BootloaderMode> on_done)
+{
+    std::array<std::byte, kRequestBufferSize> buffer{};
+    cbor::Writer writer{MutBytes{buffer}};
+    return groups::send(*client_,
+                        RequestSpec{.op = Operation::Read,
+                                    .group = Group::Os,
+                                    .command = command_id(OsCommand::BootloaderInfo),
+                                    .payload = {},
+                                    .timeout = {}},
+                        writer.open_map().put_text("query", "mode").close_map().finish(),
+                        std::move(on_done), decode_bootloader_mode, kBufferTooSmall);
 }
 
 } // namespace smply

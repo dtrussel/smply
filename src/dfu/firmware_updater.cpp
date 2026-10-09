@@ -58,6 +58,8 @@ std::string_view to_string(UpdateState state) noexcept
         return "Idle";
     case UpdateState::QueryingParameters:
         return "QueryingParameters";
+    case UpdateState::QueryingBootloader:
+        return "QueryingBootloader";
     case UpdateState::InspectingImages:
         return "InspectingImages";
     case UpdateState::Planning:
@@ -362,6 +364,29 @@ private:
                     event.kind = Event::Kind::ParametersRead;
                     event.buf_size = result->buf_size;
                     self.dispatch(event);
+                })));
+            return;
+
+        case Effect::QueryBootloader:
+            static_cast<void>(os_->bootloader_mode(
+                guarded<BootloaderMode>([](Impl& self, const Result<BootloaderMode>& result) {
+                    if (result.has_value()) {
+                        Event event;
+                        event.kind = Event::Kind::BootloaderRead;
+                        event.bootloader = *result;
+                        self.dispatch(event);
+                        return;
+                    }
+                    // The device answered, but not with a mode: the command is
+                    // missing, the bootloader is not MCUboot, or the answer is
+                    // malformed. That is no answer. Anything else -- a timeout,
+                    // a dropped link -- fails the update (ADR-0025).
+                    const ErrorCode code = result.error().code();
+                    if (code == ErrorCode::ProtocolError || code == ErrorCode::CborDecode) {
+                        self.dispatch(plain(Event::Kind::BootloaderUnavailable));
+                        return;
+                    }
+                    self.dispatch(failure(result.error()));
                 })));
             return;
 

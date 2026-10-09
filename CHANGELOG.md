@@ -21,6 +21,17 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Added
 
+- **The MCUboot mode, read from the device** (ADR-0025). `OsManagement`
+  reads bootloader information, OS command 8: `bootloader_name()` and
+  `bootloader_mode()`, which returns `BootloaderMode` (`McubootMode`, the raw
+  number, and `no_downgrade`). `FirmwareUpdater` asks for it in a new
+  `QueryingBootloader` state. `UpdateReport` records the mode in
+  `bootloader_mode` and where it came from in `mode_source`; the plan's
+  `fallback_mode` is used when the device reports none. A device without the
+  command updates exactly as before. A timeout or a lost link during the query
+  fails the update before anything is sent. New bound in `smply/limits.hpp`:
+  `kMaxBootloaderNameLength`. The example tools take `--fallback-mode` and
+  print the mode.
 - **The statistics and settings management groups** (MCUmgr groups 2 and 3).
   `StatisticsManagement` lists statistics groups and reads one group's
   counters; `SettingsManagement` reads, writes and erases a setting and asks

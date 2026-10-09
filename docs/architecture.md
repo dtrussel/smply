@@ -345,6 +345,7 @@ smply will accept from a device or a file.
 | `kMaxImageHashLength` | 64 B | a device-reported image hash (SHA-512 case) | — |
 | `kMaxReasonLength` | 128 B | a device-supplied `rsn` string | — |
 | `kMaxEchoLength` | 128 B | echo, in both directions | — |
+| `kMaxBootloaderNameLength` | 32 B | a device-reported bootloader name | — |
 | `kMaxStatisticsNameLength` | 64 B | a statistics group or field name, both directions | — |
 | `kMaxStatisticsGroups` | 128 | names in a statistics list | — |
 | `kMaxStatisticsFields` | 256 | fields in one statistics group | — |
@@ -444,9 +445,10 @@ smply/
 │   │                           test doubles and the stub device. smply::minicbor
 │   ├── dfu_app/                what a DFU *application* needs and the library
 │   │                           deliberately does not ship: FileImageSource,
-│   │                           ReconnectPolicy, and PackageUpdate (a package file
-│   │                           into FirmwareUpdater targets). smply::dfu_app, used
-│   │                           by both examples and unit-tested
+│   │                           ReconnectPolicy, PackageUpdate (a package file
+│   │                           into FirmwareUpdater targets), and the tools'
+│   │                           MCUboot-mode option. smply::dfu_app, used by the
+│   │                           examples and unit-tested
 │   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
 │                               stored-zip lister, a bounded JSON reader and the
 │                               manifest cross-checks. smply::dfu_package, not

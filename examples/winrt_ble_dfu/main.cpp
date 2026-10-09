@@ -27,6 +27,7 @@
 #include "scanner.hpp"
 #include "winrt_prelude.hpp"
 
+#include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 
@@ -96,6 +97,10 @@ struct Options
     /// The other half of the same split. It installs nothing, so it needs no
     /// `--image`, and it is the only mode that does not build an updater.
     bool confirm_only = false;
+
+    /// `--fallback-mode`: the MCUboot mode to assume when the device does not
+    /// report one (ADR-0025).
+    std::optional<McubootMode> fallback_mode;
 };
 
 /// Parses `--mode`. Two of the five are not `UpdateMode` values at all.
@@ -133,7 +138,8 @@ struct Options
 void usage()
 {
     std::cerr << "usage: winrt_ble_dfu --image PATH [--name NAME | --address ADDR]\n"
-                 "                     [--mode MODE] [--scan-timeout MS] [--quiet]\n"
+                 "                     [--mode MODE] [--fallback-mode M] [--scan-timeout MS]\n"
+                 "                     [--quiet]\n"
                  "  --image PATH   the firmware to install (required)\n"
                  "  --name NAME    connect to the first device whose advertised name\n"
                  "                 contains NAME; without it, the first device that\n"
@@ -145,6 +151,9 @@ void usage()
                  "                 so the device is left in its trial boot;\n"
                  "                 confirm-only confirms the running image and needs\n"
                  "                 no --image\n"
+                 "  --fallback-mode M  the MCUboot mode to assume when the device does\n"
+                 "                 not report one, named as the report prints it\n"
+                 "                 (swap-using-move, upgrade-only, direct-xip, ...)\n"
                  "  --scan-timeout MS  how long to look for a device (default 10000)\n"
                  "  --quiet        print only the outcome\n"
                  "\n"
@@ -172,6 +181,11 @@ void usage()
             out.scan_timeout = std::chrono::milliseconds{std::stoul(ms)};
         } else if (arg == "--mode" && i + 1 < args.size()) {
             if (!parse_mode(args[++i], out)) {
+                return false;
+            }
+        } else if (arg == "--fallback-mode" && i + 1 < args.size()) {
+            out.fallback_mode = parse_mcuboot_mode(args[++i]);
+            if (!out.fallback_mode.has_value()) {
                 return false;
             }
         } else {
@@ -339,6 +353,7 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    plan.fallback_mode = options.fallback_mode;
 
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
 
@@ -492,6 +507,7 @@ int main(int argc, char** argv)
 
     if (!outcome.has_value()) {
         std::cerr << "winrt_ble_dfu: update failed: " << to_string(outcome.error()) << '\n';
+        std::cerr << "  " << describe_mode(updater.report()) << '\n';
         return gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
     }
 
@@ -505,6 +521,7 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    std::cout << "  " << describe_mode(report) << '\n';
     // The client's counters, because a real link is where they earn their keep:
     // a retransmitted final chunk is answered as a fresh session (protocol-notes
     // section 6, rules 9b then 9a) and reads as "already held" above, and the

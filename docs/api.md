@@ -212,7 +212,7 @@ are grouped here so the whole defensive surface can be reviewed at once.
 | ------ | --------- |
 | Framing and buffering | `kMaxSmpPayload` · `kMaxAssemblyBuffer` · `kMaxCborNesting` |
 | Request lifecycle | `kMaxInFlight` · `kMaxRetiredSeqs` · `kDefaultTimeout` |
-| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` · `kMaxStatisticsNameLength` · `kMaxStatisticsGroups` · `kMaxStatisticsFields` |
+| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` · `kMaxBootloaderNameLength` · `kMaxStatisticsNameLength` · `kMaxStatisticsGroups` · `kMaxStatisticsFields` |
 | Settings | `kMaxSettingNameLength` · `kMaxSettingValueLength` |
 | Image files | `kMaxImageSize` · `kMaxImageTlvs` |
 | Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kFinalChunkTimeout` · `kEraseTimeout` |
@@ -472,6 +472,21 @@ struct McumgrParameters {
     std::uint32_t buf_count = 0;
 };
 
+// MCUboot's enum mcuboot_mode, by number (protocol-notes §7, S56). Unknown:
+// no answer, -1, or a number outside the enum.
+enum class McubootMode : std::int8_t {
+    Unknown = -1, SingleSlot, SwapUsingScratch, UpgradeOnly, SwapUsingMove,
+    DirectXip, DirectXipWithRevert, RamLoad, FirmwareLoader, SingleSlotRamLoad,
+    SwapUsingOffset,
+};
+std::string_view to_string(McubootMode) noexcept;   // "swap-using-move", ...
+
+struct BootloaderMode {
+    McubootMode  mode = McubootMode::Unknown;
+    std::int64_t raw_mode = -1;    // as sent, so a newer mode stays visible (A2)
+    bool         no_downgrade = false;  // sent only when true
+};
+
 struct ResetOptions {
     bool force = false;            // sent as a CBOR bool, omitted when false (A15)
     std::optional<Duration> timeout;
@@ -495,6 +510,14 @@ public:
     // Rejects text longer than limits::kMaxEchoLength with InvalidArgument,
     // and a reply longer than that with CborDecode.
     RequestHandle echo(std::string_view, Callback<std::string>);
+
+    // Bootloader information, command 8 (protocol-notes §5). Optional, like
+    // mcumgr_parameters(): a device without it answers NotSupported. The name
+    // is the empty query, bounded by limits::kMaxBootloaderNameLength; the mode
+    // is the "mode" query. A bootloader that is not MCUboot has no answer to
+    // it, an OS-group error (3) over SMP v2.
+    RequestHandle bootloader_name(Callback<std::string>);
+    RequestHandle bootloader_mode(Callback<BootloaderMode>);
 };
 
 } // namespace smply
@@ -960,7 +983,7 @@ namespace smply {
 enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, UploadOnly };
 
 enum class UpdateState : std::uint8_t {
-    Idle, QueryingParameters, InspectingImages, Planning, Uploading,
+    Idle, QueryingParameters, QueryingBootloader, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
     AwaitingReconnect, VerifyingBooted, AwaitingDeviceApply, AwaitingConfirmation,
     Confirming, VerifyingConfirmed, AwaitingDeviceCommit, Completed, Failed, Cancelled,
@@ -974,6 +997,10 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 // docs/multi-image.md). smply never confirms it.
 enum class CommitBy : std::uint8_t { Client, Device };
 
+// Where UpdateReport::bootloader_mode came from (ADR-0025): the device's
+// answer, the plan's fallback, or neither.
+enum class ModeSource : std::uint8_t { Reported, Supplied, Assumed };
+
 struct ImageTarget {                  // one image of a multi-image update
     std::uint32_t image = 0;
     ImageSource*  source = nullptr;   // not owned; outlives the update
@@ -982,6 +1009,9 @@ struct ImageTarget {                  // one image of a multi-image update
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
+    // Used only when the device does not report a mode: no command, no answer,
+    // -1, or a number smply does not know. A reported mode always wins.
+    std::optional<McubootMode> fallback_mode{};
     // For the single-image start(), upload.image is the image the whole update
     // works on: transferred, inspected, marked and confirmed (by hash). The
     // image-list start() replaces it with each target's image. Image >= 1
@@ -1023,6 +1053,8 @@ struct UpdateReport {                 // the summary fields cover every image
     std::optional<Error> cause;     // set iff the update failed
     bool rolled_back = false;       // MCUboot reverted an image (protocol-notes §7)
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
+    McubootMode bootloader_mode = McubootMode::Unknown;  // ADR-0025
+    ModeSource  mode_source = ModeSource::Assumed;       // Unknown iff Assumed
     std::vector<ImageReport> images;
 };
 

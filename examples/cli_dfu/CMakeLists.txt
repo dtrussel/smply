@@ -55,6 +55,19 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # The MCUboot mode (ADR-0025): reported by the device, and the plan's
+    # fallback used when the device reports none.
+    add_test(NAME cli_dfu_mode_reported COMMAND cli_dfu --quiet --stub-mode swap-using-move)
+    set_tests_properties(cli_dfu_mode_reported PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: swap-using-move \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_mode_fallback COMMAND cli_dfu --quiet --fallback-mode swap-using-scratch)
+    set_tests_properties(cli_dfu_mode_fallback PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: swap-using-scratch \\(not reported; the fallback was used\\)"
+        TIMEOUT 60
+    )
+
     # The multi-image update of ADR-0021 end to end: a generated package read
     # by smply::dfu_package, both images staged before one reset, image 1
     # applied by the device, image 0 confirmed only after that, and image 1
