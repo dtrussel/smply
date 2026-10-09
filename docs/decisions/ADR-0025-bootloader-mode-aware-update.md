@@ -1,6 +1,6 @@
 # ADR-0025 — The updater follows the MCUboot mode the device reports
 
-**Status:** Proposed (2026-10-09)
+**Status:** Accepted (2026-10-09)
 
 ## Context
 

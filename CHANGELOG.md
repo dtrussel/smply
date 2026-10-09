@@ -19,6 +19,19 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
+A feature release. **smply now asks the device which MCUboot mode it runs**
+and never sends a command the mode cannot carry out, or promises a revert
+the mode does not have (ADR-0025). That makes direct-XIP devices updatable,
+from one file, one build per slot, or an nRF Connect SDK direct-XIP package.
+It also adds the statistics and settings groups, a reference serial port
+adapter and its example, and several images of one device in one update with
+a reader for nRF Connect SDK's multi-image package. **It breaks the API and
+changes behaviour in the places listed under "Changed"**, which is what `0.x`
+allows (ADR-0016): above all, an upgrade-only device is now refused unless the
+plan sets `allow_no_revert`.
+
 ### Added
 
 - **The MCUboot mode, read from the device** (ADR-0025). `OsManagement`
@@ -364,6 +377,7 @@ indefinite-length, and that the final upload chunk is answered only after the
 device has hashed the whole image, which is why `UploadOptions` carries a
 separate `final_chunk_timeout`.
 
-[Unreleased]: https://github.com/dtrussel/smply/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dtrussel/smply/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dtrussel/smply/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dtrussel/smply/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dtrussel/smply/releases/tag/v0.1.0
