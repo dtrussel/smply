@@ -246,12 +246,12 @@ before the transfer instead of erased by the bootloader after it.
 **Delivers:** a direct-XIP device can be updated with a file built for its
 free slot, in both variants, where today the update fails after the upload.
 
-- [ ] `ServerSimulator` models both direct-XIP variants: no set-state without revert, uploads into the slot opposite the active one, and the bootloader booting the newest valid slot
-- [ ] Without revert, the update is refused unless `allow_no_revert` is set; with it, it uploads, resets and succeeds only if the running slot holds the target hash, with no set-state sent
-- [ ] With revert, it uploads, tests, resets and confirms as usual
-- [ ] Neither variant waits for a swap; the report records the slot that received the image
-- [ ] A device that boots the old image is reported as `rolled_back`, whose documentation now reads "the bootloader booted the old image"
-- [ ] A multi-image plan sent to a direct-XIP device is refused with `MultiImageUnsupported`
+- [x] `ServerSimulator` models both direct-XIP variants: no set-state without revert, uploads into the slot opposite the active one, and the bootloader booting the newest valid slot
+- [x] Without revert, the update is refused unless `allow_no_revert` is set; with it, it uploads, resets and succeeds only if the running slot holds the target hash, with no set-state sent
+- [x] With revert, it uploads, tests, resets and confirms as usual
+- [x] Neither variant waits for a swap (smply never did: reconnecting is the application's); the report records the slot that received the image
+- [x] A device that boots the old image is reported as `rolled_back`, whose documentation now reads "the bootloader booted the old image"
+- [x] A multi-image plan sent to a direct-XIP device is refused with `MultiImageUnsupported`
 
 ### Stage 6: Two alternatives per image
 
