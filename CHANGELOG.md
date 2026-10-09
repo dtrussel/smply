@@ -47,7 +47,10 @@ git; commit `97f1647` is the last to carry the per-phase record in
   `rolled_back` now also covers a direct-XIP device that kept its old slot.
   An image can be given as one build per slot
   (`ImageTarget::secondary_source`, `--image-secondary` in the example tools),
-  and the build for the free slot is the one sent.
+  and the build for the free slot is the one sent. `support/dfu_package` reads
+  an nRF Connect SDK direct-XIP package as one image with both builds
+  (`PackageImage::secondary`, `PackageImage::slot`), and `PackageUpdate` passes
+  both on. A QSPI split-image direct-XIP package is refused by name.
 - **An older image is refused before it is sent** when the device reports
   downgrade prevention (ADR-0025, `Refusal::Downgrade`), with MCUboot's own
   comparison: major, minor and revision, never the build number.

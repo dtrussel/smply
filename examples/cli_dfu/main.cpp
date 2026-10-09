@@ -101,6 +101,8 @@ struct Options
     std::string package_path;
     /// Invent the package, and a two-image device for it.
     bool demo_package = false;
+    /// Invent a direct-XIP package: one image, one build per slot.
+    bool demo_xip_package = false;
     /// The stub device fails to apply image 1 (package modes only).
     bool apply_fails = false;
     /// `--commit N=client|device`, in the order given.
@@ -119,7 +121,7 @@ struct Options
 
     [[nodiscard]] bool package_mode() const noexcept
     {
-        return demo_package || !package_path.empty();
+        return demo_package || demo_xip_package || !package_path.empty();
     }
 };
 
@@ -155,6 +157,8 @@ void usage()
                  "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
                  "                is confirmed here, every other image is left to the device\n"
                  "  --demo-package  generate a two-image package, and a device to take it\n"
+                 "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
+                 "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
@@ -200,6 +204,8 @@ void usage()
             out.package_path = args[++i];
         } else if (arg == "--demo-package") {
             out.demo_package = true;
+        } else if (arg == "--demo-xip-package") {
+            out.demo_xip_package = true;
         } else if (arg == "--apply-fails") {
             out.apply_fails = true;
         } else if (arg == "--allow-no-revert") {
@@ -224,7 +230,7 @@ void usage()
     }
     // One thing to install, and the package-only options only with a package.
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
-                        (out.demo_package ? 1 : 0);
+                        (out.demo_package ? 1 : 0) + (out.demo_xip_package ? 1 : 0);
     // A second build goes with exactly one first build: a named file, or the
     // demo's; and never with a package, which names its own files.
     const bool one_image = !out.package_mode();
@@ -373,9 +379,16 @@ int main(int argc, char** argv)
     std::unique_ptr<PackageUpdate> package;
     std::optional<SecondImage> second_image;
     if (options.package_mode()) {
-        Result<std::unique_ptr<PackageUpdate>> read =
-            options.demo_package ? PackageUpdate::from_bytes(build_demo_two_image_package())
-                                 : PackageUpdate::load(options.package_path);
+        const auto read_demo_or_file = [&options]() -> Result<std::unique_ptr<PackageUpdate>> {
+            if (options.demo_package) {
+                return PackageUpdate::from_bytes(build_demo_two_image_package());
+            }
+            if (options.demo_xip_package) {
+                return PackageUpdate::from_bytes(build_demo_xip_package());
+            }
+            return PackageUpdate::load(options.package_path);
+        };
+        Result<std::unique_ptr<PackageUpdate>> read = read_demo_or_file();
         if (!read.has_value()) {
             std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
             return 1;
@@ -391,12 +404,15 @@ int main(int argc, char** argv)
         // The stub's image 1: another MCU's firmware, which it applies itself
         // after the reset. The demo device runs radio 5.0.0; a real package's
         // image 1 lands on a device with nothing applied yet.
-        second_image = SecondImage{
-            .running = options.demo_package
-                           ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
-                           : std::vector<std::byte>{},
-            .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
-        };
+        // The direct-XIP demo is one image, given twice, so its device has none.
+        if (!options.demo_xip_package) {
+            second_image = SecondImage{
+                .running = options.demo_package
+                               ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
+                               : std::vector<std::byte>{},
+                .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+            };
+        }
     }
 
     // A package brings its own sources; only a single image is read from a file.

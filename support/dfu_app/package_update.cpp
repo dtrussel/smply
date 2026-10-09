@@ -72,12 +72,22 @@ Result<std::unique_ptr<PackageUpdate>> PackageUpdate::from_bytes(std::vector<std
 
     for (const dfu_package::PackageImage& image : update->package_.images) {
         update->sources_.push_back(std::make_unique<MemoryImageSource>(image.bytes));
+        ImageSource* source = update->sources_.back().get();
+        // A direct-XIP image's second build, for its secondary slot: the
+        // updater sends whichever matches the slot the device is not running
+        // (ADR-0025).
+        ImageSource* secondary = nullptr;
+        if (image.secondary.has_value()) {
+            update->sources_.push_back(std::make_unique<MemoryImageSource>(image.secondary->bytes));
+            secondary = update->sources_.back().get();
+        }
         // The coordinating-MCU default (docs/multi-image.md): the device's own
         // application is smply's to confirm, every other image the device's.
         update->targets_.push_back(
             ImageTarget{.image = image.image,
-                        .source = update->sources_.back().get(),
-                        .commit = image.image == 0 ? CommitBy::Client : CommitBy::Device});
+                        .source = source,
+                        .commit = image.image == 0 ? CommitBy::Client : CommitBy::Device,
+                        .secondary_source = secondary});
     }
     return update;
 }

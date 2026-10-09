@@ -52,6 +52,20 @@ struct ImageDependency
 };
 
 /// One image of the package.
+/// The second build of a direct-XIP image: the same image linked for the
+/// other slot (docs/protocol-notes.md S58).
+struct PackageBuild
+{
+    /// The file's name in the zip.
+    std::string file;
+    /// The signed image: a view into the archive, as `PackageImage::bytes`.
+    ConstBytes bytes;
+    /// Its MCUboot header. Its version equals the first build's.
+    McubootImageInfo header;
+    /// The global slot it is linked for, from the manifest's `slot`.
+    std::uint32_t slot = 0;
+};
+
 struct PackageImage
 {
     /// The file's name in the zip.
@@ -69,6 +83,15 @@ struct PackageImage
     std::optional<std::string> soc;
     /// The image's dependency TLVs, in the order they appear.
     std::vector<ImageDependency> dependencies;
+    /// `slot`: the global slot a direct-XIP build is linked for, when the
+    /// manifest says.
+    std::optional<std::uint32_t> slot;
+    /// A direct-XIP package's second build of this image, linked for the
+    /// image's secondary slot (`2n + 1`); this entry is then the primary
+    /// slot's (`2n`). A direct-XIP build writes the two as two `files[]`
+    /// entries with one `image_index` and a `slot` each; they are read as one
+    /// image here.
+    std::optional<PackageBuild> secondary;
 };
 
 /// A whole package.
@@ -90,13 +113,16 @@ struct DfuPackage
 ///
 /// \return `MessageTooLarge` for an archive, manifest or entry count over a
 ///         bound; `InvalidArgument` for a package smply does not read (a
-///         compressed zip, two files for one image as a direct-XIP build
-///         writes, an image index over `kMaxImageIndex`, or an image that
+///         compressed zip, two files for one image that are not a direct-XIP
+///         pair, more than one image given as a direct-XIP pair as a QSPI
+///         split-image build writes, an image index over `kMaxImageIndex`,
+///         or an image that
 ///         depends on a newer version of another image than the package
 ///         carries, compared as MCUboot does by default: major, minor and
 ///         revision, never the build number); `MalformedMessage`
 ///         for anything structurally wrong, a manifest that disagrees with
-///         the zip or with an image's header, or a broken TLV area.
+///         the zip or with an image's header, a direct-XIP pair whose builds
+///         differ in version, or a broken TLV area.
 [[nodiscard]] Result<DfuPackage> read_package(ConstBytes archive);
 
 /// The dependency TLVs of one signed image, whose header is \p header.

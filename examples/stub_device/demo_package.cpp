@@ -57,9 +57,15 @@ void text(std::vector<std::byte>& out, std::string_view value)
     for (std::size_t index = 0; index < files.size(); ++index) {
         const DemoPackageFile& file = files[index];
         out += index == 0 ? "" : ", ";
-        out += R"({"image_index": ")" + std::to_string(file.image_index) +
-               R"(", "version_MCUBOOT": ")" + file.version + R"(", "size": )" +
-               std::to_string(file.content.size()) + R"(, "file": ")" + file.name + R"("})";
+        const std::string version_key =
+            file.slot.has_value() ? "version_MCUBOOT+XIP" : "version_MCUBOOT";
+        out += R"({"image_index": ")" + std::to_string(file.image_index) + R"(", ")" + version_key +
+               R"(": ")" + file.version + R"(", "size": )" + std::to_string(file.content.size()) +
+               R"(, "file": ")" + file.name + R"(")";
+        if (file.slot.has_value()) {
+            out += R"(, "slot": ")" + std::to_string(*file.slot) + R"(")";
+        }
+        out += "}";
     }
     return out + "]}";
 }
@@ -143,6 +149,25 @@ std::vector<std::byte> build_demo_two_image_package()
                         .image_index = 1,
                         .version = "6.0.0",
                         .content = build_demo_image(DemoVersion{.major = 6})},
+    });
+}
+
+std::vector<std::byte> build_demo_xip_package()
+{
+    // Two builds of one image. A real project links them for two addresses;
+    // here only the size differs, which is enough to tell them apart.
+    constexpr std::size_t kSlot1Body = 4100;
+    return build_demo_package({
+        DemoPackageFile{.name = "app.signed.bin",
+                        .image_index = 0,
+                        .version = "2.0.0",
+                        .content = build_demo_image(DemoVersion{.major = 2}),
+                        .slot = 0},
+        DemoPackageFile{.name = "app_slot1_variant.signed.bin",
+                        .image_index = 0,
+                        .version = "2.0.0",
+                        .content = build_demo_image(DemoVersion{.major = 2}, kSlot1Body),
+                        .slot = 1},
     });
 }
 

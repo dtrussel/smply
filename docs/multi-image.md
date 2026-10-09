@@ -228,8 +228,18 @@ nRF Connect SDK's sysbuild writes, `dfu_application.zip`
 ready for a `MemoryImageSource`. It checks the manifest instead of believing it:
 * `size` against the file;
 * `version_MCUBOOT` against the image's own MCUboot header;
-* each `image_index` given once. A direct-XIP build writes two files for one
-  image, which are alternatives rather than a set, and is refused.
+* each `image_index` given once, except for a **direct-XIP pair**. A
+  direct-XIP build writes two files for one image, the same image linked for
+  each of its slots, each with a `slot` (global: `image × 2 + 0/1`) and its
+  version under `version_MCUBOOT+XIP` (S58). They are alternatives, not a set:
+  the reader returns them as one `PackageImage` whose `secondary` is the
+  secondary slot's build, after checking that the two slots are the image's
+  own pair and the two headers carry the same version. `PackageUpdate` hands
+  both to the updater (`ImageTarget::secondary_source`), which sends the one
+  for the slot the device is not running (ADR-0025). Any other second file for
+  an image is refused, and so is a package with more than one such pair, which
+  is what a QSPI split-image build writes (internal and external parts):
+  Zephyr's image group updates one image under direct-XIP.
 
 `image_index` is a string in these manifests (`"1"`), because
 `generate_zip.py` keeps every sysbuild value a string unless it starts with

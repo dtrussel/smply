@@ -57,9 +57,14 @@ constexpr std::size_t kDependencySize = 12;
 /// `image_index`, which `generate_zip.py` writes as a string ("1") because
 /// every `key=value` it is given is a string unless it starts with 0x. A
 /// number is accepted too.
-[[nodiscard]] Result<std::optional<std::uint32_t>> image_index(const JsonValue& entry)
+/// A manifest number that sysbuild may have written as a string, or nothing
+/// when the key is absent (protocol-notes S38: every sysbuild value is a
+/// string unless it starts with `0x`).
+[[nodiscard]] Result<std::optional<std::uint32_t>>
+small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
+             const char* malformed_text, const char* range_text)
 {
-    const JsonValue* value = entry.find("image_index");
+    const JsonValue* value = entry.find(key);
     if (value == nullptr) {
         return std::optional<std::uint32_t>{};
     }
@@ -73,12 +78,27 @@ constexpr std::size_t kDependencySize = 12;
         number = value->as_uint();
     }
     if (!number.has_value()) {
-        return malformed("package: image_index is not a non-negative integer");
+        return malformed(malformed_text);
     }
-    if (*number > kMaxImageIndex) {
-        return fail(ErrorCode::InvalidArgument, "package: image_index out of range");
+    if (*number > max) {
+        return fail(ErrorCode::InvalidArgument, range_text);
     }
     return std::optional<std::uint32_t>{static_cast<std::uint32_t>(*number)};
+}
+
+[[nodiscard]] Result<std::optional<std::uint32_t>> image_index(const JsonValue& entry)
+{
+    return small_number(entry, "image_index", kMaxImageIndex,
+                        "package: image_index is not a non-negative integer",
+                        "package: image_index out of range");
+}
+
+/// A direct-XIP entry's global slot (protocol-notes S58).
+[[nodiscard]] Result<std::optional<std::uint32_t>> slot_of(const JsonValue& entry)
+{
+    return small_number(entry, "slot", (kMaxImageIndex * 2) + 1,
+                        "package: slot is not a non-negative integer",
+                        "package: slot out of range");
 }
 
 /// One `files[]` entry, checked against the zip and against the image itself.
@@ -123,6 +143,12 @@ constexpr std::size_t kDependencySize = 12;
     }
     image.image = index->value_or(0);
 
+    Result<std::optional<std::uint32_t>> slot = slot_of(entry);
+    if (!slot.has_value()) {
+        return fail(slot.error());
+    }
+    image.slot = *slot;
+
     for (const auto& [key, into] :
          {std::pair{"version_MCUBOOT", &image.version}, std::pair{"board", &image.board},
           std::pair{"soc", &image.soc}}) {
@@ -131,6 +157,14 @@ constexpr std::size_t kDependencySize = 12;
             return fail(text.error());
         }
         *into = std::move(*text);
+    }
+    if (!image.version.has_value()) {
+        // A direct-XIP build writes its version under its own key (S58).
+        Result<std::optional<std::string>> xip = optional_text(entry, "version_MCUBOOT+XIP");
+        if (!xip.has_value()) {
+            return fail(xip.error());
+        }
+        image.version = std::move(*xip);
     }
 
     if (image.bytes.size() < kMcubootHeaderSize) {
@@ -157,6 +191,35 @@ constexpr std::size_t kDependencySize = 12;
     }
     image.dependencies = std::move(*dependencies);
     return image;
+}
+
+/// Joins \p second to \p first as a direct-XIP pair: both carry a `slot`, one
+/// the image's primary (`2n`) and one its secondary (`2n + 1`), and both the
+/// same version. \p first keeps the primary's build.
+[[nodiscard]] Result<void> pair_builds(PackageImage& first, PackageImage second)
+{
+    if (first.secondary.has_value()) {
+        return fail(ErrorCode::InvalidArgument, "package: more than two files for one image");
+    }
+    const std::uint32_t primary = first.image * 2;
+    const bool pair = first.slot.has_value() && second.slot.has_value() &&
+                      ((*first.slot == primary && *second.slot == primary + 1) ||
+                       (*first.slot == primary + 1 && *second.slot == primary));
+    if (!pair) {
+        return fail(ErrorCode::InvalidArgument,
+                    "package: two files for one image that are not a direct-XIP pair");
+    }
+    if (first.header.version != second.header.version) {
+        return malformed("package: the two builds of a direct-XIP image differ in version");
+    }
+    if (*first.slot != primary) {
+        std::swap(first, second);
+    }
+    first.secondary = PackageBuild{.file = std::move(second.file),
+                                   .bytes = second.bytes,
+                                   .header = second.header,
+                                   .slot = primary + 1};
+    return {};
 }
 
 /// Whether \p version satisfies \p minimum, as MCUboot decides it by default:
@@ -336,15 +399,30 @@ Result<DfuPackage> read_package(ConstBytes archive)
         if (!image.has_value()) {
             return fail(image.error());
         }
-        const bool taken = std::ranges::any_of(package.images, [&image](const PackageImage& other) {
-            return other.image == image->image;
-        });
-        if (taken) {
-            // A direct-XIP build writes one file per slot of the same image;
-            // those are alternatives, not a set to send (docs/protocol-notes.md).
-            return fail(ErrorCode::InvalidArgument, "package: two files for one image");
+        const auto taken =
+            std::ranges::find_if(package.images, [&image](const PackageImage& other) {
+                return other.image == image->image;
+            });
+        if (taken == package.images.end()) {
+            package.images.push_back(std::move(*image));
+            continue;
         }
-        package.images.push_back(std::move(*image));
+        // A second file for an image already read: a direct-XIP build writes
+        // one per slot, the same image linked twice. Those are alternatives,
+        // not a set to send (protocol-notes S58).
+        if (Result<void> paired = pair_builds(*taken, std::move(*image)); !paired.has_value()) {
+            return fail(paired.error());
+        }
+    }
+    const auto pairs = std::ranges::count_if(
+        package.images, [](const PackageImage& image) { return image.secondary.has_value(); });
+    if (pairs > 1) {
+        // Several images each given as a pair is a QSPI split-image build (its
+        // internal and external parts), and Zephyr's image group updates one
+        // image under direct-XIP (protocol-notes S58, section 7).
+        return fail(ErrorCode::InvalidArgument,
+                    "package: a direct-XIP split image (QSPI XIP, internal and external parts) "
+                    "is not supported");
     }
     std::ranges::sort(package.images, {}, &PackageImage::image);
     if (Result<void> consistent = check_dependencies(package); !consistent.has_value()) {

@@ -93,6 +93,16 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # An nRF Connect SDK direct-XIP package (S58): one image, a build per slot,
+    # read by smply::dfu_package as one image with two builds, and the free
+    # slot's build sent. The stub only reports direct-XIP.
+    add_test(NAME cli_dfu_xip_package
+        COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-xip-package)
+    set_tests_properties(cli_dfu_xip_package PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: direct-xip-with-revert \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
     # The multi-image update of ADR-0021 end to end: a generated package read
     # by smply::dfu_package, both images staged before one reset, image 1
     # applied by the device, image 0 confirmed only after that, and image 1

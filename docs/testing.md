@@ -13,7 +13,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **five** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package` and `cli_dfu_package_apply_fails` |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **eleven** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, and six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package` |
 | The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **three** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc` and `serial_dfu_pty_package`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
@@ -367,7 +367,11 @@ flipped byte of a real archive; the JSON bounds on depth, count, length and
 size, and RFC 8259's edge cases; `image_index` as a string (what
 `generate_zip.py` writes), as a number, absent, out of range and repeated; the
 manifest's size and `version_MCUBOOT` checked against the file and its MCUboot
-header; dependency TLVs from both areas, with a broken area refused; and a
+header; a direct-XIP pair (two files for one image, each with its `slot` and
+`version_MCUBOOT+XIP`) read as one image with both builds, in either order,
+while two files without slots, the same slot twice, another image's slot, or
+builds of different versions are refused, as is a QSPI split-image package by
+name and a `slot` that is not a number or is out of range; dependency TLVs from both areas, with a broken area refused; and a
 package whose image depends on a newer version of another image it carries
 refused, by MCUboot's default comparison, so the build number does not count
 (ADR-0022).
@@ -461,6 +465,11 @@ it covers ground no other suite does:
   because a test advanced time by exactly 1 ms would show up here;
 * it exercises the **application's half of the reconnect protocol**: a dropped
   link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
+
+`cli_dfu_xip_package` reads a generated direct-XIP package
+(`--demo-xip-package`, two files for image 0 with their `slot`s) through
+`smply::dfu_package` and `PackageUpdate`, against a stub reporting direct-XIP
+with revert, and expects it completed.
 
 Two more run the multi-image update of ADR-0021 end to end, from a package
 built in memory (`--demo-package`) through `smply::dfu_package` and

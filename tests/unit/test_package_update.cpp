@@ -22,6 +22,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -163,4 +164,33 @@ TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][package]")
         CAPTURE(bad);
         CHECK_FALSE(parse_commit(bad).has_value());
     }
+}
+
+TEST_CASE("a direct-XIP package becomes one target with a build per slot",
+          "[dfu_app][package][xip]")
+{
+    // Two files for image 0, each with its slot (protocol-notes S58). The
+    // target's source is slot 0's build and its secondary_source slot 1's.
+    const std::vector<std::byte> slot0 =
+        ImageBuilder{}.version(2, 0, 0, 0).body(64).tlv(0x10, std::vector<std::byte>(32)).build();
+    const std::vector<std::byte> slot1 =
+        ImageBuilder{}.version(2, 0, 0, 0).body(80).tlv(0x10, std::vector<std::byte>(32)).build();
+    std::vector<std::byte> archive = ZipBuilder{}
+                                         .add("app_slot1_variant.signed.bin", slot1)
+                                         .add("app.signed.bin", slot0)
+                                         .add("manifest.json", std::string_view{R"({"files": [
+                     {"file": "app_slot1_variant.signed.bin", "image_index": "0", "slot": "1"},
+                     {"file": "app.signed.bin", "image_index": "0", "slot": "0"}]})"})
+                                         .build();
+
+    auto update = PackageUpdate::from_bytes(std::move(archive));
+    REQUIRE(update.has_value());
+    const auto targets = (*update)->targets();
+    REQUIRE(targets.size() == 1);
+    CHECK(targets[0].image == 0);
+    CHECK(targets[0].commit == CommitBy::Client);
+    REQUIRE(targets[0].source != nullptr);
+    REQUIRE(targets[0].secondary_source != nullptr);
+    CHECK(targets[0].source->size() == slot0.size());
+    CHECK(targets[0].secondary_source->size() == slot1.size());
 }
