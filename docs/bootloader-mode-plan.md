@@ -206,12 +206,12 @@ are independent once 3 has landed. Every stage from 2 to 6 changes
 nothing else. A caller can read it through the OS group, an update reports it
 with where it came from, and the tools print it.
 
-- [ ] `OsManagement` reads the bootloader name, mode, raw mode number and `no-downgrade`; a mode number outside MCUboot's enum is `Unknown` with its number kept; the name is bounded before it is stored
-- [ ] Unit tests cover both request shapes, both response shapes in definite- and indefinite-length CBOR, an unknown mode, a missing flag, an over-long name, and the error shapes
-- [ ] `FirmwareUpdater` queries in a new `QueryingBootloader` state; the report carries the mode and `Reported`, `Supplied` (from the plan's fallback) or `Assumed`; a device error means unknown; a timeout or transport failure fails the update before anything is sent
-- [ ] `ServerSimulator` and the stub device answer command 8 with a configured mode, or `ENOTSUP`
-- [ ] `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` take `--fallback-mode` and print the mode and its source
-- [ ] Every existing update test passes unchanged; `api.md`, `design.md` and `architecture.md` describe the new state and fields
+- [x] `OsManagement` reads the bootloader name, mode, raw mode number and `no-downgrade`; a mode number outside MCUboot's enum is `Unknown` with its number kept; the name is bounded before it is stored
+- [x] Unit tests cover both request shapes, both response shapes in definite- and indefinite-length CBOR, an unknown mode, a missing flag, an over-long name, and the error shapes
+- [x] `FirmwareUpdater` queries in a new `QueryingBootloader` state; the report carries the mode and `Reported`, `Supplied` (from the plan's fallback) or `Assumed`; a device error means unknown; a timeout or transport failure fails the update before anything is sent
+- [x] `ServerSimulator` and the stub device answer command 8 with a configured mode, or `ENOTSUP`
+- [x] `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` take `--fallback-mode` and print the mode and its source
+- [x] Every existing update test passes; the one that pinned "parameters → inspect images" now expects the new state, and no other changes; `api.md`, `design.md` and `architecture.md` describe the new state and fields
 
 ### Stage 3: Refuse what a mode cannot honour
 
@@ -220,12 +220,12 @@ with where it came from, and the tools print it.
 **Delivers:** an update that would quietly break its promise is refused
 before the first byte is sent, with one error code and a stated reason.
 
-- [ ] `ErrorCode::UpdateRefused` and the report's refusal reason exist
-- [ ] Overwrite-only is refused with `RevertUnavailable` unless the plan sets `allow_no_revert`, and then updates as before; `ServerSimulator` models its test as permanent
-- [ ] Single-app, the firmware loader, RAM load and single-slot RAM load are refused with `UnsupportedMode`
-- [ ] Each refusal test asserts that no upload request reached the device
-- [ ] The three tools take `--allow-no-revert`; a stub-device ctest shows the refusal and the opt-in
-- [ ] `CHANGELOG.md` lists the overwrite-only refusal under "Changed", with the opt-in that restores the old behaviour
+- [x] `ErrorCode::UpdateRefused` and the report's refusal reason exist
+- [x] Overwrite-only is refused with `RevertUnavailable` unless the plan sets `allow_no_revert`, and then updates as before; `ServerSimulator` models its test as permanent
+- [x] Single-app, the firmware loader, RAM load and single-slot RAM load are refused with `UnsupportedMode`
+- [x] Each refusal test asserts that no upload request reached the device
+- [x] The three tools take `--allow-no-revert`; a stub-device ctest shows the refusal and the opt-in
+- [x] `CHANGELOG.md` lists the overwrite-only refusal under "Changed", with the opt-in that restores the old behaviour
 
 ### Stage 4: Downgrade check
 
