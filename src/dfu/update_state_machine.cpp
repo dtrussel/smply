@@ -47,6 +47,65 @@ void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& rep
     report.mode_source = ModeSource::Assumed;
 }
 
+/// Why the bootloader mode rules this update out, if it does (ADR-0025,
+/// decision 4).
+[[nodiscard]] std::optional<Refusal> mode_refusal(const UpdatePlan& plan,
+                                                  const UpdateReport& report)
+{
+    switch (report.bootloader_mode) {
+    case McubootMode::SingleSlot:
+    case McubootMode::FirmwareLoader:
+    case McubootMode::RamLoad:
+    case McubootMode::SingleSlotRamLoad:
+        return Refusal::UnsupportedMode;
+    case McubootMode::UpgradeOnly:
+        if (plan.mode != UpdateMode::UploadOnly && !plan.allow_no_revert) {
+            return Refusal::RevertUnavailable;
+        }
+        return std::nullopt;
+    case McubootMode::Unknown:
+    case McubootMode::SwapUsingScratch:
+    case McubootMode::SwapUsingMove:
+    case McubootMode::SwapUsingOffset:
+    case McubootMode::DirectXip:
+    case McubootMode::DirectXipWithRevert:
+        return std::nullopt;
+    }
+    return std::nullopt; // LCOV_EXCL_LINE -- every enumerator is handled above
+}
+
+/// What a refusal's failure says, in `Error::where()`.
+[[nodiscard]] const char* refusal_text(Refusal refusal) noexcept
+{
+    switch (refusal) {
+    case Refusal::RevertUnavailable:
+        return "dfu: the bootloader cannot revert this update";
+    case Refusal::Downgrade:
+        return "dfu: the device refuses an image older than the one it runs";
+    case Refusal::UnsupportedMode:
+        return "dfu: no update path for this bootloader mode";
+    case Refusal::MultiImageUnsupported:
+        return "dfu: this bootloader mode updates one image only";
+    }
+    return "dfu: refused"; // LCOV_EXCL_LINE -- every enumerator is handled above
+}
+
+/// Runs the refusal checks once, before the first command that would change
+/// the device. Nothing has been sent when they refuse.
+[[nodiscard]] std::optional<Step> check_preconditions(const UpdatePlan& plan, Context& context)
+{
+    if (context.preconditions_checked) {
+        return std::nullopt;
+    }
+    context.preconditions_checked = true;
+    const std::optional<Refusal> refusal = mode_refusal(plan, context.report);
+    if (!refusal.has_value()) {
+        return std::nullopt;
+    }
+    context.report.refusal = *refusal;
+    return fail(context, ErrorCode::UpdateRefused, refusal_text(*refusal));
+}
+
 /// The slot of \p image that is running.
 [[nodiscard]] const ImageSlot* active_of(const Context& context, std::uint32_t image)
 {
@@ -319,6 +378,10 @@ enum class Apply : std::uint8_t
         return Step{UpdateState::Completed, Effect::Finish};
     }
     if (context.swap_scheduled) {
+        // A swap someone else scheduled is still this update's reset to make.
+        if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+            return *refused;
+        }
         return Step{UpdateState::Resetting, Effect::Reset};
     }
     // Nothing is queued, so a reset would change nothing: what the device runs
@@ -375,11 +438,17 @@ enum class Apply : std::uint8_t
             if (upload_only(plan)) {
                 continue;
             }
+            if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+                return *refused;
+            }
             return Step{UpdateState::MarkingForTest, Effect::MarkForTest};
         }
 
         // 4. Upload it. Even here the device may answer "already present" on
         //    the first packet and finish without a transfer (rule 9a).
+        if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+            return *refused;
+        }
         context.upload_in_progress = true;
         return Step{UpdateState::Uploading, Effect::StartUpload};
     }

@@ -170,7 +170,7 @@ constexpr std::uint32_t kDefaultSlotSize = 512U * 1024U;
 
 } // namespace
 
-ServerSimulator::ServerSimulator(FakeTransport& transport, ServerConfig config)
+ServerSimulator::ServerSimulator(FakeTransport& transport, const ServerConfig& config)
     : transport_{transport}, config_{config},
       images_(config.image_count == 0 ? 1U : config.image_count)
 {}
@@ -224,10 +224,22 @@ void ServerSimulator::reboot()
                 pair.applying = pair.apply_reads;
                 break;
             }
+            if (upgrade_only()) {
+                // Overwrite: the new image is copied over the old one for
+                // good, and the secondary is erased. No trial, nothing to
+                // revert (protocol-notes section 7).
+                overwrite(pair);
+                break;
+            }
             std::swap(pair.slots[0], pair.slots[1]);
             pair.swap = SwapType::Revert;
             break;
         case SwapType::Perm:
+            if (upgrade_only() && !pair.device_outcome.has_value()) {
+                overwrite(pair);
+                break;
+            }
+            [[fallthrough]];
         case SwapType::Revert:
             // Two different intentions with the same effect: `Perm` swaps the
             // new image in for good, `Revert` swaps the old one back after an
@@ -247,6 +259,19 @@ void ServerSimulator::reboot()
     // area_id == -1, so a continuation is answered off == 0 (rule 5).
     session_ = Session{};
     reset_requested_ = false;
+}
+
+bool ServerSimulator::upgrade_only() const noexcept
+{
+    constexpr std::int64_t kUpgradeOnly = 2;
+    return config_.bootloader_mode == kUpgradeOnly;
+}
+
+void ServerSimulator::overwrite(ImagePair& pair)
+{
+    pair.slots[0] = std::move(pair.slots[1]);
+    pair.slots[1].clear();
+    pair.swap = SwapType::None;
 }
 
 void ServerSimulator::rebind_transport(FakeTransport& transport)

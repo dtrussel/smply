@@ -143,6 +143,10 @@ struct ServerConfig {
     bool no_downgrade           = false;     // "no-downgrade": true in the answer
     std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
+
+A `bootloader_mode` of 2 (upgrade-only) also changes the reboot: a test or a
+permanent mark copies the secondary over the primary and erases it, so the
+new image runs confirmed with nothing to revert.
 ```
 
 The SMP **version is deliberately not a device setting**: the version on the
@@ -461,8 +465,11 @@ it commits itself. Each passes on its output lines, never on the exit code:
 Two show the MCUboot mode (ADR-0025), again on their output lines:
 `cli_dfu_mode_reported` gives the stub a mode (`--stub-mode`) and expects it
 printed as reported by the device; `cli_dfu_mode_fallback` gives the stub none
-and expects the plan's `--fallback-mode` printed as the fallback. The stub only
-*reports* a mode; it swaps with revert whatever it claims.
+and expects the plan's `--fallback-mode` printed as the fallback. Two more
+show a refusal: `cli_dfu_mode_refused` (an upgrade-only stub, refused, with the
+reason and the mode on the failure output) and `cli_dfu_mode_allow_no_revert`
+(the same stub with `--allow-no-revert`, completed). The stub only *reports* a
+mode; it swaps with revert whatever it claims.
 
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
@@ -674,6 +681,10 @@ image is good. Shipped:
   MCUboot, or reporting `-1` ⇒ the update unchanged, mode assumed; the plan's
   fallback used only when the device reports none; a query that times out ⇒
   failed before any upload (ADR-0025);
+* refusals: an upgrade-only device ⇒ `UpdateRefused` with no upload request
+  and no byte written; the same with `allow_no_revert` ⇒ completed, the new
+  image running confirmed, and no confirmation asked for; every mode without
+  an update path refused; a fallback mode refused like a reported one;
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

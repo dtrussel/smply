@@ -90,7 +90,7 @@ make_firmware(std::uint32_t body_size, std::uint8_t major = 1, std::uint8_t mino
 /// thing that catches.
 struct Fixture
 {
-    explicit Fixture(ServerConfig config = {}, SmpClientConfig client_config = {})
+    explicit Fixture(const ServerConfig& config = {}, SmpClientConfig client_config = {})
         : simulator{transport, config}, client{transport, clock, client_config}, management{client},
           os{client}, updater{client, management, os}
     {}

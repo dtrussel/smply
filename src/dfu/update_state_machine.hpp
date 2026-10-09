@@ -183,6 +183,9 @@ struct Context
     bool confirm_approved = false;
     /// The one re-read after a timed-out confirm or read-back has been spent.
     bool confirm_reread = false;
+    /// The refusal checks have run, and passed. They run once, before the
+    /// first command that changes the device (ADR-0025, decision 3).
+    bool preconditions_checked = false;
 };
 
 /// The next state, and what to do to get there.

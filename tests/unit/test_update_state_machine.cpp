@@ -22,6 +22,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <array>
 #include <cstddef>
@@ -41,6 +42,7 @@ using smply::ImageState;
 using smply::McubootMode;
 using smply::MgmtError;
 using smply::ModeSource;
+using smply::Refusal;
 using smply::SmpError;
 using smply::UpdateMode;
 using smply::UpdatePlan;
@@ -310,6 +312,117 @@ TEST_CASE("a reported unknown mode is no answer, so the fallback applies", "[dfu
                               bootloader_read(McubootMode::Unknown), plan, context));
     CHECK(context.report.bootloader_mode == McubootMode::SwapUsingOffset);
     CHECK(context.report.mode_source == ModeSource::Supplied);
+}
+
+namespace {
+
+/// The old image running, and nothing else: the next step would be an upload.
+[[nodiscard]] ImageState running_old_only()
+{
+    return state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
+}
+
+/// A context that has read \p state from a device running \p mode.
+[[nodiscard]] Context planning_under(McubootMode mode, const ImageState& state)
+{
+    Context context = fresh();
+    context.report.bootloader_mode = mode;
+    context.report.mode_source = ModeSource::Reported;
+    context.device = state;
+    return context;
+}
+
+} // namespace
+
+TEST_CASE("an upgrade-only device is refused before the upload unless the plan accepts it",
+          "[dfu][machine][mode][refusal]")
+{
+    const ImageState state = running_old_only();
+    const UpdateMode mode = GENERATE(UpdateMode::TestThenConfirm, UpdateMode::ConfirmImmediately);
+
+    UpdatePlan plan;
+    plan.mode = mode;
+    Context refused = planning_under(McubootMode::UpgradeOnly, state);
+    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, refused);
+    CHECK(step.next == UpdateState::Failed);
+    REQUIRE(refused.report.cause.has_value());
+    CHECK(refused.report.cause->code() == ErrorCode::UpdateRefused);
+    CHECK(refused.report.refusal == Refusal::RevertUnavailable);
+    CHECK_FALSE(refused.report.revert_pending);
+
+    plan.allow_no_revert = true;
+    Context accepted = planning_under(McubootMode::UpgradeOnly, state);
+    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, accepted);
+    CHECK(upload.next == UpdateState::Uploading);
+    CHECK_FALSE(accepted.report.refusal.has_value());
+}
+
+TEST_CASE("an upload-only update is not refused for a missing revert",
+          "[dfu][machine][mode][refusal]")
+{
+    // UploadOnly promises no trial, so there is no promise to break.
+    UpdatePlan plan;
+    plan.mode = UpdateMode::UploadOnly;
+    Context context = planning_under(McubootMode::UpgradeOnly, running_old_only());
+    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    CHECK(step.next == UpdateState::Uploading);
+}
+
+TEST_CASE("a mode without an update path is refused in every update mode",
+          "[dfu][machine][mode][refusal]")
+{
+    const McubootMode mode = GENERATE(McubootMode::SingleSlot, McubootMode::FirmwareLoader,
+                                      McubootMode::RamLoad, McubootMode::SingleSlotRamLoad);
+    const UpdateMode update = GENERATE(UpdateMode::TestThenConfirm, UpdateMode::UploadOnly);
+
+    UpdatePlan plan;
+    plan.mode = update;
+    plan.allow_no_revert = true; // not a way past this one
+    Context context = planning_under(mode, running_old_only());
+    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    CHECK(step.next == UpdateState::Failed);
+    CHECK(context.report.refusal == Refusal::UnsupportedMode);
+}
+
+TEST_CASE("the refusal is checked before marking an image already present",
+          "[dfu][machine][mode][refusal]")
+{
+    Context context = planning_under(McubootMode::UpgradeOnly, running_old_holding_new());
+    const Step step =
+        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Failed);
+    CHECK(context.report.refusal == Refusal::RevertUnavailable);
+}
+
+TEST_CASE("nothing to do is never refused", "[dfu][machine][mode][refusal]")
+{
+    // The device already runs the image, confirmed: no command would change
+    // it, so there is nothing for a refusal to protect.
+    const ImageState done =
+        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true}});
+    Context context = planning_under(McubootMode::UpgradeOnly, done);
+    const Step step =
+        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Completed);
+    CHECK_FALSE(context.report.refusal.has_value());
+}
+
+TEST_CASE("swap modes and an unknown mode are never refused", "[dfu][machine][mode][refusal]")
+{
+    const McubootMode mode = GENERATE(McubootMode::Unknown, McubootMode::SwapUsingScratch,
+                                      McubootMode::SwapUsingMove, McubootMode::SwapUsingOffset);
+    Context context = planning_under(mode, running_old_only());
+    const Step step =
+        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Uploading);
+}
+
+TEST_CASE("every refusal has a name", "[dfu][machine][refusal]")
+{
+    for (const Refusal refusal : {Refusal::RevertUnavailable, Refusal::Downgrade,
+                                  Refusal::UnsupportedMode, Refusal::MultiImageUnsupported}) {
+        CHECK_FALSE(smply::to_string(refusal).empty());
+    }
 }
 
 TEST_CASE("a failed bootloader query is fatal and changes nothing", "[dfu][machine][mode]")

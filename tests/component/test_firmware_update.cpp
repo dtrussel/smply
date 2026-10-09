@@ -776,6 +776,103 @@ TEST_CASE("a bootloader query that times out fails the update before any upload"
     CHECK_FALSE(any_upload(fixture));
 }
 
+TEST_CASE("an upgrade-only device is refused before anything is sent",
+          "[dfu][update][mode][refusal]")
+{
+    // The trial TestThenConfirm promises does not exist there: the image would
+    // be copied into place for good at the reset (ADR-0025).
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = 2}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.refusal == smply::Refusal::RevertUnavailable);
+    CHECK(report.bootloader_mode == McubootMode::UpgradeOnly);
+    CHECK_FALSE(report.revert_pending);
+    CHECK_FALSE(any_upload(fixture));
+    CHECK(fixture.simulator.bytes_written() == 0);
+}
+
+TEST_CASE("an upgrade-only update the plan accepts is permanent, and never asks",
+          "[dfu][update][mode][refusal]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = 2}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK_FALSE(outcome.report->refusal.has_value());
+    // The overwrite left nothing on trial, so there was nothing to confirm.
+    CHECK(outcome.confirmations == 0);
+    REQUIRE(outcome.report->final_device_state.has_value());
+    const smply::ImageSlot* active = outcome.report->final_device_state->active_slot(0);
+    REQUIRE(active != nullptr);
+    CHECK(active->confirmed);
+    CHECK(active->hash == outcome.report->target_hash);
+}
+
+TEST_CASE("a bootloader mode without an update path is refused before anything is sent",
+          "[dfu][update][mode][refusal]")
+{
+    const std::int64_t mode =
+        GENERATE(std::int64_t{0}, std::int64_t{6}, std::int64_t{7}, std::int64_t{8});
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = mode}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    CHECK(fixture.updater.report().refusal == smply::Refusal::UnsupportedMode);
+    CHECK_FALSE(any_upload(fixture));
+}
+
+TEST_CASE("a fallback mode is refused like a reported one", "[dfu][update][mode][refusal]")
+{
+    // The caller said so; smply does not second-guess its own input.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.fallback_mode = McubootMode::UpgradeOnly;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    CHECK(fixture.updater.report().mode_source == ModeSource::Supplied);
+    CHECK_FALSE(any_upload(fixture));
+}
+
 TEST_CASE("cancelling mid-update completes the callback exactly once", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);

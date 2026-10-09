@@ -68,6 +68,21 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # A mode that cannot revert is refused before anything is sent, and the
+    # plan's opt-in lets the same update through (ADR-0025). The stub only
+    # reports the mode, so the second run swaps as usual.
+    add_test(NAME cli_dfu_mode_refused COMMAND cli_dfu --quiet --stub-mode upgrade-only)
+    set_tests_properties(cli_dfu_mode_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION "update failed: firmware update refused \\(at dfu: the bootloader cannot revert this update\\).*bootloader: upgrade-only \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_mode_allow_no_revert
+        COMMAND cli_dfu --quiet --stub-mode upgrade-only --allow-no-revert)
+    set_tests_properties(cli_dfu_mode_allow_no_revert PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: upgrade-only \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
     # The multi-image update of ADR-0021 end to end: a generated package read
     # by smply::dfu_package, both images staged before one reset, image 1
     # applied by the device, image 0 confirmed only after that, and image 1

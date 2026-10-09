@@ -117,6 +117,27 @@ enum class ModeSource : std::uint8_t
     Assumed,
 };
 
+/// Why an update was refused before anything was sent (ADR-0025). The update
+/// ends with `ErrorCode::UpdateRefused`, and the device is untouched.
+enum class Refusal : std::uint8_t
+{
+    /// The bootloader mode cannot revert an update, and the plan did not set
+    /// `allow_no_revert`: upgrade-only (overwrite), or direct-XIP without
+    /// revert. `UploadOnly` promises no revert, so it is never refused for this.
+    RevertUnavailable,
+    /// The device prevents downgrades, and the image is older than the one it
+    /// runs.
+    Downgrade,
+    /// The bootloader mode needs an update path smply does not have: single
+    /// slot, the firmware loader, RAM load, single-slot RAM load.
+    UnsupportedMode,
+    /// More than one image, and a mode whose image group handles only one.
+    MultiImageUnsupported,
+};
+
+/// A short, stable name for a refusal. Never allocates.
+[[nodiscard]] std::string_view to_string(Refusal refusal) noexcept;
+
 /// Who commits an image once it is in place (ADR-0021).
 enum class CommitBy : std::uint8_t
 {
@@ -154,6 +175,13 @@ struct UpdatePlan
     /// mode the device does report always wins over this. `Unknown`, like no
     /// value, means "assume nothing".
     std::optional<McubootMode> fallback_mode{};
+
+    /// Accept an update the bootloader cannot revert (ADR-0025). Without it,
+    /// `TestThenConfirm` and `ConfirmImmediately` are refused on an
+    /// upgrade-only device, because the trial they promise does not exist
+    /// there: the image is copied into place for good at the reset. With it,
+    /// the update runs, and the image is permanent once the device reboots.
+    bool allow_no_revert = false;
 
     /// Passed through to `ImageManagement::upload`. `sha` and `server_buf_size`
     /// are filled in by the updater when absent -- it computes the first from
@@ -257,6 +285,10 @@ struct UpdateReport
     /// (ADR-0025). `Unknown` exactly when `mode_source` is `Assumed`.
     McubootMode bootloader_mode = McubootMode::Unknown;
     ModeSource mode_source = ModeSource::Assumed;
+
+    /// Why the update was refused. Set exactly when `cause` is
+    /// `ErrorCode::UpdateRefused`; the device was not changed.
+    std::optional<Refusal> refusal;
 
     /// One entry per image, in the order the update was given them.
     std::vector<ImageReport> images;

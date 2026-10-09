@@ -283,20 +283,22 @@ logs. **Strings are never the machine-readable representation.**
 `UnsupportedSmpVersion`, `MessageTooLarge`, `CborDecode`, `CborEncode`,
 `ProtocolError` (MCUmgr `rc`/`err`), `UnexpectedResponse`, `Timeout`,
 `Cancelled`, `TransportError`, `TransportBusy`, `Disconnected`,
-`ImageMismatch`, `UpdateFailed`, `Internal`.
+`ImageMismatch`, `UpdateFailed`, `UpdateRefused`, `Internal`.
 
 Propagation: transport and codec errors surface as the `Result` of the
 affected request, and a link loss fails **all** pending requests with
 `Disconnected`. When an update fails, `UpdateReport::cause` carries the
 `Error` that ended it, unchanged. A step that failed on a timeout reports
 `Timeout`, and a device refusal reports `ProtocolError` with the device's own
-`MgmtError`. Two codes are the updater's own verdicts, used where nothing
+`MgmtError`. Three codes are the updater's own verdicts, used where nothing
 below it failed:
 * `ImageMismatch`: after the upload, no slot reports the file's image hash.
 * `UpdateFailed`: the device did not end up running the new image confirmed.
   It reverted, booted something else, reports no active slot, or did not
   report the image as confirmed after a confirm. The upload also uses it when
   it stops making progress.
+* `UpdateRefused`: the device's MCUboot mode rules the update out, and nothing
+  was sent (ADR-0025). `UpdateReport::refusal` says which rule.
 
 Errors are never silently swallowed and never converted to strings inside the
 library.

@@ -931,6 +931,17 @@ resume an update a previous process left part-way:
    `MarkingForTest` (nothing, under `UploadOnly`).
 4. Otherwise: `Uploading`.
 
+**Before the first command that would change the device** -- the first
+`MarkingForTest` or `Uploading` above, or a `Resetting` for a swap someone
+else scheduled -- the refusal checks run, once (ADR-0025). They read the mode
+recorded in `QueryingBootloader` and the plan: single slot, the firmware
+loader and both RAM-load modes are `UnsupportedMode` whatever the plan; an
+upgrade-only device is `RevertUnavailable` unless the plan sets
+`allow_no_revert` or is `UploadOnly`. A refusal ends the update in `Failed`
+with `UpdateRefused` and `UpdateReport::refusal` set, and nothing has been
+sent. An update with nothing to do is never refused: there is no command for
+a refusal to stop.
+
 Once every image is staged: `Completed` under `UploadOnly`; `Resetting` if a
 reset is owed; otherwise the device is judged as it stands, exactly as
 `VerifyingBooted` would judge it after a reset -- so a single image running
@@ -1065,6 +1076,7 @@ that forgets a kind does not compile:
 | `QueryingBootloader` | a device error (`ENOTSUP`, no answer, malformed reply) | **not fatal** — the mode is the plan's `fallback_mode`, or unknown and assumed (ADR-0025) |
 | `QueryingBootloader` | timeout, dropped link | fatal; nothing has been changed on the device. Unlike the parameters query: a link that cannot answer one query is not given an upload |
 | `InspectingImages` | any error | fatal; nothing has been changed on the device |
+| `Planning` | the bootloader mode rules the update out (ADR-0025) | fatal `UpdateRefused`, with `UpdateReport::refusal`; checked before the first command that would change the device, so nothing has |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
 | `Uploading` | server `off == 0` | restart from the first packet, bounded by `max_restarts` |

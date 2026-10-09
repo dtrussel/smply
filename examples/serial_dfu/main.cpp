@@ -98,6 +98,8 @@ struct Options
     /// The MCUboot mode to assume when the device does not report one
     /// (ADR-0025).
     std::optional<McubootMode> fallback_mode;
+    /// Accept an update the bootloader cannot revert.
+    bool allow_no_revert = false;
 
     [[nodiscard]] bool package_mode() const noexcept
     {
@@ -111,7 +113,7 @@ void usage()
                  "                  [--image PATH | --package PATH | --demo-package]\n"
                  "                  [--commit N=client|device] [--apply-fails]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
-                 "                  [--quiet]\n"
+                 "                  [--allow-no-revert] [--quiet]\n"
                  "  --port PATH   the device's serial port; prefer a stable name such as\n"
                  "                /dev/serial/by-id/... (a USB port may be renamed on reset)\n"
                  "  --baud N      line speed, default 115200 (ignored by USB CDC ACM)\n"
@@ -131,6 +133,8 @@ void usage()
                  "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
                  "                report one, named as the report prints it (swap-using-move,\n"
                  "                upgrade-only, direct-xip, ...)\n"
+                 "  --allow-no-revert  update a device whose bootloader cannot revert\n"
+                 "                (upgrade-only); without it, such an update is refused\n"
                  "  --quiet       print only the outcome\n"
                  "With --port, one of --image or --package is required.\n";
 }
@@ -197,6 +201,8 @@ void usage()
             out.demo_package = true;
         } else if (arg == "--apply-fails") {
             out.apply_fails = true;
+        } else if (arg == "--allow-no-revert") {
+            out.allow_no_revert = true;
         } else if (arg == "--fallback-mode" && has_value) {
             out.fallback_mode = parse_mcuboot_mode(args[++i]);
             if (!out.fallback_mode.has_value()) {
@@ -477,6 +483,7 @@ int main(int argc, char** argv)
     UpdatePlan plan;
     plan.mode = options.mode;
     plan.fallback_mode = options.fallback_mode;
+    plan.allow_no_revert = options.allow_no_revert;
     // A UART does not drop on reset, so this is how long the updater waits
     // before assuming the reset happened anyway (design.md section 13).
     plan.disconnect_grace = std::chrono::seconds{2};

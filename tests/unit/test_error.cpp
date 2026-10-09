@@ -148,6 +148,7 @@ TEST_CASE("every ErrorCode has a distinct, non-empty name", "[error]")
         ErrorCode::Disconnected,
         ErrorCode::ImageMismatch,
         ErrorCode::UpdateFailed,
+        ErrorCode::UpdateRefused,
         ErrorCode::Internal,
     };
 

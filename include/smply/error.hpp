@@ -44,6 +44,7 @@ enum class ErrorCode : std::uint16_t
     Disconnected,          ///< The link is gone.
     ImageMismatch,         ///< Device content does not match what was uploaded.
     UpdateFailed,          ///< Terminal failure of the DFU state machine.
+    UpdateRefused,         ///< Refused before anything was sent; see `UpdateReport::refusal`.
     Internal,              ///< A bug in smply.
 };
 

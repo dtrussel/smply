@@ -171,7 +171,7 @@ class ServerSimulator
 public:
     /// \param transport The same transport the client under test is bound to.
     ///                  Must outlive this simulator.
-    explicit ServerSimulator(FakeTransport& transport, ServerConfig config = {});
+    explicit ServerSimulator(FakeTransport& transport, const ServerConfig& config = {});
 
     ServerSimulator(const ServerSimulator&) = delete;
     ServerSimulator(ServerSimulator&&) = delete;
@@ -362,6 +362,11 @@ private:
     /// An OS-group error, in the v2 `err` shape whatever the request's version:
     /// the simulator does not model Zephyr's v1 translation of OS-group codes.
     [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
+    /// The configured mode is upgrade-only (overwrite): a test is permanent.
+    [[nodiscard]] bool upgrade_only() const noexcept;
+    /// Copies the secondary over the primary and erases it, as an overwrite
+    /// upgrade does.
+    static void overwrite(ImagePair& pair);
 
     /// Which slot of \p image (0 or 1, within the pair) the next boot runs.
     [[nodiscard]] std::size_t next_boot_slot(std::uint32_t image) const noexcept;

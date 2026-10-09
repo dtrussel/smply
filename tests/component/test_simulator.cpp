@@ -61,7 +61,7 @@ class Device : public smply::TransportListener
 public:
     Device() : Device(ServerConfig{}) {}
 
-    explicit Device(ServerConfig config) : simulator_{transport_, config}
+    explicit Device(const ServerConfig& config) : simulator_{transport_, config}
     {
         transport_.set_listener(this);
     }

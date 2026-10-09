@@ -51,6 +51,21 @@ using dfu::Event;
 
 } // namespace
 
+std::string_view to_string(Refusal refusal) noexcept
+{
+    switch (refusal) {
+    case Refusal::RevertUnavailable:
+        return "RevertUnavailable";
+    case Refusal::Downgrade:
+        return "Downgrade";
+    case Refusal::UnsupportedMode:
+        return "UnsupportedMode";
+    case Refusal::MultiImageUnsupported:
+        return "MultiImageUnsupported";
+    }
+    return "Unknown"; // LCOV_EXCL_LINE
+}
+
 std::string_view to_string(UpdateState state) noexcept
 {
     switch (state) {

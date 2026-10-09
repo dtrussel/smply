@@ -32,6 +32,10 @@ git; commit `97f1647` is the last to carry the per-phase record in
   fails the update before anything is sent. New bound in `smply/limits.hpp`:
   `kMaxBootloaderNameLength`. The example tools take `--fallback-mode` and
   print the mode.
+- **Updates the device's mode cannot carry out are refused before anything is
+  sent** (ADR-0025): the new `ErrorCode::UpdateRefused`, with the reason in
+  `UpdateReport::refusal` (`Refusal`). Single slot, the firmware loader, RAM
+  load and single-slot RAM load are refused (`UnsupportedMode`).
 - **The statistics and settings management groups** (MCUmgr groups 2 and 3).
   `StatisticsManagement` lists statistics groups and reads one group's
   counters; `SettingsManagement` reads, writes and erases a setting and asks
@@ -102,6 +106,14 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **An upgrade-only (overwrite) device is refused by default** (ADR-0025,
+  `Refusal::RevertUnavailable`). `TestThenConfirm` promises a trial boot the
+  device can revert, and an overwrite device has none: the image is copied
+  into place for good at the reset. Before, smply ran the update and reported
+  it as an ordinary test-then-confirm. **To keep the old behaviour**, set
+  `UpdatePlan::allow_no_revert`, or pass `--allow-no-revert` to the example
+  tools; `UploadOnly` is never refused for this. The device must report its
+  mode for this to apply, or the plan must supply it as `fallback_mode`.
 - **Over serial, upload messages now fit the device's buffer**
   ([ADR-0024](docs/decisions/ADR-0024-transport-message-overhead.md),
   protocol-notes A25). A Zephyr device's netbuf also holds the serial length

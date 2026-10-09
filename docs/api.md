@@ -93,6 +93,7 @@ enum class ErrorCode : std::uint16_t {
     Disconnected,
     ImageMismatch,          // device content != what we uploaded
     UpdateFailed,           // DFU state machine terminal failure
+    UpdateRefused,          // refused before anything was sent; UpdateReport::refusal
     Internal,
 };
 
@@ -1001,6 +1002,18 @@ enum class CommitBy : std::uint8_t { Client, Device };
 // answer, the plan's fallback, or neither.
 enum class ModeSource : std::uint8_t { Reported, Supplied, Assumed };
 
+// Why an update was refused before anything was sent (ADR-0025). The update
+// ends with ErrorCode::UpdateRefused and the device is untouched.
+//   RevertUnavailable      upgrade-only, and the plan did not allow_no_revert;
+//                          never under UploadOnly, which promises no trial
+//   Downgrade              the device prevents downgrades; the image is older
+//   UnsupportedMode        single slot, firmware loader, RAM load, single-slot
+//                          RAM load: an update path smply does not have
+//   MultiImageUnsupported  several images, a mode that takes one
+enum class Refusal : std::uint8_t {
+    RevertUnavailable, Downgrade, UnsupportedMode, MultiImageUnsupported };
+std::string_view to_string(Refusal) noexcept;
+
 struct ImageTarget {                  // one image of a multi-image update
     std::uint32_t image = 0;
     ImageSource*  source = nullptr;   // not owned; outlives the update
@@ -1012,6 +1025,10 @@ struct UpdatePlan {
     // Used only when the device does not report a mode: no command, no answer,
     // -1, or a number smply does not know. A reported mode always wins.
     std::optional<McubootMode> fallback_mode{};
+    // Accept an update the bootloader cannot revert: without it, an
+    // upgrade-only device is refused (Refusal::RevertUnavailable). With it the
+    // image is permanent at the reset, and nothing asks for a confirm.
+    bool          allow_no_revert = false;
     // For the single-image start(), upload.image is the image the whole update
     // works on: transferred, inspected, marked and confirmed (by hash). The
     // image-list start() replaces it with each target's image. Image >= 1
@@ -1055,6 +1072,7 @@ struct UpdateReport {                 // the summary fields cover every image
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
     McubootMode bootloader_mode = McubootMode::Unknown;  // ADR-0025
     ModeSource  mode_source = ModeSource::Assumed;       // Unknown iff Assumed
+    std::optional<Refusal> refusal;  // set iff cause is UpdateRefused
     std::vector<ImageReport> images;
 };
 
