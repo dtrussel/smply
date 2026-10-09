@@ -52,6 +52,7 @@
 #include "smply/groups/image.hpp"
 #include "smply/smp/header.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -196,6 +197,18 @@ public:
     void load_slot(std::size_t slot, std::vector<std::byte> content);
 
     [[nodiscard]] ConstBytes slot_content(std::size_t slot) const;
+
+    /// Direct-XIP only (`bootloader_mode` 4 or 5, one image): the slot the
+    /// device runs from, 0 at start. Uploads go to the other slot, and a reboot
+    /// moves to it when MCUboot would (protocol-notes section 7).
+    [[nodiscard]] std::size_t active_slot() const noexcept
+    {
+        return xip_active_;
+    }
+
+    /// Direct-XIP only: start the device running from \p slot instead, as
+    /// though an earlier update had moved it there. The slot runs confirmed.
+    void boot_from_slot(std::size_t slot);
 
     /// Moves the device onto a new link, keeping everything it holds.
     ///
@@ -366,6 +379,19 @@ private:
     /// With `no_downgrade`, erases a scheduled image older than the running one
     /// and cancels the swap, as MCUboot does at boot. Returns whether it did.
     [[nodiscard]] bool refuses_downgrade(ImagePair& pair) const;
+    /// Direct-XIP, with or without revert: image 0 runs in place from either
+    /// slot, and the newest valid one boots.
+    [[nodiscard]] bool direct_xip() const noexcept;
+    [[nodiscard]] bool xip_with_revert() const noexcept;
+    /// MCUboot would prefer the slot that is not running: it holds a valid
+    /// image with a higher version, or the same version in a lower slot.
+    [[nodiscard]] bool xip_prefers_other() const;
+    /// Whether the other slot boots next, and if so as a one-boot trial.
+    [[nodiscard]] std::optional<bool> xip_next_is_trial() const;
+    /// The flags image-state reports for one of image 0's slots.
+    [[nodiscard]] std::array<bool, 4> xip_flags(std::size_t slot) const;
+    void xip_reboot();
+    [[nodiscard]] ImageError xip_set_next(std::size_t slot, bool confirm);
     /// The configured mode is upgrade-only (overwrite): a test is permanent.
     [[nodiscard]] bool upgrade_only() const noexcept;
     /// Copies the secondary over the primary and erases it, as an overwrite
@@ -386,6 +412,20 @@ private:
     ServerConfig config_;
 
     std::vector<ImagePair> images_;
+
+    /// Direct-XIP's boot state per slot of image 0, as Zephyr's
+    /// read_boot_swap_state() names it: unset, marked for one boot, or
+    /// confirmed for good (S14). Only the with-revert variant writes it.
+    enum class XipState : std::uint8_t
+    {
+        Unset,
+        Once,
+        Forever,
+    };
+    std::size_t xip_active_ = 0;
+    std::array<XipState, 2> xip_state_{XipState::Forever, XipState::Unset};
+    /// Running a one-boot trial nobody confirmed: the next reboot reverts.
+    bool xip_trial_ = false;
     Session session_;
 
     std::vector<Pending> pending_;

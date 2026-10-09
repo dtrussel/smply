@@ -936,8 +936,9 @@ resume an update a previous process left part-way:
 else scheduled -- the refusal checks run, once (ADR-0025). They read the mode
 recorded in `QueryingBootloader` and the plan: single slot, the firmware
 loader and both RAM-load modes are `UnsupportedMode` whatever the plan; an
-upgrade-only device is `RevertUnavailable` unless the plan sets
-`allow_no_revert` or is `UploadOnly`; and when the device reported
+upgrade-only or direct-XIP-without-revert device is `RevertUnavailable`
+unless the plan sets `allow_no_revert` or is `UploadOnly`; several images on
+either direct-XIP mode are `MultiImageUnsupported`; and when the device reported
 `no-downgrade` and the plan keeps `check_downgrade`, an image whose
 `major.minor.revision` is below the running image's is `Downgrade`. An image the
 device already runs, or a running version that does not parse (`"<???>"`), is
@@ -945,6 +946,17 @@ not compared. A refusal ends the update in `Failed`
 with `UpdateRefused` and `UpdateReport::refusal` set, and nothing has been
 sent. An update with nothing to do is never refused: there is no command for
 a refusal to stop.
+
+**Direct-XIP without revert has no set-state** (protocol-notes §7). Wherever
+the table above says `MarkingForTest` -- case 3, and after `VerifyingUpload` --
+the machine records a reset as owed and moves on instead, and after the reset
+an image running in its slot is never "on trial": nothing reports it confirmed,
+and nothing needs to. Success is the running slot holding the target hash. If
+the device kept the old slot, because the new version did not win, that reads
+as a revert and is reported as `rolled_back`. Direct-XIP with revert needs no
+special case: its flags follow the ordinary table, and only the slot differs.
+Neither waits for a swap: smply never did, since reconnecting is the
+application's. Each image's `upload_slot` records where the device put it.
 
 Once every image is staged: `Completed` under `UploadOnly`; `Resetting` if a
 reset is owed; otherwise the device is judged as it stands, exactly as

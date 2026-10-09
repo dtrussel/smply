@@ -876,6 +876,17 @@ reports (§5):
   addresses. A plain direct-XIP package carries one file per slot (S58).
 * **Zephyr's image group does not support several images** under direct-XIP
   or RAM load (S10).
+* **What image-state reports under direct-XIP** (S14, `img_mgmt_state_flags()`
+  and `img_mgmt_get_next_boot_slot()`). MCUboot boots the newest valid slot,
+  a tie going to the lower slot number:
+  * **without revert**, the running slot is only `active`, **never
+    `confirmed`**, and the other slot is `pending` and `permanent` exactly when
+    MCUboot would boot it: its version is higher, or equal in a lower slot. An
+    older or equal image in the higher slot is held but never booted;
+  * **with revert**, the flags follow the ordinary table (§7 "Swap types"):
+    the other slot boots only once marked (`BOOT_STATE_ONCE`, a trial) or
+    confirmed (`FOREVER`), **and** only if its version wins as above. A trial
+    nobody confirms reverts at the next reset.
 * **Downgrade prevention.** `no-downgrade` (§5) is
   `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`, set by hand to mirror MCUboot's
   `MCUBOOT_DOWNGRADE_PREVENTION` (S57), which direct-XIP cannot enable (S56).

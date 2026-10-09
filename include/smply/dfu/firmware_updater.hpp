@@ -124,6 +124,8 @@ enum class Refusal : std::uint8_t
     /// The bootloader mode cannot revert an update, and the plan did not set
     /// `allow_no_revert`: upgrade-only (overwrite), or direct-XIP without
     /// revert. `UploadOnly` promises no revert, so it is never refused for this.
+    /// Accepted, direct-XIP without revert sends no set-state at all: it
+    /// uploads, resets, and succeeds when the device runs the new image.
     RevertUnavailable,
     /// The device prevents downgrades, and the image is older than the one it
     /// runs.
@@ -131,7 +133,8 @@ enum class Refusal : std::uint8_t
     /// The bootloader mode needs an update path smply does not have: single
     /// slot, the firmware loader, RAM load, single-slot RAM load.
     UnsupportedMode,
-    /// More than one image, and a mode whose image group handles only one.
+    /// More than one image, and a mode whose image group handles only one:
+    /// either direct-XIP mode (docs/protocol-notes.md section 7).
     MultiImageUnsupported,
 };
 
@@ -178,9 +181,10 @@ struct UpdatePlan
 
     /// Accept an update the bootloader cannot revert (ADR-0025). Without it,
     /// `TestThenConfirm` and `ConfirmImmediately` are refused on an
-    /// upgrade-only device, because the trial they promise does not exist
-    /// there: the image is copied into place for good at the reset. With it,
-    /// the update runs, and the image is permanent once the device reboots.
+    /// upgrade-only or a direct-XIP-without-revert device, because the trial
+    /// they promise does not exist there. With it, the update runs, and the
+    /// image is permanent once the device boots it. Direct-XIP boots it only
+    /// if its version is higher than the running one's.
     bool allow_no_revert = false;
 
     /// Refuse an image older than the one the device runs, when the device
@@ -244,7 +248,14 @@ struct ImageReport
     std::uint64_t bytes_transferred = 0;
     /// The device already held the image, so nothing was transferred.
     bool upload_skipped = false;
-    /// `Client` only: MCUboot reverted this image to the old one.
+    /// The global slot that holds the image, once the device has reported it
+    /// there. The device picks it: the secondary slot ordinarily, and under
+    /// direct-XIP whichever slot is not running (ADR-0025). A direct-XIP image
+    /// must be linked for this slot's address.
+    std::optional<std::uint32_t> upload_slot;
+    /// `Client` only: the bootloader booted the old image, not this one.
+    /// MCUboot reverted an unconfirmed trial, or, under direct-XIP, chose the
+    /// old slot because the new image did not qualify.
     bool rolled_back = false;
     /// `Device` only: the device reported the image applied, running on trial.
     bool applied = false;
@@ -273,9 +284,13 @@ struct UpdateReport
     /// Why it failed. Set exactly when `final_state` is `Failed`.
     std::optional<Error> cause;
 
-    /// MCUboot reverted: the device booted the **old** image
-    /// (docs/protocol-notes.md section 7), for at least one image.
+    /// The bootloader booted the **old** image, for at least one image: MCUboot
+    /// reverted an unconfirmed trial (docs/protocol-notes.md section 7), or a
+    /// direct-XIP bootloader kept the old slot (ADR-0025).
     bool rolled_back = false;
+
+    /// The first image's `ImageReport::upload_slot`.
+    std::optional<std::uint32_t> upload_slot;
 
     /// The device holds a swapped-in image that nobody confirmed, so it will
     /// revert on its next reset.

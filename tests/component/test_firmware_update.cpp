@@ -939,6 +939,175 @@ TEST_CASE("with the check off, the device itself refuses the downgrade at boot",
     CHECK(any_upload(fixture));
 }
 
+// --- Direct-XIP (ADR-0025, decision 4) --------------------------------------
+
+namespace {
+
+constexpr std::int64_t kDirectXip = 4;
+constexpr std::int64_t kDirectXipWithRevert = 5;
+
+/// How many set-state writes (marks and confirms) the device processed.
+[[nodiscard]] std::size_t set_state_writes(const Fixture& fixture)
+{
+    return static_cast<std::size_t>(
+        std::ranges::count_if(fixture.simulator.requests(), [](const smply::Header& header) {
+            return header.group == smply::Group::Image && header.command == 0 &&
+                   header.op == smply::Operation::Write;
+        }));
+}
+
+} // namespace
+
+TEST_CASE("direct-XIP without revert is refused unless the plan accepts it",
+          "[dfu][update][mode][xip][refusal]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXip}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    CHECK(fixture.updater.report().refusal == smply::Refusal::RevertUnavailable);
+    CHECK_FALSE(any_upload(fixture));
+}
+
+TEST_CASE("direct-XIP without revert uploads to the free slot, resets, and sends no set-state",
+          "[dfu][update][mode][xip]")
+{
+    // Started from either slot: the upload always lands in the other one.
+    const std::size_t running_slot = GENERATE(std::size_t{0}, std::size_t{1});
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXip}};
+    fixture.simulator.load_slot(running_slot, running);
+    fixture.simulator.boot_from_slot(running_slot);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->upload_slot == 1 - running_slot);
+    CHECK(set_state_writes(fixture) == 0);
+    CHECK(outcome.confirmations == 0);
+    CHECK(fixture.simulator.active_slot() == 1 - running_slot);
+    CHECK_FALSE(outcome.report->rolled_back);
+}
+
+TEST_CASE("a direct-XIP image that is not newer is not booted, which reads as a rollback",
+          "[dfu][update][mode][xip]")
+{
+    // MCUboot boots the newest valid slot; an equal version in the higher slot
+    // does not win, so the device stays on the old image.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 2, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXip}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    static_cast<void>(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    CHECK(fixture.updater.report().rolled_back);
+    CHECK(fixture.simulator.active_slot() == 0);
+}
+
+TEST_CASE("direct-XIP with revert tests, resets and confirms in the free slot",
+          "[dfu][update][mode][xip]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXipWithRevert}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+    CHECK(outcome.report->upload_slot == 1);
+    CHECK(outcome.confirmations == 1);
+    CHECK(fixture.simulator.active_slot() == 1);
+    REQUIRE(outcome.report->final_device_state.has_value());
+    const smply::ImageSlot* active = outcome.report->final_device_state->active_slot(0);
+    REQUIRE(active != nullptr);
+    CHECK(active->confirmed);
+    CHECK(active->slot == 1);
+}
+
+TEST_CASE("a direct-XIP trial nobody confirms reverts at the next reset",
+          "[dfu][update][mode][xip]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = kDirectXipWithRevert}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    application.reboot_twice = true; // the trial is reset out of, unconfirmed
+    static_cast<void>(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    CHECK(fixture.updater.report().rolled_back);
+    CHECK(fixture.simulator.active_slot() == 0);
+}
+
+TEST_CASE("several images on a direct-XIP device are refused before anything is sent",
+          "[dfu][update][mode][xip][refusal]")
+{
+    const std::int64_t mode = GENERATE(kDirectXip, kDirectXipWithRevert);
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> app_image = make_firmware(kBodySize, 2, 0, 0, 2);
+    const std::vector<std::byte> other_image = make_firmware(kBodySize, 3, 0, 0, 3);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = mode}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource app{ConstBytes{app_image}};
+    MemoryImageSource other{ConstBytes{other_image}};
+    std::array<ImageTarget, 2> targets{ImageTarget{.image = 0, .source = &app},
+                                       ImageTarget{.image = 1, .source = &other}};
+
+    UpdatePlan plan;
+    plan.allow_no_revert = true; // not a way past this one
+    REQUIRE(fixture.updater.start(targets, plan, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    CHECK(fixture.updater.report().refusal == smply::Refusal::MultiImageUnsupported);
+    CHECK_FALSE(any_upload(fixture));
+}
+
 TEST_CASE("cancelling mid-update completes the callback exactly once", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);

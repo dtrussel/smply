@@ -36,6 +36,15 @@ git; commit `97f1647` is the last to carry the per-phase record in
   sent** (ADR-0025): the new `ErrorCode::UpdateRefused`, with the reason in
   `UpdateReport::refusal` (`Refusal`). Single slot, the firmware loader, RAM
   load and single-slot RAM load are refused (`UnsupportedMode`).
+- **Direct-XIP devices can be updated** (ADR-0025). With revert, the update
+  is the ordinary test, reset and confirm, in whichever slot is not running.
+  Without revert, set-state does not exist, so the update is refused unless
+  the plan sets `allow_no_revert`; then it uploads, resets, and succeeds when
+  the device runs the new image, with no set-state sent and no confirm asked
+  for. Several images on a direct-XIP device are refused
+  (`Refusal::MultiImageUnsupported`). `ImageReport::upload_slot` and
+  `UpdateReport::upload_slot` record the slot the image went to, and
+  `rolled_back` now also covers a direct-XIP device that kept its old slot.
 - **An older image is refused before it is sent** when the device reports
   downgrade prevention (ADR-0025, `Refusal::Downgrade`), with MCUboot's own
   comparison: major, minor and revision, never the build number.

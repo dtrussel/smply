@@ -144,6 +144,13 @@ struct ServerConfig {
     std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
 
+`bootloader_mode` 4 or 5 switches image 0 to **direct-XIP**: it runs in place
+from `active_slot()`, uploads go to the other slot, a reboot moves to the
+newest valid slot (with revert, only a marked or confirmed one, and an
+unconfirmed trial reverts), and image-state reports Zephyr's direct-XIP flags
+(protocol-notes §7). Without revert, set-state answers `ENOTSUP`.
+`boot_from_slot()` starts the device in slot 1.
+
 `no_downgrade` also changes the reboot: a scheduled image older than the
 running one (major, minor, revision) is erased and the old one boots, as
 MCUboot's `check_downgrade_prevention()` does. A `bootloader_mode` of 2
@@ -691,6 +698,12 @@ image is good. Shipped:
 * downgrade prevention: an older image refused before any upload; the same
   version updates; with `check_downgrade` off the simulator erases the older
   image at boot, as MCUboot does, and the update reports a rollback;
+* direct-XIP: without revert refused by default; accepted, the upload lands in
+  whichever slot is not running (started from slot 0 and from slot 1), no
+  set-state is sent, nothing asks for a confirm, and the device ends up
+  running from the other slot; an image that is not newer is not booted and
+  reads as a rollback; with revert, test-reset-confirm in the free slot, and
+  an unconfirmed trial reverting; several images refused in both;
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

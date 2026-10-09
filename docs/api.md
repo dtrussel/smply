@@ -1009,7 +1009,7 @@ enum class ModeSource : std::uint8_t { Reported, Supplied, Assumed };
 //   Downgrade              the device prevents downgrades; the image is older
 //   UnsupportedMode        single slot, firmware loader, RAM load, single-slot
 //                          RAM load: an update path smply does not have
-//   MultiImageUnsupported  several images, a mode that takes one
+//   MultiImageUnsupported  several images on a direct-XIP device
 enum class Refusal : std::uint8_t {
     RevertUnavailable, Downgrade, UnsupportedMode, MultiImageUnsupported };
 std::string_view to_string(Refusal) noexcept;
@@ -1026,8 +1026,10 @@ struct UpdatePlan {
     // -1, or a number smply does not know. A reported mode always wins.
     std::optional<McubootMode> fallback_mode;
     // Accept an update the bootloader cannot revert: without it, an
-    // upgrade-only device is refused (Refusal::RevertUnavailable). With it the
-    // image is permanent at the reset, and nothing asks for a confirm.
+    // upgrade-only or direct-XIP-without-revert device is refused
+    // (Refusal::RevertUnavailable). With it the image is permanent once
+    // booted, and nothing asks for a confirm. Direct-XIP without revert sends
+    // no set-state: upload, reset, then the running slot must hold the image.
     bool          allow_no_revert = false;
     // With the device's no-downgrade flag: refuse an image whose
     // major.minor.revision is below the running one's (Refusal::Downgrade).
@@ -1060,7 +1062,11 @@ struct ImageReport {                  // one per target, in the order given
     ImageHash     target_hash;
     std::uint64_t bytes_transferred = 0;
     bool upload_skipped = false;
-    bool rolled_back = false;         // Client: MCUboot reverted it
+    // The global slot the device reported holding it in: the secondary, or
+    // under direct-XIP whichever slot is not running (the file must be
+    // linked for it).
+    std::optional<std::uint32_t> upload_slot;
+    bool rolled_back = false;         // Client: the old image booted instead
     bool applied = false;             // Device: the device runs it, on trial
     bool committed = false;           // Device: the device committed it
 };
@@ -1072,7 +1078,9 @@ struct UpdateReport {                 // the summary fields cover every image
     std::optional<ImageHash> target_hash;  // the first image's
     std::optional<ImageState> final_device_state;
     std::optional<Error> cause;     // set iff the update failed
-    bool rolled_back = false;       // MCUboot reverted an image (protocol-notes §7)
+    bool rolled_back = false;       // the old image booted: a revert, or a
+                                    // direct-XIP slot that did not win (§7)
+    std::optional<std::uint32_t> upload_slot;  // the first image's
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
     McubootMode bootloader_mode = McubootMode::Unknown;  // ADR-0025
     ModeSource  mode_source = ModeSource::Assumed;       // Unknown iff Assumed

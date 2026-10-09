@@ -512,6 +512,81 @@ TEST_CASE("the bootloader's flag is remembered from its answer", "[dfu][machine]
     CHECK(context.no_downgrade);
 }
 
+TEST_CASE("direct-XIP without revert skips the mark and owes a reset", "[dfu][machine][xip]")
+{
+    // The image is in the free slot after the upload; the device boots it by
+    // itself, so the next step is the reset, not set-state (ADR-0025).
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    Context context = planning_under(McubootMode::DirectXip, running_old_only());
+    const ImageState uploaded = state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true},
+                                          SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
+    const Step step = advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context);
+    CHECK(step.next == UpdateState::Resetting);
+    CHECK(step.effect == Effect::Reset);
+    CHECK(context.report.images[0].upload_slot == 1U);
+}
+
+TEST_CASE("an image already in the free slot is not marked under direct-XIP without revert",
+          "[dfu][machine][xip]")
+{
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    const ImageState present = state_of({SlotSpec{.slot = 1, .hash = kOther, .active = true},
+                                         SlotSpec{.slot = 0, .hash = kTarget}});
+    Context context = planning_under(McubootMode::DirectXip, present);
+    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    CHECK(step.next == UpdateState::Resetting);
+    CHECK(context.report.images[0].upload_slot == 0U);
+}
+
+TEST_CASE("a direct-XIP image running after the reset is done, never on trial",
+          "[dfu][machine][xip]")
+{
+    // Without set-state nothing is ever reported confirmed, and nothing needs
+    // a confirm: the update ends here.
+    Context context = planning_under(McubootMode::DirectXip, running_old_only());
+    const ImageState booted = state_of({SlotSpec{.slot = 1, .hash = kTarget, .active = true},
+                                        SlotSpec{.slot = 0, .hash = kOther}});
+    const Step step =
+        advance(UpdateState::VerifyingBooted, state_read(booted), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Completed);
+}
+
+TEST_CASE("the same booted-unconfirmed state with revert opens the confirmation window",
+          "[dfu][machine][xip]")
+{
+    Context context = planning_under(McubootMode::DirectXipWithRevert, running_old_only());
+    const ImageState booted = state_of({SlotSpec{.slot = 1, .hash = kTarget, .active = true},
+                                        SlotSpec{.slot = 0, .hash = kOther, .confirmed = true}});
+    const Step step =
+        advance(UpdateState::VerifyingBooted, state_read(booted), UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::AwaitingConfirmation);
+}
+
+TEST_CASE("direct-XIP refusals: no revert, and more than one image", "[dfu][machine][xip][refusal]")
+{
+    Context single = planning_under(McubootMode::DirectXip, running_old_only());
+    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, single).next ==
+          UpdateState::Failed);
+    CHECK(single.report.refusal == Refusal::RevertUnavailable);
+
+    Context with_revert = planning_under(McubootMode::DirectXipWithRevert, running_old_only());
+    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, with_revert)
+              .next == UpdateState::Uploading);
+
+    const McubootMode mode = GENERATE(McubootMode::DirectXip, McubootMode::DirectXipWithRevert);
+    Context two = smply::dfu::make_context(
+        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kOther}});
+    two.report.bootloader_mode = mode;
+    two.device = running_old_only();
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), plan, two).next ==
+          UpdateState::Failed);
+    CHECK(two.report.refusal == Refusal::MultiImageUnsupported);
+}
+
 TEST_CASE("every refusal has a name", "[dfu][machine][refusal]")
 {
     for (const Refusal refusal : {Refusal::RevertUnavailable, Refusal::Downgrade,
