@@ -180,3 +180,109 @@ A good test drives the public interface and checks what a caller can see: the co
 * The behaviour change for overwrite-only devices is deliberate. It is the reason for the 0.3.0 minor bump allowed by ADR-0016.
 * The comparison clients (Nordic's Device Manager, mcumgr-toolkit, smpclient) were read only to compare behaviour. Every fact above is traced to Zephyr, MCUboot or the nRF Connect SDK source.
 * `docs.zephyrproject.org` is blocked from the agent container's network, so the specification was read from its source in the Zephyr repository, which is the same text.
+
+## Stages
+
+Work the frontier: a stage whose blockers are all checked off. Stages 4 and 5
+are independent once 3 has landed. Every stage from 2 to 6 changes
+`winrt_ble_dfu`, which only the Windows CI job builds.
+
+### Stage 1: The ADR and the protocol notes
+
+**Blocked by:** none.
+
+**Delivers:** the decision and its facts written down before any code
+(CLAUDE.md rule 4). Documentation only.
+
+- [ ] A new ADR, `Status: Proposed`, records that the updater follows the device's reported mode, the per-mode behaviour, and the rejected alternatives; it names its consistency with ADR-0009 and ADR-0014, and is listed in the decisions index
+- [ ] `protocol-notes.md` gains the bootloader-information command, MCUboot's mode enum, the set-state gating, direct-XIP slot targeting, the downgrade comparison and the direct-XIP package keys, each with a new or existing source row
+- [ ] `tools/check_docs.py` passes
+
+### Stage 2: Report the bootloader mode
+
+**Blocked by:** Stage 1.
+
+**Delivers:** smply learns the device's MCUboot mode and says so, and changes
+nothing else. A caller can read it through the OS group, an update reports it
+with where it came from, and the tools print it.
+
+- [ ] `OsManagement` reads the bootloader name, mode, raw mode number and `no-downgrade`; a mode number outside MCUboot's enum is `Unknown` with its number kept; the name is bounded before it is stored
+- [ ] Unit tests cover both request shapes, both response shapes in definite- and indefinite-length CBOR, an unknown mode, a missing flag, an over-long name, and the error shapes
+- [ ] `FirmwareUpdater` queries in a new `QueryingBootloader` state; the report carries the mode and `Reported`, `Supplied` (from the plan's fallback) or `Assumed`; a device error means unknown; a timeout or transport failure fails the update before anything is sent
+- [ ] `ServerSimulator` and the stub device answer command 8 with a configured mode, or `ENOTSUP`
+- [ ] `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` take `--fallback-mode` and print the mode and its source
+- [ ] Every existing update test passes unchanged; `api.md`, `design.md` and `architecture.md` describe the new state and fields
+
+### Stage 3: Refuse what a mode cannot honour
+
+**Blocked by:** Stage 2.
+
+**Delivers:** an update that would quietly break its promise is refused
+before the first byte is sent, with one error code and a stated reason.
+
+- [ ] `ErrorCode::UpdateRefused` and the report's refusal reason exist
+- [ ] Overwrite-only is refused with `RevertUnavailable` unless the plan sets `allow_no_revert`, and then updates as before; `ServerSimulator` models its test as permanent
+- [ ] Single-app, the firmware loader, RAM load and single-slot RAM load are refused with `UnsupportedMode`
+- [ ] Each refusal test asserts that no upload request reached the device
+- [ ] The three tools take `--allow-no-revert`; a stub-device ctest shows the refusal and the opt-in
+- [ ] `CHANGELOG.md` lists the overwrite-only refusal under "Changed", with the opt-in that restores the old behaviour
+
+### Stage 4: Downgrade check
+
+**Blocked by:** Stage 3.
+
+**Delivers:** with downgrade prevention reported, an older image is refused
+before the transfer instead of erased by the bootloader after it.
+
+- [ ] With `no-downgrade`, an image whose `major.minor.revision` is strictly lower than the running image's is refused with `Downgrade`; an equal or higher version updates; the build number is ignored
+- [ ] `check_downgrade = false` turns the check off; the three tools take `--no-downgrade-check`
+- [ ] `ServerSimulator` reports the flag; component tests cover lower, equal and higher versions, and the opt-out
+- [ ] `security.md` T8's mitigation describes the check
+
+### Stage 5: Direct-XIP with one file
+
+**Blocked by:** Stage 3.
+
+**Delivers:** a direct-XIP device can be updated with a file built for its
+free slot, in both variants, where today the update fails after the upload.
+
+- [ ] `ServerSimulator` models both direct-XIP variants: no set-state without revert, uploads into the slot opposite the active one, and the bootloader booting the newest valid slot
+- [ ] Without revert, the update is refused unless `allow_no_revert` is set; with it, it uploads, resets and succeeds only if the running slot holds the target hash, with no set-state sent
+- [ ] With revert, it uploads, tests, resets and confirms as usual
+- [ ] Neither variant waits for a swap; the report records the slot that received the image
+- [ ] A device that boots the old image is reported as `rolled_back`, whose documentation now reads "the bootloader booted the old image"
+- [ ] A multi-image plan sent to a direct-XIP device is refused with `MultiImageUnsupported`
+
+### Stage 6: Two alternatives per image
+
+**Blocked by:** Stage 5.
+
+**Delivers:** an image can be given as one file per slot, and smply sends the
+one that matches the device's free slot.
+
+- [ ] An `ImageTarget` can carry one source per slot; with one source it behaves as before
+- [ ] Under direct-XIP the updater uploads the alternative for the free slot, and counts the image as already present when either alternative's hash is in its slot
+- [ ] Outside direct-XIP, a two-source target is refused as an invalid argument
+- [ ] The three tools accept a second file for the other slot
+
+### Stage 7: Direct-XIP packages
+
+**Blocked by:** Stage 6.
+
+**Delivers:** an nRF Connect SDK direct-XIP package updates a direct-XIP
+device.
+
+- [ ] The package reader returns a plain direct-XIP package as one image with two alternatives keyed by slot, and still refuses two files for one image otherwise
+- [ ] The QSPI split-image layout is refused with a message that names it
+- [ ] `PackageUpdate` builds the two-source target; a `--package` ctest updates a direct-XIP stub device
+- [ ] `multi-image.md` describes direct-XIP packages
+
+### Stage 8: Release 0.3.0 and close the plan
+
+**Blocked by:** Stages 4 and 7.
+
+**Delivers:** the release, and the roadmap left describing only open work.
+
+- [ ] The version is 0.3.0, and `CHANGELOG.md` has a section for it
+- [ ] The roadmap gains backlog rows for the FS, Shell, Enum and Zephyr-basic groups, the RAM-load and firmware-loader update paths, and the QSPI split package, and an acceptance gap for a real direct-XIP device
+- [ ] The ADR's status is set by a human (it stays Proposed until then); this plan file and its "In progress" line are deleted
