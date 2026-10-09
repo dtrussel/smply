@@ -37,6 +37,7 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/mcuboot_image.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -136,6 +137,8 @@ struct Target
     CommitBy commit = CommitBy::Client;
     /// The MCUboot hash TLV of the file being installed.
     ImageHash hash;
+    /// The file's header version, `ih_ver`.
+    ImageVersion version{};
     /// `Client` only: booted and not yet confirmed, so a confirm is owed.
     bool in_trial = false;
 };
@@ -156,6 +159,8 @@ struct Context
     std::optional<ImageState> device;
     /// From the device, or zero when it does not implement the command.
     std::uint32_t buf_size = 0;
+    /// The device reported downgrade prevention (`BootloaderMode::no_downgrade`).
+    bool no_downgrade = false;
 
     /// What the update will report. The machine writes the outcome fields
     /// here as it decides them -- per image in `images`, and `revert_pending`

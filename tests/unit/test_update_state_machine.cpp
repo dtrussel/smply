@@ -39,6 +39,7 @@ using smply::ImageError;
 using smply::ImageHash;
 using smply::ImageSlot;
 using smply::ImageState;
+using smply::ImageVersion;
 using smply::McubootMode;
 using smply::MgmtError;
 using smply::ModeSource;
@@ -415,6 +416,100 @@ TEST_CASE("swap modes and an unknown mode are never refused", "[dfu][machine][mo
     const Step step =
         advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Uploading);
+}
+
+namespace {
+
+/// The device runs `running` and reports downgrade prevention; the file is
+/// `file`.
+[[nodiscard]] Context downgrade_case(const ImageVersion& file, const char* running)
+{
+    Context context =
+        smply::dfu::make_context({Target{.image = 0, .hash = kTarget, .version = file}});
+    context.report.bootloader_mode = McubootMode::SwapUsingMove;
+    context.report.mode_source = ModeSource::Reported;
+    context.no_downgrade = true;
+    ImageState state = running_old_only();
+    state.slots[0].version = running;
+    context.device = state;
+    return context;
+}
+
+[[nodiscard]] Step plan_with(const UpdatePlan& plan, Context& context)
+{
+    return advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+}
+
+} // namespace
+
+TEST_CASE("an older image is refused when the device prevents downgrades",
+          "[dfu][machine][mode][refusal][downgrade]")
+{
+    // Lower in each position, the higher ones equal.
+    const ImageVersion file = GENERATE(ImageVersion{.major = 1, .minor = 2, .revision = 2},
+                                       ImageVersion{.major = 1, .minor = 1, .revision = 9},
+                                       ImageVersion{.major = 0, .minor = 9, .revision = 9});
+    Context context = downgrade_case(file, "1.2.3");
+    const Step step = plan_with(UpdatePlan{}, context);
+    CHECK(step.next == UpdateState::Failed);
+    REQUIRE(context.report.cause.has_value());
+    CHECK(context.report.cause->code() == ErrorCode::UpdateRefused);
+    CHECK(context.report.refusal == Refusal::Downgrade);
+}
+
+TEST_CASE("an equal or newer image is not a downgrade", "[dfu][machine][mode][downgrade]")
+{
+    const ImageVersion file = GENERATE(ImageVersion{.major = 1, .minor = 2, .revision = 3},
+                                       ImageVersion{.major = 1, .minor = 2, .revision = 4},
+                                       ImageVersion{.major = 1, .minor = 3, .revision = 0},
+                                       ImageVersion{.major = 2, .minor = 0, .revision = 0});
+    Context context = downgrade_case(file, "1.2.3");
+    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+}
+
+TEST_CASE("the build number never makes a downgrade", "[dfu][machine][mode][downgrade]")
+{
+    // MCUboot ignores it unless built to compare it, which the device does not
+    // report; smply ignores it always, so it never refuses what MCUboot takes.
+    Context context =
+        downgrade_case(ImageVersion{.major = 1, .minor = 2, .revision = 3, .build = 1}, "1.2.3.9");
+    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+}
+
+TEST_CASE("the downgrade check can be turned off, and needs the device's flag",
+          "[dfu][machine][mode][downgrade]")
+{
+    const ImageVersion older{.major = 1, .minor = 0, .revision = 0};
+
+    UpdatePlan off;
+    off.check_downgrade = false;
+    Context opted_out = downgrade_case(older, "2.0.0");
+    CHECK(plan_with(off, opted_out).next == UpdateState::Uploading);
+
+    Context no_flag = downgrade_case(older, "2.0.0");
+    no_flag.no_downgrade = false;
+    CHECK(plan_with(UpdatePlan{}, no_flag).next == UpdateState::Uploading);
+}
+
+TEST_CASE("an unparseable running version is not compared", "[dfu][machine][mode][downgrade]")
+{
+    // "<???>" is what Zephyr reports when it cannot format the version
+    // (docs/protocol-notes.md section 6).
+    Context context =
+        downgrade_case(ImageVersion{.major = 0, .minor = 0, .revision = 1}, R"(<???>)");
+    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+}
+
+TEST_CASE("the bootloader's flag is remembered from its answer", "[dfu][machine][mode][downgrade]")
+{
+    Context context = fresh();
+    Event read;
+    read.kind = Event::Kind::BootloaderRead;
+    read.bootloader.mode = McubootMode::SwapUsingScratch;
+    read.bootloader.raw_mode = 1;
+    read.bootloader.no_downgrade = true;
+    static_cast<void>(advance(UpdateState::QueryingBootloader, read, UpdatePlan{}, context));
+    CHECK(context.no_downgrade);
 }
 
 TEST_CASE("every refusal has a name", "[dfu][machine][refusal]")

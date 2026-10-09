@@ -144,7 +144,10 @@ struct ServerConfig {
     std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
 
-A `bootloader_mode` of 2 (upgrade-only) also changes the reboot: a test or a
+`no_downgrade` also changes the reboot: a scheduled image older than the
+running one (major, minor, revision) is erased and the old one boots, as
+MCUboot's `check_downgrade_prevention()` does. A `bootloader_mode` of 2
+(upgrade-only) also changes the reboot: a test or a
 permanent mark copies the secondary over the primary and erases it, so the
 new image runs confirmed with nothing to revert.
 ```
@@ -685,6 +688,9 @@ image is good. Shipped:
   and no byte written; the same with `allow_no_revert` ⇒ completed, the new
   image running confirmed, and no confirmation asked for; every mode without
   an update path refused; a fallback mode refused like a reported one;
+* downgrade prevention: an older image refused before any upload; the same
+  version updates; with `check_downgrade` off the simulator erases the older
+  image at boot, as MCUboot does, and the update reports a rollback;
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

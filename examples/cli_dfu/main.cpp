@@ -105,6 +105,8 @@ struct Options
     std::optional<McubootMode> stub_mode;
     /// `--allow-no-revert`: accept an update the bootloader cannot revert.
     bool allow_no_revert = false;
+    /// `--no-downgrade-check`: skip the downgrade check (ADR-0025).
+    bool check_downgrade = true;
 
     [[nodiscard]] bool package_mode() const noexcept
     {
@@ -134,7 +136,7 @@ void usage()
     std::cerr << "usage: cli_dfu [--image PATH | --package PATH | --demo-package] [--mode MODE]\n"
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
                  "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
-                 "               [--allow-no-revert]\n"
+                 "               [--allow-no-revert] [--no-downgrade-check]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
                  "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
                  "                is confirmed here, every other image is left to the device\n"
@@ -149,6 +151,8 @@ void usage()
                  "  --stub-mode M  the mode the demo device reports (it still swaps)\n"
                  "  --allow-no-revert  update a device whose bootloader cannot revert\n"
                  "                (upgrade-only); without it, such an update is refused\n"
+                 "  --no-downgrade-check  send an image older than the running one even\n"
+                 "                when the device prevents downgrades; it will refuse it at boot\n"
                  "  --quiet       print only the outcome\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
@@ -182,6 +186,8 @@ void usage()
             out.apply_fails = true;
         } else if (arg == "--allow-no-revert") {
             out.allow_no_revert = true;
+        } else if (arg == "--no-downgrade-check") {
+            out.check_downgrade = false;
         } else if ((arg == "--fallback-mode" || arg == "--stub-mode") && i + 1 < args.size()) {
             const std::optional<McubootMode> mode = parse_mcuboot_mode(args[++i]);
             if (!mode.has_value()) {
@@ -420,6 +426,7 @@ int main(int argc, char** argv)
     plan.mode = options.mode;
     plan.fallback_mode = options.fallback_mode;
     plan.allow_no_revert = options.allow_no_revert;
+    plan.check_downgrade = options.check_downgrade;
     // The stub applies image 1 within a few reads; a real second MCU takes a
     // whole UART transfer, and the default interval suits that instead.
     plan.apply_poll_interval = std::chrono::milliseconds{100};

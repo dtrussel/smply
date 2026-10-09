@@ -937,7 +937,11 @@ else scheduled -- the refusal checks run, once (ADR-0025). They read the mode
 recorded in `QueryingBootloader` and the plan: single slot, the firmware
 loader and both RAM-load modes are `UnsupportedMode` whatever the plan; an
 upgrade-only device is `RevertUnavailable` unless the plan sets
-`allow_no_revert` or is `UploadOnly`. A refusal ends the update in `Failed`
+`allow_no_revert` or is `UploadOnly`; and when the device reported
+`no-downgrade` and the plan keeps `check_downgrade`, an image whose
+`major.minor.revision` is below the running image's is `Downgrade`. An image the
+device already runs, or a running version that does not parse (`"<???>"`), is
+not compared. A refusal ends the update in `Failed`
 with `UpdateRefused` and `UpdateReport::refusal` set, and nothing has been
 sent. An update with nothing to do is never refused: there is no command for
 a refusal to stop.

@@ -99,7 +99,8 @@ struct ServerConfig
     std::optional<std::int64_t> bootloader_mode{};
 
     /// `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`: the `mode` answer carries
-    /// `"no-downgrade": true`.
+    /// `"no-downgrade": true`, and the reboot erases a scheduled image older
+    /// than the running one instead of swapping it in (major, minor, revision).
     bool no_downgrade = false;
 
     /// The name the empty query answers. Anything but `"MCUboot"` has no answer
@@ -362,6 +363,9 @@ private:
     /// An OS-group error, in the v2 `err` shape whatever the request's version:
     /// the simulator does not model Zephyr's v1 translation of OS-group codes.
     [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
+    /// With `no_downgrade`, erases a scheduled image older than the running one
+    /// and cancels the swap, as MCUboot does at boot. Returns whether it did.
+    [[nodiscard]] bool refuses_downgrade(ImagePair& pair) const;
     /// The configured mode is upgrade-only (overwrite): a test is permanent.
     [[nodiscard]] bool upgrade_only() const noexcept;
     /// Copies the secondary over the primary and erases it, as an overwrite

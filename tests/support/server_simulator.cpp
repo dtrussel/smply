@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -216,6 +217,9 @@ void ServerSimulator::reboot()
         case SwapType::None:
             break;
         case SwapType::Test:
+            if (!pair.device_outcome.has_value() && refuses_downgrade(pair)) {
+                break;
+            }
             if (pair.device_outcome.has_value()) {
                 // Not this MCU's image: the coordinating MCU starts applying it
                 // to the other one, and slot 0 keeps reporting what the other
@@ -235,6 +239,9 @@ void ServerSimulator::reboot()
             pair.swap = SwapType::Revert;
             break;
         case SwapType::Perm:
+            if (!pair.device_outcome.has_value() && refuses_downgrade(pair)) {
+                break;
+            }
             if (upgrade_only() && !pair.device_outcome.has_value()) {
                 overwrite(pair);
                 break;
@@ -259,6 +266,27 @@ void ServerSimulator::reboot()
     // area_id == -1, so a continuation is answered off == 0 (rule 5).
     session_ = Session{};
     reset_requested_ = false;
+}
+
+bool ServerSimulator::refuses_downgrade(ImagePair& pair) const
+{
+    if (!config_.no_downgrade) {
+        return false;
+    }
+    const auto version_of = [](const std::vector<std::byte>& slot) {
+        // major, minor and revision, as boot_compare_version() reads them.
+        return std::tuple{std::to_integer<unsigned>(slot[20]), std::to_integer<unsigned>(slot[21]),
+                          read16(ConstBytes{slot}, 22)};
+    };
+    if (pair.slots[0].size() < kImageHeaderSize || pair.slots[1].size() < kImageHeaderSize ||
+        !(version_of(pair.slots[1]) < version_of(pair.slots[0]))) {
+        return false;
+    }
+    // MCUboot's check_downgrade_prevention(): the new image is erased, and the
+    // old one boots as though nothing had been scheduled (S41).
+    pair.slots[1].clear();
+    pair.swap = SwapType::None;
+    return true;
 }
 
 bool ServerSimulator::upgrade_only() const noexcept

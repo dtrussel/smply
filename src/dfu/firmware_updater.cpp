@@ -151,12 +151,14 @@ public:
             // recognises it. Read before anything goes on the wire, so a file
             // that is not an MCUboot image fails here rather than half way
             // through an update.
-            const Result<ImageHash> hash = read_target_hash(*target.source);
-            if (!hash.has_value()) {
-                return fail(hash.error());
+            const Result<TargetFile> file = read_target(*target.source);
+            if (!file.has_value()) {
+                return fail(file.error());
             }
-            decided.push_back(
-                dfu::Target{.image = target.image, .commit = target.commit, .hash = *hash});
+            decided.push_back(dfu::Target{.image = target.image,
+                                          .commit = target.commit,
+                                          .hash = file->hash,
+                                          .version = file->version});
             sources.push_back(target.source);
         }
 
@@ -593,8 +595,17 @@ private:
         };
     }
 
-    /// The file's MCUboot hash TLV.
-    [[nodiscard]] static Result<ImageHash> read_target_hash(ImageSource& source)
+    /// What the updater needs from a file before anything is sent.
+    struct TargetFile
+    {
+        /// The MCUboot hash TLV.
+        ImageHash hash;
+        /// The header's `ih_ver`.
+        ImageVersion version;
+    };
+
+    /// The file's MCUboot hash TLV and header version.
+    [[nodiscard]] static Result<TargetFile> read_target(ImageSource& source)
     {
         std::array<std::byte, kMcubootHeaderSize> head{};
         const Result<std::size_t> read = source.read(0, MutBytes{head});
@@ -622,7 +633,7 @@ private:
             // slot table, so every verification step would be guesswork.
             return fail(ErrorCode::InvalidArgument, "updater: image carries no hash TLV");
         }
-        return *hash;
+        return TargetFile{.hash = *hash, .version = info->version};
     }
 
     SmpClient* client_;

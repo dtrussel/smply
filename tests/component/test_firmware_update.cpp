@@ -873,6 +873,72 @@ TEST_CASE("a fallback mode is refused like a reported one", "[dfu][update][mode]
     CHECK_FALSE(any_upload(fixture));
 }
 
+TEST_CASE("an older image is refused before anything is sent when the device prevents downgrades",
+          "[dfu][update][mode][refusal][downgrade]")
+{
+    const std::vector<std::byte> running = make_firmware(kBodySize, 2, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 1, 9, 0, 2);
+
+    UpdateOutcome outcome;
+    Fixture fixture{ServerConfig{.bootloader_mode = 3, .no_downgrade = true}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    REQUIRE(fixture.run_until([&] { return outcome.finished(); }));
+
+    CHECK(outcome.code == ErrorCode::UpdateRefused);
+    CHECK(fixture.updater.report().refusal == smply::Refusal::Downgrade);
+    CHECK_FALSE(any_upload(fixture));
+}
+
+TEST_CASE("the same version is not a downgrade, and updates", "[dfu][update][mode][downgrade]")
+{
+    // Same version, different contents: a rebuild. MCUboot accepts it.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 2, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = 3, .no_downgrade = true}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, outcome.handler()).has_value());
+    Application application;
+    REQUIRE(application.run(fixture, {&reconnected}, outcome));
+
+    REQUIRE(outcome.report.has_value());
+    CHECK(outcome.report->final_state == UpdateState::Completed);
+}
+
+TEST_CASE("with the check off, the device itself refuses the downgrade at boot",
+          "[dfu][update][mode][downgrade]")
+{
+    // MCUboot erases the older image and boots the old one, which smply sees
+    // as a revert -- after a whole transfer, which is what the check saves.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 2, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 1, 9, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture{ServerConfig{.bootloader_mode = 3, .no_downgrade = true}};
+    fixture.simulator.load_slot(0, running);
+    MemoryImageSource source{ConstBytes{update}};
+
+    UpdatePlan plan;
+    plan.check_downgrade = false;
+    REQUIRE(fixture.updater.start(source, plan, outcome.handler()).has_value());
+    Application application;
+    static_cast<void>(application.run(fixture, {&reconnected}, outcome));
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.rolled_back);
+    CHECK_FALSE(report.refusal.has_value());
+    CHECK(any_upload(fixture));
+}
+
 TEST_CASE("cancelling mid-update completes the callback exactly once", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);

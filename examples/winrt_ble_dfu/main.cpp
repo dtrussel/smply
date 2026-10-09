@@ -103,6 +103,8 @@ struct Options
     std::optional<McubootMode> fallback_mode;
     /// `--allow-no-revert`: accept an update the bootloader cannot revert.
     bool allow_no_revert = false;
+    /// `--no-downgrade-check`: skip the downgrade check (ADR-0025).
+    bool check_downgrade = true;
 };
 
 /// Parses `--mode`. Two of the five are not `UpdateMode` values at all.
@@ -141,7 +143,8 @@ void usage()
 {
     std::cerr << "usage: winrt_ble_dfu --image PATH [--name NAME | --address ADDR]\n"
                  "                     [--mode MODE] [--fallback-mode M] [--scan-timeout MS]\n"
-                 "                     [--allow-no-revert] [--quiet]\n"
+                 "                     [--allow-no-revert] [--no-downgrade-check]\n"
+                 "                     [--quiet]\n"
                  "  --image PATH   the firmware to install (required)\n"
                  "  --name NAME    connect to the first device whose advertised name\n"
                  "                 contains NAME; without it, the first device that\n"
@@ -158,6 +161,9 @@ void usage()
                  "                 (swap-using-move, upgrade-only, direct-xip, ...)\n"
                  "  --allow-no-revert  update a device whose bootloader cannot revert\n"
                  "                 (upgrade-only); without it, such an update is refused\n"
+                 "  --no-downgrade-check  send an image older than the running one even\n"
+                 "                 when the device prevents downgrades; it will refuse it\n"
+                 "                 at boot\n"
                  "  --scan-timeout MS  how long to look for a device (default 10000)\n"
                  "  --quiet        print only the outcome\n"
                  "\n"
@@ -189,6 +195,8 @@ void usage()
             }
         } else if (arg == "--allow-no-revert") {
             out.allow_no_revert = true;
+        } else if (arg == "--no-downgrade-check") {
+            out.check_downgrade = false;
         } else if (arg == "--fallback-mode" && i + 1 < args.size()) {
             out.fallback_mode = parse_mcuboot_mode(args[++i]);
             if (!out.fallback_mode.has_value()) {
@@ -361,6 +369,7 @@ int main(int argc, char** argv)
     plan.mode = options.mode;
     plan.fallback_mode = options.fallback_mode;
     plan.allow_no_revert = options.allow_no_revert;
+    plan.check_downgrade = options.check_downgrade;
 
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
 

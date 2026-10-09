@@ -5,6 +5,7 @@
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/groups/os.hpp"
+#include "smply/mcuboot_image.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -74,6 +75,25 @@ void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& rep
     return std::nullopt; // LCOV_EXCL_LINE -- every enumerator is handled above
 }
 
+/// True when \p image is older than \p running by MCUboot's comparison:
+/// major, minor, revision, and never the build number (S41).
+[[nodiscard]] bool older(const ImageVersion& image, const ImageVersion& running) noexcept
+{
+    if (image.major != running.major) {
+        return image.major < running.major;
+    }
+    if (image.minor != running.minor) {
+        return image.minor < running.minor;
+    }
+    return image.revision < running.revision;
+}
+
+/// Whether the device would erase one of the images at the reset as a
+/// downgrade (ADR-0025, decision 5). An image the device already runs, or one
+/// whose running version it reports unparseably, is not refused: there is
+/// nothing to compare, and the device still decides.
+[[nodiscard]] bool is_downgrade(const UpdatePlan& plan, const Context& context);
+
 /// What a refusal's failure says, in `Error::where()`.
 [[nodiscard]] const char* refusal_text(Refusal refusal) noexcept
 {
@@ -98,7 +118,10 @@ void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& rep
         return std::nullopt;
     }
     context.preconditions_checked = true;
-    const std::optional<Refusal> refusal = mode_refusal(plan, context.report);
+    std::optional<Refusal> refusal = mode_refusal(plan, context.report);
+    if (!refusal.has_value() && is_downgrade(plan, context)) {
+        refusal = Refusal::Downgrade;
+    }
     if (!refusal.has_value()) {
         return std::nullopt;
     }
@@ -370,6 +393,21 @@ enum class Apply : std::uint8_t
     return await_device(plan, context);
 }
 
+bool is_downgrade(const UpdatePlan& plan, const Context& context)
+{
+    if (!plan.check_downgrade || !context.no_downgrade) {
+        return false;
+    }
+    return std::ranges::any_of(context.targets, [&context](const Target& target) {
+        const ImageSlot* running = active_of(context, target.image);
+        if (running == nullptr || holds(running, target)) {
+            return false;
+        }
+        const Result<ImageVersion> version = ImageVersion::parse(running->version);
+        return version.has_value() && older(target.version, *version);
+    });
+}
+
 /// Every image is staged, or needed nothing: reset, or judge the device as it
 /// stands.
 [[nodiscard]] Step staged(const UpdatePlan& plan, Context& context)
@@ -624,6 +662,7 @@ namespace {
         // link that cannot answer one query is not given an upload (ADR-0025).
         if (event.kind == Event::Kind::BootloaderRead) {
             record_mode(event.bootloader.mode, plan, context.report);
+            context.no_downgrade = event.bootloader.no_downgrade;
             return Step{UpdateState::InspectingImages, Effect::ReadState};
         }
         if (event.kind == Event::Kind::BootloaderUnavailable) {

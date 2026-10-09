@@ -1029,6 +1029,10 @@ struct UpdatePlan {
     // upgrade-only device is refused (Refusal::RevertUnavailable). With it the
     // image is permanent at the reset, and nothing asks for a confirm.
     bool          allow_no_revert = false;
+    // With the device's no-downgrade flag: refuse an image whose
+    // major.minor.revision is below the running one's (Refusal::Downgrade).
+    // MCUboot's comparison; the build number never counts, equal passes.
+    bool          check_downgrade = true;
     // For the single-image start(), upload.image is the image the whole update
     // works on: transferred, inspected, marked and confirmed (by hash). The
     // image-list start() replaces it with each target's image. Image >= 1

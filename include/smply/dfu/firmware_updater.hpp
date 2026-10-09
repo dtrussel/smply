@@ -183,6 +183,14 @@ struct UpdatePlan
     /// the update runs, and the image is permanent once the device reboots.
     bool allow_no_revert = false;
 
+    /// Refuse an image older than the one the device runs, when the device
+    /// reports downgrade prevention (`BootloaderMode::no_downgrade`). MCUboot
+    /// would erase it at the reset, after the whole transfer. The comparison is
+    /// MCUboot's: major, minor and revision, never the build number, and an
+    /// equal version passes (docs/protocol-notes.md section 7). Turn it off for
+    /// a device whose flag is known to be wrong; the device still decides.
+    bool check_downgrade = true;
+
     /// Passed through to `ImageManagement::upload`. `sha` and `server_buf_size`
     /// are filled in by the updater when absent -- it computes the first from
     /// the source and learns the second from the device.

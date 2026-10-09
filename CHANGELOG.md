@@ -36,6 +36,11 @@ git; commit `97f1647` is the last to carry the per-phase record in
   sent** (ADR-0025): the new `ErrorCode::UpdateRefused`, with the reason in
   `UpdateReport::refusal` (`Refusal`). Single slot, the firmware loader, RAM
   load and single-slot RAM load are refused (`UnsupportedMode`).
+- **An older image is refused before it is sent** when the device reports
+  downgrade prevention (ADR-0025, `Refusal::Downgrade`), with MCUboot's own
+  comparison: major, minor and revision, never the build number.
+  `UpdatePlan::check_downgrade = false` (`--no-downgrade-check` in the
+  example tools) turns it off; the device still refuses at boot.
 - **The statistics and settings management groups** (MCUmgr groups 2 and 3).
   `StatisticsManagement` lists statistics groups and reads one group's
   counters; `SettingsManagement` reads, writes and erases a setting and asks

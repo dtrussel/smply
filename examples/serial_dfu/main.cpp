@@ -100,6 +100,8 @@ struct Options
     std::optional<McubootMode> fallback_mode;
     /// Accept an update the bootloader cannot revert.
     bool allow_no_revert = false;
+    /// Skip the downgrade check (ADR-0025).
+    bool check_downgrade = true;
 
     [[nodiscard]] bool package_mode() const noexcept
     {
@@ -113,7 +115,8 @@ void usage()
                  "                  [--image PATH | --package PATH | --demo-package]\n"
                  "                  [--commit N=client|device] [--apply-fails]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
-                 "                  [--allow-no-revert] [--quiet]\n"
+                 "                  [--allow-no-revert] [--no-downgrade-check]\n"
+                 "                  [--quiet]\n"
                  "  --port PATH   the device's serial port; prefer a stable name such as\n"
                  "                /dev/serial/by-id/... (a USB port may be renamed on reset)\n"
                  "  --baud N      line speed, default 115200 (ignored by USB CDC ACM)\n"
@@ -135,6 +138,8 @@ void usage()
                  "                upgrade-only, direct-xip, ...)\n"
                  "  --allow-no-revert  update a device whose bootloader cannot revert\n"
                  "                (upgrade-only); without it, such an update is refused\n"
+                 "  --no-downgrade-check  send an image older than the running one even\n"
+                 "                when the device prevents downgrades; it will refuse it at boot\n"
                  "  --quiet       print only the outcome\n"
                  "With --port, one of --image or --package is required.\n";
 }
@@ -203,6 +208,8 @@ void usage()
             out.apply_fails = true;
         } else if (arg == "--allow-no-revert") {
             out.allow_no_revert = true;
+        } else if (arg == "--no-downgrade-check") {
+            out.check_downgrade = false;
         } else if (arg == "--fallback-mode" && has_value) {
             out.fallback_mode = parse_mcuboot_mode(args[++i]);
             if (!out.fallback_mode.has_value()) {
@@ -484,6 +491,7 @@ int main(int argc, char** argv)
     plan.mode = options.mode;
     plan.fallback_mode = options.fallback_mode;
     plan.allow_no_revert = options.allow_no_revert;
+    plan.check_downgrade = options.check_downgrade;
     // A UART does not drop on reset, so this is how long the updater waits
     // before assuming the reset happened anyway (design.md section 13).
     plan.disconnect_grace = std::chrono::seconds{2};
