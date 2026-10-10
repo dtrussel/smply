@@ -331,10 +331,10 @@ Delivers part 1. `FirmwareUpdater::report()` returns the live report, with the
 terminal-only fields filled once the update is terminal; one report, not a copy
 assembled at finish. Doc comment and `api.md` match.
 
-- [ ] A component test reads `report()` partway through a multi-image update and sees the outcomes decided so far (fails before the fix).
-- [ ] A component test reads `report()` after a failure and sees the final state, target hash and final slot table.
-- [ ] The `UpdateFinished` result and `report()` come from the same report.
-- [ ] `report()`'s doc comment and `api.md` describe exactly this behaviour.
+- [x] A component test reads `report()` partway through a multi-image update and sees the outcomes decided so far (fails before the fix).
+- [x] A component test reads `report()` after a failure and sees the final state, target hash and final slot table.
+- [x] The `UpdateFinished` result and `report()` come from the same report.
+- [x] `report()`'s doc comment and `api.md` describe exactly this behaviour.
 
 ### Stage 2: the update run, proven by the component suite
 

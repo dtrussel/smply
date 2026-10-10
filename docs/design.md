@@ -1128,7 +1128,13 @@ that forgets a kind does not compile:
 
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
-failed in plus the underlying `Error`. (The restart and retry counts live inside
+failed in plus the underlying `Error`. There is one report: the machine writes
+it in `Context::report` as it decides, `FirmwareUpdater::report()` hands that
+same object out live while the update runs, and on reaching a terminal state
+the updater fills the three fields only known at the end (`final_state`,
+`target_hash`, `final_device_state`) and emits `UpdateFinished` with it. So a
+progress view sees each image's outcome as it is decided, and the event and
+`report()` cannot disagree. (The restart and retry counts live inside
 the upload and are not plumbed out; the roadmap's backlog has the item.)
 
 **`upload_skipped` has two sources, and both matter.** The updater's own
