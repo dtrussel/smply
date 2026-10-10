@@ -370,10 +370,14 @@ private:
 
     [[nodiscard]] Event answer(const Step& step)
     {
+        // A REQUIRE before the switch, not a FAIL inside it: MSVC knows FAIL
+        // throws, and reports the return the switch still needs as C4702,
+        // an error under /WX (docs/handoff.md).
+        INFO("the machine is waiting for nothing the device can answer");
+        REQUIRE((step.effect != Effect::None && step.effect != Effect::Finish));
         switch (step.effect) {
         case Effect::None:
         case Effect::Finish:
-            FAIL("the machine is waiting for nothing the device can answer");
             return Event{};
         case Effect::Continue:
             return just(Event::Kind::Continue);
