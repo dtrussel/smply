@@ -39,7 +39,7 @@ they run against the simulator and the stub device only.
 
 ## In progress
 
-Nothing. Pick the next item from the backlog below, by its "When".
+[`update-run-plan.md`](update-run-plan.md): one update run for applications, and a sealed update state machine. Its stages say what is done.
 
 ## Acceptance gaps that need the hardware bench
 
@@ -91,7 +91,6 @@ doing.
 
 | Item | When |
 | ---- | ---- |
-| **One update run for applications, and a sealed update state machine** ([`update-run-plan.md`](update-run-plan.md)). `report()` returns an empty report while an update runs; every application re-implements the update loop; the state machine's context is written by `FirmwareUpdater` and by the unit tests. | next: ready for implementation |
 | **One `poll` and one `next_deadline` for the whole core.** `FirmwareUpdater` keeps timers separate from `SmpClient`'s, so every pump merges two deadlines. Running the updater's timers on `SmpClient::poll` would remove that, but it changes the public interface and touches ADR-0003 and ADR-0004. The update run in `update-run-plan.md` hides the two clocks from applications first. | if an application outside `smply::dfu_app` trips over the two clocks |
 | **Several *devices* in one update.** `FirmwareUpdater` updates one device, whose own firmware keeps several images consistent (ADR-0021). A product without a coordinating MCU would need a host-side coordinator over several updaters, and ADR-0021 records why that cannot make the pair atomic. | when a product without a coordinating MCU needs it |
 | **Retry, restart and bytes-sent counters in `UpdateReport`.** A caller cannot see that an update succeeded only after retransmissions, and a resume that finds the transfer already complete cannot say how much this run moved. `UploadResult` would have to carry the counters first. `already_present` means only "no progress in this session". | when a caller asks |

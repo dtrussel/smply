@@ -320,3 +320,72 @@ design round (questions 1 to 8). See Further Notes.
 - Part 3 is the largest diff, mostly in the unit tests. If it grows past about
   1,000 lines, split it: first the event carrying the slot table and effects
   carrying parameters, then the class and the test rewrite.
+
+## Stages
+
+### Stage 1: `report()` tells the truth while an update runs
+
+Blocked by: none
+
+Delivers part 1. `FirmwareUpdater::report()` returns the live report, with the
+terminal-only fields filled once the update is terminal; one report, not a copy
+assembled at finish. Doc comment and `api.md` match.
+
+- [ ] A component test reads `report()` partway through a multi-image update and sees the outcomes decided so far (fails before the fix).
+- [ ] A component test reads `report()` after a failure and sees the final state, target hash and final slot table.
+- [ ] The `UpdateFinished` result and `report()` come from the same report.
+- [ ] `report()`'s doc comment and `api.md` describe exactly this behaviour.
+
+### Stage 2: the update run, proven by the component suite
+
+Blocked by: none
+
+Delivers part 2's module: the update run in `smply::dfu_app`, its three hooks,
+the wait seam with its real adapter and its `ManualClock` test adapter, and the
+component suite's `Application` replaced by it. The examples are not touched.
+
+- [ ] The update run and the real wait adapter live in `smply::dfu_app`; the test wait adapter lives with the component test support.
+- [ ] Every component test that used `Application` uses the run, with its assertions unchanged.
+- [ ] New component cases: refused attempts with exact backoff delays read from `ManualClock`; give-up by policy exhaustion; give-up by the hook's verdict with that error reaching the updater; approve returning stop; the overall deadline; a second reboot in one update.
+- [ ] No hook is called from inside `poll()`; no test reads the real clock.
+- [ ] `architecture.md` §10, `testing.md` and the `support/` line in `CLAUDE.md` name the run and the test adapter.
+
+### Stage 3: the three examples use the update run
+
+Blocked by: 2
+
+Delivers the rest of part 2. `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` keep
+their setup, `start()` choice, hooks and report printing, and drop their
+pending flags, visitor routing, reconnect loop, confirm step and wait.
+
+- [ ] Each example's output and exit codes are unchanged; the `cli_dfu` and `serial_dfu` ctests pass unmodified.
+- [ ] `serial_dfu`'s rule survives: an absent port is retried, a port that exists and refuses ends the episode.
+- [ ] `winrt_ble_dfu --stop-before-confirm` exits with the image installed and unconfirmed, via the approve hook.
+- [ ] `winrt_ble_dfu` still compiles: reviewed against the "Windows half" caveats in `handoff.md`, since only Windows CI builds it.
+- [ ] `api.md`'s account of driving an update points at the run.
+
+### Stage 4: events carry the slot table, effects carry their parameters
+
+Blocked by: 1
+
+Delivers the first half of part 3. `MarkedForTest` and `Confirmed` carry the
+set-state answer, and the machine records it; `StartUpload`, `MarkForTest` and
+`Confirm` carry what the updater needs. `FirmwareUpdater` no longer writes the
+context, and reads it for nothing but the report.
+
+- [ ] A unit test shows `MarkedForTest` carrying a slot table that changes the next image's routing (fails before the change).
+- [ ] The updater's direct write of the slot table is gone; carrying out an effect reads only the step.
+- [ ] The component suite passes unchanged.
+- [ ] `design.md` §8 describes the events and effects as they now are.
+
+### Stage 5: `dfu::Machine` owns its context, state and report
+
+Blocked by: 4
+
+Delivers the rest of part 3. The free function and public `Context` give way to
+`dfu::Machine`; the unit suite drives it through events with a scenario helper.
+
+- [ ] `dfu::Machine` owns the context, the current state and the one report; the updater holds a machine, not a context.
+- [ ] No unit test assigns a context field; deep states are reached through a scenario helper. A case that tested an unreachable state is deleted and named in the commit message.
+- [ ] The component suite passes unchanged, and `report()` behaves exactly as stage 1 left it.
+- [ ] `design.md` §8 describes the machine's interface in place of the context struct.
