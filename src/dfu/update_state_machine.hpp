@@ -37,7 +37,9 @@
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/mcuboot_image.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -55,6 +57,7 @@ enum class Effect : std::uint8_t
     /// with a real transition rather than something invisible.
     Continue,
     QueryParameters,
+    QueryBootloader,
     ReadState,
     StartUpload,
     ResumeUpload,
@@ -86,6 +89,10 @@ struct Event
         ParametersRead,
         /// The optional parameters command failed. Not fatal (A8).
         ParametersUnavailable,
+        /// The device answered the bootloader-information `mode` query.
+        BootloaderRead,
+        /// It gave no answer: a device error, not a lost link (ADR-0025).
+        BootloaderUnavailable,
         StateRead,
         UploadFinished,
         MarkedForTest,
@@ -111,6 +118,8 @@ struct Event
     Kind kind{};
     /// `ParametersRead`.
     std::uint32_t buf_size = 0;
+    /// `BootloaderRead`.
+    BootloaderMode bootloader{};
     /// `StateRead`. Borrowed for the duration of the call.
     const ImageState* state = nullptr;
     /// `UploadFinished`.
@@ -129,6 +138,25 @@ struct Target
     CommitBy commit = CommitBy::Client;
     /// The MCUboot hash TLV of the file being installed.
     ImageHash hash;
+    /// The file's header version, `ih_ver`.
+    ImageVersion version{};
+
+    /// One build of the image, linked for one of its two slots.
+    struct Build
+    {
+        ImageHash hash;
+        ImageVersion version;
+    };
+
+    /// Direct-XIP's one build per slot, primary then secondary
+    /// (`ImageTarget::secondary_source`). `hash` and `version` above are copied
+    /// from the chosen one once the slot table shows which slot is free.
+    std::optional<std::array<Build, 2>> builds = std::nullopt;
+    /// Which of `builds` is sent: 0 for the primary slot's, 1 for the
+    /// secondary's. Always 0 without builds.
+    std::size_t chosen = 0;
+    /// `builds` has been chosen from.
+    bool chosen_known = false;
     /// `Client` only: booted and not yet confirmed, so a confirm is owed.
     bool in_trial = false;
 };
@@ -149,6 +177,8 @@ struct Context
     std::optional<ImageState> device;
     /// From the device, or zero when it does not implement the command.
     std::uint32_t buf_size = 0;
+    /// The device reported downgrade prevention (`BootloaderMode::no_downgrade`).
+    bool no_downgrade = false;
 
     /// What the update will report. The machine writes the outcome fields
     /// here as it decides them -- per image in `images`, and `revert_pending`
@@ -176,6 +206,9 @@ struct Context
     bool confirm_approved = false;
     /// The one re-read after a timed-out confirm or read-back has been spent.
     bool confirm_reread = false;
+    /// The refusal checks have run, and passed. They run once, before the
+    /// first command that changes the device (ADR-0025, decision 3).
+    bool preconditions_checked = false;
 };
 
 /// The next state, and what to do to get there.

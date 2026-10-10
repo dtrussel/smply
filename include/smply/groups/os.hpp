@@ -5,7 +5,8 @@
 /// \file
 /// The OS management group, group 0 (docs/protocol-notes.md section 5).
 ///
-/// Three commands, and nothing else: reset, MCUmgr parameters, echo. This is a
+/// Five commands, and nothing else: reset, MCUmgr parameters, echo, and the
+/// bootloader's name and mode from bootloader information. This is a
 /// thin encoder/decoder over `SmpClient` -- it allocates no sequence numbers,
 /// sets no deadlines and interprets no `rc`, because the client below it
 /// already does all three. If something here looks like it needs to know about
@@ -44,6 +45,51 @@ struct McumgrParameters
                                                    const McumgrParameters&) noexcept = default;
 };
 
+/// MCUboot's mode of operation, numbered as MCUboot's `enum mcuboot_mode`
+/// numbers it (docs/protocol-notes.md section 7, S56).
+///
+/// The number is what the device sends. Zephyr's specification lists only 0 to
+/// 6, and calls 3 by an older name; the enum is the authority (A37).
+enum class McubootMode : std::int8_t
+{
+    /// The device did not say, said `-1`, or sent a number outside MCUboot's
+    /// enum. Zephyr reports `-1` for its RAM-load builds too (A38).
+    Unknown = -1,
+    SingleSlot = 0,
+    SwapUsingScratch = 1,
+    /// Overwrite: an update is copied into place permanently, with no trial.
+    UpgradeOnly = 2,
+    SwapUsingMove = 3,
+    /// Runs from either slot; no set-state, and no revert.
+    DirectXip = 4,
+    DirectXipWithRevert = 5,
+    RamLoad = 6,
+    FirmwareLoader = 7,
+    SingleSlotRamLoad = 8,
+    SwapUsingOffset = 9,
+};
+
+/// A short, stable name for a mode, such as `"swap-using-move"`. Never
+/// allocates.
+[[nodiscard]] std::string_view to_string(McubootMode mode) noexcept;
+
+/// The answer to the bootloader-information `mode` query.
+struct BootloaderMode
+{
+    /// `Unknown` for a number outside MCUboot's enum.
+    McubootMode mode = McubootMode::Unknown;
+    /// The number exactly as the device sent it, so that a mode newer than
+    /// smply is still visible (A2).
+    std::int64_t raw_mode = -1;
+    /// MCUboot refuses an image with a lower version than the running one
+    /// (`CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`, protocol-notes section 7).
+    /// The device sends the flag only when it is true.
+    bool no_downgrade = false;
+
+    [[nodiscard]] friend constexpr bool operator==(const BootloaderMode&,
+                                                   const BootloaderMode&) noexcept = default;
+};
+
 /// What to ask for when resetting.
 struct ResetOptions
 {
@@ -60,7 +106,7 @@ struct ResetOptions
     std::optional<Duration> timeout;
 };
 
-/// Reset, MCUmgr parameters and echo.
+/// Reset, MCUmgr parameters, echo and bootloader information.
 ///
 /// Holds a reference to the client and no state of its own, so several may
 /// exist over one client and any may be destroyed at any time. Destroying it
@@ -107,6 +153,26 @@ public:
     ///
     /// \p text is borrowed for the duration of this call only.
     RequestHandle echo(std::string_view text, Callback<std::string> on_done);
+
+    /// Reads the bootloader's name: bootloader information with no query.
+    /// MCUboot answers `"MCUboot"`.
+    ///
+    /// **Optional command** (`CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO`): a device
+    /// without it answers `SmpError::NotSupported`, as for
+    /// `mcumgr_parameters()`. A name longer than
+    /// `limits::kMaxBootloaderNameLength` is rejected as
+    /// `ErrorCode::CborDecode` before it is copied.
+    RequestHandle bootloader_name(Callback<std::string> on_done);
+
+    /// Reads MCUboot's mode and downgrade prevention: bootloader information
+    /// with the query `"mode"` (docs/protocol-notes.md section 5).
+    ///
+    /// The same optional command as `bootloader_name()`. A bootloader that is
+    /// not MCUboot has no answer, which arrives as an OS-group error
+    /// (`QUERY_YIELDS_NO_ANSWER`, 3) over SMP v2. Every device error is an
+    /// ordinary `ErrorCode::ProtocolError`; what to do without an answer is
+    /// the caller's decision.
+    RequestHandle bootloader_mode(Callback<BootloaderMode> on_done);
 
 private:
     SmpClient* client_;

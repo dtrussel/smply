@@ -39,7 +39,7 @@ earlier.
 | S9 | `subsys/mgmt/mcumgr/transport/include/mgmt/mcumgr/transport/smp_internal.h` | `struct smp_hdr` bitfield order | same |
 | S10 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt.c` | Server-side upload handler and response construction; also the erase and slot-info handlers, and `img_mgmt_translate_error_code()` | same (image handlers verified 2026-09-05) |
 | S11 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/zephyr_img_mgmt.c` | `img_mgmt_upload_inspect()` — offset/resume/validation rules | same |
-| S13 | `subsys/mgmt/mcumgr/grp/os_mgmt/src/os_mgmt.c` | OS-group server handlers; echo, reset and mcumgr-params decoding and the handler registration table | same (verified 2026-09-05, and against tags `v3.5.0` and `v3.7.0`) |
+| S13 | `subsys/mgmt/mcumgr/grp/os_mgmt/src/os_mgmt.c` | OS-group server handlers; echo, reset and mcumgr-params decoding and the handler registration table; `os_mgmt_bootloader_info()` and its mode mapping | same (verified 2026-09-05, and against tags `v3.5.0` and `v3.7.0`; bootloader info verified 2026-10-09 on `main`) |
 | S12 | `docs/design.md` | MCUboot image format, TLVs, slots, swap types, trailer | `mcu-tools/mcuboot@main` |
 | S14 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_state.c` | Image-state read and write handlers; the flag encoding and the set-state decode | `zephyrproject-rtos/zephyr@main` (verified 2026-09-05) |
 | S15 | `subsys/mgmt/mcumgr/grp/img_mgmt/src/img_mgmt_util.c` | `img_mgmt_ver_str()` -- the version string a device actually reports | same |
@@ -83,10 +83,15 @@ earlier.
 | S54 | `subsys/mgmt/mcumgr/grp/settings_mgmt/Kconfig` | `CONFIG_MCUMGR_GRP_SETTINGS_NAME_LEN` and `_VALUE_LEN` (both default 32), stack or heap buffers, `CONFIG_MCUMGR_GRP_SETTINGS_ACCESS_HOOK` | same |
 | S55 | `include/zephyr/settings/settings.h` | `SETTINGS_MAX_NAME_LEN` (64, from `SETTINGS_MAX_DIR_DEPTH` 8) and `SETTINGS_MAX_VAL_LEN` (256) | same |
 | S46 | `include/zephyr/mgmt/mcumgr/mgmt/callbacks.h`, `subsys/mgmt/mcumgr/smp/src/smp.c` | `MGMT_EVT_OP_CMD_RECV`, `MGMT_EVT_OP_CMD_STATUS` and `MGMT_EVT_OP_CMD_DONE`, each with `struct mgmt_evt_op_cmd_arg { group; id; op / err / status }`, under `CONFIG_MCUMGR_SMP_COMMAND_STATUS_HOOKS`; `smp.c` notifies `CMD_DONE` once a command has been processed: a device can learn when a given command is done | `zephyrproject-rtos/zephyr@main` (verified 2026-09-26 from source) |
+| S56 | `boot/bootutil/include/bootutil/boot_status.h` (`enum mcuboot_mode`), `boot/zephyr/Kconfig` (`MCUBOOT_DOWNGRADE_PREVENTION`) | MCUboot's ten mode values, 0 to 9 (§7); software downgrade prevention `depends on !BOOT_DIRECT_XIP` and enforces a greater version | `mcu-tools/mcuboot@main` (verified 2026-10-09 from source) |
+| S57 | `subsys/mgmt/mcumgr/grp/os_mgmt/Kconfig` (`MCUMGR_GRP_OS_BOOTLOADER_INFO`, `_HOOK`), `modules/Kconfig.mcuboot` (`MCUBOOT_BOOTLOADER_NO_DOWNGRADE`) | The bootloader-information command is opt-in; `no-downgrade` is an application-side option the build sets by hand to mirror MCUboot's `MCUBOOT_DOWNGRADE_PREVENTION` | `zephyrproject-rtos/zephyr@main` (verified 2026-10-09 from source) |
+| S58 | `nrfconnect/sdk-nrf`: `cmake/sysbuild/zip.cmake` (direct-XIP branches) | A plain direct-XIP package lists two files for one `image_index`, each with `slot` as a **global** slot index (`image × 2 + 0/1`, no +1 unlike `slot_index_primary`), its own `load_address` and `version_MCUBOOT+XIP`; a QSPI split-image build lists four (internal and external part per slot) | `nrfconnect/sdk-nrf@main` (read 2026-10-09). A **format** reference, as S38 |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
-`nrfconnect/Android-nRF-Connect-Device-Manager`, `apache/mynewt-mcumgr`.
+`nrfconnect/Android-nRF-Connect-Device-Manager`, `apache/mynewt-mcumgr`,
+`NordicSemiconductor/IOS-nRF-Connect-Device-Manager`, `Finomnis/mcumgr-toolkit`,
+`intercreate/smpclient`.
 
 ### Layer attribution
 
@@ -343,6 +348,26 @@ buffers (relevant to how many requests may be in flight).
 
 > ⚠ Optional command. Older/minimal servers return `MGMT_ERR_ENOTSUP`. smply
 > must fall back to a conservative default (see §8).
+
+### Bootloader information — op `0` (read), group `0`, cmd `8` (S3, S13)
+
+Request: `{ "query": (str, opt) }`. Two response shapes:
+
+* no `query` ⇒ `{ "bootloader": (str) }`, the bootloader's name. MCUboot
+  answers `"MCUboot"`.
+* `query: "mode"` ⇒ `{ "mode": (int), "no-downgrade": (bool, opt) }`. The
+  mode is MCUboot's `enum mcuboot_mode` (§7). `no-downgrade` is present only
+  when true.
+
+`os_mgmt_bootloader_info()` (S13) answers `mode` only for MCUboot
+(`CONFIG_BOOTLOADER_MCUBOOT`). A query it cannot answer yields
+`OS_MGMT_ERR_QUERY_YIELDS_NO_ANSWER` in v2 (§3). With
+`CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO_HOOK`, an application callback can add
+or override answers, so neither shape is guaranteed to be the whole map.
+
+> ⚠ Optional command, behind `CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO` (S57),
+> off by default. A device without it answers `MGMT_ERR_ENOTSUP`, which is
+> ordinary (A8).
 
 ---
 
@@ -817,6 +842,60 @@ A hash that names no slot is `IMG_MGMT_ERR_HASH_NOT_FOUND`, and on any of these
 failures the response carries the error **only**: the refreshed image list is
 not appended.
 
+### MCUboot modes (S56, S13, S14)
+
+`enum mcuboot_mode` (S56), the number the bootloader-information command
+reports (§5):
+
+| # | Mode | Set-state (S14) | Revert |
+| - | ---- | --------------- | ------ |
+| 0 | single slot | handler present; no second slot | none |
+| 1 | swap using scratch | yes | yes |
+| 2 | upgrade-only (overwrite) | yes, but a test is a permanent copy | **none** |
+| 3 | swap using move | yes | yes |
+| 4 | direct-XIP | **no handler** (`ENOTSUP`) | **none** |
+| 5 | direct-XIP with revert | yes | yes |
+| 6 | RAM load | **no handler** | none |
+| 7 | firmware loader | **no handler** | none |
+| 8 | single-slot RAM load | handler present; never reported by Zephyr (A38) | none |
+| 9 | swap using offset | yes | yes |
+
+* **Zephyr's specification table (S3) is out of date.** It stops at 6 and
+  calls 3 "swap without scratch". The enum is the authority (A37).
+* **Zephyr's mapping has gaps.** `os_mgmt.c` (S13) maps the application's
+  `CONFIG_MCUBOOT_BOOTLOADER_MODE_*` to the enum and reports `-1` for anything
+  else. It has no branch for RAM load, RAM load with revert or single-slot RAM load, so all three report `-1` (A38).
+* **Set-state's write handler is `NULL`** under `DIRECT_XIP`, `RAM_LOAD` and
+  `FIRMWARE_UPDATER` (S10). The two "with revert" variants keep it, with their
+  own boot-state reading (S14).
+* **Direct-XIP uploads go to the slot opposite the active one** (S10). The
+  image must be linked for that slot's address. The device checks the
+  address at upload only under
+  `CONFIG_MCUMGR_GRP_IMG_REJECT_DIRECT_XIP_MISMATCHED_SLOT`; otherwise a
+  mislinked image uploads and then does not boot. SMP never reports slot
+  addresses. A plain direct-XIP package carries one file per slot (S58).
+* **Zephyr's image group does not support several images** under direct-XIP
+  or RAM load (S10).
+* **What image-state reports under direct-XIP** (S14, `img_mgmt_state_flags()`
+  and `img_mgmt_get_next_boot_slot()`). MCUboot boots the newest valid slot,
+  a tie going to the lower slot number:
+  * **without revert**, the running slot is only `active`, **never
+    `confirmed`**, and the other slot is `pending` and `permanent` exactly when
+    MCUboot would boot it: its version is higher, or equal in a lower slot. An
+    older or equal image in the higher slot is held but never booted;
+  * **with revert**, the flags follow the ordinary table (§7 "Swap types"):
+    the other slot boots only once marked (`BOOT_STATE_ONCE`, a trial) or
+    confirmed (`FOREVER`), **and** only if its version wins as above. A trial
+    nobody confirms reverts at the next reset.
+* **Downgrade prevention.** `no-downgrade` (§5) is
+  `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`, set by hand to mirror MCUboot's
+  `MCUBOOT_DOWNGRADE_PREVENTION` (S57), which direct-XIP cannot enable (S56).
+  MCUboot compares with `boot_compare_version()` (S41): major, minor,
+  revision, and the build number only under a build option the device does
+  not report. An equal version is accepted. A refused image is erased at
+  boot and the old one runs. Hardware prevention by security counter is not
+  reported at all.
+
 ### What smply must *not* do
 
 Signature verification, encryption, dependency-TLV evaluation and swap
@@ -1067,6 +1146,8 @@ Recorded so future sessions do not rediscover them.
 | A34 | **SMP v1 loses statistics and settings error codes many-to-one**, as it does image codes (A16). With `ORIGINAL_PROTOCOL`, statistics maps `INVALID_GROUP` and `INVALID_STAT_NAME` to `ENOENT` and `INVALID_STAT_SIZE` to `EINVAL`; settings maps `KEY_TOO_LONG` to `EINVAL`, `KEY_NOT_FOUND` and `READ_NOT_SUPPORTED` to `ENOENT`, and six others -- including `ROOT_KEY_NOT_FOUND` and every not-supported refusal -- to `EUNKNOWN` (S49, S53). Inferred from source; the image-group mechanism behind it was measured (A24). **Settings half observed on the BL54L15 bench (2026-10-05)**, each refusal provoked once under v1 and once under v2: `ROOT_KEY_NOT_FOUND` (5) → `EUNKNOWN`, `KEY_NOT_FOUND` (3) → `ENOENT`, `WRITE_NOT_SUPPORTED` (6) → `EUNKNOWN`, `KEY_TOO_LONG` (2) → `EINVAL`, and -- from a bench firmware that had not initialised its settings store -- `SAVE_NOT_SUPPORTED` (8) → `EUNKNOWN`; under v2 every one arrived group-scoped and intact. `READ_NOT_SUPPORTED` (4), from a handler with no getter, arrived as `(3, 4)` under v2 and a flat `ENOENT` under v1 (2026-10-06), so the settings half is observed in full except `DELETE_NOT_SUPPORTED`, `SAVE_FAILED_VALUE_TOO_LONG_TO_READ` and `UNKNOWN`. The statistics half did **not** hold on that server's revision: see A35. | `statistics_error()` and `settings_error()` return `nullopt` for a flat code, as `image_error()` does, and their documentation names the v1 translation. A caller that must tell a missing root key from a refused write needs SMP v2. |
 | A35 | **Which group an unknown statistics group is filed under depends on the Zephyr revision -- measured.** `stat_mgmt_show()` (S49) reports the missing group with `smp_add_cmd_err(zse, <group>, STAT_MGMT_ERR_INVALID_STAT_NAME)`. Upstream Zephyr at the WB55 bench's pin (`e71ff182`) passes `MGMT_GROUP_ID_STAT` (2). The nRF Connect SDK v3.3.0 fork (`sdk-zephyr` `fd9204a0`, the BL54L15 bench) passes **`ZEPHYR_MGMT_GRP_BASIC` (63)** -- read in both sources, and observed on the BL54L15 (2026-10-05): under v2 the response is `err: {group: 63, rc: 3}`, so `statistics_error()` is `nullopt`; under v1 with `ORIGINAL_PROTOCOL` the code goes through group 63's translation rather than stat_mgmt's and arrives as a flat **`EUNKNOWN`** (1), not the `ENOENT` A34 inferred. The over-long-name refusal (a flat `EINVAL`, returned before the group lookup) is the same on both. | Nothing in smply changes: decoding is per response, and group 63 is carried through as a `MgmtError` like any other (`Group::ZephyrBasic`). A caller that must recognise "no such statistics group" across server revisions cannot rely on `statistics_error()` alone; under v2 it should also accept `(ZephyrBasic, 3)`, and under v1 the answer is indistinguishable from any other failure. `test_hil_mgmt.cpp` accepts either variant and records which one it saw. |
 | A36 | **BLE upload throughput is set by the connection interval in force during the upload, and the peer asks for a fast one only once.** With `CONFIG_MCUMGR_TRANSPORT_BT_CONN_PARAM_CONTROL`, `smp_bt.c` (S2) requests its SMP parameters (7.5-11.25 ms) on the first SMP packet of an idle period, sets `CONN_PARAM_SMP_REQUESTED`, and afterwards only pushes back the 5 s restore timer (`conn_param_smp_enable()`); it never re-requests. **Measured on the BL54L15 bench (2026-10-06)**, three clean updates in each of two orders, link logged by the bench module: every upload ran on 2M PHY with data length 251 and ATT MTU 498, but in three of them a later update set **45 ms** while SMP traffic was flowing -- so not the peer's restore -- and the upload stayed there (chunk acknowledgements p50 **90 ms**, update 36 s); in the other three the 7.5 ms update came last (p50 **38 ms**, 20 s). That the 45 ms update is the central's (Windows) is an inference: it is inside the peer's preferred range (`BT_PERIPHERAL_PREF` 30-50 ms) and the peer did not ask for it. Which order occurs correlated with the baseline image in each run here and the reverse way in the previous iteration, so it is ordering, not image content. | No protocol change: smply's sizing and pacing are unaffected, and the update is correct either way. A central that wants the fast interval can ask for it itself -- Windows 11 documents `BluetoothLEDevice.RequestPreferredConnectionParameters`, not yet tried here -- which is an adapter option on the roadmap backlog, not a core one. A peer can re-request; that is the device's design. |
+| A37 | **Zephyr's group 0 specification lists MCUboot modes 0-6 only**, and names 3 "swap without scratch". MCUboot's `enum mcuboot_mode` (S56) runs to 9: 7 firmware loader, 8 single-slot RAM load, 9 swap using offset; 3 is swap using move. | Decode the mode against the enum, not the table. A number outside it is reported as unknown with its value kept (A2). |
+| A38 | **The RAM-load builds report mode `-1`.** Zephyr's mapping in `os_mgmt.c` (S13) has no branch for `CONFIG_MCUBOOT_BOOTLOADER_MODE_RAM_LOAD`, `_RAM_LOAD_WITH_REVERT` or `_SINGLE_APP_RAM_LOAD` (all three exist in `modules/Kconfig.mcuboot`), although the enum has values 6 and 8. The with-revert variant keeps set-state (S14) and so updates like a swap device. `-1` therefore means "Zephyr did not map this build", not "no MCUboot". | Treat `-1` like no answer: the mode is unknown. |
 | A27 | **Image ≥ 1 cannot be confirmed the way image 0 can.** A hashless confirm names the running image, and a confirm of a non-running image is refused unless `CONFIG_MCUMGR_GRP_IMG_ALLOW_CONFIRM_NON_ACTIVE_IMAGE_*` is set (§6, S35). | smply confirms by hash, always. An image the device commits itself -- the staged image of a second MCU -- is `CommitBy::Device`, and smply waits for the device to report it applied rather than confirming it (ADR-0021, `docs/multi-image.md`). |
 
 ### Test-method correction (not a protocol inference)

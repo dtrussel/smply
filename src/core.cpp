@@ -119,6 +119,8 @@ std::string_view to_string(ErrorCode code) noexcept
         return "image mismatch";
     case ErrorCode::UpdateFailed:
         return "firmware update failed";
+    case ErrorCode::UpdateRefused:
+        return "firmware update refused";
     case ErrorCode::Internal:
         return "internal error";
     }

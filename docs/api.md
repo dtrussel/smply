@@ -93,6 +93,7 @@ enum class ErrorCode : std::uint16_t {
     Disconnected,
     ImageMismatch,          // device content != what we uploaded
     UpdateFailed,           // DFU state machine terminal failure
+    UpdateRefused,          // refused before anything was sent; UpdateReport::refusal
     Internal,
 };
 
@@ -212,7 +213,7 @@ are grouped here so the whole defensive surface can be reviewed at once.
 | ------ | --------- |
 | Framing and buffering | `kMaxSmpPayload` · `kMaxAssemblyBuffer` · `kMaxCborNesting` |
 | Request lifecycle | `kMaxInFlight` · `kMaxRetiredSeqs` · `kDefaultTimeout` |
-| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` · `kMaxStatisticsNameLength` · `kMaxStatisticsGroups` · `kMaxStatisticsFields` |
+| What a device may say | `kMaxImages` · `kMaxSlotsPerImage` · `kMaxVersionStringLength` · `kMaxImageHashLength` · `kMaxReasonLength` · `kMaxEchoLength` · `kMaxBootloaderNameLength` · `kMaxStatisticsNameLength` · `kMaxStatisticsGroups` · `kMaxStatisticsFields` |
 | Settings | `kMaxSettingNameLength` · `kMaxSettingValueLength` |
 | Image files | `kMaxImageSize` · `kMaxImageTlvs` |
 | Upload | `kUploadChunkMin` · `kUploadChunkMax` · `kDefaultSmpMessageBudget` · `kMaxChunkRetries` · `kMaxUploadRestarts` · `kMaxNoProgress` · `kFirstChunkTimeout` · `kFinalChunkTimeout` · `kEraseTimeout` |
@@ -472,6 +473,21 @@ struct McumgrParameters {
     std::uint32_t buf_count = 0;
 };
 
+// MCUboot's enum mcuboot_mode, by number (protocol-notes §7, S56). Unknown:
+// no answer, -1, or a number outside the enum.
+enum class McubootMode : std::int8_t {
+    Unknown = -1, SingleSlot, SwapUsingScratch, UpgradeOnly, SwapUsingMove,
+    DirectXip, DirectXipWithRevert, RamLoad, FirmwareLoader, SingleSlotRamLoad,
+    SwapUsingOffset,
+};
+std::string_view to_string(McubootMode) noexcept;   // "swap-using-move", ...
+
+struct BootloaderMode {
+    McubootMode  mode = McubootMode::Unknown;
+    std::int64_t raw_mode = -1;    // as sent, so a newer mode stays visible (A2)
+    bool         no_downgrade = false;  // sent only when true
+};
+
 struct ResetOptions {
     bool force = false;            // sent as a CBOR bool, omitted when false (A15)
     std::optional<Duration> timeout;
@@ -495,6 +511,14 @@ public:
     // Rejects text longer than limits::kMaxEchoLength with InvalidArgument,
     // and a reply longer than that with CborDecode.
     RequestHandle echo(std::string_view, Callback<std::string>);
+
+    // Bootloader information, command 8 (protocol-notes §5). Optional, like
+    // mcumgr_parameters(): a device without it answers NotSupported. The name
+    // is the empty query, bounded by limits::kMaxBootloaderNameLength; the mode
+    // is the "mode" query. A bootloader that is not MCUboot has no answer to
+    // it, an OS-group error (3) over SMP v2.
+    RequestHandle bootloader_name(Callback<std::string>);
+    RequestHandle bootloader_mode(Callback<BootloaderMode>);
 };
 
 } // namespace smply
@@ -960,7 +984,7 @@ namespace smply {
 enum class UpdateMode : std::uint8_t { TestThenConfirm, ConfirmImmediately, UploadOnly };
 
 enum class UpdateState : std::uint8_t {
-    Idle, QueryingParameters, InspectingImages, Planning, Uploading,
+    Idle, QueryingParameters, QueryingBootloader, InspectingImages, Planning, Uploading,
     VerifyingUpload, MarkingForTest, Resetting, AwaitingDisconnect,
     AwaitingReconnect, VerifyingBooted, AwaitingDeviceApply, AwaitingConfirmation,
     Confirming, VerifyingConfirmed, AwaitingDeviceCommit, Completed, Failed, Cancelled,
@@ -974,14 +998,49 @@ constexpr bool   is_terminal(UpdateState) noexcept;
 // docs/multi-image.md). smply never confirms it.
 enum class CommitBy : std::uint8_t { Client, Device };
 
+// Where UpdateReport::bootloader_mode came from (ADR-0025): the device's
+// answer, the plan's fallback, or neither.
+enum class ModeSource : std::uint8_t { Reported, Supplied, Assumed };
+
+// Why an update was refused before anything was sent (ADR-0025). The update
+// ends with ErrorCode::UpdateRefused and the device is untouched.
+//   RevertUnavailable      upgrade-only, and the plan did not allow_no_revert;
+//                          never under UploadOnly, which promises no trial
+//   Downgrade              the device prevents downgrades; the image is older
+//   UnsupportedMode        single slot, firmware loader, RAM load, single-slot
+//                          RAM load: an update path smply does not have
+//   MultiImageUnsupported  several images on a direct-XIP device
+enum class Refusal : std::uint8_t {
+    RevertUnavailable, Downgrade, UnsupportedMode, MultiImageUnsupported };
+std::string_view to_string(Refusal) noexcept;
+
 struct ImageTarget {                  // one image of a multi-image update
     std::uint32_t image = 0;
     ImageSource*  source = nullptr;   // not owned; outlives the update
     CommitBy      commit = CommitBy::Client;
+    // Direct-XIP: the same image linked for the secondary slot (2n + 1), with
+    // `source` the primary slot's build. The one for the slot the device is
+    // not running is sent; either build already in its own slot counts as
+    // present. InvalidArgument, before anything is sent, on a device that
+    // does not report direct-XIP (ADR-0025).
+    ImageSource*  secondary_source = nullptr;
 };
 
 struct UpdatePlan {
     UpdateMode    mode  = UpdateMode::TestThenConfirm;
+    // Used only when the device does not report a mode: no command, no answer,
+    // -1, or a number smply does not know. A reported mode always wins.
+    std::optional<McubootMode> fallback_mode;
+    // Accept an update the bootloader cannot revert: without it, an
+    // upgrade-only or direct-XIP-without-revert device is refused
+    // (Refusal::RevertUnavailable). With it the image is permanent once
+    // booted, and nothing asks for a confirm. Direct-XIP without revert sends
+    // no set-state: upload, reset, then the running slot must hold the image.
+    bool          allow_no_revert = false;
+    // With the device's no-downgrade flag: refuse an image whose
+    // major.minor.revision is below the running one's (Refusal::Downgrade).
+    // MCUboot's comparison; the build number never counts, equal passes.
+    bool          check_downgrade = true;
     // For the single-image start(), upload.image is the image the whole update
     // works on: transferred, inspected, marked and confirmed (by hash). The
     // image-list start() replaces it with each target's image. Image >= 1
@@ -1009,7 +1068,11 @@ struct ImageReport {                  // one per target, in the order given
     ImageHash     target_hash;
     std::uint64_t bytes_transferred = 0;
     bool upload_skipped = false;
-    bool rolled_back = false;         // Client: MCUboot reverted it
+    // The global slot the device reported holding it in: the secondary, or
+    // under direct-XIP whichever slot is not running (the file must be
+    // linked for it).
+    std::optional<std::uint32_t> upload_slot;
+    bool rolled_back = false;         // Client: the old image booted instead
     bool applied = false;             // Device: the device runs it, on trial
     bool committed = false;           // Device: the device committed it
 };
@@ -1021,8 +1084,13 @@ struct UpdateReport {                 // the summary fields cover every image
     std::optional<ImageHash> target_hash;  // the first image's
     std::optional<ImageState> final_device_state;
     std::optional<Error> cause;     // set iff the update failed
-    bool rolled_back = false;       // MCUboot reverted an image (protocol-notes §7)
+    bool rolled_back = false;       // the old image booted: a revert, or a
+                                    // direct-XIP slot that did not win (§7)
+    std::optional<std::uint32_t> upload_slot;  // the first image's
     bool revert_pending = false;    // a swap nobody confirmed; it will revert
+    McubootMode bootloader_mode = McubootMode::Unknown;  // ADR-0025
+    ModeSource  mode_source = ModeSource::Assumed;       // Unknown iff Assumed
+    std::optional<Refusal> refusal;  // set iff cause is UpdateRefused
     std::vector<ImageReport> images;
 };
 

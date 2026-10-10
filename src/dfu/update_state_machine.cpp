@@ -4,6 +4,8 @@
 
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
+#include "smply/groups/os.hpp"
+#include "smply/mcuboot_image.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -26,6 +28,118 @@ namespace {
 [[nodiscard]] Step fail(Context& context, ErrorCode code, const char* where)
 {
     return fail(context, Error{code, where});
+}
+
+/// Records the mode the update runs under: the device's answer when it gave
+/// one, else the plan's fallback, else nothing (ADR-0025, decision 1).
+void record_mode(McubootMode reported, const UpdatePlan& plan, UpdateReport& report)
+{
+    if (reported != McubootMode::Unknown) {
+        report.bootloader_mode = reported;
+        report.mode_source = ModeSource::Reported;
+        return;
+    }
+    if (plan.fallback_mode.has_value() && *plan.fallback_mode != McubootMode::Unknown) {
+        report.bootloader_mode = *plan.fallback_mode;
+        report.mode_source = ModeSource::Supplied;
+        return;
+    }
+    report.bootloader_mode = McubootMode::Unknown;
+    report.mode_source = ModeSource::Assumed;
+}
+
+/// Why the bootloader mode rules this update out, if it does (ADR-0025,
+/// decision 4).
+[[nodiscard]] std::optional<Refusal> mode_refusal(const UpdatePlan& plan, const Context& context)
+{
+    const bool accepts_no_revert = plan.mode == UpdateMode::UploadOnly || plan.allow_no_revert;
+    switch (context.report.bootloader_mode) {
+    case McubootMode::SingleSlot:
+    case McubootMode::FirmwareLoader:
+    case McubootMode::RamLoad:
+    case McubootMode::SingleSlotRamLoad:
+        return Refusal::UnsupportedMode;
+    case McubootMode::UpgradeOnly:
+        return accepts_no_revert ? std::nullopt : std::optional{Refusal::RevertUnavailable};
+    case McubootMode::DirectXip:
+        if (context.targets.size() > 1) {
+            return Refusal::MultiImageUnsupported;
+        }
+        return accepts_no_revert ? std::nullopt : std::optional{Refusal::RevertUnavailable};
+    case McubootMode::DirectXipWithRevert:
+        if (context.targets.size() > 1) {
+            return Refusal::MultiImageUnsupported;
+        }
+        return std::nullopt;
+    case McubootMode::Unknown:
+    case McubootMode::SwapUsingScratch:
+    case McubootMode::SwapUsingMove:
+    case McubootMode::SwapUsingOffset:
+        return std::nullopt;
+    }
+    return std::nullopt; // LCOV_EXCL_LINE -- every enumerator is handled above
+}
+
+/// Direct-XIP without revert has no set-state handler (S10): an image is
+/// never marked, and a running image is never "confirmed" (S14). The device
+/// boots the newest valid slot by itself.
+[[nodiscard]] bool without_set_state(const Context& context) noexcept
+{
+    return context.report.bootloader_mode == McubootMode::DirectXip;
+}
+
+/// True when \p image is older than \p running by MCUboot's comparison:
+/// major, minor, revision, and never the build number (S41).
+[[nodiscard]] bool older(const ImageVersion& image, const ImageVersion& running) noexcept
+{
+    if (image.major != running.major) {
+        return image.major < running.major;
+    }
+    if (image.minor != running.minor) {
+        return image.minor < running.minor;
+    }
+    return image.revision < running.revision;
+}
+
+/// Whether the device would erase one of the images at the reset as a
+/// downgrade (ADR-0025, decision 5). An image the device already runs, or one
+/// whose running version it reports unparseably, is not refused: there is
+/// nothing to compare, and the device still decides.
+[[nodiscard]] bool is_downgrade(const UpdatePlan& plan, const Context& context);
+
+/// What a refusal's failure says, in `Error::where()`.
+[[nodiscard]] const char* refusal_text(Refusal refusal) noexcept
+{
+    switch (refusal) {
+    case Refusal::RevertUnavailable:
+        return "dfu: the bootloader cannot revert this update";
+    case Refusal::Downgrade:
+        return "dfu: the device refuses an image older than the one it runs";
+    case Refusal::UnsupportedMode:
+        return "dfu: no update path for this bootloader mode";
+    case Refusal::MultiImageUnsupported:
+        return "dfu: this bootloader mode updates one image only";
+    }
+    return "dfu: refused"; // LCOV_EXCL_LINE -- every enumerator is handled above
+}
+
+/// Runs the refusal checks once, before the first command that would change
+/// the device. Nothing has been sent when they refuse.
+[[nodiscard]] std::optional<Step> check_preconditions(const UpdatePlan& plan, Context& context)
+{
+    if (context.preconditions_checked) {
+        return std::nullopt;
+    }
+    context.preconditions_checked = true;
+    std::optional<Refusal> refusal = mode_refusal(plan, context);
+    if (!refusal.has_value() && is_downgrade(plan, context)) {
+        refusal = Refusal::Downgrade;
+    }
+    if (!refusal.has_value()) {
+        return std::nullopt;
+    }
+    context.report.refusal = refusal;
+    return fail(context, ErrorCode::UpdateRefused, refusal_text(*refusal));
 }
 
 /// The slot of \p image that is running.
@@ -278,7 +392,9 @@ enum class Apply : std::uint8_t
             }
             continue;
         }
-        target.in_trial = !active->confirmed;
+        // Without set-state nothing is ever confirmed, and nothing needs to be:
+        // the device boots the image for good (ADR-0025).
+        target.in_trial = !without_set_state(context) && !active->confirmed;
     }
 
     // Whatever is still on trial, or still queued, happens at the next reset.
@@ -292,6 +408,21 @@ enum class Apply : std::uint8_t
     return await_device(plan, context);
 }
 
+bool is_downgrade(const UpdatePlan& plan, const Context& context)
+{
+    if (!plan.check_downgrade || !context.no_downgrade) {
+        return false;
+    }
+    return std::ranges::any_of(context.targets, [&context](const Target& target) {
+        const ImageSlot* running = active_of(context, target.image);
+        if (running == nullptr || holds(running, target)) {
+            return false;
+        }
+        const Result<ImageVersion> version = ImageVersion::parse(running->version);
+        return version.has_value() && older(target.version, *version);
+    });
+}
+
 /// Every image is staged, or needed nothing: reset, or judge the device as it
 /// stands.
 [[nodiscard]] Step staged(const UpdatePlan& plan, Context& context)
@@ -300,6 +431,10 @@ enum class Apply : std::uint8_t
         return Step{UpdateState::Completed, Effect::Finish};
     }
     if (context.swap_scheduled) {
+        // A swap someone else scheduled is still this update's reset to make.
+        if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+            return *refused;
+        }
         return Step{UpdateState::Resetting, Effect::Reset};
     }
     // Nothing is queued, so a reset would change nothing: what the device runs
@@ -314,6 +449,67 @@ enum class Apply : std::uint8_t
 /// because an update may be resumed by a *new* process against a device that
 /// is already part-way through one, which is exactly what happens when an
 /// application is restarted mid-update.
+[[nodiscard]] Step mark_or_skip(const UpdatePlan& plan, Context& context);
+
+/// The slot \p global of \p image in the last slot table, if listed.
+[[nodiscard]] const ImageSlot* listed_slot(const Context& context, std::uint32_t image,
+                                           std::uint32_t global)
+{
+    if (!context.device.has_value()) {
+        return nullptr;
+    }
+    const auto found = std::ranges::find_if(context.device->slots, [&](const ImageSlot& slot) {
+        return slot.image == image && slot.slot == global;
+    });
+    return found == context.device->slots.end() ? nullptr : &*found;
+}
+
+/// Picks which of a target's two builds this update is about (ADR-0025,
+/// decision 6): a build already in its own slot, the running one first, or
+/// else the build for the slot the device is not running from. Fails before
+/// anything is sent when the device is not direct-XIP, where a file linked
+/// for one slot is meaningless.
+[[nodiscard]] std::optional<Step> choose_build(Context& context)
+{
+    Target& target = context.targets[context.current];
+    if (!target.builds.has_value() || target.chosen_known) {
+        return std::nullopt;
+    }
+    // Bound once: the engaged state is then visible where it is read, to a
+    // reader and to static analysis alike.
+    const std::array<Target::Build, 2>& builds = *target.builds;
+    const McubootMode mode = context.report.bootloader_mode;
+    if (mode != McubootMode::DirectXip && mode != McubootMode::DirectXipWithRevert) {
+        return fail(context, ErrorCode::InvalidArgument,
+                    "dfu: one file per slot needs a direct-XIP device");
+    }
+    const std::uint32_t base = target.image * 2;
+    const ImageSlot* running = active_of(context, target.image);
+
+    // By default the free slot's build: the slot not running, or the secondary
+    // when nothing runs at all. A build already in its own slot wins, the
+    // running one first.
+    std::size_t chosen = running != nullptr && running->slot == base + 1 ? 0U : 1U;
+    bool present = false;
+    for (std::size_t index = 0; index < builds.size(); ++index) {
+        const ImageSlot* slot =
+            listed_slot(context, target.image, base + static_cast<std::uint32_t>(index));
+        if (slot == nullptr || slot->hash != builds[index].hash) {
+            continue;
+        }
+        if (!present || slot == running) {
+            chosen = index;
+            present = true;
+        }
+    }
+    target.chosen = chosen;
+    target.chosen_known = true;
+    target.hash = builds[chosen].hash;
+    target.version = builds[chosen].version;
+    context.report.images[context.current].target_hash = target.hash;
+    return std::nullopt;
+}
+
 [[nodiscard]] Step plan_from_state(const UpdatePlan& plan, Context& context)
 {
     // A `Client` image running its file on trial means the reset has already
@@ -332,6 +528,9 @@ enum class Apply : std::uint8_t
     }
 
     for (; context.current < context.targets.size(); ++context.current) {
+        if (const std::optional<Step> failed = choose_build(context)) {
+            return *failed;
+        }
         const Target& target = context.targets[context.current];
         ImageReport& report = context.report.images[context.current];
         const ImageSlot* holder = slot_holding(context, target);
@@ -346,6 +545,7 @@ enum class Apply : std::uint8_t
         //    succeeded at some point even if we never saw the response.
         if (holder != nullptr && holder->pending) {
             report.upload_skipped = true;
+            report.upload_slot = holder->slot;
             context.swap_scheduled = context.swap_scheduled || !upload_only(plan);
             continue;
         }
@@ -356,11 +556,18 @@ enum class Apply : std::uint8_t
             if (upload_only(plan)) {
                 continue;
             }
-            return Step{UpdateState::MarkingForTest, Effect::MarkForTest};
+            if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+                return *refused;
+            }
+            report.upload_slot = holder->slot;
+            return mark_or_skip(plan, context);
         }
 
         // 4. Upload it. Even here the device may answer "already present" on
         //    the first packet and finish without a transfer (rule 9a).
+        if (const std::optional<Step> refused = check_preconditions(plan, context)) {
+            return *refused;
+        }
         context.upload_in_progress = true;
         return Step{UpdateState::Uploading, Effect::StartUpload};
     }
@@ -378,6 +585,17 @@ enum class Apply : std::uint8_t
     return staged(plan, context);
 }
 
+/// The image is in a slot: mark it for test, or, without set-state, move on
+/// with a reset owed -- the device boots the newest valid slot itself.
+[[nodiscard]] Step mark_or_skip(const UpdatePlan& plan, Context& context)
+{
+    if (without_set_state(context)) {
+        context.swap_scheduled = true;
+        return next_target(plan, context);
+    }
+    return Step{UpdateState::MarkingForTest, Effect::MarkForTest};
+}
+
 /// Derives the report's summary fields from its images.
 void summarise(Context& context)
 {
@@ -393,6 +611,7 @@ void summarise(Context& context)
         std::ranges::all_of(images, [](const ImageReport& image) { return image.upload_skipped; });
     context.report.rolled_back =
         std::ranges::any_of(images, [](const ImageReport& image) { return image.rolled_back; });
+    context.report.upload_slot = images.front().upload_slot;
 }
 
 /// `Uploading`, on `UploadFinished`.
@@ -482,8 +701,10 @@ Context make_context(std::vector<Target> targets)
     Context context;
     context.report.images.reserve(targets.size());
     for (const Target& target : targets) {
-        context.report.images.push_back(ImageReport{
-            .image = target.image, .commit = target.commit, .target_hash = target.hash});
+        ImageReport& report = context.report.images.emplace_back();
+        report.image = target.image;
+        report.commit = target.commit;
+        report.target_hash = target.hash;
     }
     context.targets = std::move(targets);
     return context;
@@ -523,10 +744,29 @@ namespace {
         // than broken (docs/protocol-notes.md section 9, A8).
         if (event.kind == Event::Kind::ParametersRead) {
             context.buf_size = event.buf_size;
-            return Step{UpdateState::InspectingImages, Effect::ReadState};
+            return Step{UpdateState::QueryingBootloader, Effect::QueryBootloader};
         }
         if (event.kind == Event::Kind::ParametersUnavailable) {
+            return Step{UpdateState::QueryingBootloader, Effect::QueryBootloader};
+        }
+        break;
+
+    case UpdateState::QueryingBootloader:
+        // Optional too: no answer leaves the mode unknown, and the update runs
+        // as it always has. A lost link or a timeout is not "no answer", and a
+        // link that cannot answer one query is not given an upload (ADR-0025).
+        if (event.kind == Event::Kind::BootloaderRead) {
+            record_mode(event.bootloader.mode, plan, context.report);
+            context.no_downgrade = event.bootloader.no_downgrade;
             return Step{UpdateState::InspectingImages, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::BootloaderUnavailable) {
+            record_mode(McubootMode::Unknown, plan, context.report);
+            return Step{UpdateState::InspectingImages, Effect::ReadState};
+        }
+        if (event.kind == Event::Kind::Failed) {
+            // Nothing has been changed on the device yet.
+            return fail(context, event.error);
         }
         break;
 
@@ -559,12 +799,14 @@ namespace {
     case UpdateState::VerifyingUpload:
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
-            if (slot_holding(context, context.targets[context.current]) == nullptr) {
+            const ImageSlot* holder = slot_holding(context, context.targets[context.current]);
+            if (holder == nullptr) {
                 // The device does not report holding what was just sent.
                 return fail(context, ErrorCode::ImageMismatch,
                             "dfu: uploaded image not present in any slot");
             }
-            return Step{UpdateState::MarkingForTest, Effect::MarkForTest};
+            context.report.images[context.current].upload_slot = holder->slot;
+            return mark_or_skip(plan, context);
         }
         if (event.kind == Event::Kind::Failed) {
             return fail(context, event.error);

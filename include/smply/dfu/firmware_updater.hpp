@@ -8,7 +8,7 @@
 ///
 /// Everything below this class is a single command or a single transfer.
 /// `FirmwareUpdater` is what decides the *order*: query the device's buffer
-/// budget, read its slot table, upload, mark the new image for test, reset,
+/// budget and its MCUboot mode, read its slot table, upload, mark the new image for test, reset,
 /// wait for the link to come back, check what booted, and confirm.
 ///
 /// **It never touches a connection** (ADR-0004). A reset drops the link by
@@ -75,6 +75,7 @@ enum class UpdateState : std::uint8_t
 {
     Idle,
     QueryingParameters, ///< OS mcumgr-params; `NotSupported` is fine (A8).
+    QueryingBootloader, ///< OS bootloader info, `mode`; no answer is fine (ADR-0025).
     InspectingImages,   ///< Image get-state: what does the device hold?
     Planning,           ///< Decide whether anything needs uploading at all.
     Uploading,
@@ -104,6 +105,42 @@ enum class UpdateState : std::uint8_t
            state == UpdateState::Cancelled;
 }
 
+/// Where `UpdateReport::bootloader_mode` came from (ADR-0025).
+enum class ModeSource : std::uint8_t
+{
+    /// The device answered the bootloader-information `mode` query.
+    Reported,
+    /// The device gave no answer, and the plan's `fallback_mode` was used.
+    Supplied,
+    /// Neither: the mode is unknown, and the update ran as it always has, as
+    /// for a device that swaps with revert.
+    Assumed,
+};
+
+/// Why an update was refused before anything was sent (ADR-0025). The update
+/// ends with `ErrorCode::UpdateRefused`, and the device is untouched.
+enum class Refusal : std::uint8_t
+{
+    /// The bootloader mode cannot revert an update, and the plan did not set
+    /// `allow_no_revert`: upgrade-only (overwrite), or direct-XIP without
+    /// revert. `UploadOnly` promises no revert, so it is never refused for this.
+    /// Accepted, direct-XIP without revert sends no set-state at all: it
+    /// uploads, resets, and succeeds when the device runs the new image.
+    RevertUnavailable,
+    /// The device prevents downgrades, and the image is older than the one it
+    /// runs.
+    Downgrade,
+    /// The bootloader mode needs an update path smply does not have: single
+    /// slot, the firmware loader, RAM load, single-slot RAM load.
+    UnsupportedMode,
+    /// More than one image, and a mode whose image group handles only one:
+    /// either direct-XIP mode (docs/protocol-notes.md section 7).
+    MultiImageUnsupported,
+};
+
+/// A short, stable name for a refusal. Never allocates.
+[[nodiscard]] std::string_view to_string(Refusal refusal) noexcept;
+
 /// Who commits an image once it is in place (ADR-0021).
 enum class CommitBy : std::uint8_t
 {
@@ -128,12 +165,44 @@ struct ImageTarget
     /// The firmware file. Not owned; must outlive the update.
     ImageSource* source = nullptr;
     CommitBy commit = CommitBy::Client;
+    /// Direct-XIP only: a second build of the same image, linked for the
+    /// image's secondary slot (`2n + 1`), with `source` then the build for its
+    /// primary slot (`2n`). The updater sends the one for the slot the device
+    /// is not running from, and counts the image as already present when
+    /// either build is in its own slot (ADR-0025). On a device that does not
+    /// report a direct-XIP mode, the update fails with
+    /// `ErrorCode::InvalidArgument` before anything is sent. Not owned; must
+    /// outlive the update.
+    ImageSource* secondary_source = nullptr;
 };
 
 /// What to do, and how.
 struct UpdatePlan
 {
     UpdateMode mode = UpdateMode::TestThenConfirm;
+
+    /// The MCUboot mode to assume when the device does not report one: it
+    /// lacks the bootloader-information command, has no answer to the `mode`
+    /// query, or reports `-1` or a number smply does not know (ADR-0025). A
+    /// mode the device does report always wins over this. `Unknown`, like no
+    /// value, means "assume nothing".
+    std::optional<McubootMode> fallback_mode;
+
+    /// Accept an update the bootloader cannot revert (ADR-0025). Without it,
+    /// `TestThenConfirm` and `ConfirmImmediately` are refused on an
+    /// upgrade-only or a direct-XIP-without-revert device, because the trial
+    /// they promise does not exist there. With it, the update runs, and the
+    /// image is permanent once the device boots it. Direct-XIP boots it only
+    /// if its version is higher than the running one's.
+    bool allow_no_revert = false;
+
+    /// Refuse an image older than the one the device runs, when the device
+    /// reports downgrade prevention (`BootloaderMode::no_downgrade`). MCUboot
+    /// would erase it at the reset, after the whole transfer. The comparison is
+    /// MCUboot's: major, minor and revision, never the build number, and an
+    /// equal version passes (docs/protocol-notes.md section 7). Turn it off for
+    /// a device whose flag is known to be wrong; the device still decides.
+    bool check_downgrade = true;
 
     /// Passed through to `ImageManagement::upload`. `sha` and `server_buf_size`
     /// are filled in by the updater when absent -- it computes the first from
@@ -188,7 +257,14 @@ struct ImageReport
     std::uint64_t bytes_transferred = 0;
     /// The device already held the image, so nothing was transferred.
     bool upload_skipped = false;
-    /// `Client` only: MCUboot reverted this image to the old one.
+    /// The global slot that holds the image, once the device has reported it
+    /// there. The device picks it: the secondary slot ordinarily, and under
+    /// direct-XIP whichever slot is not running (ADR-0025). A direct-XIP image
+    /// must be linked for this slot's address.
+    std::optional<std::uint32_t> upload_slot;
+    /// `Client` only: the bootloader booted the old image, not this one.
+    /// MCUboot reverted an unconfirmed trial, or, under direct-XIP, chose the
+    /// old slot because the new image did not qualify.
     bool rolled_back = false;
     /// `Device` only: the device reported the image applied, running on trial.
     bool applied = false;
@@ -217,9 +293,13 @@ struct UpdateReport
     /// Why it failed. Set exactly when `final_state` is `Failed`.
     std::optional<Error> cause;
 
-    /// MCUboot reverted: the device booted the **old** image
-    /// (docs/protocol-notes.md section 7), for at least one image.
+    /// The bootloader booted the **old** image, for at least one image: MCUboot
+    /// reverted an unconfirmed trial (docs/protocol-notes.md section 7), or a
+    /// direct-XIP bootloader kept the old slot (ADR-0025).
     bool rolled_back = false;
+
+    /// The first image's `ImageReport::upload_slot`.
+    std::optional<std::uint32_t> upload_slot;
 
     /// The device holds a swapped-in image that nobody confirmed, so it will
     /// revert on its next reset.
@@ -232,6 +312,15 @@ struct UpdateReport
     /// A multi-image update whose `Device` image was not applied ends here
     /// too: its `Client` images are left unconfirmed, so they revert.
     bool revert_pending = false;
+
+    /// The MCUboot mode the update ran under, and where it came from
+    /// (ADR-0025). `Unknown` exactly when `mode_source` is `Assumed`.
+    McubootMode bootloader_mode = McubootMode::Unknown;
+    ModeSource mode_source = ModeSource::Assumed;
+
+    /// Why the update was refused. Set exactly when `cause` is
+    /// `ErrorCode::UpdateRefused`; the device was not changed.
+    std::optional<Refusal> refusal;
 
     /// One entry per image, in the order the update was given them.
     std::vector<ImageReport> images;

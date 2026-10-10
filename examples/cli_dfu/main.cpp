@@ -31,6 +31,7 @@
 #include "stub_device/demo_package.hpp"
 #include "stub_device/stub_device.hpp"
 
+#include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
@@ -45,6 +46,7 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -71,9 +73,17 @@ using namespace smply;          // NOLINT(google-build-using-namespace) -- an ex
 using namespace smply::example; // NOLINT(google-build-using-namespace)
 using namespace smply::dfu_app; // NOLINT(google-build-using-namespace)
 
+/// The demo's second build differs from the first in size alone.
+constexpr std::size_t kDemoSecondaryBodySize = 4100;
+
 struct Options
 {
     std::string image_path; ///< Empty means "invent one".
+    /// `--image-secondary`: the same image linked for the secondary slot, for
+    /// a direct-XIP device; `image_path` is then the primary slot's build.
+    std::string image_secondary_path;
+    /// `--demo-builds`: invent both builds, one per slot.
+    bool demo_builds = false;
     UpdateMode mode = UpdateMode::TestThenConfirm;
     bool quiet = false;
 
@@ -91,14 +101,27 @@ struct Options
     std::string package_path;
     /// Invent the package, and a two-image device for it.
     bool demo_package = false;
+    /// Invent a direct-XIP package: one image, one build per slot.
+    bool demo_xip_package = false;
     /// The stub device fails to apply image 1 (package modes only).
     bool apply_fails = false;
     /// `--commit N=client|device`, in the order given.
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
 
+    /// `--fallback-mode`: the mode to assume when the device does not report
+    /// one (ADR-0025).
+    std::optional<McubootMode> fallback_mode;
+    /// `--stub-mode`: the mode the stub device reports. Without it, the stub
+    /// has no bootloader-information command, like most Zephyr builds.
+    std::optional<McubootMode> stub_mode;
+    /// `--allow-no-revert`: accept an update the bootloader cannot revert.
+    bool allow_no_revert = false;
+    /// `--no-downgrade-check`: skip the downgrade check (ADR-0025).
+    bool check_downgrade = true;
+
     [[nodiscard]] bool package_mode() const noexcept
     {
-        return demo_package || !package_path.empty();
+        return demo_package || demo_xip_package || !package_path.empty();
     }
 };
 
@@ -123,14 +146,31 @@ void usage()
 {
     std::cerr << "usage: cli_dfu [--image PATH | --package PATH | --demo-package] [--mode MODE]\n"
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
-                 "               [--apply-fails]\n"
+                 "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
+                 "               [--allow-no-revert] [--no-downgrade-check]\n"
+                 "               [--image-secondary PATH | --demo-builds]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
+                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
+                 "                secondary slot (--image is then the primary slot's build);\n"
+                 "                the one for the slot the device is not running is sent\n"
+                 "  --demo-builds  generate both builds of the demo image, one per slot\n"
                  "  --package PATH  a multi-image DFU package (docs/multi-image.md): image 0\n"
                  "                is confirmed here, every other image is left to the device\n"
                  "  --demo-package  generate a two-image package, and a device to take it\n"
+                 "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
+                 "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
+                 "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
+                 "                report one: single-slot, swap-using-scratch, upgrade-only,\n"
+                 "                swap-using-move, direct-xip, direct-xip-with-revert, ram-load,\n"
+                 "                firmware-loader, single-slot-ram-load, swap-using-offset\n"
+                 "  --stub-mode M  the mode the demo device reports (it still swaps)\n"
+                 "  --allow-no-revert  update a device whose bootloader cannot revert\n"
+                 "                (upgrade-only); without it, such an update is refused\n"
+                 "  --no-downgrade-check  send an image older than the running one even\n"
+                 "                when the device prevents downgrades; it will refuse it at boot\n"
                  "  --quiet       print only the outcome\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
@@ -146,6 +186,10 @@ void usage()
             out.quiet = true;
         } else if (arg == "--image" && i + 1 < args.size()) {
             out.image_path = args[++i];
+        } else if (arg == "--image-secondary" && i + 1 < args.size()) {
+            out.image_secondary_path = args[++i];
+        } else if (arg == "--demo-builds") {
+            out.demo_builds = true;
         } else if (arg == "--mode" && i + 1 < args.size()) {
             if (!parse_mode(args[++i], out.mode)) {
                 return false;
@@ -160,8 +204,20 @@ void usage()
             out.package_path = args[++i];
         } else if (arg == "--demo-package") {
             out.demo_package = true;
+        } else if (arg == "--demo-xip-package") {
+            out.demo_xip_package = true;
         } else if (arg == "--apply-fails") {
             out.apply_fails = true;
+        } else if (arg == "--allow-no-revert") {
+            out.allow_no_revert = true;
+        } else if (arg == "--no-downgrade-check") {
+            out.check_downgrade = false;
+        } else if ((arg == "--fallback-mode" || arg == "--stub-mode") && i + 1 < args.size()) {
+            const std::optional<McubootMode> mode = parse_mcuboot_mode(args[++i]);
+            if (!mode.has_value()) {
+                return false;
+            }
+            (arg == "--fallback-mode" ? out.fallback_mode : out.stub_mode) = mode;
         } else if (arg == "--commit" && i + 1 < args.size()) {
             const auto commit = parse_commit(args[++i]);
             if (!commit.has_value()) {
@@ -174,8 +230,15 @@ void usage()
     }
     // One thing to install, and the package-only options only with a package.
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
-                        (out.demo_package ? 1 : 0);
-    return sources <= 1 && (out.package_mode() || (!out.apply_fails && out.commits.empty()));
+                        (out.demo_package ? 1 : 0) + (out.demo_xip_package ? 1 : 0);
+    // A second build goes with exactly one first build: a named file, or the
+    // demo's; and never with a package, which names its own files.
+    const bool one_image = !out.package_mode();
+    const bool builds_ok = (out.image_secondary_path.empty() || !out.image_path.empty()) &&
+                           (!out.demo_builds || out.image_path.empty()) &&
+                           (one_image || (out.image_secondary_path.empty() && !out.demo_builds));
+    return sources <= 1 && builds_ok &&
+           (out.package_mode() || (!out.apply_fails && out.commits.empty()));
 }
 
 /// How far the device took an image it commits itself (ADR-0022).
@@ -287,7 +350,9 @@ int main(int argc, char** argv)
 
     const std::vector<std::byte> running = build_demo_image(DemoVersion{.major = 1});
     std::string image_path = options.image_path;
-    DemoImageFile demo_file; // before `source`, which reads it
+    std::string image_secondary_path = options.image_secondary_path;
+    DemoImageFile demo_file;           // before `source`, which reads it
+    DemoImageFile demo_secondary_file; // and `secondary`, which reads this
     if (image_path.empty() && !options.package_mode()) {
         const std::vector<std::byte> update = build_demo_image(DemoVersion{.major = 2});
         const std::optional<std::string> written = demo_file.write(update);
@@ -297,14 +362,33 @@ int main(int argc, char** argv)
         }
         image_path = *written;
     }
+    if (options.demo_builds) {
+        // The same version again, a different build: what a direct-XIP
+        // project links for its second slot. Here only the size differs.
+        const std::vector<std::byte> other_build =
+            build_demo_image(DemoVersion{.major = 2}, kDemoSecondaryBodySize);
+        const std::optional<std::string> written = demo_secondary_file.write(other_build);
+        if (!written.has_value()) {
+            std::cerr << "cli_dfu: cannot write the demo image\n";
+            return 1;
+        }
+        image_secondary_path = *written;
+    }
 
     // A package, when there is one: the images, and who commits each.
     std::unique_ptr<PackageUpdate> package;
     std::optional<SecondImage> second_image;
     if (options.package_mode()) {
-        Result<std::unique_ptr<PackageUpdate>> read =
-            options.demo_package ? PackageUpdate::from_bytes(build_demo_two_image_package())
-                                 : PackageUpdate::load(options.package_path);
+        const auto read_demo_or_file = [&options]() -> Result<std::unique_ptr<PackageUpdate>> {
+            if (options.demo_package) {
+                return PackageUpdate::from_bytes(build_demo_two_image_package());
+            }
+            if (options.demo_xip_package) {
+                return PackageUpdate::from_bytes(build_demo_xip_package());
+            }
+            return PackageUpdate::load(options.package_path);
+        };
+        Result<std::unique_ptr<PackageUpdate>> read = read_demo_or_file();
         if (!read.has_value()) {
             std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
             return 1;
@@ -320,12 +404,15 @@ int main(int argc, char** argv)
         // The stub's image 1: another MCU's firmware, which it applies itself
         // after the reset. The demo device runs radio 5.0.0; a real package's
         // image 1 lands on a device with nothing applied yet.
-        second_image = SecondImage{
-            .running = options.demo_package
-                           ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
-                           : std::vector<std::byte>{},
-            .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
-        };
+        // The direct-XIP demo is one image, given twice, so its device has none.
+        if (!options.demo_xip_package) {
+            second_image = SecondImage{
+                .running = options.demo_package
+                               ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
+                               : std::vector<std::byte>{},
+                .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+            };
+        }
     }
 
     // A package brings its own sources; only a single image is read from a file.
@@ -336,6 +423,15 @@ int main(int argc, char** argv)
     if (!options.package_mode() && !source.has_value()) {
         std::cerr << "cli_dfu: " << to_string(source.error()) << '\n';
         return 1;
+    }
+    std::optional<FileImageSource> secondary;
+    if (!image_secondary_path.empty()) {
+        Result<FileImageSource> opened = FileImageSource::open(image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "cli_dfu: " << to_string(opened.error()) << '\n';
+            return 1;
+        }
+        secondary.emplace(std::move(*opened));
     }
 
     // --- the pump's wake-up, and the marshalling queue -----------------------
@@ -360,7 +456,11 @@ int main(int argc, char** argv)
     }};
 
     Pending pending;
-    StubDevice device{running, std::move(second_image)};
+    const std::optional<std::int64_t> reported_mode =
+        options.stub_mode.has_value()
+            ? std::optional<std::int64_t>{static_cast<std::int64_t>(*options.stub_mode)}
+            : std::nullopt;
+    StubDevice device{running, std::move(second_image), reported_mode};
 
     // Deliberately brisk: these delays are waited for real, and this example
     // runs as a ctest with a timeout. A shipped tool would use the defaults
@@ -388,6 +488,9 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    plan.fallback_mode = options.fallback_mode;
+    plan.allow_no_revert = options.allow_no_revert;
+    plan.check_downgrade = options.check_downgrade;
     // The stub applies image 1 within a few reads; a real second MCU takes a
     // whole UART transfer, and the default interval suits that instead.
     plan.apply_poll_interval = std::chrono::milliseconds{100};
@@ -431,8 +534,23 @@ int main(int argc, char** argv)
     const auto handler = [&] {
         return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
     };
-    const Result<void> begun = package ? updater.start(package->targets(), plan, handler())
-                                       : updater.start(*source, plan, handler());
+    // One build per slot is an image list of one: the image-list start() is
+    // the one that takes it.
+    const std::array<ImageTarget, 1> builds{ImageTarget{
+        .image = 0,
+        .source = source.has_value() ? &*source : nullptr,
+        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
+    }};
+    const auto begin = [&]() -> Result<void> {
+        if (package) {
+            return updater.start(package->targets(), plan, handler());
+        }
+        if (secondary) {
+            return updater.start(builds, plan, handler());
+        }
+        return updater.start(*source, plan, handler());
+    };
+    const Result<void> begun = begin();
 
     if (!begun.has_value()) {
         std::cerr << "cli_dfu: " << to_string(begun.error()) << '\n';
@@ -549,6 +667,7 @@ int main(int argc, char** argv)
         // The report still says what happened to each image, and what the next
         // reset will do.
         // On stderr with the failure itself, so the lines keep their order.
+        std::cerr << "  " << describe_mode(updater.report()) << '\n';
         print_images(updater.report(), std::cerr);
         if (updater.report().revert_pending) {
             std::cerr
@@ -567,6 +686,7 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    std::cout << "  " << describe_mode(report) << '\n';
     print_images(report, std::cout);
 
     return report.final_state == UpdateState::Completed ? 0 : 1;

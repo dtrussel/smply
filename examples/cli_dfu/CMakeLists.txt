@@ -55,6 +55,54 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # The MCUboot mode (ADR-0025): reported by the device, and the plan's
+    # fallback used when the device reports none.
+    add_test(NAME cli_dfu_mode_reported COMMAND cli_dfu --quiet --stub-mode swap-using-move)
+    set_tests_properties(cli_dfu_mode_reported PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: swap-using-move \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_mode_fallback COMMAND cli_dfu --quiet --fallback-mode swap-using-scratch)
+    set_tests_properties(cli_dfu_mode_fallback PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: swap-using-scratch \\(not reported; the fallback was used\\)"
+        TIMEOUT 60
+    )
+
+    # A mode that cannot revert is refused before anything is sent, and the
+    # plan's opt-in lets the same update through (ADR-0025). The stub only
+    # reports the mode, so the second run swaps as usual.
+    add_test(NAME cli_dfu_mode_refused COMMAND cli_dfu --quiet --stub-mode upgrade-only)
+    set_tests_properties(cli_dfu_mode_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION "update failed: firmware update refused \\(at dfu: the bootloader cannot revert this update\\).*bootloader: upgrade-only \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_mode_allow_no_revert
+        COMMAND cli_dfu --quiet --stub-mode upgrade-only --allow-no-revert)
+    set_tests_properties(cli_dfu_mode_allow_no_revert PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: upgrade-only \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
+    # One build per slot (ADR-0025): the stub reports direct-XIP with revert,
+    # and the build for the free slot is the one sent. The stub swaps as usual,
+    # so this shows the choice and the image-list start(), not direct-XIP.
+    add_test(NAME cli_dfu_mode_two_builds
+        COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-builds)
+    set_tests_properties(cli_dfu_mode_two_builds PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: direct-xip-with-revert \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
+    # An nRF Connect SDK direct-XIP package (S58): one image, a build per slot,
+    # read by smply::dfu_package as one image with two builds, and the free
+    # slot's build sent. The stub only reports direct-XIP.
+    add_test(NAME cli_dfu_xip_package
+        COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-xip-package)
+    set_tests_properties(cli_dfu_xip_package PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*bootloader: direct-xip-with-revert \\(reported by the device\\)"
+        TIMEOUT 60
+    )
+
     # The multi-image update of ADR-0021 end to end: a generated package read
     # by smply::dfu_package, both images staged before one reset, image 1
     # applied by the device, image 0 confirmed only after that, and image 1

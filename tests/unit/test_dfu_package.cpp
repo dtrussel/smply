@@ -19,6 +19,7 @@
 #include "smply/mcuboot_image.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -29,9 +30,11 @@
 using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageVersion;
+using smply::Result;
 using smply::dfu_package::DfuPackage;
 using smply::dfu_package::ImageDependency;
 using smply::dfu_package::JsonValue;
+using smply::dfu_package::PackageImage;
 using smply::dfu_package::parse_json;
 using smply::dfu_package::read_package;
 using smply::dfu_package::read_stored_zip;
@@ -398,20 +401,142 @@ TEST_CASE("image_index is checked", "[dfu_package]")
     CHECK(code_of(read_package(ConstBytes{archive})) == ErrorCode::MalformedMessage);
 }
 
-TEST_CASE("two files for one image are refused", "[dfu_package]")
+namespace {
+
+/// The same image, linked for another slot: here, only the body differs.
+[[nodiscard]] std::vector<std::byte> build_of(std::uint8_t major, std::uint32_t body)
 {
-    // What a direct-XIP build writes: one file per slot of the same image.
-    // They are alternatives, not a set to send.
-    const std::vector<std::byte> app = image(2);
+    return ImageBuilder{}
+        .version(major, 0, 0, 0)
+        .body(body)
+        .tlv(0x10, std::vector<std::byte>(32))
+        .build();
+}
+
+/// A direct-XIP package as nRF Connect SDK's zip.cmake writes it (S58): two
+/// files for image 0, each with its global `slot` and `version_MCUBOOT+XIP`,
+/// every value a string. \p entries is the JSON of the files[] array.
+[[nodiscard]] std::vector<std::byte> xip_package(const std::vector<std::byte>& slot0,
+                                                 const std::vector<std::byte>& slot1,
+                                                 const std::string& entries)
+{
+    return ZipBuilder{}
+        .add("app.signed.bin", slot0)
+        .add("app_slot1_variant.signed.bin", slot1)
+        .add("manifest.json", R"({"format-version": 1, "files": [)" + entries + "]}")
+        .build();
+}
+
+[[nodiscard]] std::string xip_entry(const std::string& file, const std::string& slot,
+                                    const std::string& index = "0")
+{
+    return R"({"file": ")" + file + R"(", "image_index": ")" + index + R"(", "slot": ")" + slot +
+           R"(", "version_MCUBOOT+XIP": "2.0.0+0"})";
+}
+
+} // namespace
+
+TEST_CASE("a direct-XIP package reads as one image with a build per slot", "[dfu_package][xip]")
+{
+    const std::vector<std::byte> for_slot0 = build_of(2, 64);
+    const std::vector<std::byte> for_slot1 = build_of(2, 80);
+    // The manifest may list either build first.
+    const bool reversed = GENERATE(false, true);
+    const std::string first = xip_entry("app.signed.bin", "0");
+    const std::string second = xip_entry("app_slot1_variant.signed.bin", "1");
     const std::vector<std::byte> archive =
+        xip_package(for_slot0, for_slot1, reversed ? second + "," + first : first + "," + second);
+
+    const Result<DfuPackage> package = read_package(ConstBytes{archive});
+    REQUIRE(package.has_value());
+    REQUIRE(package->images.size() == 1);
+    const PackageImage& image = package->images[0];
+    CHECK(image.image == 0);
+    CHECK(image.file == "app.signed.bin");
+    CHECK(image.slot == 0U);
+    CHECK(image.bytes.size() == for_slot0.size());
+    CHECK(image.version == std::optional<std::string>{"2.0.0+0"});
+    REQUIRE(image.secondary.has_value());
+    CHECK(image.secondary->file == "app_slot1_variant.signed.bin");
+    CHECK(image.secondary->slot == 1U);
+    CHECK(image.secondary->bytes.size() == for_slot1.size());
+}
+
+TEST_CASE("two files for one image that are not a direct-XIP pair are refused",
+          "[dfu_package][xip]")
+{
+    const std::vector<std::byte> app = build_of(2, 64);
+    const std::vector<std::byte> other = build_of(2, 80);
+
+    // No slots at all: the old shape, still refused.
+    const std::vector<std::byte> no_slots =
         ZipBuilder{}
             .add("slot0.bin", app)
             .add("slot1.bin", app)
             .add("manifest.json",
                  std::string_view{R"({"files": [{"file": "slot0.bin", "image_index": "0"},
-                                                {"file": "slot1.bin", "image_index": "0"}]})"})
+                                            {"file": "slot1.bin", "image_index": "0"}]})"})
             .build();
-    CHECK(code_of(read_package(ConstBytes{archive})) == ErrorCode::InvalidArgument);
+    CHECK(code_of(read_package(ConstBytes{no_slots})) == ErrorCode::InvalidArgument);
+
+    // The same slot twice, and a slot of another image.
+    for (const std::string& slots : {std::string{"0"}, std::string{"2"}}) {
+        const std::string entries = xip_entry("app.signed.bin", "0") + "," +
+                                    xip_entry("app_slot1_variant.signed.bin", slots);
+        CHECK(code_of(read_package(ConstBytes{xip_package(app, other, entries)})) ==
+              ErrorCode::InvalidArgument);
+    }
+}
+
+TEST_CASE("the two builds of a direct-XIP image must be the same version", "[dfu_package][xip]")
+{
+    const std::vector<std::byte> v2 = build_of(2, 64);
+    const std::vector<std::byte> v3 = build_of(3, 80);
+    const std::string entries = R"({"file": "app.signed.bin", "image_index": "0", "slot": "0"},)"
+                                R"({"file": "app_slot1_variant.signed.bin", "image_index": "0",)"
+                                R"( "slot": "1"})";
+    CHECK(code_of(read_package(ConstBytes{xip_package(v2, v3, entries)})) ==
+          ErrorCode::MalformedMessage);
+}
+
+TEST_CASE("a QSPI split-image direct-XIP package is refused by name", "[dfu_package][xip]")
+{
+    // Internal and external parts, each linked for both slots: two images
+    // given as pairs (zip.cmake's QSPI XIP branch, S58).
+    const std::vector<std::byte> internal0 = build_of(2, 64);
+    const std::vector<std::byte> internal1 = build_of(2, 80);
+    const std::vector<std::byte> external0 = build_of(2, 96);
+    const std::vector<std::byte> external1 = build_of(2, 112);
+    const std::vector<std::byte> archive =
+        ZipBuilder{}
+            .add("app.internal.bin", internal0)
+            .add("app_slot1_variant.internal.bin", internal1)
+            .add("app.external.bin", external0)
+            .add("app_slot1_variant.external.bin", external1)
+            .add("manifest.json", "{\"files\": [" + xip_entry("app.internal.bin", "0") + "," +
+                                      xip_entry("app_slot1_variant.internal.bin", "1") + "," +
+                                      xip_entry("app.external.bin", "2", "1") + "," +
+                                      xip_entry("app_slot1_variant.external.bin", "3", "1") + "]}")
+            .build();
+
+    const Result<DfuPackage> package = read_package(ConstBytes{archive});
+    REQUIRE_FALSE(package.has_value());
+    CHECK(package.error().code() == ErrorCode::InvalidArgument);
+    CHECK(std::string_view{package.error().where()}.find("split") != std::string_view::npos);
+}
+
+TEST_CASE("a slot that is not a number, or out of range, is refused", "[dfu_package][xip]")
+{
+    const std::vector<std::byte> app = build_of(2, 64);
+    const std::vector<std::byte> other = build_of(2, 80);
+    const std::string not_a_number =
+        xip_entry("app.signed.bin", "zero") + "," + xip_entry("app_slot1_variant.signed.bin", "1");
+    CHECK(code_of(read_package(ConstBytes{xip_package(app, other, not_a_number)})) ==
+          ErrorCode::MalformedMessage);
+    const std::string too_big = xip_entry("app.signed.bin", "0") + "," +
+                                xip_entry("app_slot1_variant.signed.bin", "100000");
+    CHECK(code_of(read_package(ConstBytes{xip_package(app, other, too_big)})) ==
+          ErrorCode::InvalidArgument);
 }
 
 TEST_CASE("the manifest must agree with the zip and with the images", "[dfu_package]")

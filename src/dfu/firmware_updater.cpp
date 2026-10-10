@@ -51,6 +51,21 @@ using dfu::Event;
 
 } // namespace
 
+std::string_view to_string(Refusal refusal) noexcept
+{
+    switch (refusal) {
+    case Refusal::RevertUnavailable:
+        return "RevertUnavailable";
+    case Refusal::Downgrade:
+        return "Downgrade";
+    case Refusal::UnsupportedMode:
+        return "UnsupportedMode";
+    case Refusal::MultiImageUnsupported:
+        return "MultiImageUnsupported";
+    }
+    return "Unknown"; // LCOV_EXCL_LINE
+}
+
 std::string_view to_string(UpdateState state) noexcept
 {
     switch (state) {
@@ -58,6 +73,8 @@ std::string_view to_string(UpdateState state) noexcept
         return "Idle";
     case UpdateState::QueryingParameters:
         return "QueryingParameters";
+    case UpdateState::QueryingBootloader:
+        return "QueryingBootloader";
     case UpdateState::InspectingImages:
         return "InspectingImages";
     case UpdateState::Planning:
@@ -125,7 +142,7 @@ public:
         }
 
         std::vector<dfu::Target> decided;
-        std::vector<ImageSource*> sources;
+        std::vector<std::array<ImageSource*, 2>> sources;
         decided.reserve(targets.size());
         sources.reserve(targets.size());
         for (const ImageTarget& target : targets) {
@@ -134,13 +151,26 @@ public:
             // recognises it. Read before anything goes on the wire, so a file
             // that is not an MCUboot image fails here rather than half way
             // through an update.
-            const Result<ImageHash> hash = read_target_hash(*target.source);
-            if (!hash.has_value()) {
-                return fail(hash.error());
+            const Result<TargetFile> file = read_target(*target.source);
+            if (!file.has_value()) {
+                return fail(file.error());
             }
-            decided.push_back(
-                dfu::Target{.image = target.image, .commit = target.commit, .hash = *hash});
-            sources.push_back(target.source);
+            dfu::Target& decision = decided.emplace_back();
+            decision.image = target.image;
+            decision.commit = target.commit;
+            decision.hash = file->hash;
+            decision.version = file->version;
+            if (target.secondary_source != nullptr) {
+                // Both builds are read now, so a bad second file fails here too.
+                const Result<TargetFile> secondary = read_target(*target.secondary_source);
+                if (!secondary.has_value()) {
+                    return fail(secondary.error());
+                }
+                decision.builds = std::array<dfu::Target::Build, 2>{
+                    dfu::Target::Build{.hash = file->hash, .version = file->version},
+                    dfu::Target::Build{.hash = secondary->hash, .version = secondary->version}};
+            }
+            sources.push_back({target.source, target.secondary_source});
         }
 
         plan_ = plan;
@@ -275,9 +305,11 @@ private:
             }
             device_commits = device_commits || target.commit == CommitBy::Device;
         }
-        if (targets.size() > 1 && plan.upload.sha.has_value()) {
+        const bool any_builds = std::ranges::any_of(
+            targets, [](const ImageTarget& target) { return target.secondary_source != nullptr; });
+        if ((targets.size() > 1 || any_builds) && plan.upload.sha.has_value()) {
             // It is the hash of one file, and there is more than one.
-            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several images");
+            return fail(ErrorCode::InvalidArgument, "updater: upload.sha with several files");
         }
         if (device_commits && plan.apply_poll_interval <= Duration::zero()) {
             return fail(ErrorCode::InvalidArgument, "updater: apply_poll_interval not positive");
@@ -362,6 +394,29 @@ private:
                     event.kind = Event::Kind::ParametersRead;
                     event.buf_size = result->buf_size;
                     self.dispatch(event);
+                })));
+            return;
+
+        case Effect::QueryBootloader:
+            static_cast<void>(os_->bootloader_mode(
+                guarded<BootloaderMode>([](Impl& self, const Result<BootloaderMode>& result) {
+                    if (result.has_value()) {
+                        Event event;
+                        event.kind = Event::Kind::BootloaderRead;
+                        event.bootloader = *result;
+                        self.dispatch(event);
+                        return;
+                    }
+                    // The device answered, but not with a mode: the command is
+                    // missing, the bootloader is not MCUboot, or the answer is
+                    // malformed. That is no answer. Anything else -- a timeout,
+                    // a dropped link -- fails the update (ADR-0025).
+                    const ErrorCode code = result.error().code();
+                    if (code == ErrorCode::ProtocolError || code == ErrorCode::CborDecode) {
+                        self.dispatch(plain(Event::Kind::BootloaderUnavailable));
+                        return;
+                    }
+                    self.dispatch(failure(result.error()));
                 })));
             return;
 
@@ -483,7 +538,7 @@ private:
         }
 
         upload_ = image_->upload(
-            *sources_[context_.current], options,
+            *sources_[context_.current][current_target().chosen], options,
             [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
@@ -553,8 +608,17 @@ private:
         };
     }
 
-    /// The file's MCUboot hash TLV.
-    [[nodiscard]] static Result<ImageHash> read_target_hash(ImageSource& source)
+    /// What the updater needs from a file before anything is sent.
+    struct TargetFile
+    {
+        /// The MCUboot hash TLV.
+        ImageHash hash;
+        /// The header's `ih_ver`.
+        ImageVersion version;
+    };
+
+    /// The file's MCUboot hash TLV and header version.
+    [[nodiscard]] static Result<TargetFile> read_target(ImageSource& source)
     {
         std::array<std::byte, kMcubootHeaderSize> head{};
         const Result<std::size_t> read = source.read(0, MutBytes{head});
@@ -582,7 +646,7 @@ private:
             // slot table, so every verification step would be guesswork.
             return fail(ErrorCode::InvalidArgument, "updater: image carries no hash TLV");
         }
-        return *hash;
+        return TargetFile{.hash = *hash, .version = info->version};
     }
 
     SmpClient* client_;
@@ -591,7 +655,8 @@ private:
 
     UpdatePlan plan_;
     /// Parallel to `context_.targets`.
-    std::vector<ImageSource*> sources_;
+    /// Per target: the source, and the secondary slot's build when given.
+    std::vector<std::array<ImageSource*, 2>> sources_;
     UpdateEventCallback on_event_;
     UploadHandle upload_;
 

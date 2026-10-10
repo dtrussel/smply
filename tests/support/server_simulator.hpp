@@ -52,6 +52,7 @@
 #include "smply/groups/image.hpp"
 #include "smply/smp/header.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -90,6 +91,22 @@ struct ServerConfig
 
     /// False makes MCUmgr parameters answer `ENOTSUP`, as older servers do.
     bool supports_mcumgr_params = true;
+
+    /// `CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO`, and the mode the build reports
+    /// to the `mode` query (protocol-notes sections 5 and 7). No value leaves
+    /// the command out, so it answers `ENOTSUP`, as Zephyr does by default.
+    /// The number is sent as given, so `-1` and numbers outside MCUboot's enum
+    /// can be tested.
+    std::optional<std::int64_t> bootloader_mode{};
+
+    /// `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`: the `mode` answer carries
+    /// `"no-downgrade": true`, and the reboot erases a scheduled image older
+    /// than the running one instead of swapping it in (major, minor, revision).
+    bool no_downgrade = false;
+
+    /// The name the empty query answers. Anything but `"MCUboot"` has no answer
+    /// to `mode`, which is an OS-group error, `QUERY_YIELDS_NO_ANSWER`.
+    std::string bootloader_name = "MCUboot";
 
     /// `CONFIG_MCUMGR_GRP_IMG_SLOT_INFO`. Off by default, as in Zephyr.
     bool supports_slot_info = false;
@@ -156,7 +173,7 @@ class ServerSimulator
 public:
     /// \param transport The same transport the client under test is bound to.
     ///                  Must outlive this simulator.
-    explicit ServerSimulator(FakeTransport& transport, ServerConfig config = {});
+    explicit ServerSimulator(FakeTransport& transport, const ServerConfig& config = {});
 
     ServerSimulator(const ServerSimulator&) = delete;
     ServerSimulator(ServerSimulator&&) = delete;
@@ -180,6 +197,18 @@ public:
     void load_slot(std::size_t slot, std::vector<std::byte> content);
 
     [[nodiscard]] ConstBytes slot_content(std::size_t slot) const;
+
+    /// Direct-XIP only (`bootloader_mode` 4 or 5, one image): the slot the
+    /// device runs from, 0 at start. Uploads go to the other slot, and a reboot
+    /// moves to it when MCUboot would (protocol-notes section 7).
+    [[nodiscard]] std::size_t active_slot() const noexcept
+    {
+        return xip_active_;
+    }
+
+    /// Direct-XIP only: start the device running from \p slot instead, as
+    /// though an earlier update had moved it there. The slot runs confirmed.
+    void boot_from_slot(std::size_t slot);
 
     /// Moves the device onto a new link, keeping everything it holds.
     ///
@@ -344,6 +373,30 @@ private:
     [[nodiscard]] std::vector<std::byte> image_failure(Version version, ImageError code) const;
     /// A flat SMP-level failure, which never carries a group.
     [[nodiscard]] static std::vector<std::byte> smp_failure(Version version, SmpError code);
+    /// An OS-group error, in the v2 `err` shape whatever the request's version:
+    /// the simulator does not model Zephyr's v1 translation of OS-group codes.
+    [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
+    /// With `no_downgrade`, erases a scheduled image older than the running one
+    /// and cancels the swap, as MCUboot does at boot. Returns whether it did.
+    [[nodiscard]] bool refuses_downgrade(ImagePair& pair) const;
+    /// Direct-XIP, with or without revert: image 0 runs in place from either
+    /// slot, and the newest valid one boots.
+    [[nodiscard]] bool direct_xip() const noexcept;
+    [[nodiscard]] bool xip_with_revert() const noexcept;
+    /// MCUboot would prefer the slot that is not running: it holds a valid
+    /// image with a higher version, or the same version in a lower slot.
+    [[nodiscard]] bool xip_prefers_other() const;
+    /// Whether the other slot boots next, and if so as a one-boot trial.
+    [[nodiscard]] std::optional<bool> xip_next_is_trial() const;
+    /// The flags image-state reports for one of image 0's slots.
+    [[nodiscard]] std::array<bool, 4> xip_flags(std::size_t slot) const;
+    void xip_reboot();
+    [[nodiscard]] ImageError xip_set_next(std::size_t slot, bool confirm);
+    /// The configured mode is upgrade-only (overwrite): a test is permanent.
+    [[nodiscard]] bool upgrade_only() const noexcept;
+    /// Copies the secondary over the primary and erases it, as an overwrite
+    /// upgrade does.
+    static void overwrite(ImagePair& pair);
 
     /// Which slot of \p image (0 or 1, within the pair) the next boot runs.
     [[nodiscard]] std::size_t next_boot_slot(std::uint32_t image) const noexcept;
@@ -359,6 +412,20 @@ private:
     ServerConfig config_;
 
     std::vector<ImagePair> images_;
+
+    /// Direct-XIP's boot state per slot of image 0, as Zephyr's
+    /// read_boot_swap_state() names it: unset, marked for one boot, or
+    /// confirmed for good (S14). Only the with-revert variant writes it.
+    enum class XipState : std::uint8_t
+    {
+        Unset,
+        Once,
+        Forever,
+    };
+    std::size_t xip_active_ = 0;
+    std::array<XipState, 2> xip_state_{XipState::Forever, XipState::Unset};
+    /// Running a one-boot trial nobody confirmed: the next reboot reverts.
+    bool xip_trial_ = false;
     Session session_;
 
     std::vector<Pending> pending_;

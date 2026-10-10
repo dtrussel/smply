@@ -13,7 +13,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **five** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package` and `cli_dfu_package_apply_fails` |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **eleven** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, and six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package` |
 | The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **three** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc` and `serial_dfu_pty_package`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
@@ -139,7 +139,24 @@ struct ServerConfig {
     bool translate_v1_errors    = true;      // the A16 rebuild for a v1 request
     std::uint32_t slot_size     = 0;         // 0 = unbounded
     Duration response_delay{0};
+    std::optional<std::int64_t> bootloader_mode{};  // OS command 8; none = ENOTSUP
+    bool no_downgrade           = false;     // "no-downgrade": true in the answer
+    std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
+
+`bootloader_mode` 4 or 5 switches image 0 to **direct-XIP**: it runs in place
+from `active_slot()`, uploads go to the other slot, a reboot moves to the
+newest valid slot (with revert, only a marked or confirmed one, and an
+unconfirmed trial reverts), and image-state reports Zephyr's direct-XIP flags
+(protocol-notes §7). Without revert, set-state answers `ENOTSUP`.
+`boot_from_slot()` starts the device in slot 1.
+
+`no_downgrade` also changes the reboot: a scheduled image older than the
+running one (major, minor, revision) is erased and the old one boots, as
+MCUboot's `check_downgrade_prevention()` does. A `bootloader_mode` of 2
+(upgrade-only) also changes the reboot: a test or a
+permanent mark copies the secondary over the primary and erases it, so the
+new image runs confirmed with nothing to revert.
 ```
 
 The SMP **version is deliberately not a device setting**: the version on the
@@ -235,6 +252,11 @@ Every field of image-state decoded including the "absent means false" rule and
 the single-image "absent image ⇒ 0" rule; hostile responses (`images` not an
 array, 10 000 entries, 4 KiB version string, 200-byte hash) ⇒ bounded error;
 `set_state` encoding with and without `hash`; reset with/without `force`.
+Bootloader information (`test_os_group.cpp`): both requests' bytes; the name
+and every one of MCUboot's ten modes in both encodings; `-1` and numbers
+outside the enum kept as `Unknown` with their value; `no-downgrade` present and
+absent; a missing or wrong-typed mode or flag, a name one over its bound, the
+OS-group "no answer" error, and every truncation of a reply.
 
 Statistics and settings (`test_statistics_group.cpp`, `test_settings_group.cpp`):
 every request's operation, command and bytes, hand-derived from the grammar --
@@ -345,7 +367,11 @@ flipped byte of a real archive; the JSON bounds on depth, count, length and
 size, and RFC 8259's edge cases; `image_index` as a string (what
 `generate_zip.py` writes), as a number, absent, out of range and repeated; the
 manifest's size and `version_MCUBOOT` checked against the file and its MCUboot
-header; dependency TLVs from both areas, with a broken area refused; and a
+header; a direct-XIP pair (two files for one image, each with its `slot` and
+`version_MCUBOOT+XIP`) read as one image with both builds, in either order,
+while two files without slots, the same slot twice, another image's slot, or
+builds of different versions are refused, as is a QSPI split-image package by
+name and a `slot` that is not a number or is out of range; dependency TLVs from both areas, with a broken area refused; and a
 package whose image depends on a newer version of another image it carries
 refused, by MCUboot's default comparison, so the build number does not count
 (ADR-0022).
@@ -440,6 +466,11 @@ it covers ground no other suite does:
 * it exercises the **application's half of the reconnect protocol**: a dropped
   link, a fresh transport, `rebind_transport()`, `resume_after_reconnect()`.
 
+`cli_dfu_xip_package` reads a generated direct-XIP package
+(`--demo-xip-package`, two files for image 0 with their `slot`s) through
+`smply::dfu_package` and `PackageUpdate`, against a stub reporting direct-XIP
+with revert, and expects it completed.
+
 Two more run the multi-image update of ADR-0021 end to end, from a package
 built in memory (`--demo-package`) through `smply::dfu_package` and
 `PackageUpdate` to the image-list `start()`, against a stub with a second image
@@ -449,6 +480,18 @@ it commits itself. Each passes on its output lines, never on the exit code:
   must fail with "device did not apply an image", report image 1 not applied,
   and warn that the next reset reverts image 0. Both patterns were checked
   against the other test's output, so neither passes on the wrong outcome.
+
+Two show the MCUboot mode (ADR-0025), again on their output lines:
+`cli_dfu_mode_reported` gives the stub a mode (`--stub-mode`) and expects it
+printed as reported by the device; `cli_dfu_mode_fallback` gives the stub none
+and expects the plan's `--fallback-mode` printed as the fallback. Two more
+show a refusal: `cli_dfu_mode_refused` (an upgrade-only stub, refused, with the
+reason and the mode on the failure output) and `cli_dfu_mode_allow_no_revert`
+(the same stub with `--allow-no-revert`, completed). `cli_dfu_mode_two_builds`
+gives a direct-XIP-with-revert stub both builds of the demo image
+(`--demo-builds`) and expects it completed. The stub only *reports* a mode; it
+swaps with revert whatever it claims, so that test shows the build chosen and
+the image-list `start()`, not direct-XIP itself.
 
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
 protocol reference — `ServerSimulator` is. The stub answers the five commands one
@@ -655,6 +698,29 @@ image is good. Shipped:
   and the flash still byte-exact;
 * `EBUSY` reset retried with `force`; a **lost** reset response treated as
   success (A3); a device that never drops the link released by the grace timer;
+* the MCUboot mode: queried between the parameters and the slot table and
+  reported; a device without the command, with a bootloader that is not
+  MCUboot, or reporting `-1` ⇒ the update unchanged, mode assumed; the plan's
+  fallback used only when the device reports none; a query that times out ⇒
+  failed before any upload (ADR-0025);
+* refusals: an upgrade-only device ⇒ `UpdateRefused` with no upload request
+  and no byte written; the same with `allow_no_revert` ⇒ completed, the new
+  image running confirmed, and no confirmation asked for; every mode without
+  an update path refused; a fallback mode refused like a reported one;
+* downgrade prevention: an older image refused before any upload; the same
+  version updates; with `check_downgrade` off the simulator erases the older
+  image at boot, as MCUboot does, and the update reports a rollback;
+* direct-XIP: without revert refused by default; accepted, the upload lands in
+  whichever slot is not running (started from slot 0 and from slot 1), no
+  set-state is sent, nothing asks for a confirm, and the device ends up
+  running from the other slot; an image that is not newer is not booted and
+  reads as a rollback; with revert, test-reset-confirm in the free slot, and
+  an unconfirmed trial reverting; several images refused in both;
+* one build per slot: the build for the free slot sent, byte for byte, from
+  slot 0 and from slot 1; either build already running ⇒ nothing sent; two
+  builds on a device that is not direct-XIP, or that reports nothing ⇒
+  `InvalidArgument` before any upload; a second build that is not an image, or
+  with `upload.sha`, refused by `start()`;
 * the device reverting ⇒ `rolled_back`, recognised from the flags;
 * a refused confirm, and an application that declines to confirm ⇒ both
   terminal with `revert_pending` set;

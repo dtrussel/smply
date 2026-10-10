@@ -31,6 +31,7 @@ namespace cbor = smply::minicbor;
 
 constexpr std::uint8_t kOsReset = 5;
 constexpr std::uint8_t kOsMcumgrParams = 6;
+constexpr std::uint8_t kOsBootloaderInfo = 8;
 constexpr std::uint8_t kImageState = 0;
 constexpr std::uint8_t kImageUpload = 1;
 
@@ -78,7 +79,9 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
 
 } // namespace
 
-StubDevice::StubDevice(std::vector<std::byte> primary, std::optional<SecondImage> second)
+StubDevice::StubDevice(std::vector<std::byte> primary, std::optional<SecondImage> second,
+                       std::optional<std::int64_t> bootloader_mode)
+    : bootloader_mode_{bootloader_mode}
 {
     images_.emplace_back();
     images_[0].slots[0].content = std::move(primary);
@@ -324,6 +327,18 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
         if (header->command == kOsMcumgrParams) {
             cbor::Writer out;
             out.map(2).text("buf_size").uint(kBufSize).text("buf_count").uint(kBufCount);
+            return respond(*header, ConstBytes{out.bytes()});
+        }
+        if (header->command == kOsBootloaderInfo && bootloader_mode_.has_value()) {
+            cbor::Writer out;
+            const bool asks_mode = request.has_value() && request->find("query") != nullptr;
+            if (!asks_mode) {
+                out.map(1).text("bootloader").text("MCUboot");
+            } else if (*bootloader_mode_ < 0) {
+                out.map(1).text("mode").nint(*bootloader_mode_);
+            } else {
+                out.map(1).text("mode").uint(static_cast<std::uint64_t>(*bootloader_mode_));
+            }
             return respond(*header, ConstBytes{out.bytes()});
         }
         if (header->command == kOsReset) {

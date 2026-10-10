@@ -23,15 +23,19 @@ The library is feature-complete for what it exists to do:
 * serial console framing, and a reference serial port adapter with an example;
 * several images of one device in one update, including images the device
   commits itself after the client images are confirmed, and a reader for
-  nRF Connect SDK's multi-image package (ADR-0021, ADR-0022).
+  nRF Connect SDK's multi-image package (ADR-0021, ADR-0022);
+* updates that follow the device's MCUboot mode (ADR-0025): the mode read
+  through OS command 8, a refusal before anything is sent for an update the
+  mode cannot carry out or a downgrade the device would refuse, and direct-XIP
+  devices updated from one file, one build per slot, or a direct-XIP package.
 
-Its released version is 0.2.0. The Windows side has updated real devices from
+Its released version is 0.3.0. The Windows side has updated real devices from
 two hardware benches, a NUCLEO-WB55RG and a BL54L15 DVK (nRF54L15, nRF Connect
 SDK), including from a fresh clone consumed out of tree. The reference serial
 port adapter (`transports/serial_port/`) has updated the stub device over a
 pseudo-terminal in CI and the BL54L15 over its console UART. The multi-image
-update has not met a device: it runs against the simulator and the stub device
-only.
+update and the MCUboot-mode handling have not met a device that exercises them:
+they run against the simulator and the stub device only.
 
 ## In progress
 
@@ -48,6 +52,14 @@ None of these can be closed from a container.
   outside smply. Until then, the contract is tested against the
   simulator and the stub device only. `serial_dfu --port … --package …` is
   the tool for the run.
+* **Update a real direct-XIP device** (ADR-0025). Both variants, without and
+  with revert, and from a direct-XIP package, are tested against
+  `ServerSimulator`'s model of Zephyr's direct-XIP rules only (protocol-notes
+  §7). A build of the BL54L15 with `CONFIG_MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP`
+  (and `_WITH_REVERT`) and `CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO` would close
+  it: the mode reported, the upload landing in the slot not running, and the
+  device booting it. Its bench's swap build would also show the mode reported
+  for the first time.
 * **Commission the self-hosted `smply-bench` runner.** `hil.yml` is committed
   but no runner is registered, so the hardware suite has only ever run by hand.
   Its header carries the steps and the `schedule:` block to restore. The
@@ -92,12 +104,15 @@ doing.
 | **The client-context assertion covers `SmpClient` only.** Using `ImageManagement` from a second thread without reaching the client (for example, by reading `transferred()`) does not trip it. Closing that needs the groups to use pimpl. | when the groups are next reworked |
 | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics. An adapter branching on it is a bug; a blocking `wait_and_drain()` may be the better offer. | when an adapter asks |
 | `ImageState` has no `operator==`. | when a test wants it |
+| **A direct-XIP image that is not newer than the running one is sent anyway.** A direct-XIP bootloader boots only a newer image, a tie going to the lower slot (protocol-notes §7), and MCUboot's downgrade prevention cannot be enabled in that mode. So an equal or older image is uploaded in full and then fails after the reset, reported as a rollback. The updater could refuse it before the upload, as `Refusal::Downgrade` does when the device reports `no-downgrade`; that is new behaviour ADR-0025 did not decide. | if a direct-XIP user is caught by it |
 | **Nothing checks that a package is meant for the device it is sent to.** The package names its `board` (`DfuPackage::board`), but smply takes no expectation from the caller and does not compare. A mismatch is refused only by the device's signature check, after the upload. A caller-supplied expectation compared in `PackageUpdate` would catch it before the first byte. | when a product ships several boards from one tool |
 
 ### Protocol and images
 
 | Item | When |
 | ---- | ---- |
+| **The FS, Shell, Enum and Zephyr-basic management groups are not implemented** (groups 8, 9, 10 and 63). Every full client in Zephyr's tools table has FS and Shell, and most have Enum; smply's scope so far is the update. Enum would also let smply ask which groups a device has instead of handling `ENOTSUP` per command. Each is a group of its own, traced to Zephyr's `smp_group_<n>.rst` and source. | when an application asks for one |
+| **Single slot, the firmware loader and the RAM-load modes have no update path.** `FirmwareUpdater` refuses them by name (`Refusal::UnsupportedMode`, ADR-0025). Each needs a flow of its own: single slot and the firmware loader update through a separate loader, and RAM load has no set-state (S10). A Zephyr RAM-load device reports `-1` (A38), so it is not even refused by name: it is treated as unknown and fails at set-state, as before. | when a product uses one |
 | **MCUboot serial recovery is not a supported target.** Its SMP server is not the application's image group: an upload's `image` names a slot (S43), set-state only schedules the secondary slot (S44), and the default upload overwrites the primary slot with no trial. `serial_dfu` pointed at a device in recovery would not behave. Supporting it would be a separate update mode, not a flag. | if a product updates through serial recovery from the PC |
 | **Ask the device which board it is.** The OS group's `info` command (`os_mgmt_info`) can report the board, which would let the board check above use the device's own answer instead of the caller's. It needs the command implemented in `OsManagement`, and reading Zephyr's source for the format. | with the board check, if a caller cannot supply the expectation |
 | **The package manifest is not authenticated.** nRF Connect SDK's `manifest.json` carries no signature, so a tampered manifest can relabel an image's index. Each image is signed, and its signed dependency TLVs are what stop a mismatched set from booting; smply's self-consistency check (ADR-0022) reads those, not the manifest. A signed manifest would be a product format of its own. | if a product defines a signed container |
@@ -114,6 +129,7 @@ doing.
 | Item | When |
 | ---- | ---- |
 | **`winrt_ble_dfu` has no `--package`.** The multi-image update runs from `cli_dfu` and `serial_dfu` only. Over BLE on a dual-MCU product the link drops while the controller is updated (ADR-0022), so the Windows tool's reconnect policy (six attempts, 23.5 s of backoff between them) must be sized for the controller's transfer and reboot before a package update can rely on it. | when the dual-MCU product is on the bench |
+| **A QSPI split-image direct-XIP package is refused.** nRF Connect SDK's QSPI XIP build lists four files: an internal and an external part, each linked for both slots (S58). The reader refuses more than one image given as a slot pair, by name, and the updater refuses several images under direct-XIP anyway, because Zephyr's image group updates one (S10). | if a product ships one |
 | **`support/dfu_package` reads stored zips only.** A deflated package is refused by name. Deflate would mean a new dependency or a hand-written inflater, and the package format written today is stored (ADR-0021, S38). | when someone ships a deflated package |
 | **The stub device does not model the confirm-denial rules for image 1** (A27), so `--commit 1=client` succeeds against it where a default Zephyr build would refuse. `ServerSimulator` models them, and its tests cover the refusal. | if the examples are used to demonstrate A27 |
 | **The serial port adapter's Win32 half is compile-only** (ADR-0020). It is outside clang-tidy and cppcheck, and CI never opens a port with it; a MinGW cross-build is the only local check (handoff.md). Running clang-tidy on the Windows runner would recover the analysis for this half and for `winrt_ble` alike. | with the WinRT row below |

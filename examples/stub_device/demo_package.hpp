@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,10 @@ struct DemoPackageFile
     /// The dotted version the image's header carries.
     std::string version;
     std::vector<std::byte> content;
+    /// A direct-XIP build's global slot. With it the entry is written as
+    /// zip.cmake writes a direct-XIP file (S58): `slot`, and the version under
+    /// `version_MCUBOOT+XIP`.
+    std::optional<std::uint32_t> slot = std::nullopt;
 };
 
 /// A stored zip holding \p files and a manifest describing them.
@@ -37,6 +42,10 @@ struct DemoPackageFile
 /// docs/multi-image.md: `app.bin` (image 0, 2.0.0) and `radio.bin` (image 1,
 /// 6.0.0), for a device running app 1.0.0 and radio `kDemoRadioRunning`.
 [[nodiscard]] std::vector<std::byte> build_demo_two_image_package();
+
+/// The demo's direct-XIP package: image 0, version 2.0.0, linked for slot 0
+/// (`app.signed.bin`) and for slot 1 (`app_slot1_variant.signed.bin`).
+[[nodiscard]] std::vector<std::byte> build_demo_xip_package();
 
 /// The radio version the demo device runs before the update.
 inline constexpr std::uint8_t kDemoRadioRunning = 5;

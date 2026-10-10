@@ -61,7 +61,7 @@ class Device : public smply::TransportListener
 public:
     Device() : Device(ServerConfig{}) {}
 
-    explicit Device(ServerConfig config) : simulator_{transport_, config}
+    explicit Device(const ServerConfig& config) : simulator_{transport_, config}
     {
         transport_.set_listener(this);
     }
@@ -873,7 +873,7 @@ TEST_CASE("a hashless confirm names the running image, never another", "[simulat
 TEST_CASE("confirming a non-running image is denied, and each Kconfig relaxes only its rule",
           "[simulator][multi]")
 {
-    const auto trial_of_image_1 = [](ServerConfig config) {
+    const auto trial_of_image_1 = [](const ServerConfig& config) {
         auto device = std::make_unique<Device>(config);
         load_two_images(device->simulator());
         const std::vector<std::byte> staged = hash_at(*device, 1, 1);

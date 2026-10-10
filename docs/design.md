@@ -437,6 +437,8 @@ class OsManagement {                       // src/groups/os/
     RequestHandle reset(Callback<void>);
     RequestHandle mcumgr_parameters(Callback<McumgrParameters>);
     RequestHandle echo(std::string_view, Callback<std::string>);
+    RequestHandle bootloader_name(Callback<std::string>);
+    RequestHandle bootloader_mode(Callback<BootloaderMode>);
 };
 
 class ImageManagement {                    // src/groups/image/
@@ -849,6 +851,10 @@ callbacks).
                     │ QueryingParameters │  OS mcumgr-params (optional; ENOTSUP ok)
                     └───────┬────────────┘
                             ▼
+                    ┌────────────────────┐
+                    │ QueryingBootloader │  OS bootloader info "mode" (optional;
+                    └───────┬────────────┘  no answer ok; ADR-0025)
+                            ▼
                     ┌──────────────────┐
                     │ InspectingImages │  IMG get-state  → learn active/pending/slots
                     └───────┬──────────┘
@@ -924,6 +930,41 @@ resume an update a previous process left part-way:
 3. **Another slot holds it, unmarked**, and `skip_if_already_present` is set:
    `MarkingForTest` (nothing, under `UploadOnly`).
 4. Otherwise: `Uploading`.
+
+**Before the first command that would change the device** -- the first
+`MarkingForTest` or `Uploading` above, or a `Resetting` for a swap someone
+else scheduled -- the refusal checks run, once (ADR-0025). They read the mode
+recorded in `QueryingBootloader` and the plan: single slot, the firmware
+loader and both RAM-load modes are `UnsupportedMode` whatever the plan; an
+upgrade-only or direct-XIP-without-revert device is `RevertUnavailable`
+unless the plan sets `allow_no_revert` or is `UploadOnly`; several images on
+either direct-XIP mode are `MultiImageUnsupported`; and when the device reported
+`no-downgrade` and the plan keeps `check_downgrade`, an image whose
+`major.minor.revision` is below the running image's is `Downgrade`. An image the
+device already runs, or a running version that does not parse (`"<???>"`), is
+not compared. A refusal ends the update in `Failed`
+with `UpdateRefused` and `UpdateReport::refusal` set, and nothing has been
+sent. An update with nothing to do is never refused: there is no command for
+a refusal to stop.
+
+**Direct-XIP without revert has no set-state** (protocol-notes §7). Wherever
+the table above says `MarkingForTest` -- case 3, and after `VerifyingUpload` --
+the machine records a reset as owed and moves on instead, and after the reset
+an image running in its slot is never "on trial": nothing reports it confirmed,
+and nothing needs to. Success is the running slot holding the target hash. If
+the device kept the old slot, because the new version did not win, that reads
+as a revert and is reported as `rolled_back`. Direct-XIP with revert needs no
+special case: its flags follow the ordinary table, and only the slot differs.
+Neither waits for a swap: smply never did, since reconnecting is the
+application's. Each image's `upload_slot` records where the device put it.
+
+**An image given as one build per slot** (`ImageTarget::secondary_source`) is
+resolved at the top of its `Planning` turn, before the four cases, by
+`choose_build()`: on a device that does not report direct-XIP it fails with
+`InvalidArgument`, nothing sent; otherwise it picks a build already in its own
+slot (the running one first), or else the build for the slot not running. That
+build's hash and version become the target's, so the four cases and every later
+step see one file, as they always have. The updater sends that build's source.
 
 Once every image is staged: `Completed` under `UploadOnly`; `Resetting` if a
 reset is owed; otherwise the device is judged as it stands, exactly as
@@ -1056,7 +1097,10 @@ that forgets a kind does not compile:
 | State | Failure | Recovery |
 | ----- | ------- | -------- |
 | `QueryingParameters` | `ENOTSUP` / timeout | **not fatal** — fall back to defaults (PN §9 A8) |
+| `QueryingBootloader` | a device error (`ENOTSUP`, no answer, malformed reply) | **not fatal** — the mode is the plan's `fallback_mode`, or unknown and assumed (ADR-0025) |
+| `QueryingBootloader` | timeout, dropped link | fatal; nothing has been changed on the device. Unlike the parameters query: a link that cannot answer one query is not given an upload |
 | `InspectingImages` | any error | fatal; nothing has been changed on the device |
+| `Planning` | the bootloader mode rules the update out (ADR-0025) | fatal `UpdateRefused`, with `UpdateReport::refusal`; checked before the first command that would change the device, so nothing has |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
 | `Uploading` | server `off == 0` | restart from the first packet, bounded by `max_restarts` |

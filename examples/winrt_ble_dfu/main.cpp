@@ -27,6 +27,7 @@
 #include "scanner.hpp"
 #include "winrt_prelude.hpp"
 
+#include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 
@@ -41,6 +42,7 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -75,8 +77,11 @@ enum ExitCode : int
 struct Options
 {
     std::string image_path; ///< Required: see the note in main().
-    std::string name;       ///< --name: match a substring of the advertised name.
-    std::string address;    ///< --address: skip scanning entirely.
+    /// `--image-secondary`: the same image linked for the secondary slot, for
+    /// a direct-XIP device; `image_path` is then the primary slot's build.
+    std::string image_secondary_path;
+    std::string name;    ///< --name: match a substring of the advertised name.
+    std::string address; ///< --address: skip scanning entirely.
     UpdateMode mode = UpdateMode::TestThenConfirm;
     std::chrono::milliseconds scan_timeout{std::chrono::seconds{10}};
     bool quiet = false;
@@ -96,6 +101,14 @@ struct Options
     /// The other half of the same split. It installs nothing, so it needs no
     /// `--image`, and it is the only mode that does not build an updater.
     bool confirm_only = false;
+
+    /// `--fallback-mode`: the MCUboot mode to assume when the device does not
+    /// report one (ADR-0025).
+    std::optional<McubootMode> fallback_mode;
+    /// `--allow-no-revert`: accept an update the bootloader cannot revert.
+    bool allow_no_revert = false;
+    /// `--no-downgrade-check`: skip the downgrade check (ADR-0025).
+    bool check_downgrade = true;
 };
 
 /// Parses `--mode`. Two of the five are not `UpdateMode` values at all.
@@ -133,8 +146,12 @@ struct Options
 void usage()
 {
     std::cerr << "usage: winrt_ble_dfu --image PATH [--name NAME | --address ADDR]\n"
-                 "                     [--mode MODE] [--scan-timeout MS] [--quiet]\n"
+                 "                     [--mode MODE] [--fallback-mode M] [--scan-timeout MS]\n"
+                 "                     [--allow-no-revert] [--no-downgrade-check]\n"
+                 "                     [--image-secondary PATH] [--quiet]\n"
                  "  --image PATH   the firmware to install (required)\n"
+                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
+                 "                 secondary slot (--image is then the primary slot's build)\n"
                  "  --name NAME    connect to the first device whose advertised name\n"
                  "                 contains NAME; without it, the first device that\n"
                  "                 advertises the SMP service is used\n"
@@ -145,6 +162,14 @@ void usage()
                  "                 so the device is left in its trial boot;\n"
                  "                 confirm-only confirms the running image and needs\n"
                  "                 no --image\n"
+                 "  --fallback-mode M  the MCUboot mode to assume when the device does\n"
+                 "                 not report one, named as the report prints it\n"
+                 "                 (swap-using-move, upgrade-only, direct-xip, ...)\n"
+                 "  --allow-no-revert  update a device whose bootloader cannot revert\n"
+                 "                 (upgrade-only); without it, such an update is refused\n"
+                 "  --no-downgrade-check  send an image older than the running one even\n"
+                 "                 when the device prevents downgrades; it will refuse it\n"
+                 "                 at boot\n"
                  "  --scan-timeout MS  how long to look for a device (default 10000)\n"
                  "  --quiet        print only the outcome\n"
                  "\n"
@@ -160,6 +185,8 @@ void usage()
             out.quiet = true;
         } else if (arg == "--image" && i + 1 < args.size()) {
             out.image_path = args[++i];
+        } else if (arg == "--image-secondary" && i + 1 < args.size()) {
+            out.image_secondary_path = args[++i];
         } else if (arg == "--name" && i + 1 < args.size()) {
             out.name = args[++i];
         } else if (arg == "--address" && i + 1 < args.size()) {
@@ -174,6 +201,15 @@ void usage()
             if (!parse_mode(args[++i], out)) {
                 return false;
             }
+        } else if (arg == "--allow-no-revert") {
+            out.allow_no_revert = true;
+        } else if (arg == "--no-downgrade-check") {
+            out.check_downgrade = false;
+        } else if (arg == "--fallback-mode" && i + 1 < args.size()) {
+            out.fallback_mode = parse_mcuboot_mode(args[++i]);
+            if (!out.fallback_mode.has_value()) {
+                return false;
+            }
         } else {
             return false;
         }
@@ -186,6 +222,7 @@ void usage()
     // make the caller name a file that is never opened -- and a file named but
     // unused is the sort of argument that goes stale without anyone noticing.
     return (out.confirm_only || !out.image_path.empty()) &&
+           (out.image_secondary_path.empty() || (!out.confirm_only && !out.image_path.empty())) &&
            !(!out.name.empty() && !out.address.empty());
 }
 
@@ -227,6 +264,15 @@ int main(int argc, char** argv)
         // `Result` is deliberately not assignable, so it cannot be the thing
         // that gets filled in conditionally.
         source.emplace(std::move(*opened));
+    }
+    std::optional<FileImageSource> secondary;
+    if (!options.image_secondary_path.empty()) {
+        Result<FileImageSource> opened = FileImageSource::open(options.image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
+            return kUpdateFailed;
+        }
+        secondary.emplace(std::move(*opened));
     }
 
     // --- find the device ----------------------------------------------------
@@ -339,6 +385,9 @@ int main(int argc, char** argv)
 
     UpdatePlan plan;
     plan.mode = options.mode;
+    plan.fallback_mode = options.fallback_mode;
+    plan.allow_no_revert = options.allow_no_revert;
+    plan.check_downgrade = options.check_downgrade;
 
     Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
 
@@ -384,8 +433,15 @@ int main(int argc, char** argv)
             pending.finished = true;
         },
     };
-    const Result<void> begun = updater.start(
-        *source, plan, [&](const UpdateEvent& event) { std::visit(on_event, event); });
+    // One build per slot is an image list of one (ADR-0025).
+    const std::array<ImageTarget, 1> builds{ImageTarget{
+        .image = 0,
+        .source = &*source,
+        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
+    }};
+    const auto handler = [&](const UpdateEvent& event) { std::visit(on_event, event); };
+    const Result<void> begun =
+        secondary ? updater.start(builds, plan, handler) : updater.start(*source, plan, handler);
 
     if (!begun.has_value()) {
         std::cerr << "winrt_ble_dfu: " << to_string(begun.error()) << '\n';
@@ -492,6 +548,7 @@ int main(int argc, char** argv)
 
     if (!outcome.has_value()) {
         std::cerr << "winrt_ble_dfu: update failed: " << to_string(outcome.error()) << '\n';
+        std::cerr << "  " << describe_mode(updater.report()) << '\n';
         return gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
     }
 
@@ -505,6 +562,7 @@ int main(int argc, char** argv)
     if (report.revert_pending) {
         std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
     }
+    std::cout << "  " << describe_mode(report) << '\n';
     // The client's counters, because a real link is where they earn their keep:
     // a retransmitted final chunk is answered as a fresh session (protocol-notes
     // section 6, rules 9b then 9a) and reads as "already held" above, and the

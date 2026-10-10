@@ -17,7 +17,7 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 
 ## Status
 
-**Version 0.2.0.** The library does what it exists to do:
+**Version 0.3.0.** The library does what it exists to do:
 * SMP framing and streaming reassembly;
 * a bounded CBOR façade;
 * request correlation with timeouts and cancellation;
@@ -25,7 +25,10 @@ protocol, focused on **MCUboot firmware update (DFU)**.
 * MCUboot image parsing with SHA-256;
 * the image upload state machine;
 * `FirmwareUpdater`, which drives the whole update: upload, reset, reconnect,
-  trial boot and confirmation.
+  trial boot and confirmation. It asks the device which MCUboot mode it runs
+  and follows it, refusing before the first byte an update the mode cannot
+  carry out or a downgrade the device would refuse, and updating direct-XIP
+  devices too.
 
 Around the core library:
 * **For application code:** `smply::asyncutil`, C++20 coroutines and

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -170,7 +171,7 @@ constexpr std::uint32_t kDefaultSlotSize = 512U * 1024U;
 
 } // namespace
 
-ServerSimulator::ServerSimulator(FakeTransport& transport, ServerConfig config)
+ServerSimulator::ServerSimulator(FakeTransport& transport, const ServerConfig& config)
     : transport_{transport}, config_{config},
       images_(config.image_count == 0 ? 1U : config.image_count)
 {}
@@ -210,12 +211,21 @@ void ServerSimulator::start_device_commits()
 
 void ServerSimulator::reboot()
 {
+    if (direct_xip()) {
+        xip_reboot();
+        session_ = Session{};
+        reset_requested_ = false;
+        return;
+    }
     // MCUboot runs every image's swap at the same boot.
     for (ImagePair& pair : images_) {
         switch (pair.swap) {
         case SwapType::None:
             break;
         case SwapType::Test:
+            if (!pair.device_outcome.has_value() && refuses_downgrade(pair)) {
+                break;
+            }
             if (pair.device_outcome.has_value()) {
                 // Not this MCU's image: the coordinating MCU starts applying it
                 // to the other one, and slot 0 keeps reporting what the other
@@ -224,10 +234,25 @@ void ServerSimulator::reboot()
                 pair.applying = pair.apply_reads;
                 break;
             }
+            if (upgrade_only()) {
+                // Overwrite: the new image is copied over the old one for
+                // good, and the secondary is erased. No trial, nothing to
+                // revert (protocol-notes section 7).
+                overwrite(pair);
+                break;
+            }
             std::swap(pair.slots[0], pair.slots[1]);
             pair.swap = SwapType::Revert;
             break;
         case SwapType::Perm:
+            if (!pair.device_outcome.has_value() && refuses_downgrade(pair)) {
+                break;
+            }
+            if (upgrade_only() && !pair.device_outcome.has_value()) {
+                overwrite(pair);
+                break;
+            }
+            [[fallthrough]];
         case SwapType::Revert:
             // Two different intentions with the same effect: `Perm` swaps the
             // new image in for good, `Revert` swaps the old one back after an
@@ -247,6 +272,176 @@ void ServerSimulator::reboot()
     // area_id == -1, so a continuation is answered off == 0 (rule 5).
     session_ = Session{};
     reset_requested_ = false;
+}
+
+// --- Direct-XIP --------------------------------------------------------------
+//
+// Image 0 runs in place from whichever slot MCUboot chose. The rules are
+// Zephyr's predictions of MCUboot's choice in img_mgmt_state.c (S14), which is
+// what a client sees: the newest valid slot boots, a tie going to the lower
+// slot; with revert, only a slot marked for one boot or for good qualifies, a
+// one-boot trial reverts unless confirmed, and the flags follow the standard
+// table. Without revert there is no set-state, nothing is ever "confirmed",
+// and the preferred slot is reported pending and permanent.
+
+bool ServerSimulator::direct_xip() const noexcept
+{
+    constexpr std::int64_t kDirectXip = 4;
+    constexpr std::int64_t kDirectXipWithRevert = 5;
+    return config_.bootloader_mode == kDirectXip || config_.bootloader_mode == kDirectXipWithRevert;
+}
+
+bool ServerSimulator::xip_with_revert() const noexcept
+{
+    constexpr std::int64_t kDirectXipWithRevert = 5;
+    return config_.bootloader_mode == kDirectXipWithRevert;
+}
+
+void ServerSimulator::boot_from_slot(std::size_t slot)
+{
+    xip_active_ = slot % 2;
+    xip_state_ = {XipState::Unset, XipState::Unset};
+    xip_state_[xip_active_] = XipState::Forever;
+    xip_trial_ = false;
+}
+
+bool ServerSimulator::xip_prefers_other() const
+{
+    const std::size_t other = 1 - xip_active_;
+    const std::vector<std::byte>& theirs = images_[0].slots[other];
+    const std::vector<std::byte>& ours = images_[0].slots[xip_active_];
+    const std::optional<SlotImage> candidate = describe(ConstBytes{theirs});
+    if (!candidate.has_value() || !candidate->bootable) {
+        return false;
+    }
+    if (!describe(ConstBytes{ours}).has_value()) {
+        return true;
+    }
+    const auto version_of = [](const std::vector<std::byte>& slot) {
+        return std::tuple{std::to_integer<unsigned>(slot[20]), std::to_integer<unsigned>(slot[21]),
+                          read16(ConstBytes{slot}, 22)};
+    };
+    const auto mine = version_of(ours);
+    const auto other_version = version_of(theirs);
+    return mine < other_version || (mine == other_version && other < xip_active_);
+}
+
+std::optional<bool> ServerSimulator::xip_next_is_trial() const
+{
+    if (!xip_prefers_other()) {
+        return std::nullopt;
+    }
+    if (!xip_with_revert()) {
+        return false;
+    }
+    switch (xip_state_[1 - xip_active_]) {
+    case XipState::Once:
+        return true;
+    case XipState::Forever:
+        return false;
+    case XipState::Unset:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::array<bool, 4> ServerSimulator::xip_flags(std::size_t slot) const
+{
+    // {pending, confirmed, active, permanent}
+    const bool active = slot == xip_active_;
+    const std::optional<bool> next_trial = xip_next_is_trial();
+    if (!xip_with_revert()) {
+        return {!active && next_trial.has_value(), false, active,
+                !active && next_trial.has_value()};
+    }
+    if (xip_trial_) {
+        // Swap type REVERT: the running image is unconfirmed, the other is
+        // what the device goes back to.
+        return {false, !active, active, false};
+    }
+    if (active) {
+        return {false, true, true, false};
+    }
+    return {next_trial.has_value(), false, false, next_trial.has_value() && !*next_trial};
+}
+
+void ServerSimulator::xip_reboot()
+{
+    const std::size_t other = 1 - xip_active_;
+    if (xip_with_revert() && xip_trial_) {
+        // An unconfirmed trial: MCUboot drops the image and boots the other.
+        images_[0].slots[xip_active_].clear();
+        xip_state_[xip_active_] = XipState::Unset;
+        xip_active_ = other;
+        xip_trial_ = false;
+        return;
+    }
+    const std::optional<bool> trial = xip_next_is_trial();
+    if (!trial.has_value()) {
+        return;
+    }
+    xip_active_ = other;
+    xip_trial_ = *trial;
+}
+
+ImageError ServerSimulator::xip_set_next(std::size_t slot, bool confirm)
+{
+    if (slot >= 2) {
+        return ImageError::HashNotFound; // only image 0 exists under direct-XIP
+    }
+    const bool active = slot == xip_active_;
+    if (confirm && !active && !config_.allow_confirm_non_active_slot) {
+        return ImageError::ImageConfirmationDenied;
+    }
+    if (!confirm && active) {
+        return ImageError::ImageSettingTestToActiveDenied;
+    }
+    if (confirm) {
+        xip_state_[slot] = XipState::Forever;
+        if (active) {
+            xip_trial_ = false;
+        }
+        return ImageError::Ok;
+    }
+    if (xip_trial_ || xip_state_[slot] == XipState::Forever) {
+        return ImageError::ImageAlreadyPending;
+    }
+    xip_state_[slot] = XipState::Once; // already Once: nothing to do
+    return ImageError::Ok;
+}
+
+bool ServerSimulator::refuses_downgrade(ImagePair& pair) const
+{
+    if (!config_.no_downgrade) {
+        return false;
+    }
+    const auto version_of = [](const std::vector<std::byte>& slot) {
+        // major, minor and revision, as boot_compare_version() reads them.
+        return std::tuple{std::to_integer<unsigned>(slot[20]), std::to_integer<unsigned>(slot[21]),
+                          read16(ConstBytes{slot}, 22)};
+    };
+    if (pair.slots[0].size() < kImageHeaderSize || pair.slots[1].size() < kImageHeaderSize ||
+        !(version_of(pair.slots[1]) < version_of(pair.slots[0]))) {
+        return false;
+    }
+    // MCUboot's check_downgrade_prevention(): the new image is erased, and the
+    // old one boots as though nothing had been scheduled (S41).
+    pair.slots[1].clear();
+    pair.swap = SwapType::None;
+    return true;
+}
+
+bool ServerSimulator::upgrade_only() const noexcept
+{
+    constexpr std::int64_t kUpgradeOnly = 2;
+    return config_.bootloader_mode == kUpgradeOnly;
+}
+
+void ServerSimulator::overwrite(ImagePair& pair)
+{
+    pair.slots[0] = std::move(pair.slots[1]);
+    pair.slots[1].clear();
+    pair.swap = SwapType::None;
 }
 
 void ServerSimulator::rebind_transport(FakeTransport& transport)
@@ -398,6 +593,34 @@ std::vector<std::byte> ServerSimulator::handle_os(const Header& header, ConstByt
         return out.bytes();
     }
 
+    case 8: { // Bootloader information: read-only, and optional.
+        if (header.op != Operation::Read || !config_.bootloader_mode.has_value()) {
+            return smp_failure(header.version, SmpError::NotSupported);
+        }
+        constexpr std::uint64_t kQueryYieldsNoAnswer = 3;
+        const tcbor::Value* query = request->find("query");
+        if (query == nullptr) {
+            tcbor::Writer out;
+            out.map(1).text("bootloader").text(config_.bootloader_name);
+            return out.bytes();
+        }
+        if (!query->is(tcbor::Value::Kind::Text) || query->text != "mode" ||
+            config_.bootloader_name != "MCUboot") {
+            return os_failure(kQueryYieldsNoAnswer);
+        }
+        tcbor::Writer out;
+        out.map(config_.no_downgrade ? 2 : 1).text("mode");
+        if (*config_.bootloader_mode < 0) {
+            out.nint(*config_.bootloader_mode);
+        } else {
+            out.uint(static_cast<std::uint64_t>(*config_.bootloader_mode));
+        }
+        if (config_.no_downgrade) {
+            out.text("no-downgrade").boolean(true);
+        }
+        return out.bytes();
+    }
+
     default:
         return smp_failure(header.version, SmpError::NotSupported);
     }
@@ -419,6 +642,10 @@ std::vector<std::byte> ServerSimulator::handle_image(const Header& header, Const
     case 0:
         if (header.op == Operation::Read) {
             return handle_state_read();
+        }
+        if (direct_xip() && !xip_with_revert()) {
+            // The write handler is NULL under direct-XIP (S10).
+            return smp_failure(header.version, SmpError::NotSupported);
         }
         return handle_state_write(header.version, payload);
 
@@ -485,7 +712,11 @@ std::vector<std::byte> ServerSimulator::handle_upload(const Header& header, Cons
         if (image >= images_.size()) {
             return image_failure(header.version, ImageError::NoFreeSlot);
         }
-        const std::size_t target = (static_cast<std::size_t>(image) * 2) + 1;
+        // Direct-XIP writes the slot that is not running (S10); everything
+        // else writes the image's secondary.
+        const std::size_t target = direct_xip() && image == 0
+                                       ? 1 - xip_active_
+                                       : (static_cast<std::size_t>(image) * 2) + 1;
 
         const tcbor::Value* sha_field = request->find("sha");
         std::vector<std::byte> sha;
@@ -537,7 +768,11 @@ std::vector<std::byte> ServerSimulator::handle_upload(const Header& header, Cons
             // bounded by the capacity check above, so a device-supplied `len`
             // never sizes an unbounded allocation -- the same rule the library
             // works under.
-            images_[target / 2].slots[1].assign(static_cast<std::size_t>(*size), std::byte{0xFF});
+            images_[target / 2].slots[target % 2].assign(static_cast<std::size_t>(*size),
+                                                         std::byte{0xFF});
+            if (direct_xip() && image == 0) {
+                xip_state_[target] = XipState::Unset; // the erase took its trailer too
+            }
         }
     } else {
         if (!session_.active || *off != session_.off) {
@@ -694,6 +929,13 @@ std::vector<std::byte> ServerSimulator::encode_state() const
             if (!described.has_value()) {
                 continue;
             }
+            if (direct_xip() && image == 0) {
+                // {pending, confirmed, active, permanent}, from the direct-XIP rules.
+                const std::array<bool, 4> flags = xip_flags(slot);
+                entries.push_back(Entry{image, slot, std::move(*described), flags[0], flags[1],
+                                        flags[2], flags[3]});
+                continue;
+            }
             const bool is_active = slot == 0;
             entries.push_back(Entry{image, slot, std::move(*described),
                                     is_active ? false : other_pending,
@@ -806,8 +1048,8 @@ std::vector<std::byte> ServerSimulator::handle_state_write(Version version, Cons
     const tcbor::Value* hash_field = request->find("hash");
 
     // A hashless confirm names the RUNNING image's active slot, never any
-    // other image's (S35) -- global slot 0 here.
-    std::size_t slot = 0;
+    // other image's (S35) -- global slot 0 here, or wherever direct-XIP runs.
+    std::size_t slot = direct_xip() ? xip_active_ : 0;
     if (hash_field == nullptr) {
         if (!confirm) {
             // A test with no hash names no image, and is refused.
@@ -832,7 +1074,8 @@ std::vector<std::byte> ServerSimulator::handle_state_write(Version version, Cons
         slot = *found;
     }
 
-    const ImageError result = set_next_boot_slot(slot, confirm);
+    const ImageError result =
+        direct_xip() ? xip_set_next(slot, confirm) : set_next_boot_slot(slot, confirm);
     if (result != ImageError::Ok) {
         return image_failure(version, result);
     }
@@ -897,6 +1140,15 @@ std::vector<std::byte> ServerSimulator::image_failure(Version version, ImageErro
     out.map(1).text("err").map(2);
     out.text("group").uint(static_cast<std::uint64_t>(Group::Image));
     out.text("rc").uint(static_cast<std::uint64_t>(code));
+    return out.bytes();
+}
+
+std::vector<std::byte> ServerSimulator::os_failure(std::uint64_t code)
+{
+    tcbor::Writer out;
+    out.map(1).text("err").map(2);
+    out.text("group").uint(static_cast<std::uint64_t>(Group::Os));
+    out.text("rc").uint(code);
     return out.bytes();
 }
 

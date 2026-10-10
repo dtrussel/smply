@@ -8,12 +8,15 @@
 
 #include "smply/groups/os.hpp"
 
+#include "cbor_shapes.hpp"
 #include "fake_transport.hpp"
 #include "manual_clock.hpp"
 #include "message_builder.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -22,10 +25,12 @@
 #include <string>
 #include <vector>
 
+using smply::BootloaderMode;
 using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::Group;
 using smply::Header;
+using smply::McubootMode;
 using smply::McumgrParameters;
 using smply::MgmtError;
 using smply::Operation;
@@ -37,9 +42,11 @@ using smply::SmpClient;
 using smply::SmpError;
 using smply::Version;
 using smply::test::bytes_of;
+using smply::test::Encoding;
 using smply::test::FakeTransport;
 using smply::test::make_message;
 using smply::test::ManualClock;
+using smply::test::Shape;
 
 namespace Catch {
 template<>
@@ -508,6 +515,257 @@ TEST_CASE("every truncation of an echo reply is handled", "[os][echo][hostile]")
         REQUIRE(outcome.code == ErrorCode::CborDecode);
         REQUIRE_FALSE(outcome.value.has_value());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bootloader information
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// `{"mode": <mode>}`, plus `"no-downgrade": true` when asked, in \p encoding.
+[[nodiscard]] Shape mode_reply(Encoding encoding, std::int64_t mode, bool no_downgrade)
+{
+    Shape shape{encoding};
+    shape.map(no_downgrade ? 2 : 1).text("mode");
+    if (mode < 0) {
+        shape.raw().nint(mode);
+    } else {
+        shape.uint(static_cast<std::uint64_t>(mode));
+    }
+    if (no_downgrade) {
+        shape.text("no-downgrade");
+        shape.raw().boolean(true);
+    }
+    shape.end();
+    return shape;
+}
+
+} // namespace
+
+TEST_CASE("the bootloader name request is a read of command 8 with no query",
+          "[os][bootloader][encoding]")
+{
+    Outcome<std::string> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_name(outcome.callback()));
+
+    const Header header = fixture.sent_header();
+    REQUIRE(header.op == Operation::Read);
+    REQUIRE(header.group == Group::Os);
+    REQUIRE(header.command == 8);
+    REQUIRE(fixture.sent_payload() == bytes_of({0xA0}));
+}
+
+TEST_CASE("the bootloader mode request carries query \"mode\"", "[os][bootloader][encoding]")
+{
+    Outcome<BootloaderMode> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+
+    const Header header = fixture.sent_header();
+    REQUIRE(header.op == Operation::Read);
+    REQUIRE(header.group == Group::Os);
+    REQUIRE(header.command == 8);
+    // {"query": "mode"}
+    REQUIRE(fixture.sent_payload() ==
+            bytes_of({0xA1, 0x65, 0x71, 0x75, 0x65, 0x72, 0x79, 0x64, 0x6D, 0x6F, 0x64, 0x65}));
+}
+
+TEST_CASE("the bootloader name is returned", "[os][bootloader]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    Outcome<std::string> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_name(outcome.callback()));
+    Shape reply{encoding};
+    reply.map(1).text("bootloader").text("MCUboot").end();
+    fixture.respond(reply.view());
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value == std::string{"MCUboot"});
+}
+
+TEST_CASE("each of MCUboot's modes is decoded with its number", "[os][bootloader]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    const std::int64_t raw = GENERATE(range(std::int64_t{0}, std::int64_t{10}));
+    Outcome<BootloaderMode> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+    fixture.respond(mode_reply(encoding, raw, false).view());
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value.has_value());
+    CHECK(static_cast<std::int64_t>(outcome.value->mode) == raw);
+    CHECK(outcome.value->raw_mode == raw);
+    CHECK_FALSE(outcome.value->no_downgrade);
+    CHECK(smply::to_string(outcome.value->mode) != "unknown");
+}
+
+TEST_CASE("a mode outside MCUboot's enum is unknown, with its number kept",
+          "[os][bootloader][hostile]")
+{
+    // -1 is what Zephyr sends for a build it does not map (A38); 10 and up is
+    // a mode newer than smply (A2). Neither is an error.
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    const std::int64_t raw =
+        GENERATE(std::int64_t{-1}, std::int64_t{-128}, std::int64_t{10}, std::int64_t{1000000});
+    Outcome<BootloaderMode> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+    fixture.respond(mode_reply(encoding, raw, false).view());
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value.has_value());
+    CHECK(outcome.value->mode == McubootMode::Unknown);
+    CHECK(outcome.value->raw_mode == raw);
+}
+
+TEST_CASE("no-downgrade is read when present and false when absent", "[os][bootloader]")
+{
+    const Encoding encoding = GENERATE(Encoding::Definite, Encoding::Indefinite);
+    const bool flag = GENERATE(false, true);
+    Outcome<BootloaderMode> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+    fixture.respond(mode_reply(encoding, 3, flag).view());
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.value == BootloaderMode{.mode = McubootMode::SwapUsingMove,
+                                            .raw_mode = 3,
+                                            .no_downgrade = flag});
+}
+
+TEST_CASE("a mode reply without a mode is rejected", "[os][bootloader][hostile]")
+{
+    Outcome<BootloaderMode> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+    fixture.respond(ConstBytes{bytes_of({0xA0})}); // {}
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.code == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a wrong-typed mode or flag is a decode failure", "[os][bootloader][hostile]")
+{
+    Outcome<BootloaderMode> text_mode;
+    Outcome<BootloaderMode> int_flag;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode(text_mode.callback()));
+    // {"mode": "3"}
+    fixture.respond(ConstBytes{bytes_of({0xA1, 0x64, 0x6D, 0x6F, 0x64, 0x65, 0x61, 0x33})});
+    REQUIRE(text_mode.calls == 1);
+    REQUIRE(text_mode.code == ErrorCode::CborDecode);
+
+    static_cast<void>(fixture.os.bootloader_mode(int_flag.callback()));
+    Shape reply{Encoding::Definite};
+    reply.map(2).text("mode").uint(1).text("no-downgrade").uint(1).end();
+    fixture.respond(reply.view());
+    REQUIRE(int_flag.calls == 1);
+    REQUIRE(int_flag.code == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a bootloader name longer than the limit is rejected", "[os][bootloader][hostile]")
+{
+    Outcome<std::string> at_limit;
+    Outcome<std::string> over;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_name(at_limit.callback()));
+    Shape exact{Encoding::Definite};
+    exact.map(1).text("bootloader").text(std::string(smply::limits::kMaxBootloaderNameLength, 'b'));
+    fixture.respond(exact.view());
+    REQUIRE(at_limit.calls == 1);
+    REQUIRE(at_limit.value.has_value());
+
+    static_cast<void>(fixture.os.bootloader_name(over.callback()));
+    Shape longer{Encoding::Definite};
+    longer.map(1)
+        .text("bootloader")
+        .text(std::string(smply::limits::kMaxBootloaderNameLength + 1, 'b'));
+    fixture.respond(longer.view());
+    REQUIRE(over.calls == 1);
+    REQUIRE(over.code == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a name reply without a name is rejected", "[os][bootloader][hostile]")
+{
+    Outcome<std::string> outcome;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_name(outcome.callback()));
+    fixture.respond(ConstBytes{bytes_of({0xA0})});
+
+    REQUIRE(outcome.calls == 1);
+    REQUIRE(outcome.code == ErrorCode::CborDecode);
+}
+
+TEST_CASE("a bootloader with no answer to the query is an OS-group error", "[os][bootloader]")
+{
+    // {"err": {"group": 0, "rc": 3}}: OS_MGMT_ERR_QUERY_YIELDS_NO_ANSWER over
+    // SMP v2 (docs/protocol-notes.md section 5).
+    std::optional<smply::Error> captured;
+
+    Fixture fixture;
+
+    static_cast<void>(fixture.os.bootloader_mode([&](const Result<BootloaderMode>& result) {
+        if (!result.has_value()) {
+            captured = result.error();
+        }
+    }));
+    fixture.respond(ConstBytes{bytes_of({0xA1, 0x63, 0x65, 0x72, 0x72, 0xA2, 0x65, 0x67, 0x72, 0x6F,
+                                         0x75, 0x70, 0x00, 0x62, 0x72, 0x63, 0x03})});
+
+    REQUIRE(captured.has_value());
+    REQUIRE(captured->code() == ErrorCode::ProtocolError);
+    REQUIRE(captured->mgmt() == MgmtError::scoped(Group::Os, 3));
+}
+
+TEST_CASE("every truncation of a mode reply is handled", "[os][bootloader][hostile]")
+{
+    const Shape reply = mode_reply(Encoding::Definite, 5, true);
+    const ConstBytes full = reply.view();
+
+    for (std::size_t length = 0; length < full.size(); ++length) {
+        Outcome<BootloaderMode> outcome;
+
+        Fixture fixture;
+
+        static_cast<void>(fixture.os.bootloader_mode(outcome.callback()));
+        fixture.respond(full.first(length));
+
+        REQUIRE(outcome.calls == 1);
+        REQUIRE(outcome.code == ErrorCode::CborDecode);
+        REQUIRE_FALSE(outcome.value.has_value());
+    }
+}
+
+TEST_CASE("every mode has a name", "[os][bootloader]")
+{
+    CHECK(smply::to_string(McubootMode::Unknown) == "unknown");
+    CHECK(smply::to_string(McubootMode::UpgradeOnly) == "upgrade-only");
+    CHECK(smply::to_string(McubootMode::DirectXipWithRevert) == "direct-xip-with-revert");
+    CHECK(smply::to_string(McubootMode::SwapUsingOffset) == "swap-using-offset");
 }
 
 // ---------------------------------------------------------------------------

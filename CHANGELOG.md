@@ -19,8 +19,56 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
+A feature release. **smply now asks the device which MCUboot mode it runs**
+and never sends a command the mode cannot carry out, or promises a revert
+the mode does not have (ADR-0025). That makes direct-XIP devices updatable,
+from one file, one build per slot, or an nRF Connect SDK direct-XIP package.
+It also adds the statistics and settings groups, a reference serial port
+adapter and its example, and several images of one device in one update with
+a reader for nRF Connect SDK's multi-image package. **It breaks the API and
+changes behaviour in the places listed under "Changed"**, which is what `0.x`
+allows (ADR-0016): above all, an upgrade-only device is now refused unless the
+plan sets `allow_no_revert`.
+
 ### Added
 
+- **The MCUboot mode, read from the device** (ADR-0025). `OsManagement`
+  reads bootloader information, OS command 8: `bootloader_name()` and
+  `bootloader_mode()`, which returns `BootloaderMode` (`McubootMode`, the raw
+  number, and `no_downgrade`). `FirmwareUpdater` asks for it in a new
+  `QueryingBootloader` state. `UpdateReport` records the mode in
+  `bootloader_mode` and where it came from in `mode_source`; the plan's
+  `fallback_mode` is used when the device reports none. A device without the
+  command updates exactly as before. A timeout or a lost link during the query
+  fails the update before anything is sent. New bound in `smply/limits.hpp`:
+  `kMaxBootloaderNameLength`. The example tools take `--fallback-mode` and
+  print the mode.
+- **Updates the device's mode cannot carry out are refused before anything is
+  sent** (ADR-0025): the new `ErrorCode::UpdateRefused`, with the reason in
+  `UpdateReport::refusal` (`Refusal`). Single slot, the firmware loader, RAM
+  load and single-slot RAM load are refused (`UnsupportedMode`).
+- **Direct-XIP devices can be updated** (ADR-0025). With revert, the update
+  is the ordinary test, reset and confirm, in whichever slot is not running.
+  Without revert, set-state does not exist, so the update is refused unless
+  the plan sets `allow_no_revert`; then it uploads, resets, and succeeds when
+  the device runs the new image, with no set-state sent and no confirm asked
+  for. Several images on a direct-XIP device are refused
+  (`Refusal::MultiImageUnsupported`). `ImageReport::upload_slot` and
+  `UpdateReport::upload_slot` record the slot the image went to, and
+  `rolled_back` now also covers a direct-XIP device that kept its old slot.
+  An image can be given as one build per slot
+  (`ImageTarget::secondary_source`, `--image-secondary` in the example tools),
+  and the build for the free slot is the one sent. `support/dfu_package` reads
+  an nRF Connect SDK direct-XIP package as one image with both builds
+  (`PackageImage::secondary`, `PackageImage::slot`), and `PackageUpdate` passes
+  both on. A QSPI split-image direct-XIP package is refused by name.
+- **An older image is refused before it is sent** when the device reports
+  downgrade prevention (ADR-0025, `Refusal::Downgrade`), with MCUboot's own
+  comparison: major, minor and revision, never the build number.
+  `UpdatePlan::check_downgrade = false` (`--no-downgrade-check` in the
+  example tools) turns it off; the device still refuses at boot.
 - **The statistics and settings management groups** (MCUmgr groups 2 and 3).
   `StatisticsManagement` lists statistics groups and reads one group's
   counters; `SettingsManagement` reads, writes and erases a setting and asks
@@ -91,6 +139,14 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Changed
 
+- **An upgrade-only (overwrite) device is refused by default** (ADR-0025,
+  `Refusal::RevertUnavailable`). `TestThenConfirm` promises a trial boot the
+  device can revert, and an overwrite device has none: the image is copied
+  into place for good at the reset. Before, smply ran the update and reported
+  it as an ordinary test-then-confirm. **To keep the old behaviour**, set
+  `UpdatePlan::allow_no_revert`, or pass `--allow-no-revert` to the example
+  tools; `UploadOnly` is never refused for this. The device must report its
+  mode for this to apply, or the plan must supply it as `fallback_mode`.
 - **Over serial, upload messages now fit the device's buffer**
   ([ADR-0024](docs/decisions/ADR-0024-transport-message-overhead.md),
   protocol-notes A25). A Zephyr device's netbuf also holds the serial length
@@ -321,6 +377,7 @@ indefinite-length, and that the final upload chunk is answered only after the
 device has hashed the whole image, which is why `UploadOptions` carries a
 separate `final_chunk_timeout`.
 
-[Unreleased]: https://github.com/dtrussel/smply/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dtrussel/smply/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dtrussel/smply/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dtrussel/smply/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dtrussel/smply/releases/tag/v0.1.0
