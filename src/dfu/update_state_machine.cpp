@@ -8,10 +8,76 @@
 #include "smply/mcuboot_image.hpp"
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace smply::dfu {
+
+/// One image of the update with what the machine has decided about it.
+struct Image : Target
+{
+    /// Which of `builds` is sent: 0 for the primary slot's, 1 for the
+    /// secondary's. Always 0 without builds.
+    std::size_t chosen = 0;
+    /// `builds` has been chosen from.
+    bool chosen_known = false;
+    /// `Client` only: booted and not yet confirmed, so a confirm is owed.
+    bool in_trial = false;
+};
+
+/// Everything the decisions need, carried between them.
+///
+/// Deliberately small: anything the machine does not branch on belongs in
+/// `FirmwareUpdater`, not here. Only `Machine` holds one, so every field is
+/// set by an event the machine was given.
+struct Context
+{
+    /// The images, in the order they are staged. `report.images` matches it
+    /// entry for entry.
+    std::vector<Image> targets;
+    /// The target being uploaded, marked or confirmed. Equal to
+    /// `targets.size()` once every image is staged.
+    std::size_t current = 0;
+    /// The most recent slot table: from a state read, or from the answer to a
+    /// set-state command, both delivered in the event.
+    std::optional<ImageState> device;
+    /// From the device, or zero when it does not implement the command.
+    std::uint32_t buf_size = 0;
+    /// The device reported downgrade prevention (`BootloaderMode::no_downgrade`).
+    bool no_downgrade = false;
+
+    /// What the update will report. The machine writes the outcome fields
+    /// here as it decides them -- per image in `images`, and `revert_pending`
+    /// and `cause` for the whole -- derives the summary fields from the images
+    /// after every step, and adds the final state, the target hash and the
+    /// last slot table on the step that finishes the update.
+    /// `Machine::report()` hands this one report out live: there is no copy.
+    UpdateReport report;
+
+    /// An upload was started and has not finished, so a reconnect resumes it
+    /// rather than moving on.
+    bool upload_in_progress = false;
+
+    /// A swap is scheduled and not yet confirmed, so an update that ends now
+    /// leaves the device about to revert.
+    bool swap_scheduled = false;
+    /// The one mark-for-test recovery has been spent for the current target --
+    /// for either shape of refusal, `ImageAlreadyPending` or a group-less
+    /// `BadState`.
+    bool mark_retried = false;
+    /// The one `Busy` reset retry has been spent.
+    bool reset_forced = false;
+    /// The application has approved the confirm, so a re-inspection that finds
+    /// an image still on trial confirms it without asking again (ADR-0023).
+    bool confirm_approved = false;
+    /// The one re-read after a timed-out confirm or read-back has been spent.
+    bool confirm_reread = false;
+    /// The refusal checks have run, and passed. They run once, before the
+    /// first command that changes the device (ADR-0025, decision 3).
+    bool preconditions_checked = false;
+};
+
 namespace {
 
 /// Terminal failure, recording why.
@@ -374,7 +440,7 @@ enum class Apply : std::uint8_t
     bool reverted = false;
     bool not_booted = false;
     for (std::size_t index = 0; index < context.targets.size(); ++index) {
-        Target& target = context.targets[index];
+        Image& target = context.targets[index];
         target.in_trial = false;
         if (target.commit != CommitBy::Client) {
             continue;
@@ -471,7 +537,7 @@ bool is_downgrade(const UpdatePlan& plan, const Context& context)
 /// for one slot is meaningless.
 [[nodiscard]] std::optional<Step> choose_build(Context& context)
 {
-    Target& target = context.targets[context.current];
+    Image& target = context.targets[context.current];
     if (!target.builds.has_value() || target.chosen_known) {
         return std::nullopt;
     }
@@ -694,24 +760,6 @@ void summarise(Context& context)
     return fail(context, error);
 }
 
-} // namespace
-
-Context make_context(std::vector<Target> targets)
-{
-    Context context;
-    context.report.images.reserve(targets.size());
-    for (const Target& target : targets) {
-        ImageReport& report = context.report.images.emplace_back();
-        report.image = target.image;
-        report.commit = target.commit;
-        report.target_hash = target.hash;
-    }
-    context.targets = std::move(targets);
-    return context;
-}
-
-namespace {
-
 /// Whether \p state works on `context.current`, which must then name a target.
 [[nodiscard]] bool needs_current(UpdateState state)
 {
@@ -734,7 +782,7 @@ void parameterise(Step& step, Context& context)
 {
     switch (step.effect) {
     case Effect::StartUpload: {
-        const Target& target = context.targets[context.current];
+        const Image& target = context.targets[context.current];
         step.target = context.current;
         step.build = target.chosen;
         step.image = target.image;
@@ -743,7 +791,7 @@ void parameterise(Step& step, Context& context)
     }
     case Effect::MarkForTest:
     case Effect::Confirm: {
-        const Target& target = context.targets[context.current];
+        const Image& target = context.targets[context.current];
         step.image = target.image;
         step.hash = target.hash;
         return;
@@ -1013,15 +1061,32 @@ void parameterise(Step& step, Context& context)
 
 } // namespace
 
-Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Context& context)
+Machine::Machine(const std::vector<Target>& targets, const UpdatePlan& plan)
+    : plan_{plan}, context_{std::make_unique<Context>()}
 {
-    // Both are the updater's to guarantee; a slip is a bug, reported as one
-    // rather than read out of bounds.
+    context_->targets.reserve(targets.size());
+    context_->report.images.reserve(targets.size());
+    for (const Target& target : targets) {
+        ImageReport& report = context_->report.images.emplace_back();
+        report.image = target.image;
+        report.commit = target.commit;
+        report.target_hash = target.hash;
+        context_->targets.push_back(Image{target});
+    }
+}
+
+Machine::~Machine() = default;
+
+Step Machine::apply(const Event& event)
+{
+    Context& context = *context_;
+    // The machine's own invariants: a slip is a bug, reported as one rather
+    // than read out of bounds. With no target at all, the updater built the
+    // machine wrong.
     const bool consistent = !context.targets.empty() &&
-                            context.report.images.size() == context.targets.size() &&
-                            (!needs_current(state) || context.current < context.targets.size());
-    Step step = consistent || is_terminal(state)
-                    ? decide(state, event, plan, context)
+                            (!needs_current(state_) || context.current < context.targets.size());
+    Step step = consistent || is_terminal(state_)
+                    ? decide(state_, event, plan_, context)
                     : fail(context, ErrorCode::Internal, "dfu: no image to work on");
     // An effect naming the current target is given its parameters from it, so
     // it must have one, whatever state the step was decided in.
@@ -1030,7 +1095,18 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     }
     summarise(context);
     parameterise(step, context);
+    state_ = step.next;
     return step;
+}
+
+UpdateState Machine::state() const noexcept
+{
+    return state_;
+}
+
+const UpdateReport& Machine::report() const noexcept
+{
+    return context_->report;
 }
 
 } // namespace smply::dfu

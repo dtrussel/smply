@@ -836,16 +836,32 @@ vectors, rather than a dependency on a crypto library (ADR-0009; see
 
 ## 8. Firmware update state machine (`src/dfu/`)
 
-Pure `(state, event) → (state, effects)` core (`update_state_machine.*`) driven
-by `FirmwareUpdater`, which owns the effects (issuing requests, emitting
+A pure decision core, `dfu::Machine` (`update_state_machine.*`), driven by
+`FirmwareUpdater`, which owns the effects (issuing requests, emitting
 callbacks).
 
 ### Events in, effects out
 
-`dfu::advance(state, event, plan, context)` returns a `Step`: the next state,
-one `Effect`, and the parameters that effect needs. The seam carries
-everything across it in both directions, so every decision is made inside the
-machine and the updater's I/O code makes none
+`dfu::Machine` is internal to `src/dfu/`. Its whole interface is:
+
+* **Construction** from the update's targets (image number, `CommitBy`, the
+  file's hash and version, and direct-XIP's two builds when given) and the
+  `UpdatePlan`. The report has one entry per target from the start.
+* **`apply(event)`**, which decides in the current state, moves to the next
+  and returns a `Step`: the next state, one `Effect`, and the parameters that
+  effect needs. A `Continue` effect asks for a `Continue` event at once; the
+  updater feeds it, and announces each state it passes through.
+* **`state()`** and **`report()`**, read-only.
+
+Everything the machine carries between events (the current target, the last
+slot table, the buffer size, the chosen build, the recovery budgets, whether a
+swap is scheduled) is its own, defined beside the decisions and visible to
+nothing else. A state is therefore reached only by the events that reach it,
+in the unit suite as in production. The updater holds one machine per
+`start()` and keeps it after the update ends, so `report()` still answers.
+
+The seam carries everything across it in both directions, so every decision
+is made inside the machine and the updater's I/O code makes none
 ([ADR-0008](decisions/ADR-0008-upload-state-ownership.md)'s split):
 
 * **Events carry what the machine routes on.** `StateRead` carries the slot
@@ -859,18 +875,12 @@ machine and the updater's I/O code makes none
   index in the update, which is also its source's), the build to send (0 or 1,
   for direct-XIP's per-slot files), the image number and the device's buffer
   size. `MarkForTest` and `Confirm` name the image-state hash and the image.
-  The updater carries out an effect from the step alone and never reads the
-  context to do it. Its timers (`AwaitDisconnect`, `AwaitApply`) read only the
+  The updater carries out an effect from the step alone. Its timers (`AwaitDisconnect`, `AwaitApply`) read only the
   plan and the updater's own clock state.
 * **The report is the machine's.** The machine writes it as it decides and,
   on the step whose effect is `Finish`, adds the final state, the target hash
-  and the last slot table. The updater writes nothing to the context at all;
-  it reads the report, to hand it out.
-
-`dfu::Context` still holds the machine's working state between calls, and the
-unit suite still reaches some states by assigning its fields;
-[`update-run-plan.md`](update-run-plan.md) moves both behind a `dfu::Machine`
-class.
+  and the last slot table. The updater writes nothing to it; it reads
+  `Machine::report()`, to hand it out.
 
 ### States
 
@@ -1052,7 +1062,7 @@ multi-image flow ([`multi-image.md`](multi-image.md)).
 `start(std::span<const ImageTarget>, plan, callback)`
 ([ADR-0021](decisions/ADR-0021-multi-image-update.md)) runs the diagram above
 once, with the staging part once per image: each image is planned, uploaded,
-verified and marked, in the order given, and `Context::current` says which.
+verified and marked, in the order given, one after the other.
 Then **one** reset, because MCUboot evaluates every image's dependency TLV at
 that one boot, and an image whose dependency is not yet staged is not booted
 (protocol-notes §6). The single-image `start()` is this with one `Client`
@@ -1161,7 +1171,7 @@ that forgets a kind does not compile:
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
 failed in plus the underlying `Error`. There is one report: the machine writes
-it in `Context::report` as it decides, `FirmwareUpdater::report()` hands that
+it as it decides, `FirmwareUpdater::report()` hands that
 same object out live while the update runs, and on the step that reaches a
 terminal state the machine fills the three fields only known at the end
 (`final_state`, `target_hash`, `final_device_state`); the updater then emits

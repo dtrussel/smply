@@ -385,7 +385,7 @@ Blocked by: 4
 Delivers the rest of part 3. The free function and public `Context` give way to
 `dfu::Machine`; the unit suite drives it through events with a scenario helper.
 
-- [ ] `dfu::Machine` owns the context, the current state and the one report; the updater holds a machine, not a context.
-- [ ] No unit test assigns a context field; deep states are reached through a scenario helper. A case that tested an unreachable state is deleted and named in the commit message.
-- [ ] The component suite passes unchanged, and `report()` behaves exactly as stage 1 left it.
-- [ ] `design.md` §8 describes the machine's interface in place of the context struct.
+- [x] `dfu::Machine` owns the context, the current state and the one report; the updater holds a machine, not a context.
+- [x] No unit test assigns a context field; deep states are reached through a scenario helper. A case that tested an unreachable state is deleted and named in the commit message.
+- [x] The component suite passes unchanged, and `report()` behaves exactly as stage 1 left it.
+- [x] `design.md` §8 describes the machine's interface in place of the context struct.

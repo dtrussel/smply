@@ -414,10 +414,16 @@ and a file that shrinks after `open()` is a broken source. `support/` is outside
 the coverage filter ([`quality-gates.md`](quality-gates.md) §6), so these tests
 add proof, not a gate number.
 
-### Update state machine (pure function)
+### Update state machine (`dfu::Machine`)
 Every transition in [`design.md`](design.md) §8, and every row of its
-failure/recovery table, driven directly as `(state, event)` pairs — no client,
-no transport. Exhaustive switch coverage is checked by the branch-coverage gate.
+failure/recovery table, driven through `dfu::Machine`'s interface: events in,
+steps and the report out — no client, no transport. No case sets the
+machine's working state: a state is reached by the events that reach it,
+through the suite's `Scenario` helper, a small device model that answers each
+effect (a read returns its slot table, an upload fills the free slot, a reset
+swaps the marked image in on trial, a confirm confirms) until the machine is
+in the state asked for. A case then feeds the event it is about. Exhaustive
+switch coverage is checked by the branch-coverage gate.
 
 `tests/unit/test_update_state_machine.cpp`. Beyond the happy
 path: the planner's four cases and their `UploadOnly` variants; a slot table
@@ -434,7 +440,7 @@ the one reset; the mark recovery spent once per image; the three answers of
 the device contract (applied, still applying in either variant, failed); the
 timeout and a failed read while waiting; a revert of one `Client` image; a
 resume after the reset that stages nothing; each `Client` image confirmed in
-turn and all read back confirmed; `UploadOnly` over two images; and a context
+turn and all read back confirmed; `UploadOnly` over two images; and a machine
 with no image to work on. ADR-0022 added:
 * a device image on trial counts as applied;
 * the commit wait after the confirm: its success, a trial the other MCU

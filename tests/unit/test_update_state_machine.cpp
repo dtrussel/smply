@@ -5,6 +5,11 @@
 // machine out of `FirmwareUpdater`: every recovery rule is a value-in,
 // value-out assertion instead of a scenario needing a device.
 //
+// Every case drives `dfu::Machine` through its interface: events in, steps
+// and the report out. A state is reached by the events that reach it, through
+// `Scenario` below, never by setting the machine's working state -- so a state
+// the machine cannot reach cannot be tested as if it could.
+//
 // Three rules the suite exists to protect, each read out of the server's
 // source (docs/protocol-notes.md section 7):
 //
@@ -24,13 +29,17 @@
 #include <catch2/catch_tostring.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+using smply::CommitBy;
 using smply::ConstBytes;
 using smply::Error;
 using smply::ErrorCode;
@@ -47,11 +56,11 @@ using smply::Refusal;
 using smply::SmpError;
 using smply::UpdateMode;
 using smply::UpdatePlan;
+using smply::UpdateReport;
 using smply::UpdateState;
-using smply::dfu::advance;
-using smply::dfu::Context;
 using smply::dfu::Effect;
 using smply::dfu::Event;
+using smply::dfu::Machine;
 using smply::dfu::Step;
 using smply::dfu::Target;
 
@@ -94,6 +103,8 @@ namespace {
 
 const ImageHash kTarget = hash_of(1);
 const ImageHash kOther = hash_of(200);
+const ImageHash kRadio = hash_of(100);
+const ImageHash kRadioOld = hash_of(150);
 
 /// One slot, spelled so a test states only what it is about.
 struct SlotSpec
@@ -106,22 +117,33 @@ struct SlotSpec
     bool confirmed = false;
 };
 
+[[nodiscard]] ImageSlot slot_of(const SlotSpec& spec)
+{
+    ImageSlot slot;
+    slot.image = spec.image;
+    slot.slot = spec.slot;
+    slot.version = "1.0.0";
+    slot.hash = spec.hash;
+    slot.bootable = true;
+    slot.active = spec.active;
+    slot.pending = spec.pending;
+    slot.confirmed = spec.confirmed;
+    return slot;
+}
+
 [[nodiscard]] ImageState state_of(std::initializer_list<SlotSpec> specs)
 {
     ImageState out;
     for (const SlotSpec& spec : specs) {
-        ImageSlot slot;
-        slot.image = spec.image;
-        slot.slot = spec.slot;
-        slot.version = "1.0.0";
-        slot.hash = spec.hash;
-        slot.bootable = true;
-        slot.active = spec.active;
-        slot.pending = spec.pending;
-        slot.confirmed = spec.confirmed;
-        out.slots.push_back(slot);
+        out.slots.push_back(slot_of(spec));
     }
     return out;
+}
+
+/// The old image running, and nothing else: the next step would be an upload.
+[[nodiscard]] ImageState running_old_only()
+{
+    return state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
 }
 
 /// The ordinary steady state: the old image running and confirmed, the new one
@@ -138,6 +160,20 @@ struct SlotSpec
 {
     return state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true},
                      SlotSpec{.slot = 1, .hash = kOther, .confirmed = true}});
+}
+
+/// The new image running and confirmed: what a landed confirm reads back.
+[[nodiscard]] ImageState booted_confirmed()
+{
+    return state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+                     SlotSpec{.slot = 1, .hash = kOther}});
+}
+
+[[nodiscard]] Event just(Event::Kind kind)
+{
+    Event event;
+    event.kind = kind;
+    return event;
 }
 
 [[nodiscard]] Event state_read(const ImageState& state)
@@ -166,10 +202,21 @@ struct SlotSpec
     return event;
 }
 
-[[nodiscard]] Event just(Event::Kind kind)
+[[nodiscard]] Event upload_finished(std::uint64_t transferred)
 {
     Event event;
-    event.kind = kind;
+    event.kind = Event::Kind::UploadFinished;
+    event.transferred = transferred;
+    return event;
+}
+
+[[nodiscard]] Event bootloader_read(McubootMode mode, bool no_downgrade = false)
+{
+    Event event;
+    event.kind = Event::Kind::BootloaderRead;
+    event.bootloader.mode = mode;
+    event.bootloader.raw_mode = static_cast<std::int64_t>(mode);
+    event.bootloader.no_downgrade = no_downgrade;
     return event;
 }
 
@@ -205,11 +252,250 @@ struct SlotSpec
         Error{ErrorCode::ProtocolError, MgmtError::smp(static_cast<std::uint16_t>(code))});
 }
 
-/// A context for one `Client` image, \p image, whose file is `kTarget`.
-[[nodiscard]] Context fresh(std::uint32_t image = 0)
+/// One `Client` image, \p image, whose file is `kTarget`.
+[[nodiscard]] std::vector<Target> one_image(std::uint32_t image = 0)
 {
-    return smply::dfu::make_context({Target{.image = image, .hash = kTarget}});
+    return {Target{.image = image, .hash = kTarget}};
 }
+
+/// Image 0 committed by smply, image 1 by the device: the coordinating-MCU
+/// product of docs/multi-image.md.
+[[nodiscard]] std::vector<Target> app_and_radio()
+{
+    return {Target{.image = 0, .commit = CommitBy::Client, .hash = kTarget},
+            Target{.image = 1, .commit = CommitBy::Device, .hash = kRadio}};
+}
+
+/// Two `Client` images, `kTarget` for image 0 and `kRadio` for image 1.
+[[nodiscard]] std::vector<Target> two_client_images()
+{
+    return {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}};
+}
+
+/// Drives a `dfu::Machine` the way `FirmwareUpdater` and a cooperative device
+/// would, so that a test reaches a state through the events that reach it.
+///
+/// `next()` answers the last step's effect as the device would: a read returns
+/// `device`, an upload puts the file in the image's free slot, a mark sets it
+/// pending, the disconnect after a reset swaps every pending image in, a
+/// confirm confirms. `reach()` repeats that until the machine is in the state
+/// asked for. Between them, `feed()` hands the machine any event a test wants,
+/// and the model carries on from whatever the test left.
+///
+/// The knobs are read when their question is asked, so set them first.
+class Scenario
+{
+public:
+    explicit Scenario(const UpdatePlan& plan = UpdatePlan{}) : Scenario{one_image(), plan} {}
+
+    explicit Scenario(std::vector<Target> targets, const UpdatePlan& plan = UpdatePlan{})
+        : targets_{std::move(targets)}, machine_{std::make_unique<Machine>(targets_, plan)}
+    {
+        // Each image runs an old build of its own, confirmed, in its primary.
+        for (const Target& target : targets_) {
+            device.slots.push_back(slot_of(SlotSpec{.image = target.image,
+                                                    .slot = target.image * 2,
+                                                    .hash = old_of(target.image),
+                                                    .active = true,
+                                                    .confirmed = true}));
+        }
+    }
+
+    /// The slot table the device reports.
+    ImageState device;
+    /// The bootloader's answer; none when unset.
+    std::optional<McubootMode> mode;
+    bool no_downgrade = false;
+    /// The parameters' answer; none when zero.
+    std::uint32_t buf_size = 0;
+    /// A `Device` image is still applying after the reset, and is applied at
+    /// the first apply poll rather than at the reset.
+    bool device_applies_late = false;
+
+    /// Hands the machine \p event.
+    Step feed(const Event& event)
+    {
+        last_ = machine_->apply(event);
+        return last_;
+    }
+
+    /// Answers the last step as the device would.
+    Step next()
+    {
+        if (machine_->state() == UpdateState::Idle) {
+            return feed(just(Event::Kind::Start));
+        }
+        return feed(answer(last_));
+    }
+
+    /// `next()` until the machine is in \p state.
+    Scenario& reach(UpdateState state)
+    {
+        for (int turns = 0; turns < 64 && machine_->state() != state; ++turns) {
+            REQUIRE_FALSE(smply::is_terminal(machine_->state()));
+            static_cast<void>(next());
+        }
+        REQUIRE(machine_->state() == state);
+        return *this;
+    }
+
+    /// Reaches `Planning` and returns the planning decision.
+    Step plan()
+    {
+        reach(UpdateState::Planning);
+        return next();
+    }
+
+    [[nodiscard]] const Step& last() const noexcept
+    {
+        return last_;
+    }
+
+    [[nodiscard]] UpdateState state() const noexcept
+    {
+        return machine_->state();
+    }
+
+    [[nodiscard]] const UpdateReport& report() const noexcept
+    {
+        return machine_->report();
+    }
+
+private:
+    /// The old build an image runs before the update.
+    [[nodiscard]] static ImageHash old_of(std::uint32_t image)
+    {
+        return image == 0 ? kOther : hash_of(static_cast<std::uint8_t>(149 + image));
+    }
+
+    [[nodiscard]] Event answer(const Step& step)
+    {
+        switch (step.effect) {
+        case Effect::None:
+        case Effect::Finish:
+            FAIL("the machine is waiting for nothing the device can answer");
+            return Event{};
+        case Effect::Continue:
+            return just(Event::Kind::Continue);
+        case Effect::QueryParameters: {
+            if (buf_size == 0) {
+                return just(Event::Kind::ParametersUnavailable);
+            }
+            Event event = just(Event::Kind::ParametersRead);
+            event.buf_size = buf_size;
+            return event;
+        }
+        case Effect::QueryBootloader:
+            return mode.has_value() ? bootloader_read(*mode, no_downgrade)
+                                    : just(Event::Kind::BootloaderUnavailable);
+        case Effect::ReadState:
+            return state_read(device);
+        case Effect::StartUpload:
+            upload_ = step;
+            upload(step);
+            return upload_finished(kUploadBytes);
+        case Effect::ResumeUpload:
+            upload(upload_);
+            return upload_finished(kUploadBytes);
+        case Effect::MarkForTest:
+            for (ImageSlot& slot : device.slots) {
+                slot.pending = slot.pending || (slot.image == step.image && slot.hash == step.hash);
+            }
+            return marked_for_test(device);
+        case Effect::Reset:
+        case Effect::ForceReset:
+            return just(Event::Kind::ResetAccepted);
+        case Effect::AwaitDisconnect:
+            swap_in([this](std::uint32_t image) {
+                return !device_applies_late || !is_device_image(image);
+            });
+            return just(Event::Kind::Disconnected);
+        case Effect::RequestReconnect:
+            return just(Event::Kind::Reconnected);
+        case Effect::AwaitApply:
+            if (machine_->state() == UpdateState::AwaitingDeviceApply) {
+                swap_in([this](std::uint32_t image) { return is_device_image(image); });
+            } else {
+                for (ImageSlot& slot : device.slots) {
+                    slot.confirmed = slot.confirmed || (slot.active && is_device_image(slot.image));
+                }
+            }
+            return just(Event::Kind::ApplyPollDue);
+        case Effect::RequestConfirmation:
+            return just(Event::Kind::ConfirmApproved);
+        case Effect::Confirm:
+            for (ImageSlot& slot : device.slots) {
+                if (slot.image == step.image) {
+                    slot.confirmed = slot.hash == step.hash;
+                }
+            }
+            return confirmed(device);
+        }
+        return Event{};
+    }
+
+    /// Puts the build \p step names in the free slot of its image.
+    void upload(const Step& step)
+    {
+        const Target& target = targets_.at(step.target);
+        const ImageHash hash =
+            target.builds.has_value() ? (*target.builds).at(step.build).hash : target.hash;
+        const ImageSlot* running = device.active_slot(step.image);
+        const std::uint32_t base = step.image * 2;
+        const std::uint32_t free =
+            running != nullptr && running->slot == base + 1 ? base : base + 1;
+        for (ImageSlot& slot : device.slots) {
+            if (slot.image == step.image && slot.slot == free) {
+                slot = slot_of(SlotSpec{.image = step.image, .slot = free, .hash = hash});
+                return;
+            }
+        }
+        device.slots.push_back(slot_of(SlotSpec{.image = step.image, .slot = free, .hash = hash}));
+    }
+
+    /// Boots the pending build of each image \p which selects, on trial: the
+    /// old one stays beside it, confirmed, as MCUboot reports a test swap.
+    template<class Which>
+    void swap_in(Which which)
+    {
+        for (ImageSlot& incoming : device.slots) {
+            if (!incoming.pending || !which(incoming.image)) {
+                continue;
+            }
+            incoming.pending = false;
+            ImageSlot* running = nullptr;
+            for (ImageSlot& slot : device.slots) {
+                if (slot.image == incoming.image && slot.active) {
+                    running = &slot;
+                }
+            }
+            if (running == nullptr) {
+                incoming.active = true;
+                continue;
+            }
+            std::swap(running->hash, incoming.hash);
+            running->confirmed = false;
+            incoming.confirmed = true;
+        }
+    }
+
+    [[nodiscard]] bool is_device_image(std::uint32_t image) const
+    {
+        for (const Target& target : targets_) {
+            if (target.image == image) {
+                return target.commit == CommitBy::Device;
+            }
+        }
+        return false;
+    }
+
+    static constexpr std::uint64_t kUploadBytes = 4096;
+
+    std::vector<Target> targets_;
+    std::unique_ptr<Machine> machine_;
+    Step last_{};
+    Step upload_{};
+};
 
 /// Every state an update can be in that is not terminal.
 constexpr std::array<UpdateState, 17> kNonTerminal{
@@ -232,14 +518,53 @@ constexpr std::array<UpdateState, 17> kNonTerminal{
     UpdateState::AwaitingDeviceCommit,
 };
 
+/// A scenario that passes through every one of `kNonTerminal`: a `Client` and
+/// a `Device` image, the second still applying after the reset.
+[[nodiscard]] std::unique_ptr<Scenario> through_every_state()
+{
+    auto scenario = std::make_unique<Scenario>(app_and_radio());
+    scenario->device_applies_late = true;
+    return scenario;
+}
+
 } // namespace
+
+// --- The scenario helper itself ----------------------------------------------
+
+TEST_CASE("the scenario reaches every non-terminal state through events", "[dfu][machine]")
+{
+    // The rest of the suite stands on this: if a state could not be reached,
+    // a case that reaches it would fail on its own REQUIRE, not pass vacuously.
+    for (const UpdateState state : kNonTerminal) {
+        CAPTURE(state);
+        through_every_state()->reach(state);
+    }
+
+    // And the ordinary single-image update runs to the end.
+    Scenario single;
+    single.reach(UpdateState::VerifyingConfirmed);
+    CHECK(single.next().next == UpdateState::Completed);
+    CHECK(single.report().final_state == UpdateState::Completed);
+}
 
 // --- The happy path, state by state -----------------------------------------
 
+TEST_CASE("a machine starts idle and moves to the state of each step", "[dfu][machine]")
+{
+    Machine machine{one_image(), UpdatePlan{}};
+    CHECK(machine.state() == UpdateState::Idle);
+    REQUIRE(machine.report().images.size() == 1);
+    CHECK(machine.report().images[0].target_hash == kTarget);
+
+    const Step step = machine.apply(just(Event::Kind::Start));
+    CHECK(step.next == UpdateState::QueryingParameters);
+    CHECK(machine.state() == UpdateState::QueryingParameters);
+}
+
 TEST_CASE("an update starts by asking for the device's buffer budget", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step = advance(UpdateState::Idle, just(Event::Kind::Start), UpdatePlan{}, context);
+    Scenario scenario;
+    const Step step = scenario.next();
     CHECK(step.next == UpdateState::QueryingParameters);
     CHECK(step.effect == Effect::QueryParameters);
 }
@@ -248,49 +573,37 @@ TEST_CASE("the buffer budget is remembered, and its absence is not fatal", "[dfu
 {
     // The command is optional; a device without it is ordinary, not broken
     // (docs/protocol-notes.md section 9, A8).
-    Context context = fresh();
-    Event read;
-    read.kind = Event::Kind::ParametersRead;
-    read.buf_size = 512;
-    const Step got = advance(UpdateState::QueryingParameters, read, UpdatePlan{}, context);
+    Scenario with;
+    with.buf_size = 512;
+    with.reach(UpdateState::QueryingParameters);
+    const Step got = with.next();
     CHECK(got.next == UpdateState::QueryingBootloader);
     CHECK(got.effect == Effect::QueryBootloader);
-    CHECK(context.buf_size == 512);
+    with.reach(UpdateState::Uploading);
+    CHECK(with.last().buf_size == 512);
 
-    Context without = fresh();
-    const Step missing = advance(UpdateState::QueryingParameters,
-                                 just(Event::Kind::ParametersUnavailable), UpdatePlan{}, without);
+    Scenario without;
+    without.reach(UpdateState::QueryingParameters);
+    const Step missing = without.next();
     CHECK(missing.next == UpdateState::QueryingBootloader);
     CHECK(missing.effect == Effect::QueryBootloader);
-    CHECK(without.buf_size == 0);
+    without.reach(UpdateState::Uploading);
+    CHECK(without.last().buf_size == 0);
 }
-
-namespace {
-
-[[nodiscard]] Event bootloader_read(McubootMode mode)
-{
-    Event event;
-    event.kind = Event::Kind::BootloaderRead;
-    event.bootloader.mode = mode;
-    event.bootloader.raw_mode = static_cast<std::int64_t>(mode);
-    return event;
-}
-
-} // namespace
 
 TEST_CASE("a reported mode is recorded as reported, and the slot table is read next",
           "[dfu][machine][mode]")
 {
     // The device's answer wins over the plan's fallback (ADR-0025, decision 1).
-    Context context = fresh();
     UpdatePlan plan;
     plan.fallback_mode = McubootMode::UpgradeOnly;
-    const Step step = advance(UpdateState::QueryingBootloader,
-                              bootloader_read(McubootMode::SwapUsingMove), plan, context);
+    Scenario scenario{plan};
+    scenario.reach(UpdateState::QueryingBootloader);
+    const Step step = scenario.feed(bootloader_read(McubootMode::SwapUsingMove));
     CHECK(step.next == UpdateState::InspectingImages);
     CHECK(step.effect == Effect::ReadState);
-    CHECK(context.report.bootloader_mode == McubootMode::SwapUsingMove);
-    CHECK(context.report.mode_source == ModeSource::Reported);
+    CHECK(scenario.report().bootloader_mode == McubootMode::SwapUsingMove);
+    CHECK(scenario.report().mode_source == ModeSource::Reported);
 }
 
 TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machine][mode]")
@@ -298,27 +611,27 @@ TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machi
     UpdatePlan supplied;
     supplied.fallback_mode = McubootMode::SwapUsingScratch;
 
-    Context with = fresh();
-    const Step step = advance(UpdateState::QueryingBootloader,
-                              just(Event::Kind::BootloaderUnavailable), supplied, with);
+    Scenario with{supplied};
+    with.reach(UpdateState::QueryingBootloader);
+    const Step step = with.feed(just(Event::Kind::BootloaderUnavailable));
     CHECK(step.next == UpdateState::InspectingImages);
     CHECK(step.effect == Effect::ReadState);
-    CHECK(with.report.bootloader_mode == McubootMode::SwapUsingScratch);
-    CHECK(with.report.mode_source == ModeSource::Supplied);
+    CHECK(with.report().bootloader_mode == McubootMode::SwapUsingScratch);
+    CHECK(with.report().mode_source == ModeSource::Supplied);
 
-    Context without = fresh();
-    static_cast<void>(advance(UpdateState::QueryingBootloader,
-                              just(Event::Kind::BootloaderUnavailable), UpdatePlan{}, without));
-    CHECK(without.report.bootloader_mode == McubootMode::Unknown);
-    CHECK(without.report.mode_source == ModeSource::Assumed);
+    Scenario without;
+    without.reach(UpdateState::QueryingBootloader);
+    static_cast<void>(without.feed(just(Event::Kind::BootloaderUnavailable)));
+    CHECK(without.report().bootloader_mode == McubootMode::Unknown);
+    CHECK(without.report().mode_source == ModeSource::Assumed);
 
     // A fallback of Unknown is the same as none.
     UpdatePlan unknown;
     unknown.fallback_mode = McubootMode::Unknown;
-    Context nothing = fresh();
-    static_cast<void>(advance(UpdateState::QueryingBootloader,
-                              just(Event::Kind::BootloaderUnavailable), unknown, nothing));
-    CHECK(nothing.report.mode_source == ModeSource::Assumed);
+    Scenario nothing{unknown};
+    nothing.reach(UpdateState::QueryingBootloader);
+    static_cast<void>(nothing.feed(just(Event::Kind::BootloaderUnavailable)));
+    CHECK(nothing.report().mode_source == ModeSource::Assumed);
 }
 
 TEST_CASE("a reported unknown mode is no answer, so the fallback applies", "[dfu][machine][mode]")
@@ -326,29 +639,21 @@ TEST_CASE("a reported unknown mode is no answer, so the fallback applies", "[dfu
     // -1, or a number newer than smply: neither can drive a decision (A38).
     UpdatePlan plan;
     plan.fallback_mode = McubootMode::SwapUsingOffset;
-    Context context = fresh();
-    static_cast<void>(advance(UpdateState::QueryingBootloader,
-                              bootloader_read(McubootMode::Unknown), plan, context));
-    CHECK(context.report.bootloader_mode == McubootMode::SwapUsingOffset);
-    CHECK(context.report.mode_source == ModeSource::Supplied);
+    Scenario scenario{plan};
+    scenario.reach(UpdateState::QueryingBootloader);
+    static_cast<void>(scenario.feed(bootloader_read(McubootMode::Unknown)));
+    CHECK(scenario.report().bootloader_mode == McubootMode::SwapUsingOffset);
+    CHECK(scenario.report().mode_source == ModeSource::Supplied);
 }
 
 namespace {
 
-/// The old image running, and nothing else: the next step would be an upload.
-[[nodiscard]] ImageState running_old_only()
+/// The planning decision on \p table, from a device reporting \p mode.
+[[nodiscard]] Step planned(Scenario& scenario, McubootMode mode, const ImageState& table)
 {
-    return state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
-}
-
-/// A context that has read \p state from a device running \p mode.
-[[nodiscard]] Context planning_under(McubootMode mode, const ImageState& state)
-{
-    Context context = fresh();
-    context.report.bootloader_mode = mode;
-    context.report.mode_source = ModeSource::Reported;
-    context.device = state;
-    return context;
+    scenario.mode = mode;
+    scenario.device = table;
+    return scenario.plan();
 }
 
 } // namespace
@@ -356,24 +661,23 @@ namespace {
 TEST_CASE("an upgrade-only device is refused before the upload unless the plan accepts it",
           "[dfu][machine][mode][refusal]")
 {
-    const ImageState state = running_old_only();
     const UpdateMode mode = GENERATE(UpdateMode::TestThenConfirm, UpdateMode::ConfirmImmediately);
 
     UpdatePlan plan;
     plan.mode = mode;
-    Context refused = planning_under(McubootMode::UpgradeOnly, state);
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, refused);
+    Scenario refused{plan};
+    const Step step = planned(refused, McubootMode::UpgradeOnly, running_old_only());
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(refused.report.cause.has_value());
-    CHECK(refused.report.cause->code() == ErrorCode::UpdateRefused);
-    CHECK(refused.report.refusal == Refusal::RevertUnavailable);
-    CHECK_FALSE(refused.report.revert_pending);
+    REQUIRE(refused.report().cause.has_value());
+    CHECK(refused.report().cause->code() == ErrorCode::UpdateRefused);
+    CHECK(refused.report().refusal == Refusal::RevertUnavailable);
+    CHECK_FALSE(refused.report().revert_pending);
 
     plan.allow_no_revert = true;
-    Context accepted = planning_under(McubootMode::UpgradeOnly, state);
-    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, accepted);
+    Scenario accepted{plan};
+    const Step upload = planned(accepted, McubootMode::UpgradeOnly, running_old_only());
     CHECK(upload.next == UpdateState::Uploading);
-    CHECK_FALSE(accepted.report.refusal.has_value());
+    CHECK_FALSE(accepted.report().refusal.has_value());
 }
 
 TEST_CASE("an upload-only update is not refused for a missing revert",
@@ -382,8 +686,8 @@ TEST_CASE("an upload-only update is not refused for a missing revert",
     // UploadOnly promises no trial, so there is no promise to break.
     UpdatePlan plan;
     plan.mode = UpdateMode::UploadOnly;
-    Context context = planning_under(McubootMode::UpgradeOnly, running_old_only());
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    Scenario scenario{plan};
+    const Step step = planned(scenario, McubootMode::UpgradeOnly, running_old_only());
     CHECK(step.next == UpdateState::Uploading);
 }
 
@@ -397,20 +701,19 @@ TEST_CASE("a mode without an update path is refused in every update mode",
     UpdatePlan plan;
     plan.mode = update;
     plan.allow_no_revert = true; // not a way past this one
-    Context context = planning_under(mode, running_old_only());
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    Scenario scenario{plan};
+    const Step step = planned(scenario, mode, running_old_only());
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.refusal == Refusal::UnsupportedMode);
+    CHECK(scenario.report().refusal == Refusal::UnsupportedMode);
 }
 
 TEST_CASE("the refusal is checked before marking an image already present",
           "[dfu][machine][mode][refusal]")
 {
-    Context context = planning_under(McubootMode::UpgradeOnly, running_old_holding_new());
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    Scenario scenario;
+    const Step step = planned(scenario, McubootMode::UpgradeOnly, running_old_holding_new());
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.refusal == Refusal::RevertUnavailable);
+    CHECK(scenario.report().refusal == Refusal::RevertUnavailable);
 }
 
 TEST_CASE("nothing to do is never refused", "[dfu][machine][mode][refusal]")
@@ -419,20 +722,18 @@ TEST_CASE("nothing to do is never refused", "[dfu][machine][mode][refusal]")
     // it, so there is nothing for a refusal to protect.
     const ImageState done =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true}});
-    Context context = planning_under(McubootMode::UpgradeOnly, done);
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    Scenario scenario;
+    const Step step = planned(scenario, McubootMode::UpgradeOnly, done);
     CHECK(step.next == UpdateState::Completed);
-    CHECK_FALSE(context.report.refusal.has_value());
+    CHECK_FALSE(scenario.report().refusal.has_value());
 }
 
 TEST_CASE("swap modes and an unknown mode are never refused", "[dfu][machine][mode][refusal]")
 {
     const McubootMode mode = GENERATE(McubootMode::Unknown, McubootMode::SwapUsingScratch,
                                       McubootMode::SwapUsingMove, McubootMode::SwapUsingOffset);
-    Context context = planning_under(mode, running_old_only());
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    Scenario scenario;
+    const Step step = planned(scenario, mode, running_old_only());
     CHECK(step.next == UpdateState::Uploading);
 }
 
@@ -440,22 +741,16 @@ namespace {
 
 /// The device runs `running` and reports downgrade prevention; the file is
 /// `file`.
-[[nodiscard]] Context downgrade_case(const ImageVersion& file, const char* running)
+[[nodiscard]] std::unique_ptr<Scenario>
+downgrade_case(const ImageVersion& file, const char* running, const UpdatePlan& plan = UpdatePlan{})
 {
-    Context context =
-        smply::dfu::make_context({Target{.image = 0, .hash = kTarget, .version = file}});
-    context.report.bootloader_mode = McubootMode::SwapUsingMove;
-    context.report.mode_source = ModeSource::Reported;
-    context.no_downgrade = true;
-    ImageState state = running_old_only();
-    state.slots[0].version = running;
-    context.device = state;
-    return context;
-}
-
-[[nodiscard]] Step plan_with(const UpdatePlan& plan, Context& context)
-{
-    return advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    auto scenario = std::make_unique<Scenario>(
+        std::vector<Target>{Target{.image = 0, .hash = kTarget, .version = file}}, plan);
+    scenario->mode = McubootMode::SwapUsingMove;
+    scenario->no_downgrade = true;
+    scenario->device = running_old_only();
+    scenario->device.slots[0].version = running;
+    return scenario;
 }
 
 } // namespace
@@ -467,12 +762,12 @@ TEST_CASE("an older image is refused when the device prevents downgrades",
     const ImageVersion file = GENERATE(ImageVersion{.major = 1, .minor = 2, .revision = 2},
                                        ImageVersion{.major = 1, .minor = 1, .revision = 9},
                                        ImageVersion{.major = 0, .minor = 9, .revision = 9});
-    Context context = downgrade_case(file, "1.2.3");
-    const Step step = plan_with(UpdatePlan{}, context);
+    const std::unique_ptr<Scenario> scenario = downgrade_case(file, "1.2.3");
+    const Step step = scenario->plan();
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(context.report.cause->code() == ErrorCode::UpdateRefused);
-    CHECK(context.report.refusal == Refusal::Downgrade);
+    REQUIRE(scenario->report().cause.has_value());
+    CHECK(scenario->report().cause->code() == ErrorCode::UpdateRefused);
+    CHECK(scenario->report().refusal == Refusal::Downgrade);
 }
 
 TEST_CASE("an equal or newer image is not a downgrade", "[dfu][machine][mode][downgrade]")
@@ -481,17 +776,16 @@ TEST_CASE("an equal or newer image is not a downgrade", "[dfu][machine][mode][do
                                        ImageVersion{.major = 1, .minor = 2, .revision = 4},
                                        ImageVersion{.major = 1, .minor = 3, .revision = 0},
                                        ImageVersion{.major = 2, .minor = 0, .revision = 0});
-    Context context = downgrade_case(file, "1.2.3");
-    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+    CHECK(downgrade_case(file, "1.2.3")->plan().next == UpdateState::Uploading);
 }
 
 TEST_CASE("the build number never makes a downgrade", "[dfu][machine][mode][downgrade]")
 {
     // MCUboot ignores it unless built to compare it, which the device does not
     // report; smply ignores it always, so it never refuses what MCUboot takes.
-    Context context =
+    const std::unique_ptr<Scenario> scenario =
         downgrade_case(ImageVersion{.major = 1, .minor = 2, .revision = 3, .build = 1}, "1.2.3.9");
-    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+    CHECK(scenario->plan().next == UpdateState::Uploading);
 }
 
 TEST_CASE("the downgrade check can be turned off, and needs the device's flag",
@@ -501,33 +795,33 @@ TEST_CASE("the downgrade check can be turned off, and needs the device's flag",
 
     UpdatePlan off;
     off.check_downgrade = false;
-    Context opted_out = downgrade_case(older, "2.0.0");
-    CHECK(plan_with(off, opted_out).next == UpdateState::Uploading);
+    CHECK(downgrade_case(older, "2.0.0", off)->plan().next == UpdateState::Uploading);
 
-    Context no_flag = downgrade_case(older, "2.0.0");
-    no_flag.no_downgrade = false;
-    CHECK(plan_with(UpdatePlan{}, no_flag).next == UpdateState::Uploading);
+    const std::unique_ptr<Scenario> no_flag = downgrade_case(older, "2.0.0");
+    no_flag->no_downgrade = false;
+    CHECK(no_flag->plan().next == UpdateState::Uploading);
 }
 
 TEST_CASE("an unparseable running version is not compared", "[dfu][machine][mode][downgrade]")
 {
     // "<???>" is what Zephyr reports when it cannot format the version
     // (docs/protocol-notes.md section 6).
-    Context context =
-        downgrade_case(ImageVersion{.major = 0, .minor = 0, .revision = 1}, R"(<???>)");
-    CHECK(plan_with(UpdatePlan{}, context).next == UpdateState::Uploading);
+    CHECK(downgrade_case(ImageVersion{.major = 0, .minor = 0, .revision = 1}, R"(<???>)")
+              ->plan()
+              .next == UpdateState::Uploading);
 }
 
 TEST_CASE("the bootloader's flag is remembered from its answer", "[dfu][machine][mode][downgrade]")
 {
-    Context context = fresh();
-    Event read;
-    read.kind = Event::Kind::BootloaderRead;
-    read.bootloader.mode = McubootMode::SwapUsingScratch;
-    read.bootloader.raw_mode = 1;
-    read.bootloader.no_downgrade = true;
-    static_cast<void>(advance(UpdateState::QueryingBootloader, read, UpdatePlan{}, context));
-    CHECK(context.no_downgrade);
+    // Given once, in the bootloader's answer, and decided on later, at the
+    // planning step.
+    const std::unique_ptr<Scenario> scenario =
+        downgrade_case(ImageVersion{.major = 1, .minor = 0, .revision = 0}, "2.0.0");
+    scenario->no_downgrade = false; // the model's own answer would not say it
+    scenario->reach(UpdateState::QueryingBootloader);
+    static_cast<void>(scenario->feed(bootloader_read(McubootMode::SwapUsingScratch, true)));
+    CHECK(scenario->plan().next == UpdateState::Failed);
+    CHECK(scenario->report().refusal == Refusal::Downgrade);
 }
 
 TEST_CASE("direct-XIP without revert skips the mark and owes a reset", "[dfu][machine][xip]")
@@ -536,13 +830,15 @@ TEST_CASE("direct-XIP without revert skips the mark and owes a reset", "[dfu][ma
     // itself, so the next step is the reset, not set-state (ADR-0025).
     UpdatePlan plan;
     plan.allow_no_revert = true;
-    Context context = planning_under(McubootMode::DirectXip, running_old_only());
+    Scenario scenario{plan};
+    scenario.mode = McubootMode::DirectXip;
+    scenario.reach(UpdateState::VerifyingUpload);
     const ImageState uploaded = state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true},
                                           SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-    const Step step = advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context);
+    const Step step = scenario.feed(state_read(uploaded));
     CHECK(step.next == UpdateState::Resetting);
     CHECK(step.effect == Effect::Reset);
-    CHECK(context.report.images[0].upload_slot == 1U);
+    CHECK(scenario.report().images[0].upload_slot == 1U);
 }
 
 TEST_CASE("an image already in the free slot is not marked under direct-XIP without revert",
@@ -552,10 +848,10 @@ TEST_CASE("an image already in the free slot is not marked under direct-XIP with
     plan.allow_no_revert = true;
     const ImageState present = state_of({SlotSpec{.slot = 1, .hash = kOther, .active = true},
                                          SlotSpec{.slot = 0, .hash = kTarget}});
-    Context context = planning_under(McubootMode::DirectXip, present);
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    Scenario scenario{plan};
+    const Step step = planned(scenario, McubootMode::DirectXip, present);
     CHECK(step.next == UpdateState::Resetting);
-    CHECK(context.report.images[0].upload_slot == 0U);
+    CHECK(scenario.report().images[0].upload_slot == 0U);
 }
 
 TEST_CASE("a direct-XIP image running after the reset is done, never on trial",
@@ -563,46 +859,46 @@ TEST_CASE("a direct-XIP image running after the reset is done, never on trial",
 {
     // Without set-state nothing is ever reported confirmed, and nothing needs
     // a confirm: the update ends here.
-    Context context = planning_under(McubootMode::DirectXip, running_old_only());
+    UpdatePlan plan;
+    plan.allow_no_revert = true;
+    Scenario scenario{plan};
+    scenario.mode = McubootMode::DirectXip;
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState booted = state_of({SlotSpec{.slot = 1, .hash = kTarget, .active = true},
                                         SlotSpec{.slot = 0, .hash = kOther}});
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(booted), UpdatePlan{}, context);
+    const Step step = scenario.feed(state_read(booted));
     CHECK(step.next == UpdateState::Completed);
 }
 
 TEST_CASE("the same booted-unconfirmed state with revert opens the confirmation window",
           "[dfu][machine][xip]")
 {
-    Context context = planning_under(McubootMode::DirectXipWithRevert, running_old_only());
+    Scenario scenario;
+    scenario.mode = McubootMode::DirectXipWithRevert;
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState booted = state_of({SlotSpec{.slot = 1, .hash = kTarget, .active = true},
                                         SlotSpec{.slot = 0, .hash = kOther, .confirmed = true}});
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(booted), UpdatePlan{}, context);
+    const Step step = scenario.feed(state_read(booted));
     CHECK(step.next == UpdateState::AwaitingConfirmation);
 }
 
 TEST_CASE("direct-XIP refusals: no revert, and more than one image", "[dfu][machine][xip][refusal]")
 {
-    Context single = planning_under(McubootMode::DirectXip, running_old_only());
-    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, single).next ==
-          UpdateState::Failed);
-    CHECK(single.report.refusal == Refusal::RevertUnavailable);
+    Scenario single;
+    CHECK(planned(single, McubootMode::DirectXip, running_old_only()).next == UpdateState::Failed);
+    CHECK(single.report().refusal == Refusal::RevertUnavailable);
 
-    Context with_revert = planning_under(McubootMode::DirectXipWithRevert, running_old_only());
-    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, with_revert)
-              .next == UpdateState::Uploading);
+    Scenario with_revert;
+    CHECK(planned(with_revert, McubootMode::DirectXipWithRevert, running_old_only()).next ==
+          UpdateState::Uploading);
 
     const McubootMode mode = GENERATE(McubootMode::DirectXip, McubootMode::DirectXipWithRevert);
-    Context two = smply::dfu::make_context(
-        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kOther}});
-    two.report.bootloader_mode = mode;
-    two.device = running_old_only();
     UpdatePlan plan;
     plan.allow_no_revert = true;
-    CHECK(advance(UpdateState::Planning, just(Event::Kind::Continue), plan, two).next ==
-          UpdateState::Failed);
-    CHECK(two.report.refusal == Refusal::MultiImageUnsupported);
+    Scenario two{two_client_images(), plan};
+    two.mode = mode;
+    CHECK(two.plan().next == UpdateState::Failed);
+    CHECK(two.report().refusal == Refusal::MultiImageUnsupported);
 }
 
 TEST_CASE("every refusal has a name", "[dfu][machine][refusal]")
@@ -615,55 +911,65 @@ TEST_CASE("every refusal has a name", "[dfu][machine][refusal]")
 
 TEST_CASE("a failed bootloader query is fatal and changes nothing", "[dfu][machine][mode]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::QueryingBootloader, failed(ErrorCode::Timeout), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::QueryingBootloader);
+    const Step step = scenario.feed(failed(ErrorCode::Timeout));
     CHECK(step.next == UpdateState::Failed);
     CHECK(step.effect == Effect::Finish);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(context.report.cause->code() == ErrorCode::Timeout);
-    CHECK_FALSE(context.report.revert_pending);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(scenario.report().cause->code() == ErrorCode::Timeout);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("reading the slot table leads to a planning step", "[dfu][machine]")
 {
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::InspectingImages);
     const ImageState state = running_old_holding_new();
-    const Step step =
-        advance(UpdateState::InspectingImages, state_read(state), UpdatePlan{}, context);
+    const Step step = scenario.feed(state_read(state));
     CHECK(step.next == UpdateState::Planning);
     CHECK(step.effect == Effect::Continue);
-    REQUIRE(context.device.has_value());
-    CHECK(context.device->slots.size() == 2);
+    // ... and the plan is made on the table read: the image is already there.
+    CHECK(scenario.next().next == UpdateState::MarkingForTest);
 }
 
 TEST_CASE("a failure while inspecting is fatal and changes nothing", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::InspectingImages, failed(ErrorCode::Timeout), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::InspectingImages);
+    const Step step = scenario.feed(failed(ErrorCode::Timeout));
     CHECK(step.next == UpdateState::Failed);
     CHECK(step.effect == Effect::Finish);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(context.report.cause->code() == ErrorCode::Timeout);
-    CHECK_FALSE(context.report.revert_pending);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(scenario.report().cause->code() == ErrorCode::Timeout);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 // --- Planning ---------------------------------------------------------------
 
+namespace {
+
+/// Whether cancelling now reports a revert pending: the observable sign that a
+/// swap is scheduled and not yet confirmed.
+[[nodiscard]] bool swap_scheduled(Scenario& scenario)
+{
+    const Step cancelled = scenario.feed(just(Event::Kind::Cancel));
+    REQUIRE(cancelled.next == UpdateState::Cancelled);
+    return scenario.report().revert_pending;
+}
+
+} // namespace
+
 TEST_CASE("an image the device is already running and has confirmed is done",
           "[dfu][machine][planning]")
 {
-    Context context = fresh();
-    const ImageState state =
+    Scenario scenario;
+    scenario.device =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true}});
-    context.device = state;
-
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Completed);
     CHECK(step.effect == Effect::Finish);
-    CHECK(context.report.upload_skipped);
+    CHECK(scenario.report().upload_skipped);
 }
 
 TEST_CASE("an image already running unconfirmed lands in the confirmation window",
@@ -671,31 +977,26 @@ TEST_CASE("an image already running unconfirmed lands in the confirmation window
 {
     // A trial boot somebody else started -- an application restarted mid-update
     // arrives here, and must not re-upload or re-reset.
-    Context context = fresh();
-    context.device = trial_boot();
+    Scenario asked;
+    asked.device = trial_boot();
+    const Step step = asked.plan();
+    CHECK(step.next == UpdateState::AwaitingConfirmation);
+    CHECK(step.effect == Effect::RequestConfirmation);
+    CHECK(swap_scheduled(asked));
 
-    const Step asked =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
-    CHECK(asked.next == UpdateState::AwaitingConfirmation);
-    CHECK(asked.effect == Effect::RequestConfirmation);
-    CHECK(context.swap_scheduled);
-
-    Context automatic = fresh();
-    automatic.device = trial_boot();
     UpdatePlan plan;
     plan.mode = UpdateMode::ConfirmImmediately;
-    const Step confirmed =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), plan, automatic);
-    CHECK(confirmed.next == UpdateState::Confirming);
-    CHECK(confirmed.effect == Effect::Confirm);
+    Scenario automatic{plan};
+    automatic.device = trial_boot();
+    const Step confirming = automatic.plan();
+    CHECK(confirming.next == UpdateState::Confirming);
+    CHECK(confirming.effect == Effect::Confirm);
 
-    Context upload_only = fresh();
-    upload_only.device = trial_boot();
     UpdatePlan stop_early;
     stop_early.mode = UpdateMode::UploadOnly;
-    const Step stopped =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), stop_early, upload_only);
-    CHECK(stopped.next == UpdateState::Completed);
+    Scenario upload_only{stop_early};
+    upload_only.device = trial_boot();
+    CHECK(upload_only.plan().next == UpdateState::Completed);
 }
 
 TEST_CASE("an image already marked for the next boot skips to the reset",
@@ -703,58 +1004,47 @@ TEST_CASE("an image already marked for the next boot skips to the reset",
 {
     // The mark succeeded even if its response was lost. Re-sending it would be
     // refused with ImageAlreadyPending, so the plan steps over it.
-    Context context = fresh();
-    context.device =
+    Scenario scenario;
+    scenario.device =
         state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
                   SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Resetting);
     CHECK(step.effect == Effect::Reset);
-    CHECK(context.swap_scheduled);
-    CHECK(context.report.upload_skipped);
+    CHECK(scenario.report().upload_skipped);
+    CHECK(swap_scheduled(scenario));
 }
 
 TEST_CASE("an image present but unmarked is marked without uploading", "[dfu][machine][planning]")
 {
-    Context context = fresh();
-    context.device = running_old_holding_new();
-
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.device = running_old_holding_new();
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::MarkingForTest);
     CHECK(step.effect == Effect::MarkForTest);
-    CHECK(context.report.upload_skipped);
-    CHECK_FALSE(context.upload_in_progress);
+    CHECK(scenario.report().upload_skipped);
 }
 
 TEST_CASE("the pre-flight skip can be switched off", "[dfu][machine][planning]")
 {
     // Turning it off costs a round trip rather than the transfer: the server
     // runs the same check on the first packet (section 6, rule 9a).
-    Context context = fresh();
-    context.device = running_old_holding_new();
     UpdatePlan plan;
     plan.skip_if_already_present = false;
-
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    Scenario scenario{plan};
+    scenario.device = running_old_holding_new();
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Uploading);
     CHECK(step.effect == Effect::StartUpload);
-    CHECK(context.upload_in_progress);
 }
 
 TEST_CASE("an image the device does not hold is uploaded", "[dfu][machine][planning]")
 {
-    Context context = fresh();
-    context.device =
-        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
-
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    Scenario scenario;
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Uploading);
     CHECK(step.effect == Effect::StartUpload);
-    CHECK_FALSE(context.report.upload_skipped);
+    CHECK_FALSE(scenario.report().upload_skipped);
 }
 
 // --- Uploading --------------------------------------------------------------
@@ -762,23 +1052,18 @@ TEST_CASE("an image the device does not hold is uploaded", "[dfu][machine][plann
 TEST_CASE("a finished upload is verified, unless the caller only wanted the upload",
           "[dfu][machine]")
 {
-    Context context = fresh();
-    context.upload_in_progress = true;
-    Event done;
-    done.kind = Event::Kind::UploadFinished;
-    done.transferred = 4096;
-
-    const Step step = advance(UpdateState::Uploading, done, UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Uploading);
+    const Step step = scenario.feed(upload_finished(4096));
     CHECK(step.next == UpdateState::VerifyingUpload);
     CHECK(step.effect == Effect::ReadState);
-    CHECK(context.report.bytes_transferred == 4096);
-    CHECK_FALSE(context.upload_in_progress);
+    CHECK(scenario.report().bytes_transferred == 4096);
 
-    Context stop_early = fresh();
-    stop_early.upload_in_progress = true;
     UpdatePlan plan;
     plan.mode = UpdateMode::UploadOnly;
-    const Step stopped = advance(UpdateState::Uploading, done, plan, stop_early);
+    Scenario stop_early{plan};
+    stop_early.reach(UpdateState::Uploading);
+    const Step stopped = stop_early.feed(upload_finished(4096));
     CHECK(stopped.next == UpdateState::Completed);
     CHECK(stopped.effect == Effect::Finish);
 }
@@ -786,89 +1071,86 @@ TEST_CASE("a finished upload is verified, unless the caller only wanted the uplo
 TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][machine]")
 {
     // The device keeps its session and resumes by `sha` (section 6, rule 6).
-    Context context = fresh();
-    context.upload_in_progress = true;
-
-    const Step step =
-        advance(UpdateState::Uploading, failed(ErrorCode::Disconnected), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Uploading);
+    const Step step = scenario.feed(failed(ErrorCode::Disconnected));
     CHECK(step.next == UpdateState::AwaitingReconnect);
     CHECK(step.effect == Effect::RequestReconnect);
-    CHECK(context.upload_in_progress);
-    CHECK_FALSE(context.report.cause.has_value());
+    CHECK_FALSE(scenario.report().cause.has_value());
+
+    const Step resumed = scenario.feed(just(Event::Kind::Reconnected));
+    CHECK(resumed.next == UpdateState::Uploading);
+    CHECK(resumed.effect == Effect::ResumeUpload);
 }
 
 TEST_CASE("any other upload failure is fatal", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::Uploading, failed(ErrorCode::ImageMismatch), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Uploading);
+    const Step step = scenario.feed(failed(ErrorCode::ImageMismatch));
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(context.report.cause->code() == ErrorCode::ImageMismatch);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(scenario.report().cause->code() == ErrorCode::ImageMismatch);
 }
 
 // --- Verifying the upload ---------------------------------------------------
 
 TEST_CASE("an uploaded image must appear in the slot table", "[dfu][machine]")
 {
-    Context present = fresh();
+    Scenario present;
+    present.reach(UpdateState::VerifyingUpload);
     const ImageState holding = running_old_holding_new();
-    const Step step =
-        advance(UpdateState::VerifyingUpload, state_read(holding), UpdatePlan{}, present);
+    const Step step = present.feed(state_read(holding));
     CHECK(step.next == UpdateState::MarkingForTest);
     CHECK(step.effect == Effect::MarkForTest);
 
-    Context absent = fresh();
-    const ImageState empty =
-        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
-    const Step missing =
-        advance(UpdateState::VerifyingUpload, state_read(empty), UpdatePlan{}, absent);
+    Scenario absent;
+    absent.reach(UpdateState::VerifyingUpload);
+    const ImageState empty = running_old_only();
+    const Step missing = absent.feed(state_read(empty));
     CHECK(missing.next == UpdateState::Failed);
-    REQUIRE(absent.report.cause.has_value());
-    CHECK(absent.report.cause->code() == ErrorCode::ImageMismatch);
+    REQUIRE(absent.report().cause.has_value());
+    CHECK(absent.report().cause->code() == ErrorCode::ImageMismatch);
 }
 
 TEST_CASE("a failed verification read is fatal", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::VerifyingUpload, failed(ErrorCode::Timeout), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingUpload);
+    CHECK(scenario.feed(failed(ErrorCode::Timeout)).next == UpdateState::Failed);
 }
 
 // --- Marking for test -------------------------------------------------------
 
 TEST_CASE("marking for test schedules a swap and resets", "[dfu][machine]")
 {
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
     const ImageState answer =
         state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
                   SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-    const Step step =
-        advance(UpdateState::MarkingForTest, marked_for_test(answer), UpdatePlan{}, context);
+    const Step step = scenario.feed(marked_for_test(answer));
     CHECK(step.next == UpdateState::Resetting);
     CHECK(step.effect == Effect::Reset);
-    CHECK(context.swap_scheduled);
+    CHECK(swap_scheduled(scenario));
 }
 
 TEST_CASE("ImageAlreadyPending is recoverable exactly once", "[dfu][machine]")
 {
     // Re-reading the state and finding our own image marked means the previous
     // attempt worked and its response was lost. A second one is a real refusal.
-    Context context = fresh();
-    const Step retried =
-        advance(UpdateState::MarkingForTest, image_failure(ImageError::ImageAlreadyPending),
-                UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step retried = scenario.feed(image_failure(ImageError::ImageAlreadyPending));
     CHECK(retried.next == UpdateState::InspectingImages);
     CHECK(retried.effect == Effect::ReadState);
-    CHECK(context.mark_retried);
-    CHECK_FALSE(context.report.cause.has_value());
+    CHECK_FALSE(scenario.report().cause.has_value());
 
-    const Step again =
-        advance(UpdateState::MarkingForTest, image_failure(ImageError::ImageAlreadyPending),
-                UpdatePlan{}, context);
+    // The re-read finds the image unmarked, so it is marked again.
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step again = scenario.feed(image_failure(ImageError::ImageAlreadyPending));
     CHECK(again.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
+    REQUIRE(scenario.report().cause.has_value());
 }
 
 TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine]")
@@ -878,18 +1160,17 @@ TEST_CASE("a group-less BadState recovers the mark exactly once", "[dfu][machine
     // onto `mcumgr_err_t` and drops the group, so the recovery above never
     // sees `ImageAlreadyPending`. Branching on that code alone, it could not
     // fire at all.
-    Context context = fresh();
-    const Step retried = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
-                                 UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step retried = scenario.feed(flat_failure(SmpError::BadState));
     CHECK(retried.next == UpdateState::InspectingImages);
     CHECK(retried.effect == Effect::ReadState);
-    CHECK(context.mark_retried);
-    CHECK_FALSE(context.report.cause.has_value());
+    CHECK_FALSE(scenario.report().cause.has_value());
 
-    const Step again = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
-                               UpdatePlan{}, context);
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step again = scenario.feed(flat_failure(SmpError::BadState));
     CHECK(again.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
+    REQUIRE(scenario.report().cause.has_value());
 }
 
 TEST_CASE("the budget is one recovery, not one of each shape", "[dfu][machine]")
@@ -899,14 +1180,13 @@ TEST_CASE("the budget is one recovery, not one of each shape", "[dfu][machine]")
     // goes first deliberately -- that ordering is the one that fails if the
     // flat arm is ever removed again, and an invariant test that passes either
     // way protects nothing.
-    Context context = fresh();
-    const Step first = advance(UpdateState::MarkingForTest, flat_failure(SmpError::BadState),
-                               UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step first = scenario.feed(flat_failure(SmpError::BadState));
     CHECK(first.next == UpdateState::InspectingImages);
 
-    const Step second =
-        advance(UpdateState::MarkingForTest, image_failure(ImageError::ImageAlreadyPending),
-                UpdatePlan{}, context);
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step second = scenario.feed(image_failure(ImageError::ImageAlreadyPending));
     CHECK(second.next == UpdateState::Failed);
 }
 
@@ -916,51 +1196,50 @@ TEST_CASE("a group-less code that is not BadState is still fatal", "[dfu][machin
     // the widening deliberately stops: the same translation table gives it to
     // eighteen other image codes, every flash failure among them, so treating
     // it as recoverable would retry genuine refusals.
-    Context context = fresh();
-    const Step step = advance(UpdateState::MarkingForTest, flat_failure(SmpError::Unknown),
-                              UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step step = scenario.feed(flat_failure(SmpError::Unknown));
     CHECK(step.next == UpdateState::Failed);
-    CHECK_FALSE(context.mark_retried);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(smply::smp_error(*context.report.cause) == SmpError::Unknown);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(smply::smp_error(*scenario.report().cause) == SmpError::Unknown);
 }
 
 TEST_CASE("marking the running slot for test is fatal with the device's own code", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::MarkingForTest,
-                image_failure(ImageError::ImageSettingTestToActiveDenied), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::MarkingForTest);
+    const Step step = scenario.feed(image_failure(ImageError::ImageSettingTestToActiveDenied));
     CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(smply::image_error(*context.report.cause) == ImageError::ImageSettingTestToActiveDenied);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(smply::image_error(*scenario.report().cause) ==
+          ImageError::ImageSettingTestToActiveDenied);
     // Nothing was scheduled, so nothing will revert.
-    CHECK_FALSE(context.report.revert_pending);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 // --- Resetting --------------------------------------------------------------
 
 TEST_CASE("an accepted reset waits for the link to drop", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::Resetting, just(Event::Kind::ResetAccepted), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Resetting);
+    const Step step = scenario.feed(just(Event::Kind::ResetAccepted));
     CHECK(step.next == UpdateState::AwaitingDisconnect);
     CHECK(step.effect == Effect::AwaitDisconnect);
 }
 
 TEST_CASE("a busy reset is retried once with force", "[dfu][machine]")
 {
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::Resetting);
     const Error busy{ErrorCode::ProtocolError,
                      MgmtError::smp(static_cast<std::uint16_t>(SmpError::Busy))};
 
-    const Step forced = advance(UpdateState::Resetting, failed(busy), UpdatePlan{}, context);
+    const Step forced = scenario.feed(failed(busy));
     CHECK(forced.next == UpdateState::Resetting);
     CHECK(forced.effect == Effect::ForceReset);
-    CHECK(context.reset_forced);
 
-    const Step again = advance(UpdateState::Resetting, failed(busy), UpdatePlan{}, context);
+    const Step again = scenario.feed(failed(busy));
     CHECK(again.next == UpdateState::Failed);
 }
 
@@ -970,22 +1249,22 @@ TEST_CASE("a lost reset response is treated as the reset happening", "[dfu][mach
     // abandon a device that is already swapping; the verify after the reboot is
     // the real check.
     for (const ErrorCode code : {ErrorCode::Disconnected, ErrorCode::Timeout}) {
-        Context context = fresh();
-        const Step step = advance(UpdateState::Resetting, failed(code), UpdatePlan{}, context);
+        Scenario scenario;
+        scenario.reach(UpdateState::Resetting);
+        const Step step = scenario.feed(failed(code));
         CHECK(step.next == UpdateState::AwaitingDisconnect);
         CHECK(step.effect == Effect::AwaitDisconnect);
-        CHECK_FALSE(context.report.cause.has_value());
+        CHECK_FALSE(scenario.report().cause.has_value());
     }
 }
 
 TEST_CASE("a refused reset is fatal, and the scheduled swap is reported", "[dfu][machine]")
 {
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const Step step =
-        advance(UpdateState::Resetting, failed(ErrorCode::ProtocolError), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Resetting);
+    const Step step = scenario.feed(failed(ErrorCode::ProtocolError));
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.revert_pending);
+    CHECK(scenario.report().revert_pending);
 }
 
 // --- Disconnect and reconnect -----------------------------------------------
@@ -994,9 +1273,9 @@ TEST_CASE("the reconnect is requested whether or not the link actually dropped",
 {
     // A link still up is not proof the device ignored the reset.
     for (const Event::Kind kind : {Event::Kind::Disconnected, Event::Kind::GraceExpired}) {
-        Context context = fresh();
-        const Step step =
-            advance(UpdateState::AwaitingDisconnect, just(kind), UpdatePlan{}, context);
+        Scenario scenario;
+        scenario.reach(UpdateState::AwaitingDisconnect);
+        const Step step = scenario.feed(just(kind));
         CHECK(step.next == UpdateState::AwaitingReconnect);
         CHECK(step.effect == Effect::RequestReconnect);
     }
@@ -1004,205 +1283,192 @@ TEST_CASE("the reconnect is requested whether or not the link actually dropped",
 
 TEST_CASE("a reconnect resumes an upload, or verifies the boot", "[dfu][machine]")
 {
-    Context mid_upload = fresh();
-    mid_upload.upload_in_progress = true;
-    const Step resumed = advance(UpdateState::AwaitingReconnect, just(Event::Kind::Reconnected),
-                                 UpdatePlan{}, mid_upload);
+    Scenario mid_upload;
+    mid_upload.reach(UpdateState::Uploading);
+    static_cast<void>(mid_upload.feed(failed(ErrorCode::Disconnected)));
+    const Step resumed = mid_upload.feed(just(Event::Kind::Reconnected));
     CHECK(resumed.next == UpdateState::Uploading);
     CHECK(resumed.effect == Effect::ResumeUpload);
 
-    Context after_reset = fresh();
-    const Step verified = advance(UpdateState::AwaitingReconnect, just(Event::Kind::Reconnected),
-                                  UpdatePlan{}, after_reset);
+    Scenario after_reset;
+    after_reset.reach(UpdateState::AwaitingReconnect);
+    const Step verified = after_reset.feed(just(Event::Kind::Reconnected));
     CHECK(verified.next == UpdateState::VerifyingBooted);
     CHECK(verified.effect == Effect::ReadState);
 }
 
 TEST_CASE("a failed reconnect is fatal and says a revert is pending", "[dfu][machine]")
 {
-    Context context = fresh();
-    context.swap_scheduled = true;
-    Event event;
-    event.kind = Event::Kind::ReconnectFailed;
+    Scenario scenario;
+    scenario.reach(UpdateState::AwaitingReconnect);
+    Event event = just(Event::Kind::ReconnectFailed);
     event.error = Error{ErrorCode::Disconnected};
 
-    const Step step = advance(UpdateState::AwaitingReconnect, event, UpdatePlan{}, context);
+    const Step step = scenario.feed(event);
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.revert_pending);
+    CHECK(scenario.report().revert_pending);
 }
 
 // --- Verifying what booted --------------------------------------------------
 
 TEST_CASE("a trial boot is recognised and leads to the confirmation fork", "[dfu][machine]")
 {
-    Context asked = fresh();
     const ImageState trial = trial_boot();
-    const Step step = advance(UpdateState::VerifyingBooted, state_read(trial), UpdatePlan{}, asked);
+
+    Scenario asked;
+    asked.reach(UpdateState::VerifyingBooted);
+    const Step step = asked.feed(state_read(trial));
     CHECK(step.next == UpdateState::AwaitingConfirmation);
     CHECK(step.effect == Effect::RequestConfirmation);
-    CHECK(asked.swap_scheduled);
+    CHECK(swap_scheduled(asked));
 
-    Context automatic = fresh();
     UpdatePlan plan;
     plan.mode = UpdateMode::ConfirmImmediately;
-    const Step confirmed =
-        advance(UpdateState::VerifyingBooted, state_read(trial), plan, automatic);
-    CHECK(confirmed.next == UpdateState::Confirming);
-    CHECK(confirmed.effect == Effect::Confirm);
+    Scenario automatic{plan};
+    automatic.reach(UpdateState::VerifyingBooted);
+    const Step confirming = automatic.feed(state_read(trial));
+    CHECK(confirming.next == UpdateState::Confirming);
+    CHECK(confirming.effect == Effect::Confirm);
 }
 
 TEST_CASE("an image that booted already confirmed needs nothing further", "[dfu][machine]")
 {
     // Where a ConfirmImmediately update whose confirm response was lost lands.
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const ImageState state =
-        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
-                  SlotSpec{.slot = 1, .hash = kOther}});
-
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(state), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingBooted);
+    const ImageState state = booted_confirmed();
+    const Step step = scenario.feed(state_read(state));
     CHECK(step.next == UpdateState::Completed);
     CHECK(step.effect == Effect::Finish);
-    CHECK_FALSE(context.swap_scheduled);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("the old image running with nothing pending is a rollback", "[dfu][machine]")
 {
     // The rule the flags exist to protect: decided from them. "Not confirmed"
     // cannot mean "wrong image", because a trial boot reports exactly that.
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const ImageState reverted =
-        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-                  SlotSpec{.slot = 1, .hash = kTarget}});
-
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(reverted), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingBooted);
+    const ImageState reverted = running_old_holding_new();
+    const Step step = scenario.feed(state_read(reverted));
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.rolled_back);
+    CHECK(scenario.report().rolled_back);
     // A revert already happened, so nothing further is pending.
-    CHECK_FALSE(context.report.revert_pending);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("the old image running with a swap still pending is not a rollback", "[dfu][machine]")
 {
     // The swap has not happened yet -- a different failure, and calling it a
     // rollback would tell the caller the device had rejected the image.
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState not_yet =
         state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
                   SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(not_yet), UpdatePlan{}, context);
+    const Step step = scenario.feed(state_read(not_yet));
     CHECK(step.next == UpdateState::Failed);
-    CHECK_FALSE(context.report.rolled_back);
+    CHECK_FALSE(scenario.report().rolled_back);
 }
 
 TEST_CASE("a device reporting no active slot after the reboot is a failure", "[dfu][machine]")
 {
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState nothing = state_of({SlotSpec{.slot = 1, .hash = kTarget}});
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(nothing), UpdatePlan{}, context);
+    const Step step = scenario.feed(state_read(nothing));
     CHECK(step.next == UpdateState::Failed);
-    CHECK_FALSE(context.report.rolled_back);
+    CHECK_FALSE(scenario.report().rolled_back);
 }
 
 TEST_CASE("the image the update inspects is the one it uploads", "[dfu][machine]")
 {
     // Each target names its image. Image 0 running the target says nothing
     // about image 1, which has no active slot at all.
-    Context context = fresh(1);
     ImageState booted = state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true}});
-    const UpdatePlan plan;
-    const Step other = advance(UpdateState::VerifyingBooted, state_read(booted), plan, context);
-    CHECK(other.next == UpdateState::Failed);
+    Scenario other{one_image(1)};
+    other.reach(UpdateState::VerifyingBooted);
+    CHECK(other.feed(state_read(booted)).next == UpdateState::Failed);
 
     for (ImageSlot& slot : booted.slots) {
         slot.image = 1;
     }
-    Context same = fresh(1);
-    const Step ours = advance(UpdateState::VerifyingBooted, state_read(booted), plan, same);
-    CHECK(ours.next != UpdateState::Failed);
+    Scenario same{one_image(1)};
+    same.reach(UpdateState::VerifyingBooted);
+    CHECK(same.feed(state_read(booted)).next != UpdateState::Failed);
 }
 
 TEST_CASE("a failed boot verification is fatal", "[dfu][machine]")
 {
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::VerifyingBooted, failed(ErrorCode::Timeout), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingBooted);
+    CHECK(scenario.feed(failed(ErrorCode::Timeout)).next == UpdateState::Failed);
 }
 
 // --- Confirming (ADR-0014) --------------------------------------------------
 
 TEST_CASE("the application's approval moves the update on", "[dfu][machine][confirm]")
 {
-    Context context = fresh();
-    const Step step = advance(UpdateState::AwaitingConfirmation, just(Event::Kind::ConfirmApproved),
-                              UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::AwaitingConfirmation);
+    const Step step = scenario.feed(just(Event::Kind::ConfirmApproved));
     CHECK(step.next == UpdateState::Confirming);
     CHECK(step.effect == Effect::Confirm);
+    CHECK(step.image == 0);
+    CHECK(step.hash == kTarget);
 }
 
 TEST_CASE("declining to confirm ends the update with a revert pending", "[dfu][machine][confirm]")
 {
     // Not the same as "nothing happened": the device is running the new image
     // and will undo that on its next reset.
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const Step step = advance(UpdateState::AwaitingConfirmation, just(Event::Kind::Cancel),
-                              UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::AwaitingConfirmation);
+    const Step step = scenario.feed(just(Event::Kind::Cancel));
     CHECK(step.next == UpdateState::Cancelled);
     CHECK(step.effect == Effect::Finish);
-    CHECK(context.report.revert_pending);
+    CHECK(scenario.report().revert_pending);
 }
 
 TEST_CASE("an accepted confirm is verified", "[dfu][machine][confirm]")
 {
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const ImageState answer =
-        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
-                  SlotSpec{.slot = 1, .hash = kOther}});
-    const Step step = advance(UpdateState::Confirming, confirmed(answer), UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Confirming);
+    const ImageState answer = booted_confirmed();
+    const Step step = scenario.feed(confirmed(answer));
     CHECK(step.next == UpdateState::VerifyingConfirmed);
     CHECK(step.effect == Effect::ReadState);
-    CHECK_FALSE(context.swap_scheduled);
+    CHECK_FALSE(swap_scheduled(scenario));
 }
 
 TEST_CASE("a refused confirm is fatal and leaves the device about to revert",
           "[dfu][machine][confirm]")
 {
-    Context context = fresh();
-    context.swap_scheduled = true;
-    const Step step =
-        advance(UpdateState::Confirming, image_failure(ImageError::ImageConfirmationDenied),
-                UpdatePlan{}, context);
+    Scenario scenario;
+    scenario.reach(UpdateState::Confirming);
+    const Step step = scenario.feed(image_failure(ImageError::ImageConfirmationDenied));
     CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.revert_pending);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(smply::image_error(*context.report.cause) == ImageError::ImageConfirmationDenied);
+    CHECK(scenario.report().revert_pending);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(smply::image_error(*scenario.report().cause) == ImageError::ImageConfirmationDenied);
 }
 
 TEST_CASE("the confirmation is checked against the device's own report", "[dfu][machine]")
 {
-    Context good = fresh();
-    const ImageState confirmed =
+    Scenario good;
+    good.reach(UpdateState::VerifyingConfirmed);
+    const ImageState read_back =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true}});
-    const Step done =
-        advance(UpdateState::VerifyingConfirmed, state_read(confirmed), UpdatePlan{}, good);
+    const Step done = good.feed(state_read(read_back));
     CHECK(done.next == UpdateState::Completed);
     CHECK(done.effect == Effect::Finish);
 
-    Context bad = fresh();
+    Scenario bad;
+    bad.reach(UpdateState::VerifyingConfirmed);
     const ImageState unconfirmed = state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true}});
-    const Step refused =
-        advance(UpdateState::VerifyingConfirmed, state_read(unconfirmed), UpdatePlan{}, bad);
+    const Step refused = bad.feed(state_read(unconfirmed));
     CHECK(refused.next == UpdateState::Failed);
-    CHECK(bad.report.revert_pending);
+    CHECK(bad.report().revert_pending);
 }
 
 TEST_CASE("a lost link or answer around the confirm is re-inspected, not fatal",
@@ -1211,33 +1477,41 @@ TEST_CASE("a lost link or answer around the confirm is re-inspected, not fatal",
     // ADR-0023. Whether the confirm landed is unknown, so the machine assumes
     // nothing: a drop reconnects, a lost answer is read again once, and
     // VerifyingBooted decides.
+    const ImageState trial = trial_boot();
+    const ImageState landed = booted_confirmed();
     for (const UpdateState state : {UpdateState::Confirming, UpdateState::VerifyingConfirmed}) {
         CAPTURE(state);
 
-        Context dropped = fresh();
-        const Step reconnect =
-            advance(state, failed(ErrorCode::Disconnected), UpdatePlan{}, dropped);
+        Scenario dropped;
+        dropped.reach(state);
+        const Step reconnect = dropped.feed(failed(ErrorCode::Disconnected));
         CHECK(reconnect.next == UpdateState::AwaitingReconnect);
         CHECK(reconnect.effect == Effect::RequestReconnect);
-        CHECK(dropped.swap_scheduled);
+        CHECK(swap_scheduled(dropped));
 
-        Context lost = fresh();
-        const Step reread = advance(state, failed(ErrorCode::Timeout), UpdatePlan{}, lost);
+        Scenario lost;
+        lost.reach(state);
+        const Step reread = lost.feed(failed(ErrorCode::Timeout));
         CHECK(reread.next == UpdateState::VerifyingBooted);
         CHECK(reread.effect == Effect::ReadState);
 
         // The re-read is spent once per update; a second lost answer is fatal
-        // and reports the revert that may still come.
-        const Step again = advance(state, failed(ErrorCode::Timeout), UpdatePlan{}, lost);
+        // and reports the revert that may still come. The re-read finds the
+        // image still on trial, so it is confirmed again first.
+        REQUIRE(lost.feed(state_read(trial)).next == UpdateState::Confirming);
+        if (state == UpdateState::VerifyingConfirmed) {
+            REQUIRE(lost.feed(confirmed(landed)).next == UpdateState::VerifyingConfirmed);
+        }
+        const Step again = lost.feed(failed(ErrorCode::Timeout));
         CHECK(again.next == UpdateState::Failed);
-        CHECK(lost.report.revert_pending);
+        CHECK(lost.report().revert_pending);
 
         // Anything else is fatal, as before.
-        Context broken = fresh();
-        const Step fatal =
-            advance(state, failed(ErrorCode::MalformedMessage), UpdatePlan{}, broken);
+        Scenario broken;
+        broken.reach(state);
+        const Step fatal = broken.feed(failed(ErrorCode::MalformedMessage));
         CHECK(fatal.next == UpdateState::Failed);
-        CHECK(broken.report.revert_pending);
+        CHECK(broken.report().revert_pending);
     }
 }
 
@@ -1245,61 +1519,78 @@ TEST_CASE("after a lost confirm, the re-inspection routes on what the device rep
           "[dfu][machine][confirm]")
 {
     // The confirm landed: done, and nothing is reported as reverting.
-    Context landed = fresh();
-    static_cast<void>(
-        advance(UpdateState::Confirming, failed(ErrorCode::Disconnected), UpdatePlan{}, landed));
-    const ImageState confirmed =
-        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
-                  SlotSpec{.slot = 1, .hash = kOther}});
-    const Step done =
-        advance(UpdateState::VerifyingBooted, state_read(confirmed), UpdatePlan{}, landed);
+    Scenario landed;
+    landed.reach(UpdateState::Confirming);
+    static_cast<void>(landed.feed(failed(ErrorCode::Disconnected)));
+    REQUIRE(landed.feed(just(Event::Kind::Reconnected)).next == UpdateState::VerifyingBooted);
+    const ImageState read_back = booted_confirmed();
+    const Step done = landed.feed(state_read(read_back));
     CHECK(done.next == UpdateState::Completed);
-    CHECK_FALSE(landed.report.revert_pending);
+    CHECK_FALSE(landed.report().revert_pending);
 
     // It did not land, and the application had already approved: confirm
     // again without asking a second time.
-    Context approved = fresh();
-    static_cast<void>(advance(UpdateState::AwaitingConfirmation, just(Event::Kind::ConfirmApproved),
-                              UpdatePlan{}, approved));
-    static_cast<void>(
-        advance(UpdateState::Confirming, failed(ErrorCode::Timeout), UpdatePlan{}, approved));
+    Scenario approved;
+    approved.reach(UpdateState::Confirming);
+    static_cast<void>(approved.feed(failed(ErrorCode::Timeout)));
     const ImageState trial = trial_boot();
-    const Step retry =
-        advance(UpdateState::VerifyingBooted, state_read(trial), UpdatePlan{}, approved);
+    const Step retry = approved.feed(state_read(trial));
     CHECK(retry.next == UpdateState::Confirming);
     CHECK(retry.effect == Effect::Confirm);
 
     // Without an approval on record the application is asked, as on any
     // trial boot.
-    Context unasked = fresh();
-    const Step ask =
-        advance(UpdateState::VerifyingBooted, state_read(trial), UpdatePlan{}, unasked);
-    CHECK(ask.next == UpdateState::AwaitingConfirmation);
+    Scenario unasked;
+    unasked.reach(UpdateState::VerifyingBooted);
+    CHECK(unasked.feed(state_read(trial)).next == UpdateState::AwaitingConfirmation);
 }
 
 // --- Cancellation and terminal states ---------------------------------------
 
 TEST_CASE("cancellation is legal in every non-terminal state", "[dfu][machine]")
 {
+    // A revert is reported pending exactly while a swap is scheduled and not
+    // yet confirmed: from the first mark to the confirm.
+    const std::array<UpdateState, 7> scheduled{
+        UpdateState::Resetting,           UpdateState::AwaitingDisconnect,
+        UpdateState::AwaitingReconnect,   UpdateState::VerifyingBooted,
+        UpdateState::AwaitingDeviceApply, UpdateState::AwaitingConfirmation,
+        UpdateState::Confirming,
+    };
     for (const UpdateState state : kNonTerminal) {
-        Context context = fresh();
-        const Step step = advance(state, just(Event::Kind::Cancel), UpdatePlan{}, context);
+        CAPTURE(state);
+        const std::unique_ptr<Scenario> scenario = through_every_state();
+        scenario->reach(state);
+        const Step step = scenario->feed(just(Event::Kind::Cancel));
         CHECK(step.next == UpdateState::Cancelled);
         CHECK(step.effect == Effect::Finish);
-        CHECK_FALSE(context.report.revert_pending);
+        CHECK(scenario->report().revert_pending ==
+              (std::ranges::find(scheduled, state) != scheduled.end()));
     }
 }
 
 TEST_CASE("a terminal state absorbs everything", "[dfu][machine]")
 {
-    for (const UpdateState state :
-         {UpdateState::Completed, UpdateState::Failed, UpdateState::Cancelled}) {
-        Context context = fresh();
-        const Step cancelled = advance(state, just(Event::Kind::Cancel), UpdatePlan{}, context);
-        CHECK(cancelled.next == state);
-        CHECK(cancelled.effect == Effect::None);
+    Scenario completed;
+    completed.device =
+        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true}});
+    REQUIRE(completed.plan().next == UpdateState::Completed);
 
-        const Step other = advance(state, just(Event::Kind::ResetAccepted), UpdatePlan{}, context);
+    Scenario failure;
+    failure.reach(UpdateState::InspectingImages);
+    REQUIRE(failure.feed(failed(ErrorCode::Timeout)).next == UpdateState::Failed);
+
+    Scenario cancelled;
+    REQUIRE(cancelled.feed(just(Event::Kind::Cancel)).next == UpdateState::Cancelled);
+
+    for (Scenario* scenario : {&completed, &failure, &cancelled}) {
+        const UpdateState state = scenario->state();
+        CAPTURE(state);
+        const Step again = scenario->feed(just(Event::Kind::Cancel));
+        CHECK(again.next == state);
+        CHECK(again.effect == Effect::None);
+
+        const Step other = scenario->feed(just(Event::Kind::ResetAccepted));
         CHECK(other.next == state);
         CHECK(other.effect == Effect::None);
     }
@@ -1312,25 +1603,29 @@ TEST_CASE("an event with no rule for the state is an internal error", "[dfu][mac
     // is exactly the kind of hole a spot check leaves.
     const ImageState answer = running_old_holding_new();
     for (const UpdateState state : kNonTerminal) {
-        Context context = fresh();
-        const Step step = advance(state, marked_for_test(answer), UpdatePlan{}, context);
+        CAPTURE(state);
+        const std::unique_ptr<Scenario> scenario = through_every_state();
+        scenario->reach(state);
+        const Step step = scenario->feed(marked_for_test(answer));
         if (state == UpdateState::MarkingForTest) {
-            CHECK(step.next == UpdateState::Resetting);
+            // The one state it is legal in: on to the second image.
+            CHECK(step.next == UpdateState::Planning);
             continue;
         }
         CHECK(step.next == UpdateState::Failed);
-        REQUIRE(context.report.cause.has_value());
-        CHECK(context.report.cause->code() == ErrorCode::Internal);
+        REQUIRE(scenario->report().cause.has_value());
+        CHECK(scenario->report().cause->code() == ErrorCode::Internal);
     }
 }
 
-TEST_CASE("planning without a slot table uploads rather than guessing", "[dfu][machine]")
+TEST_CASE("planning on an empty slot table uploads rather than guessing", "[dfu][machine]")
 {
-    // Every "does the device already have it?" answer needs the table. With no
-    // table there is no evidence, and the safe reading is that it does not.
-    Context context = fresh();
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
+    // Every "does the device already have it?" answer needs the table. With
+    // nothing in it there is no evidence, and the safe reading is that it does
+    // not.
+    Scenario scenario;
+    scenario.device = ImageState{};
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Uploading);
     CHECK(step.effect == Effect::StartUpload);
 }
@@ -1339,13 +1634,10 @@ TEST_CASE("planning with no active slot still finds the image", "[dfu][machine][
 {
     // A device reports only *valid* images, so a freshly erased primary slot is
     // simply missing from the table.
-    Context context = fresh();
-    context.device = state_of({SlotSpec{.slot = 1, .hash = kTarget}});
-
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::MarkingForTest);
-    CHECK(context.report.upload_skipped);
+    Scenario scenario;
+    scenario.device = state_of({SlotSpec{.slot = 1, .hash = kTarget}});
+    CHECK(scenario.plan().next == UpdateState::MarkingForTest);
+    CHECK(scenario.report().upload_skipped);
 }
 
 TEST_CASE("UploadOnly stops at every point the image is already there", "[dfu][machine][planning]")
@@ -1354,21 +1646,19 @@ TEST_CASE("UploadOnly stops at every point the image is already there", "[dfu][m
     plan.mode = UpdateMode::UploadOnly;
 
     // Already marked for the next boot.
-    Context marked = fresh();
+    Scenario marked{plan};
     marked.device =
         state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
                   SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-    const Step from_marked =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), plan, marked);
+    const Step from_marked = marked.plan();
     CHECK(from_marked.next == UpdateState::Completed);
     CHECK(from_marked.effect == Effect::Finish);
 
     // Present but unmarked: marking it is activation, which UploadOnly does not
     // do.
-    Context present = fresh();
+    Scenario present{plan};
     present.device = running_old_holding_new();
-    const Step from_present =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), plan, present);
+    const Step from_present = present.plan();
     CHECK(from_present.next == UpdateState::Completed);
     CHECK(from_present.effect == Effect::Finish);
 }
@@ -1377,28 +1667,26 @@ TEST_CASE("a slot the device reports without a hash cannot be the target", "[dfu
 {
     // `hash` is optional on the wire. A slot without one is not evidence of
     // anything, and must never be read as a match.
-    Context booted = fresh();
     ImageState nameless = state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true}});
     nameless.slots[0].hash.reset();
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(nameless), UpdatePlan{}, booted);
-    CHECK(step.next == UpdateState::Failed);
-    CHECK(booted.report.rolled_back);
 
-    Context confirmed = fresh();
-    const Step checked =
-        advance(UpdateState::VerifyingConfirmed, state_read(nameless), UpdatePlan{}, confirmed);
-    CHECK(checked.next == UpdateState::Failed);
+    Scenario booted;
+    booted.reach(UpdateState::VerifyingBooted);
+    CHECK(booted.feed(state_read(nameless)).next == UpdateState::Failed);
+    CHECK(booted.report().rolled_back);
+
+    Scenario confirming;
+    confirming.reach(UpdateState::VerifyingConfirmed);
+    CHECK(confirming.feed(state_read(nameless)).next == UpdateState::Failed);
 }
 
 TEST_CASE("a confirmation check with no active slot fails", "[dfu][machine]")
 {
-    Context context = fresh();
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingConfirmed);
     const ImageState nothing = state_of({SlotSpec{.slot = 1, .hash = kTarget}});
-    const Step step =
-        advance(UpdateState::VerifyingConfirmed, state_read(nothing), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.revert_pending);
+    CHECK(scenario.feed(state_read(nothing)).next == UpdateState::Failed);
+    CHECK(scenario.report().revert_pending);
 }
 
 TEST_CASE("every state has a name", "[dfu][machine]")
@@ -1413,6 +1701,26 @@ TEST_CASE("every state has a name", "[dfu][machine]")
     CHECK_FALSE(smply::is_terminal(UpdateState::Uploading));
 }
 
+TEST_CASE("the report holds the end only once the update has ended", "[dfu][machine]")
+{
+    // The final state, target hash and last slot table are filled on the step
+    // that finishes the update, and default before it (stage 1's contract).
+    Scenario scenario;
+    scenario.reach(UpdateState::VerifyingConfirmed);
+    CHECK(scenario.report().final_state == UpdateState::Idle);
+    CHECK_FALSE(scenario.report().target_hash.has_value());
+    CHECK_FALSE(scenario.report().final_device_state.has_value());
+
+    REQUIRE(scenario.next().next == UpdateState::Completed);
+    CHECK(scenario.report().final_state == UpdateState::Completed);
+    CHECK(scenario.report().target_hash == kTarget);
+    REQUIRE(scenario.report().final_device_state.has_value());
+    const ImageSlot* active = scenario.report().final_device_state->active_slot(0);
+    REQUIRE(active != nullptr);
+    CHECK(active->hash == kTarget);
+    CHECK(active->confirmed);
+}
+
 // --- Several images: every decision is about the target's image (ADR-0021) --
 
 TEST_CASE("another image's pending swap does not hide a revert of this one",
@@ -1422,52 +1730,35 @@ TEST_CASE("another image's pending swap does not hide a revert of this one",
     // rollback. Image 0 happens to have a swap queued, which says nothing
     // about image 1 -- and before scoping, it turned the verdict into "did not
     // boot the new image" instead.
-    Context context = fresh(1);
-    context.swap_scheduled = true;
+    Scenario scenario{one_image(1)};
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState state = state_of(
         {SlotSpec{.image = 0, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.image = 0, .slot = 1, .hash = hash_of(50), .pending = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 1, .hash = kTarget}});
-    const UpdatePlan plan;
-
-    const Step step = advance(UpdateState::VerifyingBooted, state_read(state), plan, context);
-    CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.rolled_back);
+    CHECK(scenario.feed(state_read(state)).next == UpdateState::Failed);
+    CHECK(scenario.report().rolled_back);
 }
 
 TEST_CASE("the target held by another image is not held by this one", "[dfu][machine][multi]")
 {
     // The device finds a hash in any image, but a copy sitting in image 0's
     // secondary is not an image-1 update that is already staged.
-    Context context = fresh(1);
-    context.device = state_of(
+    Scenario scenario{one_image(1)};
+    scenario.device = state_of(
         {SlotSpec{.image = 0, .slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.image = 0, .slot = 1, .hash = kTarget, .pending = true},
          SlotSpec{.image = 1, .slot = 0, .hash = hash_of(60), .active = true, .confirmed = true}});
-    const UpdatePlan plan;
-
-    const Step step = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step step = scenario.plan();
     CHECK(step.next == UpdateState::Uploading);
     CHECK(step.effect == Effect::StartUpload);
-    CHECK_FALSE(context.report.upload_skipped);
+    CHECK_FALSE(scenario.report().upload_skipped);
 }
 
 // --- Several images in one update (ADR-0021) --------------------------------
 
 namespace {
-
-const ImageHash kRadio = hash_of(100);
-const ImageHash kRadioOld = hash_of(150);
-
-/// Image 0 committed by smply, image 1 by the device: the coordinating-MCU
-/// product of docs/multi-image.md.
-[[nodiscard]] Context app_and_radio()
-{
-    return smply::dfu::make_context(
-        {Target{.image = 0, .commit = smply::CommitBy::Client, .hash = kTarget},
-         Target{.image = 1, .commit = smply::CommitBy::Device, .hash = kRadio}});
-}
 
 /// After the one reset: image 0 on trial, image 1 as \p radio describes it.
 [[nodiscard]] ImageState after_reset(SlotSpec radio_primary, SlotSpec radio_secondary)
@@ -1503,17 +1794,18 @@ const ImageHash kRadioOld = hash_of(150);
 
 TEST_CASE("every image is staged before the one reset", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
-    context.device = state_of(
+    Scenario scenario{app_and_radio()};
+    scenario.device = state_of(
         {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 1, .hash = kRadio}});
-    const UpdatePlan plan;
 
     // Image 0 is not on the device: upload it first.
-    const Step first = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step first = scenario.plan();
     CHECK(first.next == UpdateState::Uploading);
-    CHECK(context.current == 0);
+    CHECK(first.target == 0);
+    CHECK(first.image == 0);
+    scenario.reach(UpdateState::MarkingForTest);
 
     // Marked: on to image 1 rather than to the reset.
     const ImageState first_answer = state_of(
@@ -1521,44 +1813,45 @@ TEST_CASE("every image is staged before the one reset", "[dfu][machine][multi]")
          SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 1, .hash = kRadio}});
-    const Step marked =
-        advance(UpdateState::MarkingForTest, marked_for_test(first_answer), plan, context);
+    const Step marked = scenario.feed(marked_for_test(first_answer));
     CHECK(marked.next == UpdateState::Planning);
     CHECK(marked.effect == Effect::Continue);
-    CHECK(context.current == 1);
 
     // Image 1 is already on the device, unmarked: only the mark is needed.
-    const Step second = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step second = scenario.next();
     CHECK(second.next == UpdateState::MarkingForTest);
-    CHECK(context.report.images[1].upload_skipped);
-    CHECK_FALSE(context.report.upload_skipped); // image 0 was not skipped
+    CHECK(second.image == 1);
+    CHECK(second.hash == kRadio);
+    CHECK(scenario.report().images[1].upload_skipped);
+    CHECK_FALSE(scenario.report().upload_skipped); // image 0 was not skipped
 
     const ImageState last_answer = state_of(
         {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 1, .hash = kRadio, .pending = true}});
-    const Step last =
-        advance(UpdateState::MarkingForTest, marked_for_test(last_answer), plan, context);
+    const Step last = scenario.feed(marked_for_test(last_answer));
     CHECK(last.next == UpdateState::Resetting);
     CHECK(last.effect == Effect::Reset);
 }
 
 TEST_CASE("the mark-for-test recovery is one per image", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
-    const UpdatePlan plan;
+    Scenario scenario{app_and_radio()};
     const Event refused = image_failure(ImageError::ImageAlreadyPending);
 
-    CHECK(advance(UpdateState::MarkingForTest, refused, plan, context).next ==
-          UpdateState::InspectingImages);
-    context.current = 0;
-    const ImageState answer = state_of({SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
-    CHECK(advance(UpdateState::MarkingForTest, marked_for_test(answer), plan, context).next ==
-          UpdateState::Planning);
-    CHECK_FALSE(context.mark_retried);
-    CHECK(advance(UpdateState::MarkingForTest, refused, plan, context).next ==
-          UpdateState::InspectingImages);
+    // Image 0 spends its recovery, and is then marked.
+    scenario.reach(UpdateState::MarkingForTest);
+    REQUIRE(scenario.last().image == 0);
+    CHECK(scenario.feed(refused).next == UpdateState::InspectingImages);
+    scenario.reach(UpdateState::MarkingForTest);
+    REQUIRE(scenario.last().image == 0);
+    CHECK(scenario.next().next == UpdateState::Planning);
+
+    // Image 1 has a recovery of its own.
+    scenario.reach(UpdateState::MarkingForTest);
+    REQUIRE(scenario.last().image == 1);
+    CHECK(scenario.feed(refused).next == UpdateState::InspectingImages);
 }
 
 TEST_CASE("the slot table a mark-for-test returns routes the next image", "[dfu][machine][multi]")
@@ -1567,35 +1860,14 @@ TEST_CASE("the slot table a mark-for-test returns routes the next image", "[dfu]
     // decides the next image on it -- the same contract in a unit test as in
     // `FirmwareUpdater`, which hands the answer over in the event rather than
     // writing it behind the machine's back.
-    Context context = smply::dfu::make_context(
-        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}});
-    const UpdatePlan plan;
+    Scenario scenario{two_client_images()};
+    scenario.device = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
 
-    // Neither image is on the device: image 0 is uploaded first.
-    const ImageState before = state_of(
-        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
-    REQUIRE(advance(UpdateState::Idle, just(Event::Kind::Start), plan, context).next ==
-            UpdateState::QueryingParameters);
-    REQUIRE(advance(UpdateState::QueryingParameters, just(Event::Kind::ParametersUnavailable), plan,
-                    context)
-                .next == UpdateState::QueryingBootloader);
-    REQUIRE(advance(UpdateState::QueryingBootloader, just(Event::Kind::BootloaderUnavailable), plan,
-                    context)
-                .next == UpdateState::InspectingImages);
-    REQUIRE(advance(UpdateState::InspectingImages, state_read(before), plan, context).next ==
-            UpdateState::Planning);
-    REQUIRE(advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context).next ==
-            UpdateState::Uploading);
-    REQUIRE(
-        advance(UpdateState::Uploading, just(Event::Kind::UploadFinished), plan, context).next ==
-        UpdateState::VerifyingUpload);
-    const ImageState uploaded = state_of(
-        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-         SlotSpec{.slot = 1, .hash = kTarget},
-         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
-    REQUIRE(advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context).next ==
-            UpdateState::MarkingForTest);
+    // Neither image is on the device: image 0 is uploaded and verified first.
+    scenario.reach(UpdateState::MarkingForTest);
+    REQUIRE(scenario.last().image == 0);
 
     // The answer to the mark shows image 1's file already staged and marked,
     // so image 1 needs no upload: straight on to the one reset.
@@ -1604,66 +1876,38 @@ TEST_CASE("the slot table a mark-for-test returns routes the next image", "[dfu]
          SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 1, .hash = kRadio, .pending = true}});
-    REQUIRE(advance(UpdateState::MarkingForTest, marked_for_test(answer), plan, context).next ==
-            UpdateState::Planning);
+    REQUIRE(scenario.feed(marked_for_test(answer)).next == UpdateState::Planning);
 
-    const Step next = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step next = scenario.next();
     CHECK(next.next == UpdateState::Resetting);
     CHECK(next.effect == Effect::Reset);
-    CHECK(context.report.images[1].upload_skipped);
-    CHECK(context.report.images[1].upload_slot == 1);
+    CHECK(scenario.report().images[1].upload_skipped);
+    CHECK(scenario.report().images[1].upload_slot == 1);
 }
 
 TEST_CASE("an effect names everything the updater needs to carry it out", "[dfu][machine][multi]")
 {
     // The updater carries out an effect from the step alone: which target and
     // build to send, to which image, with which buffer budget, and which hash
-    // to mark or confirm. It never reads the machine's context to find out.
-    Context context = smply::dfu::make_context(
-        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}});
-    const UpdatePlan plan;
+    // to mark or confirm. It never reads the machine's working state.
+    Scenario scenario{two_client_images()};
+    scenario.buf_size = 512;
 
-    Event parameters = just(Event::Kind::ParametersRead);
-    parameters.buf_size = 512;
-    REQUIRE(advance(UpdateState::Idle, just(Event::Kind::Start), plan, context).next ==
-            UpdateState::QueryingParameters);
-    REQUIRE(advance(UpdateState::QueryingParameters, parameters, plan, context).next ==
-            UpdateState::QueryingBootloader);
-    REQUIRE(advance(UpdateState::QueryingBootloader, just(Event::Kind::BootloaderUnavailable), plan,
-                    context)
-                .next == UpdateState::InspectingImages);
-    const ImageState before = state_of(
-        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
-    REQUIRE(advance(UpdateState::InspectingImages, state_read(before), plan, context).next ==
-            UpdateState::Planning);
-
-    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step upload = scenario.plan();
     REQUIRE(upload.effect == Effect::StartUpload);
     CHECK(upload.target == 0);
     CHECK(upload.build == 0);
     CHECK(upload.image == 0);
     CHECK(upload.buf_size == 512);
 
-    REQUIRE(
-        advance(UpdateState::Uploading, just(Event::Kind::UploadFinished), plan, context).next ==
-        UpdateState::VerifyingUpload);
-    const ImageState uploaded = state_of(
-        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-         SlotSpec{.slot = 1, .hash = kTarget},
-         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
-    const Step mark = advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context);
+    REQUIRE(scenario.next().next == UpdateState::VerifyingUpload);
+    const Step mark = scenario.next();
     REQUIRE(mark.effect == Effect::MarkForTest);
     CHECK(mark.image == 0);
     CHECK(mark.hash == kTarget);
 
-    const ImageState marked = state_of(
-        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
-         SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
-         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
-    REQUIRE(advance(UpdateState::MarkingForTest, marked_for_test(marked), plan, context).next ==
-            UpdateState::Planning);
-    const Step second = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    REQUIRE(scenario.next().next == UpdateState::Planning);
+    const Step second = scenario.next();
     REQUIRE(second.effect == Effect::StartUpload);
     CHECK(second.target == 1);
     CHECK(second.image == 1);
@@ -1674,58 +1918,46 @@ TEST_CASE("the upload names the build chosen for the free slot", "[dfu][machine]
 {
     const ImageHash primary_build = hash_of(70);
     const ImageHash secondary_build = hash_of(80);
-    Context context = smply::dfu::make_context(
-        {Target{.image = 0,
-                .hash = primary_build,
-                .builds = std::array<Target::Build, 2>{
-                    Target::Build{.hash = primary_build, .version = {}},
-                    Target::Build{.hash = secondary_build, .version = {}}}}});
-    const UpdatePlan plan;
+    Scenario scenario{{Target{.image = 0,
+                              .hash = primary_build,
+                              .builds = std::array<Target::Build, 2>{
+                                  Target::Build{.hash = primary_build, .version = {}},
+                                  Target::Build{.hash = secondary_build, .version = {}}}}}};
 
-    Event mode = just(Event::Kind::BootloaderRead);
-    mode.bootloader.mode = McubootMode::DirectXipWithRevert;
-    REQUIRE(advance(UpdateState::QueryingBootloader, mode, plan, context).next ==
-            UpdateState::InspectingImages);
     // Running from the primary slot, so the secondary's build is the one sent.
-    const ImageState running_primary =
-        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
-    REQUIRE(
-        advance(UpdateState::InspectingImages, state_read(running_primary), plan, context).next ==
-        UpdateState::Planning);
-
-    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    const Step upload = planned(scenario, McubootMode::DirectXipWithRevert, running_old_only());
     REQUIRE(upload.effect == Effect::StartUpload);
     CHECK(upload.target == 0);
     CHECK(upload.build == 1);
     CHECK(upload.buf_size == 0);
+    CHECK(scenario.report().images[0].target_hash == secondary_build);
 }
 
 TEST_CASE("a device image still applying is waited for", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
-    const UpdatePlan plan;
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingBooted);
 
     const ImageState applying = radio_applying();
-    const Step booted = advance(UpdateState::VerifyingBooted, state_read(applying), plan, context);
+    const Step booted = scenario.feed(state_read(applying));
     CHECK(booted.next == UpdateState::AwaitingDeviceApply);
     CHECK(booted.effect == Effect::AwaitApply);
-    CHECK(context.swap_scheduled); // image 0 is on trial
 
-    const Step due =
-        advance(UpdateState::AwaitingDeviceApply, just(Event::Kind::ApplyPollDue), plan, context);
+    const Step due = scenario.feed(just(Event::Kind::ApplyPollDue));
     CHECK(due.next == UpdateState::AwaitingDeviceApply);
     CHECK(due.effect == Effect::ReadState);
 
-    const Step again =
-        advance(UpdateState::AwaitingDeviceApply, state_read(applying), plan, context);
+    const Step again = scenario.feed(state_read(applying));
     CHECK(again.effect == Effect::AwaitApply);
 
     // Applied: only now does the confirmation window open, for image 0.
     const ImageState applied = radio_applied();
-    const Step done = advance(UpdateState::AwaitingDeviceApply, state_read(applied), plan, context);
+    const Step done = scenario.feed(state_read(applied));
     CHECK(done.next == UpdateState::AwaitingConfirmation);
-    CHECK(context.current == 0);
-    CHECK(context.report.images[1].applied);
+    CHECK(scenario.report().images[1].applied);
+    const Step confirm = scenario.feed(just(Event::Kind::ConfirmApproved));
+    CHECK(confirm.effect == Effect::Confirm);
+    CHECK(confirm.image == 0);
 }
 
 TEST_CASE("a device image on trial in slot 0 is applied, not yet committed",
@@ -1733,29 +1965,27 @@ TEST_CASE("a device image on trial in slot 0 is applied, not yet committed",
 {
     // ADR-0022: slot 0 reports what the other MCU runs. The new image there,
     // unconfirmed, is running on trial -- time to open the window for image 0.
-    Context context = app_and_radio();
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState on_trial =
         after_reset(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::AwaitingConfirmation);
-    CHECK(context.report.images[1].applied);
-    CHECK_FALSE(context.report.images[1].committed);
+    CHECK(scenario.feed(state_read(on_trial)).next == UpdateState::AwaitingConfirmation);
+    CHECK(scenario.report().images[1].applied);
+    CHECK_FALSE(scenario.report().images[1].committed);
 }
 
 TEST_CASE("a failed device apply confirms nothing", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState failed_apply = radio_failed();
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(failed_apply), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
-    REQUIRE(context.report.cause.has_value());
-    CHECK(context.report.cause->code() == ErrorCode::UpdateFailed);
+    CHECK(scenario.feed(state_read(failed_apply)).next == UpdateState::Failed);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(scenario.report().cause->code() == ErrorCode::UpdateFailed);
     // Image 0 is left on trial, so it reverts on the next reset.
-    CHECK(context.report.revert_pending);
-    CHECK_FALSE(context.report.images[1].applied);
-    CHECK_FALSE(context.report.rolled_back);
+    CHECK(scenario.report().revert_pending);
+    CHECK_FALSE(scenario.report().images[1].applied);
+    CHECK_FALSE(scenario.report().rolled_back);
 }
 
 TEST_CASE("waiting for the device ends on a timeout, and survives a dropped link",
@@ -1764,34 +1994,35 @@ TEST_CASE("waiting for the device ends on a timeout, and survives a dropped link
     for (const UpdateState wait :
          {UpdateState::AwaitingDeviceApply, UpdateState::AwaitingDeviceCommit}) {
         CAPTURE(wait);
-        Context timed_out = app_and_radio();
-        timed_out.swap_scheduled = wait == UpdateState::AwaitingDeviceApply;
-        const Step late = advance(wait, just(Event::Kind::ApplyTimedOut), UpdatePlan{}, timed_out);
+        const std::unique_ptr<Scenario> timed_out = through_every_state();
+        timed_out->reach(wait);
+        const Step late = timed_out->feed(just(Event::Kind::ApplyTimedOut));
         CHECK(late.next == UpdateState::Failed);
-        REQUIRE(timed_out.report.cause.has_value());
-        CHECK(timed_out.report.cause->code() == ErrorCode::Timeout);
+        REQUIRE(timed_out->report().cause.has_value());
+        CHECK(timed_out->report().cause->code() == ErrorCode::Timeout);
         // Before the confirm image 0 reverts; after it, nothing does.
-        CHECK(timed_out.report.revert_pending == (wait == UpdateState::AwaitingDeviceApply));
+        CHECK(timed_out->report().revert_pending == (wait == UpdateState::AwaitingDeviceApply));
 
         // The link runs through the MCU being updated: a drop asks for a
         // reconnect, and the wait carries on afterwards (ADR-0022).
-        Context dropped = app_and_radio();
-        const Step lost = advance(wait, failed(ErrorCode::Disconnected), UpdatePlan{}, dropped);
+        const std::unique_ptr<Scenario> dropped = through_every_state();
+        dropped->reach(wait);
+        const Step lost = dropped->feed(failed(ErrorCode::Disconnected));
         CHECK(lost.next == UpdateState::AwaitingReconnect);
         CHECK(lost.effect == Effect::RequestReconnect);
-        CHECK_FALSE(dropped.report.cause.has_value());
+        CHECK_FALSE(dropped->report().cause.has_value());
 
         // A lost answer is asked again at the next poll.
-        Context silent = app_and_radio();
-        const Step again = advance(wait, failed(ErrorCode::Timeout), UpdatePlan{}, silent);
+        const std::unique_ptr<Scenario> silent = through_every_state();
+        silent->reach(wait);
+        const Step again = silent->feed(failed(ErrorCode::Timeout));
         CHECK(again.next == wait);
         CHECK(again.effect == Effect::AwaitApply);
 
         // Anything else is still fatal.
-        Context refused = app_and_radio();
-        const Step broken =
-            advance(wait, image_failure(ImageError::Unknown), UpdatePlan{}, refused);
-        CHECK(broken.next == UpdateState::Failed);
+        const std::unique_ptr<Scenario> refused = through_every_state();
+        refused->reach(wait);
+        CHECK(refused->feed(image_failure(ImageError::Unknown)).next == UpdateState::Failed);
     }
 }
 
@@ -1821,32 +2052,30 @@ TEST_CASE("after the confirm, smply waits for the device to commit its image",
     const ImageState reverted =
         after_confirm(SlotSpec{.hash = kRadioOld, .confirmed = true}, SlotSpec{.hash = kRadio});
 
-    Context context = app_and_radio();
-    const Step verified =
-        advance(UpdateState::VerifyingConfirmed, state_read(on_trial), UpdatePlan{}, context);
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingConfirmed);
+    const Step verified = scenario.feed(state_read(on_trial));
     CHECK(verified.next == UpdateState::AwaitingDeviceCommit);
     CHECK(verified.effect == Effect::AwaitApply);
 
-    const Step still =
-        advance(UpdateState::AwaitingDeviceCommit, state_read(on_trial), UpdatePlan{}, context);
-    CHECK(still.next == UpdateState::AwaitingDeviceCommit);
+    REQUIRE(scenario.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    CHECK(scenario.feed(state_read(on_trial)).next == UpdateState::AwaitingDeviceCommit);
 
-    const Step done =
-        advance(UpdateState::AwaitingDeviceCommit, state_read(committed), UpdatePlan{}, context);
-    CHECK(done.next == UpdateState::Completed);
-    CHECK(context.report.images[1].committed);
-    CHECK_FALSE(context.report.revert_pending);
+    REQUIRE(scenario.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    CHECK(scenario.feed(state_read(committed)).next == UpdateState::Completed);
+    CHECK(scenario.report().images[1].committed);
+    CHECK_FALSE(scenario.report().revert_pending);
 
     // The other MCU reverted its trial instead: reported, and nothing reverts
     // here -- image 0 is already confirmed.
-    Context lost = app_and_radio();
-    const Step gone =
-        advance(UpdateState::AwaitingDeviceCommit, state_read(reverted), UpdatePlan{}, lost);
-    CHECK(gone.next == UpdateState::Failed);
-    REQUIRE(lost.report.cause.has_value());
-    CHECK(lost.report.cause->code() == ErrorCode::UpdateFailed);
-    CHECK_FALSE(lost.report.revert_pending);
-    CHECK_FALSE(lost.report.images[1].committed);
+    Scenario lost{app_and_radio()};
+    lost.reach(UpdateState::AwaitingDeviceCommit);
+    REQUIRE(lost.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    CHECK(lost.feed(state_read(reverted)).next == UpdateState::Failed);
+    REQUIRE(lost.report().cause.has_value());
+    CHECK(lost.report().cause->code() == ErrorCode::UpdateFailed);
+    CHECK_FALSE(lost.report().revert_pending);
+    CHECK_FALSE(lost.report().images[1].committed);
 }
 
 TEST_CASE("with no client image on trial, the commit is waited for at once",
@@ -1858,32 +2087,28 @@ TEST_CASE("with no client image on trial, the commit is waited for at once",
     const ImageState on_trial =
         after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
 
-    Context booted = app_and_radio();
-    const Step after_reset =
-        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, booted);
-    CHECK(after_reset.next == UpdateState::AwaitingDeviceCommit);
+    Scenario booted{app_and_radio()};
+    booted.reach(UpdateState::VerifyingBooted);
+    CHECK(booted.feed(state_read(on_trial)).next == UpdateState::AwaitingDeviceCommit);
 
-    Context resumed = app_and_radio();
+    Scenario resumed{app_and_radio()};
     resumed.device = on_trial;
-    const Step planned =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, resumed);
-    CHECK(planned.next == UpdateState::AwaitingDeviceCommit);
-    CHECK(resumed.report.upload_skipped);
+    CHECK(resumed.plan().next == UpdateState::AwaitingDeviceCommit);
+    CHECK(resumed.report().upload_skipped);
 }
 
 TEST_CASE("a revert of one client image fails the update and names it", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingBooted);
     const ImageState reverted = state_of(
         {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
          SlotSpec{.slot = 1, .hash = kTarget},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true, .confirmed = true}});
-    const Step step =
-        advance(UpdateState::VerifyingBooted, state_read(reverted), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Failed);
-    CHECK(context.report.images[0].rolled_back);
-    CHECK(context.report.rolled_back);
-    CHECK_FALSE(context.report.revert_pending);
+    CHECK(scenario.feed(state_read(reverted)).next == UpdateState::Failed);
+    CHECK(scenario.report().images[0].rolled_back);
+    CHECK(scenario.report().rolled_back);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("resuming after the reset goes straight to the wait", "[dfu][machine][multi]")
@@ -1891,42 +2116,34 @@ TEST_CASE("resuming after the reset goes straight to the wait", "[dfu][machine][
     // A new process, a device part-way through: image 0 on trial means the
     // reset happened, so nothing is staged again -- that would need another
     // reset, which would revert the trial.
-    Context applying = app_and_radio();
+    Scenario applying{app_and_radio()};
     applying.device = radio_applying();
-    const Step wait =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, applying);
-    CHECK(wait.next == UpdateState::AwaitingDeviceApply);
-    CHECK(applying.report.upload_skipped);
+    CHECK(applying.plan().next == UpdateState::AwaitingDeviceApply);
+    CHECK(applying.report().upload_skipped);
 
     // ... and after the device applied its image, to the confirmation window.
-    Context applied = app_and_radio();
+    Scenario applied{app_and_radio()};
     applied.device = radio_applied();
-    const Step window =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, applied);
-    CHECK(window.next == UpdateState::AwaitingConfirmation);
+    CHECK(applied.plan().next == UpdateState::AwaitingConfirmation);
 
     // ... and a failed apply is reported, not staged again.
-    Context failed_apply = app_and_radio();
+    Scenario failed_apply{app_and_radio()};
     failed_apply.device = radio_failed();
-    const Step verdict =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, failed_apply);
-    CHECK(verdict.next == UpdateState::Failed);
-    CHECK(failed_apply.report.revert_pending);
+    CHECK(failed_apply.plan().next == UpdateState::Failed);
+    CHECK(failed_apply.report().revert_pending);
 }
 
 TEST_CASE("nothing to stage and nothing on trial completes without a reset",
           "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
-    context.device = state_of(
+    Scenario scenario{app_and_radio()};
+    scenario.device = state_of(
         {SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true, .confirmed = true}});
-    const Step step =
-        advance(UpdateState::Planning, just(Event::Kind::Continue), UpdatePlan{}, context);
-    CHECK(step.next == UpdateState::Completed);
-    CHECK(context.report.upload_skipped);
-    CHECK(context.report.images[1].applied);
-    CHECK_FALSE(context.report.revert_pending);
+    CHECK(scenario.plan().next == UpdateState::Completed);
+    CHECK(scenario.report().upload_skipped);
+    CHECK(scenario.report().images[1].applied);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("a link lost after the confirm goes on to wait for the device's commit",
@@ -1934,109 +2151,99 @@ TEST_CASE("a link lost after the confirm goes on to wait for the device's commit
 {
     // The product's case: the device takes the link down to commit the other
     // MCU just after smply's confirm (ADR-0023).
-    Context context = app_and_radio();
-    const Step reconnect = advance(UpdateState::VerifyingConfirmed, failed(ErrorCode::Disconnected),
-                                   UpdatePlan{}, context);
-    CHECK(reconnect.next == UpdateState::AwaitingReconnect);
-
-    const Step verify = advance(UpdateState::AwaitingReconnect, just(Event::Kind::Reconnected),
-                                UpdatePlan{}, context);
-    CHECK(verify.next == UpdateState::VerifyingBooted);
+    Scenario scenario{app_and_radio()};
+    scenario.reach(UpdateState::VerifyingConfirmed);
+    CHECK(scenario.feed(failed(ErrorCode::Disconnected)).next == UpdateState::AwaitingReconnect);
+    CHECK(scenario.feed(just(Event::Kind::Reconnected)).next == UpdateState::VerifyingBooted);
 
     const ImageState on_trial =
         after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
-    const Step wait =
-        advance(UpdateState::VerifyingBooted, state_read(on_trial), UpdatePlan{}, context);
+    const Step wait = scenario.feed(state_read(on_trial));
     CHECK(wait.next == UpdateState::AwaitingDeviceCommit);
     CHECK(wait.effect == Effect::AwaitApply);
-    CHECK_FALSE(context.swap_scheduled);
+    // Image 0 is confirmed, so a failure now leaves nothing to revert.
+    CHECK(scenario.feed(just(Event::Kind::ApplyTimedOut)).next == UpdateState::Failed);
+    CHECK_FALSE(scenario.report().revert_pending);
 }
 
 TEST_CASE("each client image is confirmed in turn, by its own hash", "[dfu][machine][multi]")
 {
-    Context context = smply::dfu::make_context(
-        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}});
+    UpdatePlan plan;
+    plan.mode = UpdateMode::ConfirmImmediately;
+    Scenario scenario{two_client_images(), plan};
+    scenario.reach(UpdateState::VerifyingBooted);
+
     const ImageState trial =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true},
                   SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true}});
-    UpdatePlan plan;
-    plan.mode = UpdateMode::ConfirmImmediately;
-
-    const Step first = advance(UpdateState::VerifyingBooted, state_read(trial), plan, context);
+    const Step first = scenario.feed(state_read(trial));
     CHECK(first.next == UpdateState::Confirming);
-    CHECK(context.current == 0);
     CHECK(first.image == 0);
     CHECK(first.hash == kTarget);
 
     const ImageState first_confirmed =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
                   SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true}});
-    const Step second = advance(UpdateState::Confirming, confirmed(first_confirmed), plan, context);
+    const Step second = scenario.feed(confirmed(first_confirmed));
     CHECK(second.next == UpdateState::Confirming);
     CHECK(second.effect == Effect::Confirm);
-    CHECK(context.current == 1);
     CHECK(second.image == 1);
     CHECK(second.hash == kRadio);
-    CHECK(context.swap_scheduled); // image 1 is still on trial
 
     const ImageState both_confirmed = state_of(
         {SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
          SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true, .confirmed = true}});
-    const Step verify = advance(UpdateState::Confirming, confirmed(both_confirmed), plan, context);
-    CHECK(verify.next == UpdateState::VerifyingConfirmed);
-    CHECK_FALSE(context.swap_scheduled);
+    CHECK(scenario.feed(confirmed(both_confirmed)).next == UpdateState::VerifyingConfirmed);
 
     // Every client image must read back confirmed, not just the last one.
     const ImageState half =
         state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
                   SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true}});
-    CHECK(advance(UpdateState::VerifyingConfirmed, state_read(half), plan, context).next ==
-          UpdateState::Failed);
+    CHECK(scenario.feed(state_read(half)).next == UpdateState::Failed);
+}
+
+TEST_CASE("an image still on trial after a confirm keeps the swap scheduled",
+          "[dfu][machine][multi]")
+{
+    // Between the two confirms image 1 is still on trial: an update that ends
+    // there leaves it to revert.
+    UpdatePlan plan;
+    plan.mode = UpdateMode::ConfirmImmediately;
+    Scenario scenario{two_client_images(), plan};
+    scenario.reach(UpdateState::Confirming);
+    REQUIRE(scenario.next().image == 1);
+    CHECK(swap_scheduled(scenario));
 }
 
 TEST_CASE("UploadOnly uploads every image and stops", "[dfu][machine][multi]")
 {
-    Context context = app_and_radio();
     UpdatePlan plan;
     plan.mode = UpdateMode::UploadOnly;
+    Scenario scenario{app_and_radio(), plan};
+    scenario.reach(UpdateState::Uploading);
 
-    Event finished = just(Event::Kind::UploadFinished);
-    finished.transferred = 100;
-    const Step next = advance(UpdateState::Uploading, finished, plan, context);
+    const Step next = scenario.feed(upload_finished(100));
     CHECK(next.next == UpdateState::Planning);
-    CHECK(context.current == 1);
+    const Step second = scenario.next();
+    CHECK(second.next == UpdateState::Uploading);
+    CHECK(second.target == 1);
 
-    finished.transferred = 50;
-    const Step done = advance(UpdateState::Uploading, finished, plan, context);
+    const Step done = scenario.feed(upload_finished(50));
     CHECK(done.next == UpdateState::Completed);
-    CHECK(context.report.bytes_transferred == 150);
-    CHECK(context.report.images[0].bytes_transferred == 100);
-    CHECK(context.report.images[1].bytes_transferred == 50);
+    CHECK(scenario.report().bytes_transferred == 150);
+    CHECK(scenario.report().images[0].bytes_transferred == 100);
+    CHECK(scenario.report().images[1].bytes_transferred == 50);
 }
 
-TEST_CASE("a context with no image to work on is an internal error", "[dfu][machine][multi]")
+TEST_CASE("a machine with no image to work on is an internal error", "[dfu][machine][multi]")
 {
-    Context empty;
-    const Step none = advance(UpdateState::Idle, just(Event::Kind::Start), UpdatePlan{}, empty);
+    // The updater never builds one, and a machine that indexes its targets
+    // refuses rather than read past them.
+    Machine empty{{}, UpdatePlan{}};
+    const Step none = empty.apply(just(Event::Kind::Start));
     CHECK(none.next == UpdateState::Failed);
-
-    Context past_the_end = fresh();
-    past_the_end.current = 1;
-    const Step step =
-        advance(UpdateState::Confirming, just(Event::Kind::Confirmed), UpdatePlan{}, past_the_end);
-    CHECK(step.next == UpdateState::Failed);
-    REQUIRE(past_the_end.report.cause.has_value());
-    CHECK(past_the_end.report.cause->code() == ErrorCode::Internal);
-
-    // The same holds for an effect that would name a target: the machine
-    // indexes the targets to give the step its parameters, so it refuses
-    // rather than read past them.
-    Context approved = fresh();
-    approved.current = 1;
-    const Step confirm = advance(UpdateState::AwaitingConfirmation,
-                                 just(Event::Kind::ConfirmApproved), UpdatePlan{}, approved);
-    CHECK(confirm.next == UpdateState::Failed);
-    CHECK(confirm.effect == Effect::Finish);
-    REQUIRE(approved.report.cause.has_value());
-    CHECK(approved.report.cause->code() == ErrorCode::Internal);
+    CHECK(none.effect == Effect::Finish);
+    REQUIRE(empty.report().cause.has_value());
+    CHECK(empty.report().cause->code() == ErrorCode::Internal);
+    CHECK(empty.report().final_state == UpdateState::Failed);
 }

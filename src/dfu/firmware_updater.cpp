@@ -119,7 +119,7 @@ std::string_view to_string(UpdateState state) noexcept
 
 /// The I/O half: it carries out effects and owns nothing that decides anything.
 ///
-/// If a condition needs deciding it belongs in `dfu::advance()`; keeping that
+/// If a condition needs deciding it belongs in `dfu::Machine`; keeping that
 /// line is what makes the whole failure table testable without a device.
 class FirmwareUpdater::Impl
 {
@@ -176,8 +176,7 @@ public:
         plan_ = plan;
         sources_ = std::move(sources);
         on_event_ = std::move(on_event);
-        context_ = dfu::make_context(std::move(decided));
-        state_ = UpdateState::Idle;
+        machine_.emplace(decided, plan);
         running_ = true;
 
         post(plain(Event::Kind::Start));
@@ -186,7 +185,7 @@ public:
 
     [[nodiscard]] Result<void> confirm()
     {
-        if (state_ != UpdateState::AwaitingConfirmation) {
+        if (state() != UpdateState::AwaitingConfirmation) {
             return fail(ErrorCode::InvalidState, "updater: not awaiting confirmation");
         }
         post(plain(Event::Kind::ConfirmApproved));
@@ -195,7 +194,7 @@ public:
 
     [[nodiscard]] Result<void> resume_after_reconnect()
     {
-        if (state_ != UpdateState::AwaitingReconnect) {
+        if (state() != UpdateState::AwaitingReconnect) {
             return fail(ErrorCode::InvalidState, "updater: not awaiting a reconnect");
         }
         post(plain(Event::Kind::Reconnected));
@@ -233,12 +232,13 @@ public:
         if (!running_) {
             return;
         }
-        if (state_ == UpdateState::AwaitingDeviceApply ||
-            state_ == UpdateState::AwaitingDeviceCommit) {
+        const UpdateState current = state();
+        if (current == UpdateState::AwaitingDeviceApply ||
+            current == UpdateState::AwaitingDeviceCommit) {
             poll_apply(now);
             return;
         }
-        if (state_ != UpdateState::AwaitingDisconnect) {
+        if (current != UpdateState::AwaitingDisconnect) {
             return;
         }
         // The updater never touches the transport, so it learns about the drop
@@ -262,14 +262,14 @@ public:
 
     [[nodiscard]] UpdateState state() const noexcept
     {
-        return state_;
+        return machine_.has_value() ? machine_->state() : UpdateState::Idle;
     }
 
     [[nodiscard]] const UpdateReport& report() const noexcept
     {
         // The machine's own report, live: the outcomes decided so far, and the
         // fields only known at the end once the machine has finished.
-        return context_.report;
+        return machine_.has_value() ? machine_->report() : no_update_;
     }
 
     /// Completes a running update inline, for the destructor.
@@ -350,35 +350,36 @@ private:
 
     void dispatch(const Event& event)
     {
-        if (!running_) {
+        if (!running_ || !machine_.has_value()) {
             return;
         }
-        dfu::Step step = dfu::advance(state_, event, plan_, context_);
+        dfu::Machine& machine = *machine_;
+        UpdateState previous = machine.state();
+        dfu::Step step = machine.apply(event);
         for (;;) {
-            enter(step.next);
+            announce(previous, step.next);
             if (step.effect != Effect::Continue) {
                 apply(step);
                 return;
             }
             // A decision that needed no I/O: re-enter immediately, so the state
             // it was decided in is still a real, observable state.
-            step = dfu::advance(state_, plain(Event::Kind::Continue), plan_, context_);
+            previous = step.next;
+            step = machine.apply(plain(Event::Kind::Continue));
         }
     }
 
-    void enter(UpdateState next)
+    /// Tells the application the machine moved from \p previous to \p next.
+    void announce(UpdateState previous, UpdateState next)
     {
-        if (next == state_) {
+        if (next == previous) {
             return;
         }
-        const UpdateState previous = state_;
-        state_ = next;
-
         emit(UpdateStateChanged{.from = previous, .to = next});
     }
 
     /// Carries out \p step's effect from the step alone: the parameters an
-    /// effect needs travel with it, and the context is never read.
+    /// effect needs travel with it, and nothing else is read from the machine.
     void apply(const dfu::Step& step)
     {
         const Effect effect = step.effect;
@@ -482,8 +483,8 @@ private:
             // The timeout runs from the first poll of each wait -- the apply,
             // then the commit -- not from each poll, and not again after a
             // reconnect that returns to the same wait (ADR-0022).
-            if (apply_phase_ != state_) {
-                apply_phase_ = state_;
+            if (apply_phase_ != step.next) {
+                apply_phase_ = step.next;
                 apply_deadline_ = last_poll_ + plan_.apply_timeout;
             }
             apply_poll_ = last_poll_ + plan_.apply_poll_interval;
@@ -573,10 +574,10 @@ private:
         // The one report, which the machine completed on the step that
         // finished the update: `report()` and the `UpdateFinished` result
         // cannot disagree.
-        const UpdateReport& report = context_.report;
+        const UpdateReport& report = this->report();
 
         Result<UpdateReport> outcome = report;
-        if (state_ != UpdateState::Completed) {
+        if (state() != UpdateState::Completed) {
             outcome =
                 fail(report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"}));
         }
@@ -655,14 +656,19 @@ private:
     OsManagement* os_;
 
     UpdatePlan plan_;
-    /// Parallel to `context_.targets`.
-    /// Per target: the source, and the secondary slot's build when given.
+    /// Per target, in the order given to the machine: the source, and the
+    /// secondary slot's build when given. `Step::target` and `Step::build`
+    /// index it.
     std::vector<std::array<ImageSource*, 2>> sources_;
     UpdateEventCallback on_event_;
     UploadHandle upload_;
 
-    dfu::Context context_;
-    UpdateState state_ = UpdateState::Idle;
+    /// The decisions, the current state and the one report. Engaged from the
+    /// first `start()` on, and kept after the update ends so `report()` still
+    /// hands its report out.
+    std::optional<dfu::Machine> machine_;
+    /// What `report()` hands out before any update has started.
+    UpdateReport no_update_;
     bool running_ = false;
 
     std::optional<TimePoint> grace_deadline_;
