@@ -1148,6 +1148,13 @@ public:
     void reconnect_failed(Error);
 
     UpdateState  state() const noexcept;
+
+    // The report as the update has written it so far. While it runs, the
+    // per-image outcomes and the summaries derived from them are live;
+    // final_state, target_hash and final_device_state stay default until the
+    // update is terminal, and are filled just before UpdateFinished, whose
+    // result is this same report. Fresh when start() accepts an update, kept
+    // unchanged after the end.
     const UpdateReport& report() const noexcept;
 };
 

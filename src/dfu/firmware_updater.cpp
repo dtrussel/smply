@@ -177,7 +177,6 @@ public:
         sources_ = std::move(sources);
         on_event_ = std::move(on_event);
         context_ = dfu::make_context(std::move(decided));
-        report_ = UpdateReport{};
         state_ = UpdateState::Idle;
         running_ = true;
 
@@ -268,7 +267,9 @@ public:
 
     [[nodiscard]] const UpdateReport& report() const noexcept
     {
-        return report_;
+        // The machine's own report, live: the outcomes decided so far, and the
+        // fields only known at the end once `finish()` has written them.
+        return context_.report;
     }
 
     /// Completes a running update inline, for the destructor.
@@ -569,15 +570,17 @@ private:
         apply_deadline_.reset();
         apply_phase_.reset();
 
-        report_ = context_.report;
-        report_.final_state = state_;
-        report_.target_hash = context_.targets.front().hash;
-        report_.final_device_state = context_.device;
+        // The one report: completed in place, so `report()` and the
+        // `UpdateFinished` result cannot disagree.
+        UpdateReport& report = context_.report;
+        report.final_state = state_;
+        report.target_hash = context_.targets.front().hash;
+        report.final_device_state = context_.device;
 
-        Result<UpdateReport> outcome = report_;
+        Result<UpdateReport> outcome = report;
         if (state_ != UpdateState::Completed) {
-            outcome = fail(
-                context_.report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"}));
+            outcome =
+                fail(report.cause.value_or(Error{ErrorCode::Cancelled, "updater: cancelled"}));
         }
 
         emit(UpdateFinished{.result = std::move(outcome)});
@@ -661,7 +664,6 @@ private:
     UploadHandle upload_;
 
     dfu::Context context_;
-    UpdateReport report_;
     UpdateState state_ = UpdateState::Idle;
     bool running_ = false;
 

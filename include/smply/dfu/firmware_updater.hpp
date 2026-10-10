@@ -355,7 +355,8 @@ struct ConfirmationRequired
 struct UpdateFinished
 {
     /// The report on success. On failure, the `Error` that ended the update;
-    /// `FirmwareUpdater::report()` still has the full report.
+    /// `FirmwareUpdater::report()` still has the full report, the same one a
+    /// success would have carried.
     Result<UpdateReport> result;
 };
 
@@ -480,7 +481,16 @@ public:
 
     [[nodiscard]] UpdateState state() const noexcept;
 
-    /// The report as it stands. Complete once the update is terminal.
+    /// The report as the update has written it so far.
+    ///
+    /// While an update runs, the per-image outcomes and the summary fields
+    /// derived from them are live: an image's `bytes_transferred` appears once
+    /// its upload finishes, for example. `final_state`, `target_hash` and
+    /// `final_device_state` are known only at the end: they keep their default
+    /// values until the update is terminal, and are filled in just before
+    /// `UpdateFinished` is emitted, whose result is this same report. It
+    /// starts afresh when `start()` accepts an update, and is kept unchanged
+    /// after the update ends. Before any update it is default.
     [[nodiscard]] const UpdateReport& report() const noexcept;
 
 private:

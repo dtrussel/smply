@@ -183,9 +183,9 @@ struct Context
     /// What the update will report. The machine writes the outcome fields
     /// here as it decides them -- per image in `images`, and `revert_pending`
     /// and `cause` for the whole -- and derives the summary fields from the
-    /// images after every step, so the updater hands the report out rather
-    /// than copying it field by field. `FirmwareUpdater` adds the final
-    /// state, the target hash and the last slot table when it finishes.
+    /// images after every step. `FirmwareUpdater::report()` hands this one
+    /// report out live, and the updater adds the final state, the target hash
+    /// and the last slot table to it when it finishes: there is no copy.
     UpdateReport report;
 
     /// An upload was started and has not finished, so a reconnect resumes it

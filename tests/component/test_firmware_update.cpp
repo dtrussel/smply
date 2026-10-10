@@ -1938,6 +1938,91 @@ TEST_CASE("a failed device apply leaves image 0 unconfirmed", "[dfu][update][mul
     CHECK(same_bytes(fixture.simulator.slot_content(2), images.radio_running));
 }
 
+TEST_CASE("the report shows what is decided while the update runs, and is the result at the end",
+          "[dfu][update][multi][report]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 3);
+
+    Application application{fixture, {&reconnected}, outcome};
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+
+    // Partway: both images are uploaded, and the report already says so.
+    application.wait.when(
+        [&] { return fixture.updater.state() == UpdateState::AwaitingDeviceApply; },
+        [&] {
+            const UpdateReport& live = fixture.updater.report();
+            REQUIRE(live.images.size() == 2);
+            CHECK(live.images[0].image == 0);
+            CHECK(live.images[0].bytes_transferred == images.app_update.size());
+            CHECK(live.images[1].image == 1);
+            CHECK(live.images[1].bytes_transferred == images.radio_update.size());
+            CHECK_FALSE(live.images[1].applied);
+            CHECK(live.bytes_transferred == images.app_update.size() + images.radio_update.size());
+            // What is only known at the end is still default.
+            CHECK(live.final_state == UpdateState::Idle);
+            CHECK_FALSE(live.target_hash.has_value());
+            CHECK_FALSE(live.final_device_state.has_value());
+            CHECK_FALSE(live.cause.has_value());
+        });
+
+    REQUIRE(application.run());
+    REQUIRE(application.wait.all_fired());
+    REQUIRE(outcome.report.has_value());
+    const UpdateReport& finished = *outcome.report;
+    const UpdateReport& kept = fixture.updater.report();
+    // `UpdateFinished` carries the report `report()` still shows.
+    CHECK(finished.final_state == UpdateState::Completed);
+    CHECK(kept.final_state == UpdateState::Completed);
+    CHECK(kept.target_hash == hash_of_firmware(images.app_update));
+    CHECK(finished.target_hash == kept.target_hash);
+    CHECK(finished.bytes_transferred == kept.bytes_transferred);
+    REQUIRE(kept.final_device_state.has_value());
+    REQUIRE(finished.final_device_state.has_value());
+    CHECK(finished.final_device_state->slots == kept.final_device_state->slots);
+    REQUIRE(kept.images.size() == 2);
+    REQUIRE(finished.images.size() == 2);
+    CHECK(kept.images[1].committed);
+    CHECK(finished.images[1].committed);
+}
+
+TEST_CASE("after a failure the report has the final state, the target hash and the last slot table",
+          "[dfu][update][multi][report]")
+{
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Failed, 2);
+
+    Application application{fixture, {&reconnected}, outcome};
+    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    REQUIRE(application.run());
+
+    CHECK(outcome.code == ErrorCode::UpdateFailed);
+    const UpdateReport& report = fixture.updater.report();
+    CHECK(report.final_state == UpdateState::Failed);
+    REQUIRE(report.cause.has_value());
+    CHECK(report.cause->code() == ErrorCode::UpdateFailed);
+    CHECK(report.target_hash == hash_of_firmware(images.app_update));
+
+    // The last slot table read: image 0 runs its update on trial, image 1
+    // still runs the old build because the device never applied the new one.
+    REQUIRE(report.final_device_state.has_value());
+    const smply::ImageSlot* app =
+        report.final_device_state->find_by_hash(hash_of_firmware(images.app_update));
+    REQUIRE(app != nullptr);
+    CHECK(app->image == 0);
+    CHECK(app->active);
+    CHECK_FALSE(app->confirmed);
+    const smply::ImageSlot* radio = report.final_device_state->active_slot(1);
+    REQUIRE(radio != nullptr);
+    CHECK(radio->hash == hash_of_firmware(images.radio_running));
+}
+
 TEST_CASE("a device that never finishes applying times out", "[dfu][update][multi]")
 {
     UpdateOutcome outcome;
