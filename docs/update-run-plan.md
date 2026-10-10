@@ -344,11 +344,11 @@ Delivers part 2's module: the update run in `smply::dfu_app`, its three hooks,
 the wait seam with its real adapter and its `ManualClock` test adapter, and the
 component suite's `Application` replaced by it. The examples are not touched.
 
-- [ ] The update run and the real wait adapter live in `smply::dfu_app`; the test wait adapter lives with the component test support.
-- [ ] Every component test that used `Application` uses the run, with its assertions unchanged.
-- [ ] New component cases: refused attempts with exact backoff delays read from `ManualClock`; give-up by policy exhaustion; give-up by the hook's verdict with that error reaching the updater; approve returning stop; the overall deadline; a second reboot in one update.
-- [ ] No hook is called from inside `poll()`; no test reads the real clock.
-- [ ] `architecture.md` §10, `testing.md` and the `support/` line in `CLAUDE.md` name the run and the test adapter.
+- [x] The update run and the real wait adapter live in `smply::dfu_app`; the test wait adapter lives with the component test support.
+- [x] Every component test that used `Application` uses the run, with its assertions unchanged.
+- [x] New component cases: refused attempts with exact backoff delays read from `ManualClock`; give-up by policy exhaustion; give-up by the hook's verdict with that error reaching the updater; approve returning stop; the overall deadline; a second reboot in one update.
+- [x] No hook is called from inside `poll()`; no test reads the real clock.
+- [x] `architecture.md` §10, `testing.md` and the `support/` line in `CLAUDE.md` name the run and the test adapter.
 
 ### Stage 3: the three examples use the update run
 

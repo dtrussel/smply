@@ -448,9 +448,13 @@ smply/
 │   ├── dfu_app/                what a DFU *application* needs and the library
 │   │                           deliberately does not ship: FileImageSource,
 │   │                           ReconnectPolicy, PackageUpdate (a package file
-│   │                           into FirmwareUpdater targets), and the tools'
-│   │                           MCUboot-mode option. smply::dfu_app, used by the
-│   │                           examples and unit-tested
+│   │                           into FirmwareUpdater targets), the tools'
+│   │                           MCUboot-mode option, and update_run.hpp: UpdateRun,
+│   │                           the loop that drives a started update to its end
+│   │                           through three hooks (open a link, approve, observe)
+│   │                           and the UpdateWait seam, whose real adapter is
+│   │                           dispatcher_wait.hpp. smply::dfu_app, used by the
+│   │                           examples, unit-tested, and the run component-tested
 │   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
 │                               stored-zip lister, a bounded JSON reader and the
 │                               manifest cross-checks. smply::dfu_package, not
@@ -479,9 +483,12 @@ smply/
 │   ├── unit/                   per-component
 │   ├── serial_port/            test_serial_port.cpp — the serial adapter on a pseudo-terminal:
 │   │                           a real tty and a real thread, so its own executable
-│   ├── component/              harness.hpp  test_simulator.cpp  test_round_trip.cpp
-│   │                           test_firmware_update.cpp  test_async.cpp
-│   │                           — the real stack over FakeTransport + ServerSimulator
+│   ├── component/              harness.hpp  simulated_wait.hpp  test_simulator.cpp
+│   │                           test_round_trip.cpp  test_firmware_update.cpp
+│   │                           test_update_run.cpp  test_async.cpp
+│   │                           — the real stack over FakeTransport + ServerSimulator;
+│   │                           every whole update runs through UpdateRun, with
+│   │                           SimulatedWait as its wait under ManualClock
 │   ├── fuzz/                   libFuzzer targets + committed corpora (not in ctest)
 │   ├── interface_flags/        interface_flags_check.cpp — the flag-leak gate: links
 │   │                           smply::smply with -Wall only and must build clean

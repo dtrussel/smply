@@ -8,6 +8,7 @@ add_executable(smply_unit_tests
     test_clock.cpp
     test_dfu_package.cpp
     test_dispatcher.cpp
+    test_dispatcher_wait.cpp
     test_error.cpp
     test_file_image_source.cpp
     test_fake_transport.cpp
@@ -49,7 +50,8 @@ target_link_libraries(smply_unit_tests
         # a port; tests/serial_port/ does.
         smply::serial_port
         # The application-side helpers the examples share: the reconnect policy
-        # is tested here because examples/winrt_ble_dfu/ cannot be run at all.
+        # is tested here because examples/winrt_ble_dfu/ cannot be run at all, and
+        # so is the update run's real wait, DispatcherWait.
         smply::dfu_app
         # The multi-image package reader (ADR-0021): support code, tested here.
         smply::dfu_package
