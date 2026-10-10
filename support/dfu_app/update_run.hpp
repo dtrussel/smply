@@ -211,7 +211,8 @@ enum class RunEnd
     /// The approve hook answered `Approval::Stop`. The update is still
     /// running, in `AwaitingConfirmation`.
     StoppedBeforeConfirm,
-    /// The overall deadline passed. The update is still running.
+    /// The overall deadline passed. The update is still running, and a
+    /// reconnect it was waiting for is still owed: see `UpdateRun::run()`.
     TimedOut,
 };
 
@@ -252,6 +253,12 @@ public:
     /// Drives the update until it finishes, the approve hook stops it, or the
     /// overall deadline passes. Blocks. After a stop or a timeout, the update
     /// is still running and `run()` may be called again.
+    ///
+    /// A timeout during a reconnect episode leaves the reconnect owed: the
+    /// next `run()` starts with it, as a **fresh** episode -- first attempt,
+    /// first delay -- under its own overall deadline, rather than continuing
+    /// the old one's count. A reconnect delay that would reach the deadline is
+    /// cut to the time left, so no link is opened after it.
     [[nodiscard]] UpdateRunOutcome run();
 
 private:

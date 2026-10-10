@@ -383,6 +383,60 @@ TEST_CASE("the overall deadline ends a reconnect episode that would outlast it",
     CHECK(rig.fixture.updater.state() == UpdateState::AwaitingReconnect);
 }
 
+TEST_CASE("a reconnect delay is cut short at the overall deadline, not overrun",
+          "[dfu][run][deadline]")
+{
+    // 100, 200, 400, 800 ms, then 1 s at a time: one of those seconds
+    // straddles the 5 s deadline, and the run must not sleep past it and then
+    // open a link anyway.
+    UpdateRunSettings settings = brisk(1000);
+    settings.overall_timeout = 5s;
+    Rig rig{ServerConfig{}, settings};
+    rig.refusals_per_episode = 1000;
+    const smply::TimePoint began = rig.fixture.clock.now();
+    const UpdateRunOutcome outcome = rig.start_and_run();
+
+    REQUIRE(outcome.end == RunEnd::TimedOut);
+    CHECK(outcome.result.error().code() == ErrorCode::Timeout);
+    // Exactly at the deadline: the last sleep is the time that was left.
+    CHECK(rig.fixture.clock.now() == began + 5s);
+    REQUIRE_FALSE(rig.wait.sleeps().empty());
+    CHECK(rig.wait.sleeps().back() > 0ms);
+    CHECK(rig.wait.sleeps().back() < 1000ms);
+    // No attempt was made at or after the deadline.
+    REQUIRE_FALSE(rig.seen.attempts.empty());
+    CHECK(rig.seen.attempts.back() < began + 5s);
+    // The cut-short sleep is the one with no attempt after it.
+    CHECK(rig.wait.sleeps().size() == rig.seen.attempts.size() + 1);
+}
+
+TEST_CASE("a run that timed out while reconnecting reconnects when run again",
+          "[dfu][run][deadline][reconnect]")
+{
+    UpdateRunSettings settings = brisk(1000);
+    settings.overall_timeout = 5s;
+    Rig rig{ServerConfig{}, settings};
+    rig.refusals_per_episode = 1000;
+    const UpdateRunOutcome timed_out = rig.start_and_run();
+    REQUIRE(timed_out.end == RunEnd::TimedOut);
+    REQUIRE(rig.fixture.updater.state() == UpdateState::AwaitingReconnect);
+    const std::size_t attempts_before = rig.seen.attempt_args.size();
+
+    // The device is reachable now. The reconnect is still owed, and the next
+    // run starts a fresh episode for it: first attempt, first delay.
+    rig.refusals_per_episode = 0;
+    const UpdateRunOutcome finished = rig.run.run();
+
+    REQUIRE(finished.end == RunEnd::Finished);
+    REQUIRE(finished.result.has_value());
+    CHECK(finished.result->final_state == UpdateState::Completed);
+    CHECK_FALSE(finished.gave_up_reconnecting);
+    REQUIRE(rig.seen.attempt_args.size() == attempts_before + 1);
+    CHECK(rig.seen.attempt_args.back().number == 1);
+    CHECK(rig.seen.attempt_args.back().waited == 100ms);
+    CHECK(rig.fixture.simulator.swap_type() == SwapType::None);
+}
+
 TEST_CASE("a second reboot in one update runs a fresh episode", "[dfu][run][reconnect]")
 {
     // An upload interrupted by a dropped link, and then the reset: two

@@ -2,6 +2,7 @@
 
 #include "dfu_app/update_run.hpp"
 
+#include <chrono>
 #include <utility>
 #include <variant>
 
@@ -61,14 +62,18 @@ UpdateRunOutcome UpdateRun::run()
         }
 
         if (reconnect_pending_) {
-            reconnect_pending_ = false;
             switch (reconnect(deadline)) {
             case Episode::Rebound:
+                reconnect_pending_ = false;
                 break;
             case Episode::GaveUp:
+                reconnect_pending_ = false;
                 gave_up = true;
                 break;
             case Episode::TimedOut:
+                // Still owed: the updater waits in AwaitingReconnect with no
+                // deadline of its own and will not ask again, so the next
+                // run() must reconnect, with a fresh episode of its own.
                 return UpdateRunOutcome{RunEnd::TimedOut,
                                         fail(ErrorCode::Timeout, "update run: overall deadline"),
                                         gave_up};
@@ -106,8 +111,10 @@ UpdateRunOutcome UpdateRun::run()
 
 void UpdateRun::deliver()
 {
-    // Popped one at a time: observe() may not touch the library, but the queue
-    // must stay consistent if it does.
+    // Each event is popped before observe() sees it, so the queue is whole at
+    // every call: should observe() call the library after all -- it is meant
+    // for output -- any event that raises is queued behind the rest and
+    // delivered, in order, by this same loop.
     while (!inbox_->empty()) {
         const UpdateEvent event = std::move(inbox_->front());
         inbox_->pop_front();
@@ -136,6 +143,17 @@ UpdateRun::Episode UpdateRun::reconnect(std::optional<TimePoint> deadline)
                 return Episode::TimedOut;
             }
             const Duration delay = policy_.next_delay();
+            if (deadline.has_value()) {
+                // Never sleep past the deadline and then open a link anyway:
+                // a delay that reaches it is cut to the time left, and ends
+                // the episode there. Rounded up, so the comparison with a
+                // whole-millisecond delay is exact.
+                const Duration left = std::chrono::ceil<Duration>(*deadline - wait_.now());
+                if (delay >= left) {
+                    wait_.sleep_for(left);
+                    return Episode::TimedOut;
+                }
+            }
             wait_.sleep_for(delay);
 
             const LinkAttempt attempt = hooks_.open_link(ReconnectAttempt{

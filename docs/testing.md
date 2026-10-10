@@ -35,6 +35,13 @@ component suite. That last one passes only on the exact failure message
 may call `std::chrono::steady_clock::now()`.** Nothing enforces this yet; review
 does, and the roadmap's backlog has the gate.
 
+One exception: `tests/unit/test_dispatcher_wait.cpp` tests `DispatcherWait`,
+the update run's real wait, which reads the steady clock itself -- that is
+what makes it the real adapter. Its cases are chosen so that no wait blocks: a
+deadline already in the past, or a wake that came first. So the clock is read
+but never waited on, and the result does not depend on it. The blocking
+itself is exercised end to end by the examples' ctests.
+
 ### `FakeTransport`
 The workhorse (`tests/support/`). A `Transport` that records outbound messages
 and lets the test inject inbound bytes with complete control:
@@ -431,9 +438,10 @@ with no active slot, and one whose slot reports no hash; `ImageAlreadyPending`
 recovered exactly once; `Busy` reset forced exactly once; a lost reset response
 treated as success; a rollback recognised **from the flags** and distinguished
 from a swap that simply has not happened; the confirmation fork in both modes;
-cancellation from every non-terminal state; and an illegal event in **every**
+cancellation from every non-terminal state; an illegal event in **every**
 state, because "this one silently swallows a stray event" is precisely the hole
-a spot check leaves.
+a spot check leaves; and, in every state too, an answer that should carry the
+slot table arriving without it, failed as `Internal` rather than read through.
 
 The `[multi]` cases cover the image list (ADR-0021): every image staged before
 the one reset; the mark recovery spent once per image; the three answers of
@@ -779,6 +787,10 @@ simulator under `SimulatedWait`:
   late confirm completes it without asking again;
 * the overall deadline ending a stalled run, and a reconnect episode that would
   outlast it, with the update still running;
+* a reconnect delay that straddles the deadline cut to the time left, read off
+  `SimulatedWait`'s recorded delays, with no link opened after it;
+* a run that timed out while reconnecting, run again: the reconnect is still
+  owed, and the new run reconnects with a fresh episode and finishes;
 * a second reboot in one update running a fresh episode from the first delay.
 
 **`test_async.cpp`** drives `smply::asyncutil` (ADR-0019) against the same

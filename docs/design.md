@@ -867,7 +867,10 @@ is made inside the machine and the updater's I/O code makes none
 * **Events carry what the machine routes on.** `StateRead` carries the slot
   table a get-state returned, and so do `MarkedForTest` and `Confirmed`: a
   set-state answers with the refreshed table, and the machine records it and
-  plans the next image on it. Each table is borrowed for the call.
+  plans the next image on it. Each table is borrowed for the call. One of
+  these kinds arriving without its table is a driver bug, and the machine
+  fails the update as `Internal` rather than read through it, as it does when
+  it has no image to work on.
   `ParametersRead` carries the device's buffer size, `BootloaderRead` its
   bootloader mode, `UploadFinished` the bytes transferred and the server's
   already-present verdict, and `Failed` and `ReconnectFailed` the `Error`.

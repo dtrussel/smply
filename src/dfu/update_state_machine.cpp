@@ -775,6 +775,14 @@ void summarise(Context& context)
            effect == Effect::Confirm;
 }
 
+/// Whether an event of \p kind carries the device's slot table, which must
+/// then be present.
+[[nodiscard]] bool carries_table(Event::Kind kind)
+{
+    return kind == Event::Kind::StateRead || kind == Event::Kind::MarkedForTest ||
+           kind == Event::Kind::Confirmed;
+}
+
 /// Gives \p step the parameters its effect needs, read from the context, so
 /// the updater carries the effect out from the step alone. On the step that
 /// finishes the update, completes the report with what is known only then.
@@ -1081,13 +1089,17 @@ Step Machine::apply(const Event& event)
 {
     Context& context = *context_;
     // The machine's own invariants: a slip is a bug, reported as one rather
-    // than read out of bounds. With no target at all, the updater built the
-    // machine wrong.
+    // than read out of bounds or through a null table. With no target at all,
+    // the updater built the machine wrong; an answer without the slot table it
+    // is defined to carry is the updater's slip too.
     const bool consistent = !context.targets.empty() &&
                             (!needs_current(state_) || context.current < context.targets.size());
-    Step step = consistent || is_terminal(state_)
-                    ? decide(state_, event, plan_, context)
-                    : fail(context, ErrorCode::Internal, "dfu: no image to work on");
+    const bool complete = !carries_table(event.kind) || event.state != nullptr;
+    Step step =
+        is_terminal(state_) || (consistent && complete)
+            ? decide(state_, event, plan_, context)
+            : fail(context, ErrorCode::Internal,
+                   consistent ? "dfu: answer without a slot table" : "dfu: no image to work on");
     // An effect naming the current target is given its parameters from it, so
     // it must have one, whatever state the step was decided in.
     if (names_current(step.effect) && context.current >= context.targets.size()) {

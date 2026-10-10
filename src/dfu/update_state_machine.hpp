@@ -130,7 +130,8 @@ struct Event
     BootloaderMode bootloader{};
     /// `StateRead`, and the set-state answers `MarkedForTest` and `Confirmed`:
     /// the device's slot table, which the machine records and decides on.
-    /// Borrowed for the duration of the call; never null for those kinds.
+    /// Borrowed for the duration of the call. Null for one of those kinds is
+    /// the caller's bug: the machine fails the update as `Internal`.
     const ImageState* state = nullptr;
     /// `UploadFinished`.
     std::uint64_t transferred = 0;

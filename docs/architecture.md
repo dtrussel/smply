@@ -167,8 +167,10 @@ pseudo-terminal in CI and never against a device. UDP is not implemented.
 ### Test seams
 
 `Transport`, `Clock`, the `cbor` façade, `UploadSession` (pure function of
-`(state, response) → action`), and `UpdateStateMachine` (pure
-`(state, event) → (state, effects)`) are all individually substitutable and
+`(state, response) → action`), and `dfu::Machine` (the update decisions:
+`apply(event)` returns a `Step` -- the next state, one effect and its
+parameters -- with the working state and the report private to it,
+[`design.md`](design.md) §8) are all individually substitutable and
 individually testable. See [`testing.md`](testing.md).
 
 ## 4. Asynchronous model

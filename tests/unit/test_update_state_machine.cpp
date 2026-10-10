@@ -1618,6 +1618,27 @@ TEST_CASE("an event with no rule for the state is an internal error", "[dfu][mac
     }
 }
 
+TEST_CASE("an answer that should carry the slot table and does not is an internal error",
+          "[dfu][machine]")
+{
+    // The updater always attaches the table to these three kinds. A slip is a
+    // bug, reported as one, in every state -- including the ones the kind is
+    // legal in, where the table would have been read.
+    for (const Event::Kind kind :
+         {Event::Kind::StateRead, Event::Kind::MarkedForTest, Event::Kind::Confirmed}) {
+        for (const UpdateState state : kNonTerminal) {
+            CAPTURE(kind, state);
+            const std::unique_ptr<Scenario> scenario = through_every_state();
+            scenario->reach(state);
+            const Step step = scenario->feed(just(kind)); // no table
+            CHECK(step.next == UpdateState::Failed);
+            CHECK(step.effect == Effect::Finish);
+            REQUIRE(scenario->report().cause.has_value());
+            CHECK(scenario->report().cause->code() == ErrorCode::Internal);
+        }
+    }
+}
+
 TEST_CASE("planning on an empty slot table uploads rather than guessing", "[dfu][machine]")
 {
     // Every "does the device already have it?" answer needs the table. With

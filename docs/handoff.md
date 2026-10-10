@@ -121,11 +121,16 @@ true.
   clock, so such a retry would spin with zero elapsed time (`design.md` §6). A
   clock-driven backoff needs an ADR.
 * **The `Dispatcher` belongs to the application, not to an adapter.** Several
-  links may share one, as `examples/cli_dfu/main.cpp` shows. So an adapter must
-  never call `clear()` or `drain()`: that would discard another transport's
-  work, or run application closures from inside `close()`. Posted closures
-  instead capture a strong reference to the adapter's state and check
-  `LinkState::may_deliver()` before touching the listener.
+  links may share one, as `examples/cli_dfu/main.cpp` shows. So a transport
+  adapter must never call `clear()` or `drain()`: that would discard another
+  transport's work, or run application closures from inside `close()`. Posted
+  closures instead capture a strong reference to the adapter's state and check
+  `LinkState::may_deliver()` before touching the listener. The one exception
+  is `dfu_app::DispatcherWait`, the update run's wait: `wait_until()` drains,
+  but it is not a transport adapter. It drains the application's own
+  dispatcher on the application's behalf, on the client context, from inside
+  `UpdateRun::run()` -- exactly where the application would have drained it
+  itself.
 
 **Lifetime**
 
