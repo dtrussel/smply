@@ -3,9 +3,9 @@
 /// \file
 /// A console DFU tool over Bluetooth LE, on Windows.
 ///
-/// **Read `examples/cli_dfu/main.cpp` first.** It is the same pump loop against
-/// a stub device in this process, it runs in CI on every push, and it is the
-/// one that has actually been executed. This file is that arrangement pointed
+/// **Read `examples/cli_dfu/main.cpp` first.** It is the same arrangement
+/// against a stub device in this process, it runs in CI on every push, and it
+/// is the one that has actually been executed. This file is that arrangement pointed
 /// at a real radio, and it differs in exactly three ways -- each of which is
 /// what a real application has to deal with and a stub cannot show you:
 ///
@@ -16,10 +16,13 @@
 ///   exercises it on Linux -- none of the code in *this* file is ever run by
 ///   CI, so anything that can live over there does;
 /// * **giving up is a real outcome.** `reconnect_failed()` ends the update
-///   rather than leaving the pump spinning.
+///   rather than leaving the pump spinning, and this tool exits 4 for it.
 ///
-/// The pump loop itself is written out here rather than shared, deliberately.
-/// An example exists to be read, and a reader of this file should see the loop.
+/// For the same reason the pump itself is shared: it is
+/// `smply::dfu_app::UpdateRun` (`support/dfu_app/update_run.hpp`), which the
+/// component suite and `cli_dfu` run on every push. What is left here is what a
+/// radio changes: the three hooks the run calls -- open a link, approve the
+/// image, observe events.
 ///
 /// **This program has never been run.** It is compiled by CI at `/W4 /WX` on a
 /// runner with no Bluetooth radio. See the README.
@@ -28,8 +31,10 @@
 #include "winrt_prelude.hpp"
 
 #include "dfu_app/bootloader_mode.hpp"
+#include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_run.hpp"
 
 #include "winrt_ble/winrt_ble_transport.hpp"
 
@@ -44,15 +49,12 @@
 
 #include <array>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <variant>
 #include <vector>
 
@@ -226,14 +228,6 @@ void usage()
            !(!out.name.empty() && !out.address.empty());
 }
 
-/// What the update has asked the application to do next.
-struct Pending
-{
-    bool reconnect = false;
-    bool confirm = false;
-    bool finished = false;
-};
-
 } // namespace
 
 int main(int argc, char** argv)
@@ -306,19 +300,13 @@ int main(int argc, char** argv)
     // Declared before the client and the transports, because everything below
     // captures them and a callback outliving what it captured is the lifetime
     // bug this library warns about most.
+    //
+    // The dispatcher's wake callback runs on a WinRT thread-pool thread, inside
+    // post(); the wait's only signals and returns.
 
-    std::mutex wake_mutex;
-    std::condition_variable wake;
-    bool woken = false;
-
-    Dispatcher inbound{[&] {
-        // Runs on a WinRT thread-pool thread, inside post(). Signal and return.
-        {
-            const std::lock_guard<std::mutex> lock{wake_mutex};
-            woken = true;
-        }
-        wake.notify_one();
-    }};
+    DispatcherWait wait;
+    Dispatcher inbound{wait.waker()};
+    wait.deliver_from(inbound);
 
     // Every link ever opened is kept: a transport must outlive every client
     // bound to it, and the client detaches from the old one on rebind.
@@ -332,9 +320,6 @@ int main(int argc, char** argv)
         }
         links.push_back(std::move(*link));
     }
-
-    Pending pending;
-    ReconnectPolicy policy; // the defaults: 500 ms doubling to 8 s, six attempts
 
     SmpClient client{*links.back()};
     ImageManagement images{client};
@@ -357,19 +342,15 @@ int main(int argc, char** argv)
             std::cerr << "winrt_ble_dfu: the confirm request could not be sent\n";
             return kUpdateFailed;
         }
+        // A pump of one request, through the same wait the update run uses:
+        // it drains the dispatcher after every wake, and wakes at least every
+        // 50 ms when the client has no deadline.
         while (!answered) {
-            inbound.drain();
-            client.poll(std::chrono::steady_clock::now());
+            client.poll(wait.now());
             if (answered) {
                 break;
             }
-            std::unique_lock<std::mutex> lock{wake_mutex};
-            if (const std::optional<TimePoint> deadline = client.next_deadline()) {
-                wake.wait_until(lock, *deadline, [&] { return woken; });
-            } else {
-                wake.wait_for(lock, std::chrono::milliseconds{50}, [&] { return woken; });
-            }
-            woken = false;
+            wait.wait_until(client.next_deadline());
         }
         if (!confirmed.has_value()) {
             std::cerr << "winrt_ble_dfu: confirm failed: " << to_string(confirmed.error()) << '\n';
@@ -389,7 +370,15 @@ int main(int argc, char** argv)
     plan.allow_no_revert = options.allow_no_revert;
     plan.check_downgrade = options.check_downgrade;
 
-    Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
+    // The reconnect settings are the defaults -- 500 ms doubling to 8 s, six
+    // attempts -- and there is no overall deadline: over a real radio, how
+    // long an update may take is the updater's own timers' business.
+    const UpdateRunSettings settings{
+        .reconnect = ReconnectSettings{},
+        .overall_timeout = std::nullopt,
+        // What the updater is told when every attempt failed.
+        .unreachable = Error{ErrorCode::Disconnected, "winrt_ble_dfu: could not reconnect"},
+    };
 
     // Every line is stamped with the milliseconds since the update began. On a
     // real link that is the only way to see *where* the time goes -- the
@@ -403,7 +392,7 @@ int main(int argc, char** argv)
     };
 
     // One handler per kind of event; std::visit refuses to compile if a kind
-    // is left out.
+    // is left out. Output only: the run itself acts on the last three.
     const auto on_event = overloaded{
         [&](const UpdateStateChanged& changed) {
             if (!options.quiet) {
@@ -424,24 +413,62 @@ int main(int argc, char** argv)
                 std::cout << "  the device is about to reboot\n";
             }
         },
-        // Noted, not done here: this handler runs inside poll(), and
-        // reconnecting is the application's own work.
-        [&](const ReconnectRequired&) { pending.reconnect = true; },
-        [&](const ConfirmationRequired&) { pending.confirm = true; },
-        [&](const UpdateFinished& finished) {
-            outcome = finished.result;
-            pending.finished = true;
-        },
+        [](const ReconnectRequired&) {},
+        [](const ConfirmationRequired&) {},
+        [](const UpdateFinished&) {},
     };
+
+    // The three hooks. The run calls each on this thread, never inside a
+    // library callback, so the open-a-link hook may block in connect().
+    UpdateRun run{client, updater, wait, settings,
+                  UpdateRunHooks{
+                      // The device rebooted; it is not connectable yet. The run waits,
+                      // asks here, waits longer -- and eventually decides it is gone.
+                      // Every failure is worth another try: a device mid-boot answers
+                      // nothing, and that is what all of them look like.
+                      .open_link = [&](const ReconnectAttempt& attempt) -> LinkAttempt {
+                          if (!options.quiet) {
+                              std::cout << "  reconnect attempt " << attempt.number << '\n';
+                          }
+                          Result<std::unique_ptr<WinRtBleTransport>> fresh =
+                              WinRtBleTransport::connect(address, inbound);
+                          if (!fresh.has_value()) {
+                              return LinkAttempt::retry();
+                          }
+                          links.push_back(std::move(*fresh));
+                          if (!options.quiet) {
+                              std::cout << "  reconnected\n";
+                          }
+                          return LinkAttempt::opened(*links.back());
+                      },
+                      // The device is running the new image, unconfirmed. A real tool
+                      // runs its self-test here; declining to confirm lets MCUboot
+                      // revert on the next reset, which is the point of the default
+                      // mode (ADR-0014).
+                      .approve =
+                          [&] {
+                              if (options.stop_before_confirm) {
+                                  // `--mode test-only` stops exactly here, with the update
+                                  // still waiting on this application.
+                                  return Approval::Stop;
+                              }
+                              if (!options.quiet) {
+                                  std::cout
+                                      << "  the new image is running unconfirmed; confirming\n";
+                              }
+                              return Approval::Confirm;
+                          },
+                      .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
+                  }};
+
     // One build per slot is an image list of one (ADR-0025).
     const std::array<ImageTarget, 1> builds{ImageTarget{
         .image = 0,
         .source = &*source,
         .secondary_source = secondary.has_value() ? &*secondary : nullptr,
     }};
-    const auto handler = [&](const UpdateEvent& event) { std::visit(on_event, event); };
-    const Result<void> begun =
-        secondary ? updater.start(builds, plan, handler) : updater.start(*source, plan, handler);
+    const Result<void> begun = secondary ? updater.start(builds, plan, run.event_handler())
+                                         : updater.start(*source, plan, run.event_handler());
 
     if (!begun.has_value()) {
         std::cerr << "winrt_ble_dfu: " << to_string(begun.error()) << '\n';
@@ -450,106 +477,29 @@ int main(int argc, char** argv)
 
     // --- the pump -----------------------------------------------------------
 
-    bool gave_up_reconnecting = false;
-
-    while (!pending.finished) {
-        inbound.drain();
-
-        const TimePoint now = std::chrono::steady_clock::now();
-        client.poll(now);
-        updater.poll(now);
-
-        if (pending.reconnect) {
-            pending.reconnect = false;
-
-            // The device rebooted; it is not connectable yet. Wait, try, wait
-            // longer -- and eventually decide it is gone. This is the loop the
-            // stub in cli_dfu cannot show, and the reason ReconnectPolicy is
-            // shared code with tests rather than written out here.
-            policy.begin();
-            bool attached = false;
-            while (!policy.exhausted()) {
-                std::this_thread::sleep_for(policy.next_delay());
-                if (!options.quiet) {
-                    std::cout << "  reconnect attempt " << policy.attempts() << '\n';
-                }
-
-                Result<std::unique_ptr<WinRtBleTransport>> link =
-                    WinRtBleTransport::connect(address, inbound);
-                if (!link.has_value()) {
-                    continue;
-                }
-
-                links.push_back(std::move(*link));
-                client.rebind_transport(*links.back());
-                policy.succeeded();
-                attached = true;
-                break;
-            }
-
-            if (!attached) {
-                // Terminal. The updater is waiting on the application and has
-                // no deadline of its own here, so without this the pump would
-                // spin until something else gave out.
-                gave_up_reconnecting = true;
-                updater.reconnect_failed(
-                    Error{ErrorCode::Disconnected, "winrt_ble_dfu: could not reconnect"});
-                continue;
-            }
-
-            if (!options.quiet) {
-                std::cout << "  reconnected\n";
-            }
-            static_cast<void>(updater.resume_after_reconnect());
-            continue;
-        }
-
-        if (pending.confirm) {
-            pending.confirm = false;
-            // The device is running the new image, unconfirmed. A real tool
-            // runs its self-test here; declining to confirm lets MCUboot revert
-            // on the next reset, which is the point of the default mode
-            // (ADR-0014).
-            if (options.stop_before_confirm) {
-                // `--mode test-only` stops exactly here, with the update still
-                // waiting on this application. Leaving it waiting is the
-                // behaviour, not a leak: the process exits, the link closes,
-                // and the device stays in a trial boot that the next reset
-                // reverts unless something confirms it first.
-                std::cout << "installed, running unconfirmed, not confirmed by request\n";
-                return kOk;
-            }
-            if (!options.quiet) {
-                std::cout << "  the new image is running unconfirmed; confirming\n";
-            }
-            static_cast<void>(updater.confirm());
-            continue;
-        }
-
-        // Sleep until there is something to do: a deadline, or a wake from a
-        // WinRT thread. This is api.md's `app.wait_until(client.next_deadline())`.
-        std::optional<TimePoint> deadline = client.next_deadline();
-        if (const std::optional<TimePoint> theirs = updater.next_deadline();
-            theirs.has_value() && (!deadline.has_value() || *theirs < *deadline)) {
-            deadline = theirs;
-        }
-
-        std::unique_lock<std::mutex> lock{wake_mutex};
-        if (deadline.has_value()) {
-            wake.wait_until(lock, *deadline, [&] { return woken; });
-        } else {
-            // No deadline means the library is waiting on the application.
-            wake.wait_for(lock, std::chrono::milliseconds{50}, [&] { return woken; });
-        }
-        woken = false;
+    const UpdateRunOutcome ran = run.run();
+    switch (ran.end) {
+    case RunEnd::Finished:
+        break;
+    case RunEnd::StoppedBeforeConfirm:
+        // Leaving the update waiting is the behaviour, not a leak: the process
+        // exits, the link closes, and the device stays in a trial boot that
+        // the next reset reverts unless something confirms it first.
+        std::cout << "installed, running unconfirmed, not confirmed by request\n";
+        return kOk;
+    case RunEnd::TimedOut:
+        // Not reachable: there is no overall deadline.
+        std::cerr << "winrt_ble_dfu: " << to_string(ran.result.error()) << '\n';
+        return kUpdateFailed;
     }
+    const Result<UpdateReport>& outcome = ran.result;
 
     // --- the report ---------------------------------------------------------
 
     if (!outcome.has_value()) {
         std::cerr << "winrt_ble_dfu: update failed: " << to_string(outcome.error()) << '\n';
         std::cerr << "  " << describe_mode(updater.report()) << '\n';
-        return gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
+        return ran.gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
     }
 
     const UpdateReport& report = *outcome;
@@ -577,5 +527,5 @@ int main(int argc, char** argv)
     if (report.final_state == UpdateState::Completed) {
         return kOk;
     }
-    return gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
+    return ran.gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
 }

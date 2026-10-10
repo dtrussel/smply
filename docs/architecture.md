@@ -466,7 +466,8 @@ smply/
 │   │                           second image it commits itself; and the demo image and
 │   │                           two-image package it is given. Scaffolding, not a
 │   │                           protocol reference
-│   ├── cli_dfu/                the portable DFU example: main.cpp is the pump loop;
+│   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
+│   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs
 │   │                           in CI, --flaky-reconnect and --demo-package included
 │   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
