@@ -840,6 +840,38 @@ Pure `(state, event) → (state, effects)` core (`update_state_machine.*`) drive
 by `FirmwareUpdater`, which owns the effects (issuing requests, emitting
 callbacks).
 
+### Events in, effects out
+
+`dfu::advance(state, event, plan, context)` returns a `Step`: the next state,
+one `Effect`, and the parameters that effect needs. The seam carries
+everything across it in both directions, so every decision is made inside the
+machine and the updater's I/O code makes none
+([ADR-0008](decisions/ADR-0008-upload-state-ownership.md)'s split):
+
+* **Events carry what the machine routes on.** `StateRead` carries the slot
+  table a get-state returned, and so do `MarkedForTest` and `Confirmed`: a
+  set-state answers with the refreshed table, and the machine records it and
+  plans the next image on it. Each table is borrowed for the call.
+  `ParametersRead` carries the device's buffer size, `BootloaderRead` its
+  bootloader mode, `UploadFinished` the bytes transferred and the server's
+  already-present verdict, and `Failed` and `ReconnectFailed` the `Error`.
+* **Effects carry their parameters.** `StartUpload` names the target (its
+  index in the update, which is also its source's), the build to send (0 or 1,
+  for direct-XIP's per-slot files), the image number and the device's buffer
+  size. `MarkForTest` and `Confirm` name the image-state hash and the image.
+  The updater carries out an effect from the step alone and never reads the
+  context to do it. Its timers (`AwaitDisconnect`, `AwaitApply`) read only the
+  plan and the updater's own clock state.
+* **The report is the machine's.** The machine writes it as it decides and,
+  on the step whose effect is `Finish`, adds the final state, the target hash
+  and the last slot table. The updater writes nothing to the context at all;
+  it reads the report, to hand it out.
+
+`dfu::Context` still holds the machine's working state between calls, and the
+unit suite still reaches some states by assigning its fields;
+[`update-run-plan.md`](update-run-plan.md) moves both behind a `dfu::Machine`
+class.
+
 ### States
 
 ```
@@ -1130,11 +1162,11 @@ Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
 failed in plus the underlying `Error`. There is one report: the machine writes
 it in `Context::report` as it decides, `FirmwareUpdater::report()` hands that
-same object out live while the update runs, and on reaching a terminal state
-the updater fills the three fields only known at the end (`final_state`,
-`target_hash`, `final_device_state`) and emits `UpdateFinished` with it. So a
-progress view sees each image's outcome as it is decided, and the event and
-`report()` cannot disagree. (The restart and retry counts live inside
+same object out live while the update runs, and on the step that reaches a
+terminal state the machine fills the three fields only known at the end
+(`final_state`, `target_hash`, `final_device_state`); the updater then emits
+`UpdateFinished` with it. So a progress view sees each image's outcome as it is
+decided, and the event and `report()` cannot disagree. (The restart and retry counts live inside
 the upload and are not plumbed out; the roadmap's backlog has the item.)
 
 **`upload_skipped` has two sources, and both matter.** The updater's own

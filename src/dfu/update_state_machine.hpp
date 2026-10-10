@@ -47,7 +47,9 @@
 
 namespace smply::dfu {
 
-/// What `FirmwareUpdater` must do to carry out a step.
+/// What `FirmwareUpdater` must do to carry out a step. The parameters an
+/// effect needs travel in the `Step` beside it, so the updater never reads the
+/// context to carry one out.
 enum class Effect : std::uint8_t
 {
     /// Nothing to do; the machine waits for an external event.
@@ -59,8 +61,11 @@ enum class Effect : std::uint8_t
     QueryParameters,
     QueryBootloader,
     ReadState,
+    /// Upload `Step::build` of `Step::target` to `Step::image`, with
+    /// `Step::buf_size` as the device's budget when it reported one.
     StartUpload,
     ResumeUpload,
+    /// Mark `Step::hash` of `Step::image` for test.
     MarkForTest,
     Reset,
     /// Retry the reset with `force`, after the device answered `Busy`.
@@ -73,8 +78,10 @@ enum class Effect : std::uint8_t
     AwaitApply,
     /// Emit `ConfirmationRequired` and wait for the application (ADR-0014).
     RequestConfirmation,
+    /// Confirm `Step::hash` of `Step::image`.
     Confirm,
-    /// Terminal: the report is complete, emit `Finished`.
+    /// Terminal: the report is complete, the final state, target hash and last
+    /// slot table included; emit `Finished`.
     Finish,
 };
 
@@ -120,7 +127,9 @@ struct Event
     std::uint32_t buf_size = 0;
     /// `BootloaderRead`.
     BootloaderMode bootloader{};
-    /// `StateRead`. Borrowed for the duration of the call.
+    /// `StateRead`, and the set-state answers `MarkedForTest` and `Confirmed`:
+    /// the device's slot table, which the machine records and decides on.
+    /// Borrowed for the duration of the call; never null for those kinds.
     const ImageState* state = nullptr;
     /// `UploadFinished`.
     std::uint64_t transferred = 0;
@@ -173,7 +182,8 @@ struct Context
     /// The target being uploaded, marked or confirmed. Equal to
     /// `targets.size()` once every image is staged.
     std::size_t current = 0;
-    /// The most recent slot table.
+    /// The most recent slot table: from a state read, or from the answer to a
+    /// set-state command, both delivered in the event.
     std::optional<ImageState> device;
     /// From the device, or zero when it does not implement the command.
     std::uint32_t buf_size = 0;
@@ -182,10 +192,11 @@ struct Context
 
     /// What the update will report. The machine writes the outcome fields
     /// here as it decides them -- per image in `images`, and `revert_pending`
-    /// and `cause` for the whole -- and derives the summary fields from the
-    /// images after every step. `FirmwareUpdater::report()` hands this one
-    /// report out live, and the updater adds the final state, the target hash
-    /// and the last slot table to it when it finishes: there is no copy.
+    /// and `cause` for the whole -- derives the summary fields from the images
+    /// after every step, and adds the final state, the target hash and the
+    /// last slot table on the step that finishes the update.
+    /// `FirmwareUpdater::report()` hands this one report out live: there is no
+    /// copy, and the updater writes nothing to it.
     UpdateReport report;
 
     /// An upload was started and has not finished, so a reconnect resumes it
@@ -211,11 +222,31 @@ struct Context
     bool preconditions_checked = false;
 };
 
-/// The next state, and what to do to get there.
+/// The next state, what to do to get there, and what that needs.
+///
+/// The parameters are set only for the effects that use them, and default
+/// otherwise.
 struct Step
 {
     UpdateState next{};
     Effect effect = Effect::None;
+
+    /// `StartUpload`: the index of the target in the update, as given to
+    /// `make_context()` -- and so the index of its source.
+    std::size_t target = 0;
+    /// `StartUpload`: which of the target's builds to send, 0 for the primary
+    /// slot's and 1 for the secondary's. Always 0 for a target without builds.
+    std::size_t build = 0;
+    /// `StartUpload`, `MarkForTest` and `Confirm`: the image number.
+    std::uint32_t image = 0;
+    /// `StartUpload`: the device's buffer size, or zero when it did not say.
+    std::uint32_t buf_size = 0;
+    /// `MarkForTest` and `Confirm`: the image-state hash to name.
+    ///
+    /// The `{}` is for GCC: without it, every `Step{next, effect}` trips
+    /// `-Wmissing-field-initializers`. clang-tidy calls it redundant.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    ImageHash hash{};
 };
 
 /// A context for \p targets, with one report entry per target.

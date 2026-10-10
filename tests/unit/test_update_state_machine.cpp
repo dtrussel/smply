@@ -148,6 +148,24 @@ struct SlotSpec
     return event;
 }
 
+/// The device accepted a mark-for-test and answered with \p state.
+[[nodiscard]] Event marked_for_test(const ImageState& state)
+{
+    Event event;
+    event.kind = Event::Kind::MarkedForTest;
+    event.state = &state;
+    return event;
+}
+
+/// The device accepted a confirm and answered with \p state.
+[[nodiscard]] Event confirmed(const ImageState& state)
+{
+    Event event;
+    event.kind = Event::Kind::Confirmed;
+    event.state = &state;
+    return event;
+}
+
 [[nodiscard]] Event just(Event::Kind kind)
 {
     Event event;
@@ -823,8 +841,11 @@ TEST_CASE("a failed verification read is fatal", "[dfu][machine]")
 TEST_CASE("marking for test schedules a swap and resets", "[dfu][machine]")
 {
     Context context = fresh();
-    const Step step = advance(UpdateState::MarkingForTest, just(Event::Kind::MarkedForTest),
-                              UpdatePlan{}, context);
+    const ImageState answer =
+        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+                  SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
+    const Step step =
+        advance(UpdateState::MarkingForTest, marked_for_test(answer), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::Resetting);
     CHECK(step.effect == Effect::Reset);
     CHECK(context.swap_scheduled);
@@ -1143,8 +1164,10 @@ TEST_CASE("an accepted confirm is verified", "[dfu][machine][confirm]")
 {
     Context context = fresh();
     context.swap_scheduled = true;
-    const Step step =
-        advance(UpdateState::Confirming, just(Event::Kind::Confirmed), UpdatePlan{}, context);
+    const ImageState answer =
+        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+                  SlotSpec{.slot = 1, .hash = kOther}});
+    const Step step = advance(UpdateState::Confirming, confirmed(answer), UpdatePlan{}, context);
     CHECK(step.next == UpdateState::VerifyingConfirmed);
     CHECK(step.effect == Effect::ReadState);
     CHECK_FALSE(context.swap_scheduled);
@@ -1287,9 +1310,10 @@ TEST_CASE("an event with no rule for the state is an internal error", "[dfu][mac
     // Ignoring it would hide a driver bug; failing makes it visible where it
     // happens. Every state, because "this one silently swallows a stray event"
     // is exactly the kind of hole a spot check leaves.
+    const ImageState answer = running_old_holding_new();
     for (const UpdateState state : kNonTerminal) {
         Context context = fresh();
-        const Step step = advance(state, just(Event::Kind::MarkedForTest), UpdatePlan{}, context);
+        const Step step = advance(state, marked_for_test(answer), UpdatePlan{}, context);
         if (state == UpdateState::MarkingForTest) {
             CHECK(step.next == UpdateState::Resetting);
             continue;
@@ -1492,8 +1516,13 @@ TEST_CASE("every image is staged before the one reset", "[dfu][machine][multi]")
     CHECK(context.current == 0);
 
     // Marked: on to image 1 rather than to the reset.
+    const ImageState first_answer = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 1, .hash = kRadio}});
     const Step marked =
-        advance(UpdateState::MarkingForTest, just(Event::Kind::MarkedForTest), plan, context);
+        advance(UpdateState::MarkingForTest, marked_for_test(first_answer), plan, context);
     CHECK(marked.next == UpdateState::Planning);
     CHECK(marked.effect == Effect::Continue);
     CHECK(context.current == 1);
@@ -1504,8 +1533,13 @@ TEST_CASE("every image is staged before the one reset", "[dfu][machine][multi]")
     CHECK(context.report.images[1].upload_skipped);
     CHECK_FALSE(context.report.upload_skipped); // image 0 was not skipped
 
+    const ImageState last_answer = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 1, .hash = kRadio, .pending = true}});
     const Step last =
-        advance(UpdateState::MarkingForTest, just(Event::Kind::MarkedForTest), plan, context);
+        advance(UpdateState::MarkingForTest, marked_for_test(last_answer), plan, context);
     CHECK(last.next == UpdateState::Resetting);
     CHECK(last.effect == Effect::Reset);
 }
@@ -1519,11 +1553,151 @@ TEST_CASE("the mark-for-test recovery is one per image", "[dfu][machine][multi]"
     CHECK(advance(UpdateState::MarkingForTest, refused, plan, context).next ==
           UpdateState::InspectingImages);
     context.current = 0;
-    CHECK(advance(UpdateState::MarkingForTest, just(Event::Kind::MarkedForTest), plan, context)
-              .next == UpdateState::Planning);
+    const ImageState answer = state_of({SlotSpec{.slot = 1, .hash = kTarget, .pending = true}});
+    CHECK(advance(UpdateState::MarkingForTest, marked_for_test(answer), plan, context).next ==
+          UpdateState::Planning);
     CHECK_FALSE(context.mark_retried);
     CHECK(advance(UpdateState::MarkingForTest, refused, plan, context).next ==
           UpdateState::InspectingImages);
+}
+
+TEST_CASE("the slot table a mark-for-test returns routes the next image", "[dfu][machine][multi]")
+{
+    // The set-state answer is the device's whole slot table, and the machine
+    // decides the next image on it -- the same contract in a unit test as in
+    // `FirmwareUpdater`, which hands the answer over in the event rather than
+    // writing it behind the machine's back.
+    Context context = smply::dfu::make_context(
+        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}});
+    const UpdatePlan plan;
+
+    // Neither image is on the device: image 0 is uploaded first.
+    const ImageState before = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
+    REQUIRE(advance(UpdateState::Idle, just(Event::Kind::Start), plan, context).next ==
+            UpdateState::QueryingParameters);
+    REQUIRE(advance(UpdateState::QueryingParameters, just(Event::Kind::ParametersUnavailable), plan,
+                    context)
+                .next == UpdateState::QueryingBootloader);
+    REQUIRE(advance(UpdateState::QueryingBootloader, just(Event::Kind::BootloaderUnavailable), plan,
+                    context)
+                .next == UpdateState::InspectingImages);
+    REQUIRE(advance(UpdateState::InspectingImages, state_read(before), plan, context).next ==
+            UpdateState::Planning);
+    REQUIRE(advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context).next ==
+            UpdateState::Uploading);
+    REQUIRE(
+        advance(UpdateState::Uploading, just(Event::Kind::UploadFinished), plan, context).next ==
+        UpdateState::VerifyingUpload);
+    const ImageState uploaded = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
+    REQUIRE(advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context).next ==
+            UpdateState::MarkingForTest);
+
+    // The answer to the mark shows image 1's file already staged and marked,
+    // so image 1 needs no upload: straight on to the one reset.
+    const ImageState answer = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 1, .hash = kRadio, .pending = true}});
+    REQUIRE(advance(UpdateState::MarkingForTest, marked_for_test(answer), plan, context).next ==
+            UpdateState::Planning);
+
+    const Step next = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    CHECK(next.next == UpdateState::Resetting);
+    CHECK(next.effect == Effect::Reset);
+    CHECK(context.report.images[1].upload_skipped);
+    CHECK(context.report.images[1].upload_slot == 1);
+}
+
+TEST_CASE("an effect names everything the updater needs to carry it out", "[dfu][machine][multi]")
+{
+    // The updater carries out an effect from the step alone: which target and
+    // build to send, to which image, with which buffer budget, and which hash
+    // to mark or confirm. It never reads the machine's context to find out.
+    Context context = smply::dfu::make_context(
+        {Target{.image = 0, .hash = kTarget}, Target{.image = 1, .hash = kRadio}});
+    const UpdatePlan plan;
+
+    Event parameters = just(Event::Kind::ParametersRead);
+    parameters.buf_size = 512;
+    REQUIRE(advance(UpdateState::Idle, just(Event::Kind::Start), plan, context).next ==
+            UpdateState::QueryingParameters);
+    REQUIRE(advance(UpdateState::QueryingParameters, parameters, plan, context).next ==
+            UpdateState::QueryingBootloader);
+    REQUIRE(advance(UpdateState::QueryingBootloader, just(Event::Kind::BootloaderUnavailable), plan,
+                    context)
+                .next == UpdateState::InspectingImages);
+    const ImageState before = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
+    REQUIRE(advance(UpdateState::InspectingImages, state_read(before), plan, context).next ==
+            UpdateState::Planning);
+
+    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    REQUIRE(upload.effect == Effect::StartUpload);
+    CHECK(upload.target == 0);
+    CHECK(upload.build == 0);
+    CHECK(upload.image == 0);
+    CHECK(upload.buf_size == 512);
+
+    REQUIRE(
+        advance(UpdateState::Uploading, just(Event::Kind::UploadFinished), plan, context).next ==
+        UpdateState::VerifyingUpload);
+    const ImageState uploaded = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
+    const Step mark = advance(UpdateState::VerifyingUpload, state_read(uploaded), plan, context);
+    REQUIRE(mark.effect == Effect::MarkForTest);
+    CHECK(mark.image == 0);
+    CHECK(mark.hash == kTarget);
+
+    const ImageState marked = state_of(
+        {SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true},
+         SlotSpec{.slot = 1, .hash = kTarget, .pending = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadioOld, .active = true, .confirmed = true}});
+    REQUIRE(advance(UpdateState::MarkingForTest, marked_for_test(marked), plan, context).next ==
+            UpdateState::Planning);
+    const Step second = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    REQUIRE(second.effect == Effect::StartUpload);
+    CHECK(second.target == 1);
+    CHECK(second.image == 1);
+    CHECK(second.buf_size == 512);
+}
+
+TEST_CASE("the upload names the build chosen for the free slot", "[dfu][machine][xip]")
+{
+    const ImageHash primary_build = hash_of(70);
+    const ImageHash secondary_build = hash_of(80);
+    Context context = smply::dfu::make_context(
+        {Target{.image = 0,
+                .hash = primary_build,
+                .builds = std::array<Target::Build, 2>{
+                    Target::Build{.hash = primary_build, .version = {}},
+                    Target::Build{.hash = secondary_build, .version = {}}}}});
+    const UpdatePlan plan;
+
+    Event mode = just(Event::Kind::BootloaderRead);
+    mode.bootloader.mode = McubootMode::DirectXipWithRevert;
+    REQUIRE(advance(UpdateState::QueryingBootloader, mode, plan, context).next ==
+            UpdateState::InspectingImages);
+    // Running from the primary slot, so the secondary's build is the one sent.
+    const ImageState running_primary =
+        state_of({SlotSpec{.slot = 0, .hash = kOther, .active = true, .confirmed = true}});
+    REQUIRE(
+        advance(UpdateState::InspectingImages, state_read(running_primary), plan, context).next ==
+        UpdateState::Planning);
+
+    const Step upload = advance(UpdateState::Planning, just(Event::Kind::Continue), plan, context);
+    REQUIRE(upload.effect == Effect::StartUpload);
+    CHECK(upload.target == 0);
+    CHECK(upload.build == 1);
+    CHECK(upload.buf_size == 0);
 }
 
 TEST_CASE("a device image still applying is waited for", "[dfu][machine][multi]")
@@ -1791,16 +1965,24 @@ TEST_CASE("each client image is confirmed in turn, by its own hash", "[dfu][mach
     const Step first = advance(UpdateState::VerifyingBooted, state_read(trial), plan, context);
     CHECK(first.next == UpdateState::Confirming);
     CHECK(context.current == 0);
+    CHECK(first.image == 0);
+    CHECK(first.hash == kTarget);
 
-    const Step second =
-        advance(UpdateState::Confirming, just(Event::Kind::Confirmed), plan, context);
+    const ImageState first_confirmed =
+        state_of({SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+                  SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true}});
+    const Step second = advance(UpdateState::Confirming, confirmed(first_confirmed), plan, context);
     CHECK(second.next == UpdateState::Confirming);
     CHECK(second.effect == Effect::Confirm);
     CHECK(context.current == 1);
+    CHECK(second.image == 1);
+    CHECK(second.hash == kRadio);
     CHECK(context.swap_scheduled); // image 1 is still on trial
 
-    const Step verify =
-        advance(UpdateState::Confirming, just(Event::Kind::Confirmed), plan, context);
+    const ImageState both_confirmed = state_of(
+        {SlotSpec{.slot = 0, .hash = kTarget, .active = true, .confirmed = true},
+         SlotSpec{.image = 1, .slot = 0, .hash = kRadio, .active = true, .confirmed = true}});
+    const Step verify = advance(UpdateState::Confirming, confirmed(both_confirmed), plan, context);
     CHECK(verify.next == UpdateState::VerifyingConfirmed);
     CHECK_FALSE(context.swap_scheduled);
 
@@ -1845,4 +2027,16 @@ TEST_CASE("a context with no image to work on is an internal error", "[dfu][mach
     CHECK(step.next == UpdateState::Failed);
     REQUIRE(past_the_end.report.cause.has_value());
     CHECK(past_the_end.report.cause->code() == ErrorCode::Internal);
+
+    // The same holds for an effect that would name a target: the machine
+    // indexes the targets to give the step its parameters, so it refuses
+    // rather than read past them.
+    Context approved = fresh();
+    approved.current = 1;
+    const Step confirm = advance(UpdateState::AwaitingConfirmation,
+                                 just(Event::Kind::ConfirmApproved), UpdatePlan{}, approved);
+    CHECK(confirm.next == UpdateState::Failed);
+    CHECK(confirm.effect == Effect::Finish);
+    REQUIRE(approved.report.cause.has_value());
+    CHECK(approved.report.cause->code() == ErrorCode::Internal);
 }

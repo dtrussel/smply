@@ -719,6 +719,57 @@ namespace {
            state == UpdateState::MarkingForTest || state == UpdateState::Confirming;
 }
 
+/// Whether \p effect is carried out on `context.current`, which must then name
+/// a target.
+[[nodiscard]] bool names_current(Effect effect)
+{
+    return effect == Effect::StartUpload || effect == Effect::MarkForTest ||
+           effect == Effect::Confirm;
+}
+
+/// Gives \p step the parameters its effect needs, read from the context, so
+/// the updater carries the effect out from the step alone. On the step that
+/// finishes the update, completes the report with what is known only then.
+void parameterise(Step& step, Context& context)
+{
+    switch (step.effect) {
+    case Effect::StartUpload: {
+        const Target& target = context.targets[context.current];
+        step.target = context.current;
+        step.build = target.chosen;
+        step.image = target.image;
+        step.buf_size = context.buf_size;
+        return;
+    }
+    case Effect::MarkForTest:
+    case Effect::Confirm: {
+        const Target& target = context.targets[context.current];
+        step.image = target.image;
+        step.hash = target.hash;
+        return;
+    }
+    case Effect::Finish:
+        context.report.final_state = step.next;
+        context.report.target_hash =
+            context.targets.empty() ? ImageHash{} : context.targets.front().hash;
+        context.report.final_device_state = context.device;
+        return;
+    case Effect::None:
+    case Effect::Continue:
+    case Effect::QueryParameters:
+    case Effect::QueryBootloader:
+    case Effect::ReadState:
+    case Effect::ResumeUpload:
+    case Effect::Reset:
+    case Effect::ForceReset:
+    case Effect::AwaitDisconnect:
+    case Effect::RequestReconnect:
+    case Effect::AwaitApply:
+    case Effect::RequestConfirmation:
+        return;
+    }
+}
+
 [[nodiscard]] Step decide(UpdateState state, const Event& event, const UpdatePlan& plan,
                           Context& context)
 {
@@ -815,6 +866,9 @@ namespace {
 
     case UpdateState::MarkingForTest:
         if (event.kind == Event::Kind::MarkedForTest) {
+            // The answer is the refreshed slot table, and the next image is
+            // planned on it.
+            context.device = *event.state;
             context.swap_scheduled = true;
             return next_target(plan, context);
         }
@@ -904,6 +958,7 @@ namespace {
 
     case UpdateState::Confirming:
         if (event.kind == Event::Kind::Confirmed) {
+            context.device = *event.state;
             // One image at a time, each by its own hash: a hashless confirm
             // reaches only the running image (protocol-notes section 6).
             context.targets[context.current].in_trial = false;
@@ -965,10 +1020,16 @@ Step advance(UpdateState state, const Event& event, const UpdatePlan& plan, Cont
     const bool consistent = !context.targets.empty() &&
                             context.report.images.size() == context.targets.size() &&
                             (!needs_current(state) || context.current < context.targets.size());
-    const Step step = consistent || is_terminal(state)
-                          ? decide(state, event, plan, context)
-                          : fail(context, ErrorCode::Internal, "dfu: no image to work on");
+    Step step = consistent || is_terminal(state)
+                    ? decide(state, event, plan, context)
+                    : fail(context, ErrorCode::Internal, "dfu: no image to work on");
+    // An effect naming the current target is given its parameters from it, so
+    // it must have one, whatever state the step was decided in.
+    if (names_current(step.effect) && context.current >= context.targets.size()) {
+        step = fail(context, ErrorCode::Internal, "dfu: no image to work on");
+    }
     summarise(context);
+    parameterise(step, context);
     return step;
 }
 

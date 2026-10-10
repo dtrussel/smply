@@ -268,7 +268,7 @@ public:
     [[nodiscard]] const UpdateReport& report() const noexcept
     {
         // The machine's own report, live: the outcomes decided so far, and the
-        // fields only known at the end once `finish()` has written them.
+        // fields only known at the end once the machine has finished.
         return context_.report;
     }
 
@@ -357,7 +357,7 @@ private:
         for (;;) {
             enter(step.next);
             if (step.effect != Effect::Continue) {
-                apply(step.effect);
+                apply(step);
                 return;
             }
             // A decision that needed no I/O: re-enter immediately, so the state
@@ -377,8 +377,11 @@ private:
         emit(UpdateStateChanged{.from = previous, .to = next});
     }
 
-    void apply(Effect effect)
+    /// Carries out \p step's effect from the step alone: the parameters an
+    /// effect needs travel with it, and the context is never read.
+    void apply(const dfu::Step& step)
     {
+        const Effect effect = step.effect;
         switch (effect) {
         case Effect::None:
         case Effect::Continue:
@@ -436,7 +439,7 @@ private:
             return;
 
         case Effect::StartUpload:
-            start_upload();
+            start_upload(step);
             return;
 
         case Effect::ResumeUpload:
@@ -444,7 +447,7 @@ private:
             return;
 
         case Effect::MarkForTest:
-            set_state(SetStateRequest{.hash = current_target().hash, .confirm = false},
+            set_state(SetStateRequest{.hash = step.hash, .confirm = false},
                       Event::Kind::MarkedForTest);
             return;
 
@@ -496,8 +499,7 @@ private:
             // By hash, always. A hashless confirm names the device's *running*
             // image, so it can never confirm image >= 1; for image 0 the hash
             // names the same slot (protocol-notes section 6, ADR-0021).
-            set_state(SetStateRequest{.hash = current_target().hash, .confirm = true},
-                      Event::Kind::Confirmed);
+            set_state(SetStateRequest{.hash = step.hash, .confirm = true}, Event::Kind::Confirmed);
             return;
 
         case Effect::Finish:
@@ -508,7 +510,8 @@ private:
 
     /// Marks the target for test, or confirms the running image: one command,
     /// with a different request and a different event on success. Either way
-    /// the answer is the refreshed slot table, which the machine decides on.
+    /// the answer is the refreshed slot table, handed to the machine in that
+    /// event: the machine records it and decides the next image on it.
     void set_state(const SetStateRequest& request, Event::Kind on_success)
     {
         static_cast<void>(image_->set_state(
@@ -518,28 +521,25 @@ private:
                     self.dispatch(failure(result.error()));
                     return;
                 }
-                self.context_.device = *result;
-                self.dispatch(plain(on_success));
+                Event event;
+                event.kind = on_success;
+                event.state = &*result;
+                self.dispatch(event);
             })));
     }
 
-    /// The target the machine is working on. `dfu::advance()` checks the
-    /// index before it asks for an effect that uses it.
-    [[nodiscard]] const dfu::Target& current_target() const
-    {
-        return context_.targets[context_.current];
-    }
-
-    void start_upload()
+    /// Sends the build of the target \p step names. The machine names only a
+    /// target and build it was given, so both index `sources_`.
+    void start_upload(const dfu::Step& step)
     {
         UploadOptions options = plan_.upload;
-        options.image = current_target().image;
-        if (!options.server_buf_size.has_value() && context_.buf_size != 0) {
-            options.server_buf_size = context_.buf_size;
+        options.image = step.image;
+        if (!options.server_buf_size.has_value() && step.buf_size != 0) {
+            options.server_buf_size = step.buf_size;
         }
 
         upload_ = image_->upload(
-            *sources_[context_.current][current_target().chosen], options,
+            *sources_[step.target][step.build], options,
             [this](UploadProgress progress) { emit(progress); }, upload_done());
 
         // An invalid handle means `upload()` refused the request outright. Its
@@ -570,12 +570,10 @@ private:
         apply_deadline_.reset();
         apply_phase_.reset();
 
-        // The one report: completed in place, so `report()` and the
-        // `UpdateFinished` result cannot disagree.
-        UpdateReport& report = context_.report;
-        report.final_state = state_;
-        report.target_hash = context_.targets.front().hash;
-        report.final_device_state = context_.device;
+        // The one report, which the machine completed on the step that
+        // finished the update: `report()` and the `UpdateFinished` result
+        // cannot disagree.
+        const UpdateReport& report = context_.report;
 
         Result<UpdateReport> outcome = report;
         if (state_ != UpdateState::Completed) {

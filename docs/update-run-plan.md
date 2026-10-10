@@ -373,10 +373,10 @@ set-state answer, and the machine records it; `StartUpload`, `MarkForTest` and
 `Confirm` carry what the updater needs. `FirmwareUpdater` no longer writes the
 context, and reads it for nothing but the report.
 
-- [ ] A unit test shows `MarkedForTest` carrying a slot table that changes the next image's routing (fails before the change).
-- [ ] The updater's direct write of the slot table is gone; carrying out an effect reads only the step.
-- [ ] The component suite passes unchanged.
-- [ ] `design.md` §8 describes the events and effects as they now are.
+- [x] A unit test shows `MarkedForTest` carrying a slot table that changes the next image's routing (fails before the change).
+- [x] The updater's direct write of the slot table is gone; carrying out an effect reads only the step.
+- [x] The component suite passes unchanged.
+- [x] `design.md` §8 describes the events and effects as they now are.
 
 ### Stage 5: `dfu::Machine` owns its context, state and report
 
