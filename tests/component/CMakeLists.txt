@@ -13,6 +13,7 @@ add_executable(smply_component_tests
     test_firmware_update.cpp
     test_round_trip.cpp
     test_simulator.cpp
+    test_update_run.cpp
 )
 
 target_link_libraries(smply_component_tests
@@ -20,6 +21,7 @@ target_link_libraries(smply_component_tests
         smply::smply_internal
         smply::test_support
         smply::asyncutil
+        smply::dfu_app    # the update run, and the wait seam SimulatedWait adapts
         smply_internal_options
         Catch2::Catch2WithMain
 )

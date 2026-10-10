@@ -195,6 +195,23 @@ the staged image of a second MCU in `docs/multi-image.md`. A reboot swaps it in
 as an unconfirmed trial. After `reads` more state reads, the device finishes:
 confirmed, or the old image swapped back with nothing pending.
 
+### `SimulatedWait` (`tests/component/simulated_wait.hpp`)
+
+The test adapter of the update run's wait seam (`dfu_app::UpdateWait`, in
+`support/dfu_app/update_run.hpp`). The real adapter, `DispatcherWait`, blocks
+on a condition variable and reads the steady clock; this one makes each wait
+one **device turn** of the component fixture: the `ManualClock` moves one step,
+the device's between-turn behaviour runs, and the simulator answers. A
+reconnect delay advances the clock by exactly the delay and is recorded, so a
+test reads the backoff off the clock. No real clock is read.
+
+It is where a test models the device **between** turns, never inside a
+library callback: `between_turns()` is what the device does every turn (reboot
+when the reset drops the link), and `when(condition, action)` is a one-shot
+fault -- drop the link once the upload has started, swallow the next answer
+once the updater is applying. `all_fired()` lets a test require that its fault
+was actually reached.
+
 ## 3. Required unit coverage
 
 ### `Dispatcher` (`src/util/`)
@@ -382,6 +399,13 @@ target per image in index order, image 0 committed by the client and the rest by
 the device, the per-image override refused for an image the package lacks, the
 file read whole and a bad one refused, and `parse_commit()`'s accepted and
 refused forms.
+
+`support/dfu_app/`'s `DispatcherWait`, the update run's real wait
+(`test_dispatcher_wait.cpp`), for only what needs no waiting: a deadline
+already past delivers what the application's dispatcher holds, a wake that came
+before the wait is not lost, nothing is drained without a dispatcher, and the
+waker stays safe after the adapter is gone. The blocking itself needs the
+real clock, so no unit test waits on it.
 
 `support/dfu_app/`'s `FileImageSource`, the source every example reads firmware
 through (`test_file_image_source.cpp`): a missing or empty file is refused, reads
@@ -650,7 +674,7 @@ asserted it, and failed in 15 of 50 runs.
 ## 4. Component tests (`tests/component/`)
 
 A second executable, so "the unit suite is green but the stack is not" is
-something CTest can say. Four files:
+something CTest can say. Five files:
 
 **`test_simulator.cpp`** checks the double against the specification it claims
 to implement, driven with hand-built requests and **no smply client at all** --
@@ -686,7 +710,9 @@ each optional command present and absent.
 **`test_firmware_update.cpp`** drives the whole update into the
 simulator, with a small `Application` helper playing the part the updater
 refuses to play: reconnecting after the reset, and deciding whether the new
-image is good. Shipped:
+image is good. `Application` is the update run the examples use
+(`dfu_app::UpdateRun`) over `SimulatedWait`, with the two jobs as its
+open-a-link and approve hooks, so CI tests the loop that ships. Shipped:
 
 * a clean update in **both** SMP versions, asserting the command sequence and
   that the device ends up running the new image, confirmed;
@@ -729,6 +755,25 @@ image is good. Shipped:
   before a single byte goes on the wire;
 * cancellation mid-update, destruction mid-update, and a callback that outlives
   the updater while the client is still alive.
+
+**`test_update_run.cpp`** tests the update run itself
+(`support/dfu_app/update_run.hpp`) through its interface, against the
+simulator under `SimulatedWait`:
+* a clean update through the three hooks, each attempt told its number, bound
+  and delay;
+* no hook called from inside a library callback, and every event raised
+  observed afterwards, in order;
+* refused attempts backing off by the policy's exact delays, read off the
+  `ManualClock`;
+* giving up by the policy's exhaustion (the settings' error, or the last
+  refusal's reason) and by the open hook's verdict, each reaching the updater
+  through `reconnect_failed()`;
+* the approve hook answering stop: the run ends with the update in
+  `AwaitingConfirmation` and the device on trial, and a later `run()` after a
+  late confirm completes it without asking again;
+* the overall deadline ending a stalled run, and a reconnect episode that would
+  outlast it, with the update still running;
+* a second reboot in one update running a fresh episode from the first delay.
 
 **`test_async.cpp`** drives `smply::asyncutil` (ADR-0019) against the same
 simulator. It covers:

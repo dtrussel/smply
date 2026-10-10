@@ -46,7 +46,10 @@ earlier work learned the hard way. This file is only the short version.
 portable BLE helpers in `common/` and the platform adapters beside them ·
 `support/` code shared by the tests and the examples and part of neither
 (`smply::minicbor`, `smply::dfu_app` for `FileImageSource`,
-`ReconnectPolicy` and `PackageUpdate`, and `smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
+`ReconnectPolicy`, `PackageUpdate` and `UpdateRun`, the update run that drives a
+started update to its end through three hooks and a wait seam (`DispatcherWait`
+for real, the component suite's `SimulatedWait` under `ManualClock`), and
+`smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
 `winrt_ble_dfu` (Windows) · `tests/` unit, component, fuzz, HIL · `docs/` living
 documentation and ADRs · `.claude/` the shared Claude Code skills, rules and
 hook. Full description:

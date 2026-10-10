@@ -33,13 +33,21 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # platform-specific, so they live here rather than in one example -- two
 # examples need them, and two copies drift.
 #
+# The update run (update_run.hpp) is the loop around both: it drives a started
+# update to its end through three application hooks, and waits through a seam
+# whose real adapter, DispatcherWait, is the one piece here that touches a
+# mutex -- which is why this target links smply::util, and why it is still not
+# the core (ADR-0004 is about libsmply, which links none of this).
+#
 # The reconnect policy in particular is why this target exists at all:
 # examples/winrt_ble_dfu/ cannot be run by CI, so the one part of a real
 # reconnect that is pure arithmetic is put somewhere cli_dfu can exercise it on
 # every push.
 add_library(smply_dfu_app STATIC
+    dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
     dfu_app/package_update.cpp
+    dfu_app/update_run.cpp
 )
 add_library(smply::dfu_app ALIAS smply_dfu_app)
 
@@ -51,6 +59,7 @@ target_link_libraries(smply_dfu_app
     PUBLIC
         smply::smply     # ImageSource, Result, Duration
         smply::dfu_package # PackageUpdate: a package into FirmwareUpdater targets
+        smply::util      # DispatcherWait: the update run's real wait drains a Dispatcher
     PRIVATE
         smply_internal_options
 )
