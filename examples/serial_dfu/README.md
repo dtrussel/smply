@@ -1,8 +1,9 @@
 # serial_dfu
 
-`cli_dfu`'s pump loop over a real serial port, with
+`cli_dfu`'s arrangement over a real serial port, with
 [`smply::serial_port`](../../transports/serial_port/serial_port_transport.hpp).
-`examples/cli_dfu/main.cpp` is still the file to read for the loop itself.
+`examples/cli_dfu/main.cpp` is still the file to read first, and the loop itself
+is [`UpdateRun`](../../support/dfu_app/update_run.hpp), which both drive.
 This one adds what a serial link needs to survive a device reset
 (roadmap O7, [`design.md`](../../docs/design.md) §13).
 

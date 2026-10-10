@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// \file
-/// A serial DFU driver: the pump loop from `cli_dfu`, over a real serial port.
+/// A serial DFU driver: `cli_dfu`'s arrangement, over a real serial port.
 ///
 /// With `--port`, it updates a device on that port -- a Zephyr board's USB CDC
 /// ACM port, or a UART. Without one (POSIX only) it starts the stub device
 /// behind a pseudo-terminal and updates that, which is how CI runs it.
 ///
 /// What is new relative to `examples/cli_dfu/main.cpp`, which is still the file
-/// to read for the loop itself, is how a serial link survives a device reset
-/// (roadmap O7, design.md section 13):
+/// to read first (the loop itself is `smply::dfu_app::UpdateRun`), is how a
+/// serial link survives a device reset (roadmap O7, design.md section 13):
 ///
 /// * `UpdatePlan::disconnect_grace` is **two seconds**, not ten. A USB CDC port
 ///   vanishes on reset and the adapter reports it at once; a hardware UART
 ///   does not drop at all, so the updater moves on only when the grace
 ///   expires. Two seconds is past MCUboot's reset without being a wait anyone
 ///   notices.
-/// * On `ReconnectRequired` it always **closes the old port and opens a new
-///   one, by path**, retrying while the port is absent. That one piece of code
+/// * Its open-a-link hook always **closes the old port and opens a new one, by
+///   path**, retrying while the port is absent and giving up on a port that
+///   exists and refuses. That one piece of code
 ///   covers a UART that never went away, a CDC port that came back under the
 ///   same name, and one that came back under another -- provided the path is
 ///   stable, which on Linux is what `/dev/serial/by-id/` is for.
@@ -34,9 +35,11 @@
 #include "serial_port/serial_port_transport.hpp"
 
 #include "dfu_app/bootloader_mode.hpp"
+#include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_run.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -50,7 +53,6 @@
 
 #include <array>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -58,14 +60,12 @@
 #include <ios>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <random>
 #include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -328,13 +328,6 @@ struct StubRig
 };
 #endif
 
-struct Pending
-{
-    bool reconnect = false;
-    bool confirm = false;
-    bool finished = false;
-};
-
 /// Every link's counters, added up: a reconnect opens a new transport, and the
 /// boot output of a UART reset arrives on the old one.
 [[nodiscard]] SerialLinkCounters
@@ -377,16 +370,9 @@ int main(int argc, char** argv)
     // Declared first: the stub device, every transport and the client all post
     // into it or capture it, so it must outlive every one of them.
 
-    std::mutex wake_mutex;
-    std::condition_variable wake;
-    bool woken = false;
-    Dispatcher inbound{[&] {
-        {
-            const std::lock_guard<std::mutex> lock{wake_mutex};
-            woken = true;
-        }
-        wake.notify_one();
-    }};
+    DispatcherWait wait;
+    Dispatcher inbound{wait.waker()};
+    wait.deliver_from(inbound);
 
     // --- the device: a real port, or the stub behind a pseudo-terminal -------
 
@@ -500,14 +486,18 @@ int main(int argc, char** argv)
     OsManagement os{client};
     FirmwareUpdater updater{client, images, os};
 
-    // A real device gets the library's defaults (500 ms doubling to 8 s); the
-    // stub reboots in 150 ms and runs under a ctest timeout.
-    ReconnectPolicy policy{options.port.empty() ? ReconnectSettings{
-                                                      .first_delay = std::chrono::milliseconds{50},
-                                                      .max_delay = std::chrono::milliseconds{400},
-                                                      .max_attempts = 10,
-                                                  }
-                                                : ReconnectSettings{}};
+    const UpdateRunSettings settings{
+        // A real device gets the library's defaults (500 ms doubling to 8 s);
+        // the stub reboots in 150 ms and runs under a ctest timeout.
+        .reconnect = options.port.empty() ? ReconnectSettings{
+                                                .first_delay = std::chrono::milliseconds{50},
+                                                .max_delay = std::chrono::milliseconds{400},
+                                                .max_attempts = 10,
+                                            }
+                                          : ReconnectSettings{},
+        .overall_timeout = std::chrono::minutes{10},
+        .unreachable = Error{ErrorCode::Disconnected, "serial_dfu: could not reopen the port"},
+    };
 
     UpdatePlan plan;
     plan.mode = options.mode;
@@ -523,10 +513,9 @@ int main(int argc, char** argv)
         plan.apply_poll_interval = std::chrono::milliseconds{100};
     }
 
-    Pending pending;
-    Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
     std::string reset_seen = "none";
 
+    // Output only, but for one note: the run itself acts on the last three.
     const auto on_event = overloaded{
         [&](const UpdateStateChanged& changed) {
             if (!options.quiet) {
@@ -550,33 +539,67 @@ int main(int argc, char** argv)
         [&](const ReconnectRequired&) {
             // How the reset showed itself on this link: a port that vanished
             // (USB CDC), or nothing at all until the grace expired (a UART).
+            // Observed right after the poll that raised it, before the run
+            // reopens anything, so the old link's state is still the one read.
             reset_seen = client.connected() ? "grace" : "dropped";
-            pending.reconnect = true;
         },
-        [&](const ConfirmationRequired&) { pending.confirm = true; },
-        [&](const UpdateFinished& finished) {
-            outcome = finished.result;
-            pending.finished = true;
-        },
+        [](const ConfirmationRequired&) {},
+        [](const UpdateFinished&) {},
     };
-    // A package's image list, or the single image, with the same event handler.
-    const auto handler = [&] {
-        return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
-    };
+
+    UpdateRun run{client, updater, wait, settings,
+                  UpdateRunHooks{
+                      .open_link = [&](const ReconnectAttempt& attempt) -> LinkAttempt {
+                          // The old port is closed first, whether or not it dropped: a
+                          // UART that stayed open is held exclusively, and reopening
+                          // flushes the boot output and any half-frame the reset left
+                          // behind. Once per episode: later attempts find it closed.
+                          if (attempt.number == 1) {
+                              links.back()->close();
+                          }
+                          Result<std::unique_ptr<SerialPortTransport>> again =
+                              SerialPortTransport::open(config, inbound);
+                          if (again.has_value()) {
+                              links.push_back(std::move(*again));
+                              note_device();
+                              if (!options.quiet) {
+                                  std::cout << "  reopened " << port << '\n';
+                              }
+                              return LinkAttempt::opened(*links.back());
+                          }
+                          // Absent is worth retrying -- a USB port mid-reset -- but a
+                          // port that exists and refuses is not going to change its mind.
+                          if (again.error().code() == ErrorCode::Disconnected) {
+                              return LinkAttempt::retry(again.error());
+                          }
+                          return LinkAttempt::give_up(again.error());
+                      },
+                      .approve =
+                          [&] {
+                              if (!options.quiet) {
+                                  std::cout
+                                      << "  the new image is running unconfirmed; confirming\n";
+                              }
+                              return Approval::Confirm;
+                          },
+                      .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
+                  }};
+
     // One build per slot is an image list of one (ADR-0025).
     const std::array<ImageTarget, 1> builds{ImageTarget{
         .image = 0,
         .source = source.has_value() ? &*source : nullptr,
         .secondary_source = secondary.has_value() ? &*secondary : nullptr,
     }};
+    // A package's image list, or the single image, with the run's handler.
     const auto begin = [&]() -> Result<void> {
         if (package) {
-            return updater.start(package->targets(), plan, handler());
+            return updater.start(package->targets(), plan, run.event_handler());
         }
         if (secondary) {
-            return updater.start(builds, plan, handler());
+            return updater.start(builds, plan, run.event_handler());
         }
-        return updater.start(*source, plan, handler());
+        return updater.start(*source, plan, run.event_handler());
     };
     if (const Result<void> begun = begin(); !begun.has_value()) {
         std::cerr << "serial_dfu: " << to_string(begun.error()) << '\n';
@@ -585,82 +608,19 @@ int main(int argc, char** argv)
 
     // --- the pump -----------------------------------------------------------
 
-    const auto started = std::chrono::steady_clock::now();
-    constexpr auto kOverallTimeout = std::chrono::minutes{10};
-
-    while (!pending.finished) {
-        inbound.drain();
-        const TimePoint now = std::chrono::steady_clock::now();
-        client.poll(now);
-        updater.poll(now);
-
-        if (pending.reconnect) {
-            pending.reconnect = false;
-            // The old port is closed first, whether or not it dropped: a UART
-            // that stayed open is held exclusively, and reopening flushes the
-            // boot output and any half-frame the reset left behind.
-            links.back()->close();
-
-            policy.begin();
-            bool attached = false;
-            Error refused{ErrorCode::Disconnected, "serial_dfu: could not reopen the port"};
-            while (!policy.exhausted()) {
-                std::this_thread::sleep_for(policy.next_delay());
-                Result<std::unique_ptr<SerialPortTransport>> again =
-                    SerialPortTransport::open(config, inbound);
-                if (again.has_value()) {
-                    links.push_back(std::move(*again));
-                    note_device();
-                    client.rebind_transport(*links.back());
-                    policy.succeeded();
-                    attached = true;
-                    break;
-                }
-                refused = again.error();
-                // Absent is worth retrying -- a USB port mid-reset -- but a
-                // port that exists and refuses is not going to change its mind.
-                if (refused.code() != ErrorCode::Disconnected) {
-                    break;
-                }
-            }
-            if (!attached) {
-                updater.reconnect_failed(refused);
-                continue;
-            }
-            if (!options.quiet) {
-                std::cout << "  reopened " << port << '\n';
-            }
-            static_cast<void>(updater.resume_after_reconnect());
-            continue;
-        }
-
-        if (pending.confirm) {
-            pending.confirm = false;
-            if (!options.quiet) {
-                std::cout << "  the new image is running unconfirmed; confirming\n";
-            }
-            static_cast<void>(updater.confirm());
-            continue;
-        }
-
-        if (std::chrono::steady_clock::now() - started > kOverallTimeout) {
-            std::cerr << "serial_dfu: gave up waiting\n";
-            return 1;
-        }
-
-        std::optional<TimePoint> deadline = client.next_deadline();
-        if (const std::optional<TimePoint> theirs = updater.next_deadline();
-            theirs.has_value() && (!deadline.has_value() || *theirs < *deadline)) {
-            deadline = theirs;
-        }
-        std::unique_lock<std::mutex> lock{wake_mutex};
-        if (deadline.has_value()) {
-            wake.wait_until(lock, *deadline, [&] { return woken; });
-        } else {
-            wake.wait_for(lock, std::chrono::milliseconds{50}, [&] { return woken; });
-        }
-        woken = false;
+    const UpdateRunOutcome ran = run.run();
+    switch (ran.end) {
+    case RunEnd::Finished:
+        break;
+    case RunEnd::TimedOut:
+        std::cerr << "serial_dfu: gave up waiting\n";
+        return 1;
+    case RunEnd::StoppedBeforeConfirm:
+        // Not reachable: the approve hook above always confirms.
+        std::cerr << "serial_dfu: " << to_string(ran.result.error()) << '\n';
+        return 1;
     }
+    const Result<UpdateReport>& outcome = ran.result;
 
     // --- the report ---------------------------------------------------------
 

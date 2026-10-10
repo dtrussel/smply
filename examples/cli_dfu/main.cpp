@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// \file
-/// A console DFU driver: the canonical pump loop, against a device on another
-/// thread.
+/// A console DFU driver, against a device on another thread.
 ///
 /// **This is the file to read.** Everything else is scaffolding -- a stub device
 /// to talk to (`examples/stub_device/`), a link to talk over, an image to
 /// install and a file to read it from. What is demonstrated here is the arrangement every
 /// application that uses smply has to build:
 ///
-/// * **one client context**, the thread running this loop. Every call into the
+/// * **one client context**, the thread running `main()`. Every call into the
 ///   library and every callback out of it happens here (ADR-0004).
 /// * **a `Dispatcher`** carrying inbound bytes from the driver thread to this
 ///   one. The library never learns there was another thread.
 /// * **an application-driven pump**: nothing happens unless `poll()` is called,
 ///   so there is no hidden thread, no hidden queue and no callback from
-///   somewhere surprising (ADR-0003).
+///   somewhere surprising (ADR-0003). The pump is `smply::dfu_app::UpdateRun`
+///   (`support/dfu_app/update_run.hpp`), run on this thread; what is left here
+///   is what differs between applications: its three hooks.
 /// * **the application owning the connection**. A reset drops the link by
 ///   design; re-establishing it is not the library's business, so the updater
-///   asks and waits.
+///   asks, and the run calls this program's open-a-link hook.
 ///
 /// Run it with no arguments and it invents a device and an image to install.
 /// With `--demo-package` it invents a two-image device and a DFU package for it,
@@ -32,9 +33,11 @@
 #include "stub_device/stub_device.hpp"
 
 #include "dfu_app/bootloader_mode.hpp"
+#include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/file_image_source.hpp"
 #include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_run.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -48,21 +51,18 @@
 
 #include <array>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <ios>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <ostream>
 #include <random>
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -328,14 +328,6 @@ private:
     std::string path_;
 };
 
-/// The application's side of the loop: what it has been asked to do next.
-struct Pending
-{
-    bool reconnect = false;
-    bool confirm = false;
-    bool finished = false;
-};
-
 } // namespace
 
 int main(int argc, char** argv)
@@ -439,37 +431,36 @@ int main(int argc, char** argv)
     // Declared before the client and the transports: everything below captures
     // them, and a callback outliving what it captured is the lifetime bug this
     // library's documentation warns about most.
+    //
+    // The wait is the update run's: a condition variable the dispatcher's wake
+    // callback signals from the *device* thread, inside post(), and a drain of
+    // this dispatcher on this thread after every wake.
 
-    std::mutex wake_mutex;
-    std::condition_variable wake;
-    bool woken = false;
+    DispatcherWait wait;
+    Dispatcher inbound{wait.waker()};
+    wait.deliver_from(inbound);
 
-    Dispatcher inbound{[&] {
-        // Runs on the *device* thread, inside post(). Signal and return: doing
-        // work here, or taking a lock the client context holds, is how an
-        // adapter deadlocks.
-        {
-            const std::lock_guard<std::mutex> lock{wake_mutex};
-            woken = true;
-        }
-        wake.notify_one();
-    }};
-
-    Pending pending;
     const std::optional<std::int64_t> reported_mode =
         options.stub_mode.has_value()
             ? std::optional<std::int64_t>{static_cast<std::int64_t>(*options.stub_mode)}
             : std::nullopt;
     StubDevice device{running, std::move(second_image), reported_mode};
 
-    // Deliberately brisk: these delays are waited for real, and this example
-    // runs as a ctest with a timeout. A shipped tool would use the defaults
-    // (500 ms doubling to 8 s), which is what examples/winrt_ble_dfu/ does.
-    ReconnectPolicy policy{ReconnectSettings{
-        .first_delay = std::chrono::milliseconds{20},
-        .max_delay = std::chrono::milliseconds{160},
-        .max_attempts = 5,
-    }};
+    const UpdateRunSettings settings{
+        // Deliberately brisk: these delays are waited for real, and this
+        // example runs as a ctest with a timeout. A shipped tool would use the
+        // defaults (500 ms doubling to 8 s), which is what
+        // examples/winrt_ble_dfu/ does.
+        .reconnect =
+            ReconnectSettings{
+                .first_delay = std::chrono::milliseconds{20},
+                .max_delay = std::chrono::milliseconds{160},
+                .max_attempts = 5,
+            },
+        .overall_timeout = std::chrono::seconds{30},
+        // What the updater is told when every attempt was refused.
+        .unreachable = Error{ErrorCode::Disconnected, "cli_dfu: could not reconnect"},
+    };
     unsigned refusals_left = options.flaky_reconnect;
 
     // The application owns every link it ever opens. A dropped transport is
@@ -495,11 +486,9 @@ int main(int argc, char** argv)
     // whole UART transfer, and the default interval suits that instead.
     plan.apply_poll_interval = std::chrono::milliseconds{100};
 
-    Result<UpdateReport> outcome = fail(ErrorCode::InvalidState, "no result");
-    const auto started = std::chrono::steady_clock::now();
-
     // One handler per kind of event. std::visit refuses to compile if a kind
-    // is left out, which is the point of UpdateEvent being a variant.
+    // is left out, which is the point of UpdateEvent being a variant. This is
+    // output only: the run itself acts on the last three.
     const auto on_event = overloaded{
         [&](const UpdateStateChanged& changed) {
             if (!options.quiet) {
@@ -520,20 +509,63 @@ int main(int argc, char** argv)
                 std::cout << "  the device is about to reboot; a dropped link is expected\n";
             }
         },
-        // Not done here. The handler runs inside poll(), and reconnecting is the
-        // application's own work -- so it is noted and done on the loop's next
-        // turn, where it reads as what it is.
-        [&](const ReconnectRequired&) { pending.reconnect = true; },
-        [&](const ConfirmationRequired&) { pending.confirm = true; },
-        [&](const UpdateFinished& finished) {
-            outcome = finished.result;
-            pending.finished = true;
-        },
+        [](const ReconnectRequired&) {},
+        [](const ConfirmationRequired&) {},
+        [](const UpdateFinished&) {},
     };
-    // A package's image list, or the single image, with the same event handler.
-    const auto handler = [&] {
-        return UpdateEventCallback{[&](const UpdateEvent& event) { std::visit(on_event, event); }};
-    };
+
+    // The three hooks. The run calls each on this thread, after the poll that
+    // raised the event -- never inside it -- so each may block, sleep and open
+    // links.
+    UpdateRun run{client, updater, wait, settings,
+                  UpdateRunHooks{
+                      // A real reconnect is a loop, not a statement. The device has just
+                      // rebooted and is not connectable yet, so the run waits, asks here,
+                      // waits longer, and eventually decides it has lost the device.
+                      // `--flaky-reconnect` makes that visible; over BLE it is simply
+                      // what happens.
+                      .open_link = [&](const ReconnectAttempt& attempt) -> LinkAttempt {
+                          if (refusals_left > 0) {
+                              --refusals_left;
+                              if (!options.quiet) {
+                                  std::cout << "  reconnect attempt " << attempt.number
+                                            << " failed; waiting " << attempt.waited.count()
+                                            << " ms\n";
+                                  if (attempt.number == attempt.max_attempts) {
+                                      // The run now tells the updater, which ends the
+                                      // update with `settings.unreachable`.
+                                      std::cout << "  giving up after " << attempt.max_attempts
+                                                << " reconnection attempts\n";
+                                  }
+                              }
+                              return LinkAttempt::retry();
+                          }
+                          // A dropped link stays dropped, so this is a new one -- exactly
+                          // what an application does with a BLE connection after a
+                          // reboot. The run rebinds the client to it, then resumes.
+                          links.push_back(std::make_unique<LoopbackTransport>(device, inbound));
+                          device.attach(*links.back());
+                          if (!options.quiet) {
+                              std::cout << "  reconnected\n";
+                          }
+                          return LinkAttempt::opened(*links.back());
+                      },
+                      // The device is running the new image, unconfirmed. This is where a
+                      // real application runs its self-test; declining here would let
+                      // the device revert on its next reset, which is the point of the
+                      // default mode (ADR-0014).
+                      .approve =
+                          [&] {
+                              if (!options.quiet) {
+                                  std::cout
+                                      << "  the new image is running unconfirmed; confirming\n";
+                              }
+                              return Approval::Confirm;
+                          },
+                      .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
+                  }};
+
+    // A package's image list, or the single image, with the run's handler.
     // One build per slot is an image list of one: the image-list start() is
     // the one that takes it.
     const std::array<ImageTarget, 1> builds{ImageTarget{
@@ -543,12 +575,12 @@ int main(int argc, char** argv)
     }};
     const auto begin = [&]() -> Result<void> {
         if (package) {
-            return updater.start(package->targets(), plan, handler());
+            return updater.start(package->targets(), plan, run.event_handler());
         }
         if (secondary) {
-            return updater.start(builds, plan, handler());
+            return updater.start(builds, plan, run.event_handler());
         }
-        return updater.start(*source, plan, handler());
+        return updater.start(*source, plan, run.event_handler());
     };
     const Result<void> begun = begin();
 
@@ -559,106 +591,19 @@ int main(int argc, char** argv)
 
     // --- the pump -----------------------------------------------------------
 
-    constexpr auto kOverallTimeout = std::chrono::seconds{30};
-
-    while (!pending.finished) {
-        inbound.drain();
-
-        const TimePoint now = std::chrono::steady_clock::now();
-        client.poll(now);
-        updater.poll(now);
-
-        if (pending.reconnect) {
-            pending.reconnect = false;
-
-            // A real reconnect is a loop, not a statement. The device has just
-            // rebooted and is not connectable yet, so an application waits,
-            // tries, waits longer, and eventually decides it has lost the
-            // device. `--flaky-reconnect` makes that visible here; over BLE it
-            // is simply what happens.
-            policy.begin();
-            bool attached = false;
-            while (!policy.exhausted()) {
-                const Duration delay = policy.next_delay();
-                std::this_thread::sleep_for(delay);
-
-                if (refusals_left > 0) {
-                    --refusals_left;
-                    if (!options.quiet) {
-                        std::cout << "  reconnect attempt " << policy.attempts()
-                                  << " failed; waiting " << delay.count() << " ms\n";
-                    }
-                    continue;
-                }
-
-                // A dropped link stays dropped, so this is a new one -- exactly
-                // what an application does with a BLE connection after a reboot.
-                links.push_back(std::make_unique<LoopbackTransport>(device, inbound));
-                device.attach(*links.back());
-                client.rebind_transport(*links.back());
-                policy.succeeded();
-                attached = true;
-                break;
-            }
-
-            if (!attached) {
-                // Terminal, and the updater has to be told: it is waiting on
-                // the application and has no deadline of its own here, so
-                // without this the pump would spin until the overall timeout.
-                if (!options.quiet) {
-                    std::cout << "  giving up after " << policy.settings().max_attempts
-                              << " reconnection attempts\n";
-                }
-                updater.reconnect_failed(
-                    Error{ErrorCode::Disconnected, "cli_dfu: could not reconnect"});
-                continue;
-            }
-
-            if (!options.quiet) {
-                std::cout << "  reconnected\n";
-            }
-            static_cast<void>(updater.resume_after_reconnect());
-            continue;
-        }
-
-        if (pending.confirm) {
-            pending.confirm = false;
-            // The device is running the new image, unconfirmed. This is where a
-            // real application runs its self-test; doing nothing here would let
-            // the device revert on its next reset, which is the point of the
-            // default mode (ADR-0014).
-            if (!options.quiet) {
-                std::cout << "  the new image is running unconfirmed; confirming\n";
-            }
-            static_cast<void>(updater.confirm());
-            continue;
-        }
-
-        if (std::chrono::steady_clock::now() - started > kOverallTimeout) {
-            std::cerr << "cli_dfu: gave up waiting\n";
-            return 1;
-        }
-
-        // Sleep until there is something to do: a deadline, or a wake from the
-        // device thread, whichever deadline is earlier. This is api.md's
-        // `app.wait_until(earliest(...))`.
-        std::optional<TimePoint> deadline = client.next_deadline();
-        if (const std::optional<TimePoint> theirs = updater.next_deadline();
-            theirs.has_value() && (!deadline.has_value() || *theirs < *deadline)) {
-            deadline = theirs;
-        }
-
-        std::unique_lock<std::mutex> lock{wake_mutex};
-        if (deadline.has_value()) {
-            wake.wait_until(lock, *deadline, [&] { return woken; });
-        } else {
-            // No deadline at all means the library is waiting on the
-            // application -- during a reboot, say. Cap the wait so the overall
-            // timeout above stays reachable.
-            wake.wait_for(lock, std::chrono::milliseconds{50}, [&] { return woken; });
-        }
-        woken = false;
+    const UpdateRunOutcome ran = run.run();
+    switch (ran.end) {
+    case RunEnd::Finished:
+        break;
+    case RunEnd::TimedOut:
+        std::cerr << "cli_dfu: gave up waiting\n";
+        return 1;
+    case RunEnd::StoppedBeforeConfirm:
+        // Not reachable: the approve hook above always confirms.
+        std::cerr << "cli_dfu: " << to_string(ran.result.error()) << '\n';
+        return 1;
     }
+    const Result<UpdateReport>& outcome = ran.result;
 
     // --- the report ---------------------------------------------------------
 

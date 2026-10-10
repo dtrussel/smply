@@ -358,11 +358,11 @@ Delivers the rest of part 2. `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` keep
 their setup, `start()` choice, hooks and report printing, and drop their
 pending flags, visitor routing, reconnect loop, confirm step and wait.
 
-- [ ] Each example's output and exit codes are unchanged; the `cli_dfu` and `serial_dfu` ctests pass unmodified.
-- [ ] `serial_dfu`'s rule survives: an absent port is retried, a port that exists and refuses ends the episode.
-- [ ] `winrt_ble_dfu --stop-before-confirm` exits with the image installed and unconfirmed, via the approve hook.
-- [ ] `winrt_ble_dfu` still compiles: reviewed against the "Windows half" caveats in `handoff.md`, since only Windows CI builds it.
-- [ ] `api.md`'s account of driving an update points at the run.
+- [x] Each example's output and exit codes are unchanged; the `cli_dfu` and `serial_dfu` ctests pass unmodified.
+- [x] `serial_dfu`'s rule survives: an absent port is retried, a port that exists and refuses ends the episode.
+- [x] `winrt_ble_dfu --stop-before-confirm` exits with the image installed and unconfirmed, via the approve hook.
+- [x] `winrt_ble_dfu` still compiles: reviewed against the "Windows half" caveats in `handoff.md`, since only Windows CI builds it.
+- [x] `api.md`'s account of driving an update points at the run.
 
 ### Stage 4: events carry the slot table, effects carry their parameters
 
