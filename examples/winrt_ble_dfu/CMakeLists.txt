@@ -19,7 +19,7 @@ target_link_libraries(winrt_ble_dfu
         smply::smply
         smply::util        # Dispatcher: WinRT calls back on pool threads
         smply::winrt_ble   # the transport itself
-        smply::dfu_app     # FileImageSource and ReconnectPolicy, shared with cli_dfu
+        smply::dfu_app     # FileImageSource and UpdateRun, shared with cli_dfu
         smply_internal_options
 )
 

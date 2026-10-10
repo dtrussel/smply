@@ -1148,6 +1148,13 @@ public:
     void reconnect_failed(Error);
 
     UpdateState  state() const noexcept;
+
+    // The report as the update has written it so far. While it runs, the
+    // per-image outcomes and the summaries derived from them are live;
+    // final_state, target_hash and final_device_state stay default until the
+    // update is terminal, and are filled just before UpdateFinished, whose
+    // result is this same report. Fresh when start() accepts an update, kept
+    // unchanged after the end.
     const UpdateReport& report() const noexcept;
 };
 
@@ -1614,13 +1621,66 @@ What a caller has to know:
 
 ## Representative usage
 
-**All of this is runnable.** `examples/cli_dfu/main.cpp` is the sketch below as
-a working program — the same pump, against a stub device on another thread,
-with the reconnect and the confirmation handled rather than elided. It runs on
-every push as the `cli_dfu_demo` test. Where the two differ, the example is the
-one that compiles.
+**All of this is runnable.** The loop sketched below is written once, as code,
+in `smply::dfu_app::UpdateRun` (`support/dfu_app/update_run.hpp`): support code
+beside `ReconnectPolicy`, not installed (ADR-0016). `examples/cli_dfu/main.cpp`,
+`examples/serial_dfu/main.cpp` and `examples/winrt_ble_dfu/main.cpp` drive their
+updates through it, against a stub device on another thread, a serial port and a
+radio; `cli_dfu` runs on every push as the `cli_dfu_demo` test. Where the
+sketches and the code differ, the code is the one that compiles.
 
-### Portable: one update, application-driven pump
+### Portable: one update, through the update run
+
+An application builds the client, the groups and the updater, starts the update
+with the run's event handler, and supplies three hooks. The run owns the rest:
+noting events and acting on them after the poll that raised them, the reconnect
+episode around `ReconnectPolicy`, the confirm, and the wait on the earliest
+deadline.
+
+```cpp
+smply::dfu_app::DispatcherWait wait;          // the real wait: steady clock,
+smply::Dispatcher inbound{wait.waker()};      // woken by the dispatcher,
+wait.deliver_from(inbound);                   // which it drains after each wake
+
+MyTransport      transport{inbound /* ... */};
+smply::SmpClient client{transport};
+smply::ImageManagement img{client};
+smply::OsManagement    os{client};
+smply::FirmwareUpdater updater{client, img, os};
+
+smply::dfu_app::UpdateRun run{client, updater, wait,
+    smply::dfu_app::UpdateRunSettings{.overall_timeout = std::chrono::minutes{10}},
+    smply::dfu_app::UpdateRunHooks{
+        // Once per attempt, after the policy's delay, never inside a callback.
+        .open_link = [&](const smply::dfu_app::ReconnectAttempt&) {
+            auto* link = app.reconnect();     // owned by the application
+            return link ? smply::dfu_app::LinkAttempt::opened(*link)
+                        : smply::dfu_app::LinkAttempt::retry();
+        },
+        // The device runs the new image, unconfirmed: the only chance to
+        // decide it works. Stop leaves it to revert on the next reset.
+        .approve = [&] { return app.self_test_passes() ? smply::dfu_app::Approval::Confirm
+                                                       : smply::dfu_app::Approval::Stop; },
+        .observe = [&](const smply::UpdateEvent& ev) { ui.show(ev); },
+    }};
+
+if (const auto begun = updater.start(source, plan, run.event_handler()); !begun) {
+    return ui.error(smply::to_string(begun.error()));
+}
+const smply::dfu_app::UpdateRunOutcome outcome = run.run();  // blocks
+// outcome.end: Finished (outcome.result is the updater's own), StoppedBeforeConfirm,
+// or TimedOut; outcome.gave_up_reconnecting says whether the updater was told.
+```
+
+`open_link` may also answer `LinkAttempt::retry(error)` (not yet, and why: the
+updater is told the last reason if the policy runs out) or
+`LinkAttempt::give_up(error)` (stop now). `serial_dfu` retries a port that is
+absent and gives up on one that exists and refuses.
+
+### Underneath: the loop the run writes
+
+What `UpdateRun` does, written out, for an application that cannot use it (a
+GUI event loop that must not block, say):
 
 ```cpp
 MyTransport      transport{/* ... */};

@@ -79,15 +79,16 @@ is a default rather than a requirement.
 
 ## What to read, in what order
 
-1. **`examples/cli_dfu/main.cpp`** — the same pump loop, against a stub, and the
-   one that actually runs in CI.
-2. **`main.cpp` here** — that loop pointed at a radio. The pump is written out
-   in full rather than shared, because an example exists to be read.
+1. **`examples/cli_dfu/main.cpp`** — the same arrangement, against a stub, and
+   the one that actually runs in CI.
+2. **`main.cpp` here** — that arrangement pointed at a radio: the three hooks
+   of the update run (open a link, approve, observe) and the report.
 3. **`scanner.cpp`** — turning "the device on my desk" into an address.
    Scanning is the application's job, never the transport's (ADR-0005).
 
-The reconnect backoff is *not* in this directory: it is
-`support/dfu_app/reconnect_policy.hpp`, shared with `cli_dfu`. Nothing here is
+The pump and the reconnect backoff are *not* in this directory: they are
+`support/dfu_app/update_run.hpp` and `support/dfu_app/reconnect_policy.hpp`,
+shared with `cli_dfu` and the component suite. Nothing here is
 run by CI, so anything that can live somewhere testable does.
 
 ## Static analysis

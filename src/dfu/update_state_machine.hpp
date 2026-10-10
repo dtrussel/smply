@@ -3,10 +3,10 @@
 #define SMPLY_SRC_DFU_UPDATE_STATE_MACHINE_HPP
 
 /// \file
-/// The update decision logic, as one pure function.
+/// The update decision logic: `Machine`, events in, steps out.
 ///
-/// No client, no transport, no clock, no `ImageSource`: `advance()` says what
-/// should happen next and `FirmwareUpdater` does it. That is what makes every
+/// No client, no transport, no clock, no `ImageSource`: `Machine::apply()`
+/// says what should happen next and `FirmwareUpdater` does it. That is what makes every
 /// row of the failure/recovery table in docs/design.md section 8 a
 /// value-in, value-out unit test rather than a scenario needing a device --
 /// the same split ADR-0008 established for the upload, and for the same reason.
@@ -42,12 +42,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace smply::dfu {
 
-/// What `FirmwareUpdater` must do to carry out a step.
+/// What `FirmwareUpdater` must do to carry out a step. The parameters an
+/// effect needs travel in the `Step` beside it, so the updater needs nothing
+/// else from the machine to carry one out.
 enum class Effect : std::uint8_t
 {
     /// Nothing to do; the machine waits for an external event.
@@ -59,8 +62,11 @@ enum class Effect : std::uint8_t
     QueryParameters,
     QueryBootloader,
     ReadState,
+    /// Upload `Step::build` of `Step::target` to `Step::image`, with
+    /// `Step::buf_size` as the device's budget when it reported one.
     StartUpload,
     ResumeUpload,
+    /// Mark `Step::hash` of `Step::image` for test.
     MarkForTest,
     Reset,
     /// Retry the reset with `force`, after the device answered `Busy`.
@@ -73,8 +79,10 @@ enum class Effect : std::uint8_t
     AwaitApply,
     /// Emit `ConfirmationRequired` and wait for the application (ADR-0014).
     RequestConfirmation,
+    /// Confirm `Step::hash` of `Step::image`.
     Confirm,
-    /// Terminal: the report is complete, emit `Finished`.
+    /// Terminal: the report is complete, the final state, target hash and last
+    /// slot table included; emit `Finished`.
     Finish,
 };
 
@@ -120,7 +128,10 @@ struct Event
     std::uint32_t buf_size = 0;
     /// `BootloaderRead`.
     BootloaderMode bootloader{};
-    /// `StateRead`. Borrowed for the duration of the call.
+    /// `StateRead`, and the set-state answers `MarkedForTest` and `Confirmed`:
+    /// the device's slot table, which the machine records and decides on.
+    /// Borrowed for the duration of the call. Null for one of those kinds is
+    /// the caller's bug: the machine fails the update as `Internal`.
     const ImageState* state = nullptr;
     /// `UploadFinished`.
     std::uint64_t transferred = 0;
@@ -149,86 +160,81 @@ struct Target
     };
 
     /// Direct-XIP's one build per slot, primary then secondary
-    /// (`ImageTarget::secondary_source`). `hash` and `version` above are copied
-    /// from the chosen one once the slot table shows which slot is free.
+    /// (`ImageTarget::secondary_source`). The machine takes `hash` and
+    /// `version` from the chosen one once the slot table shows which slot is
+    /// free.
     std::optional<std::array<Build, 2>> builds = std::nullopt;
-    /// Which of `builds` is sent: 0 for the primary slot's, 1 for the
-    /// secondary's. Always 0 without builds.
-    std::size_t chosen = 0;
-    /// `builds` has been chosen from.
-    bool chosen_known = false;
-    /// `Client` only: booted and not yet confirmed, so a confirm is owed.
-    bool in_trial = false;
 };
 
-/// Everything the decisions need, carried between them.
+/// The next state, what to do to get there, and what that needs.
 ///
-/// Deliberately small: anything the machine does not branch on belongs in
-/// `FirmwareUpdater`, not here.
-struct Context
-{
-    /// The images, in the order they are staged. Never empty; build it with
-    /// `make_context()`, which sizes `report.images` to match.
-    std::vector<Target> targets;
-    /// The target being uploaded, marked or confirmed. Equal to
-    /// `targets.size()` once every image is staged.
-    std::size_t current = 0;
-    /// The most recent slot table.
-    std::optional<ImageState> device;
-    /// From the device, or zero when it does not implement the command.
-    std::uint32_t buf_size = 0;
-    /// The device reported downgrade prevention (`BootloaderMode::no_downgrade`).
-    bool no_downgrade = false;
-
-    /// What the update will report. The machine writes the outcome fields
-    /// here as it decides them -- per image in `images`, and `revert_pending`
-    /// and `cause` for the whole -- and derives the summary fields from the
-    /// images after every step, so the updater hands the report out rather
-    /// than copying it field by field. `FirmwareUpdater` adds the final
-    /// state, the target hash and the last slot table when it finishes.
-    UpdateReport report;
-
-    /// An upload was started and has not finished, so a reconnect resumes it
-    /// rather than moving on.
-    bool upload_in_progress = false;
-
-    /// A swap is scheduled and not yet confirmed, so an update that ends now
-    /// leaves the device about to revert.
-    bool swap_scheduled = false;
-    /// The one mark-for-test recovery has been spent for the current target --
-    /// for either shape of refusal, `ImageAlreadyPending` or a group-less
-    /// `BadState`.
-    bool mark_retried = false;
-    /// The one `Busy` reset retry has been spent.
-    bool reset_forced = false;
-    /// The application has approved the confirm, so a re-inspection that finds
-    /// an image still on trial confirms it without asking again (ADR-0023).
-    bool confirm_approved = false;
-    /// The one re-read after a timed-out confirm or read-back has been spent.
-    bool confirm_reread = false;
-    /// The refusal checks have run, and passed. They run once, before the
-    /// first command that changes the device (ADR-0025, decision 3).
-    bool preconditions_checked = false;
-};
-
-/// The next state, and what to do to get there.
+/// The parameters are set only for the effects that use them, and default
+/// otherwise.
 struct Step
 {
     UpdateState next{};
     Effect effect = Effect::None;
+
+    /// `StartUpload`: the index of the target in the update, as given to the
+    /// `Machine` -- and so the index of its source.
+    std::size_t target = 0;
+    /// `StartUpload`: which of the target's builds to send, 0 for the primary
+    /// slot's and 1 for the secondary's. Always 0 for a target without builds.
+    std::size_t build = 0;
+    /// `StartUpload`, `MarkForTest` and `Confirm`: the image number.
+    std::uint32_t image = 0;
+    /// `StartUpload`: the device's buffer size, or zero when it did not say.
+    std::uint32_t buf_size = 0;
+    /// `MarkForTest` and `Confirm`: the image-state hash to name.
+    ///
+    /// The `{}` is for GCC: without it, every `Step{next, effect}` trips
+    /// `-Wmissing-field-initializers`. clang-tidy calls it redundant.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    ImageHash hash{};
 };
 
-/// A context for \p targets, with one report entry per target.
-[[nodiscard]] Context make_context(std::vector<Target> targets);
+/// The machine's working state between events: the targets, the current one,
+/// the last slot table, the recovery budgets and the report. Defined with the
+/// decisions in the .cpp, so nothing outside the machine can read or set it.
+struct Context;
 
-/// Applies one event.
+/// The update decisions, with the state they carry between events.
 ///
-/// \param state The current state.
-/// \param event What happened.
-/// \param plan  The caller's plan; read, never modified.
-/// \param context Mutated to record what the outcome must report.
-[[nodiscard]] Step advance(UpdateState state, const Event& event, const UpdatePlan& plan,
-                           Context& context);
+/// Constructed from the update's targets and plan; `apply()` takes one event
+/// and returns the step to carry out. The current state and the one report
+/// are read-only queries. Nothing else is visible: a state is reached only by
+/// the events that reach it.
+class Machine
+{
+public:
+    /// An update of \p targets, in the order they are staged, under \p plan.
+    /// The report has one entry per target from the start. With no target,
+    /// every event fails the update as an internal error.
+    Machine(const std::vector<Target>& targets, const UpdatePlan& plan);
+    ~Machine();
+    Machine(const Machine&) = delete;
+    Machine& operator=(const Machine&) = delete;
+    Machine(Machine&&) = delete;
+    Machine& operator=(Machine&&) = delete;
+
+    /// Applies \p event in the current state, moves to the step's state and
+    /// returns the step. A step whose effect is `Continue` expects a
+    /// `Continue` event next.
+    [[nodiscard]] Step apply(const Event& event);
+
+    /// `Idle` until the first event.
+    [[nodiscard]] UpdateState state() const noexcept;
+
+    /// The report as the machine has written it so far: the outcomes decided,
+    /// and, once the state is terminal, the final state, the target hash and
+    /// the last slot table.
+    [[nodiscard]] const UpdateReport& report() const noexcept;
+
+private:
+    UpdatePlan plan_;
+    UpdateState state_ = UpdateState::Idle;
+    std::unique_ptr<Context> context_;
+};
 
 } // namespace smply::dfu
 

@@ -836,9 +836,54 @@ vectors, rather than a dependency on a crypto library (ADR-0009; see
 
 ## 8. Firmware update state machine (`src/dfu/`)
 
-Pure `(state, event) → (state, effects)` core (`update_state_machine.*`) driven
-by `FirmwareUpdater`, which owns the effects (issuing requests, emitting
+A pure decision core, `dfu::Machine` (`update_state_machine.*`), driven by
+`FirmwareUpdater`, which owns the effects (issuing requests, emitting
 callbacks).
+
+### Events in, effects out
+
+`dfu::Machine` is internal to `src/dfu/`. Its whole interface is:
+
+* **Construction** from the update's targets (image number, `CommitBy`, the
+  file's hash and version, and direct-XIP's two builds when given) and the
+  `UpdatePlan`. The report has one entry per target from the start.
+* **`apply(event)`**, which decides in the current state, moves to the next
+  and returns a `Step`: the next state, one `Effect`, and the parameters that
+  effect needs. A `Continue` effect asks for a `Continue` event at once; the
+  updater feeds it, and announces each state it passes through.
+* **`state()`** and **`report()`**, read-only.
+
+Everything the machine carries between events (the current target, the last
+slot table, the buffer size, the chosen build, the recovery budgets, whether a
+swap is scheduled) is its own, defined beside the decisions and visible to
+nothing else. A state is therefore reached only by the events that reach it,
+in the unit suite as in production. The updater holds one machine per
+`start()` and keeps it after the update ends, so `report()` still answers.
+
+The seam carries everything across it in both directions, so every decision
+is made inside the machine and the updater's I/O code makes none
+([ADR-0008](decisions/ADR-0008-upload-state-ownership.md)'s split):
+
+* **Events carry what the machine routes on.** `StateRead` carries the slot
+  table a get-state returned, and so do `MarkedForTest` and `Confirmed`: a
+  set-state answers with the refreshed table, and the machine records it and
+  plans the next image on it. Each table is borrowed for the call. One of
+  these kinds arriving without its table is a driver bug, and the machine
+  fails the update as `Internal` rather than read through it, as it does when
+  it has no image to work on.
+  `ParametersRead` carries the device's buffer size, `BootloaderRead` its
+  bootloader mode, `UploadFinished` the bytes transferred and the server's
+  already-present verdict, and `Failed` and `ReconnectFailed` the `Error`.
+* **Effects carry their parameters.** `StartUpload` names the target (its
+  index in the update, which is also its source's), the build to send (0 or 1,
+  for direct-XIP's per-slot files), the image number and the device's buffer
+  size. `MarkForTest` and `Confirm` name the image-state hash and the image.
+  The updater carries out an effect from the step alone. Its timers (`AwaitDisconnect`, `AwaitApply`) read only the
+  plan and the updater's own clock state.
+* **The report is the machine's.** The machine writes it as it decides and,
+  on the step whose effect is `Finish`, adds the final state, the target hash
+  and the last slot table. The updater writes nothing to it; it reads
+  `Machine::report()`, to hand it out.
 
 ### States
 
@@ -1020,7 +1065,7 @@ multi-image flow ([`multi-image.md`](multi-image.md)).
 `start(std::span<const ImageTarget>, plan, callback)`
 ([ADR-0021](decisions/ADR-0021-multi-image-update.md)) runs the diagram above
 once, with the staging part once per image: each image is planned, uploaded,
-verified and marked, in the order given, and `Context::current` says which.
+verified and marked, in the order given, one after the other.
 Then **one** reset, because MCUboot evaluates every image's dependency TLV at
 that one boot, and an image whose dependency is not yet staged is not booted
 (protocol-notes §6). The single-image `start()` is this with one `Client`
@@ -1128,7 +1173,13 @@ that forgets a kind does not compile:
 
 Every terminal outcome yields an `UpdateReport` recording the final device
 image state, the number of bytes transferred, and, on failure, the state it
-failed in plus the underlying `Error`. (The restart and retry counts live inside
+failed in plus the underlying `Error`. There is one report: the machine writes
+it as it decides, `FirmwareUpdater::report()` hands that
+same object out live while the update runs, and on the step that reaches a
+terminal state the machine fills the three fields only known at the end
+(`final_state`, `target_hash`, `final_device_state`); the updater then emits
+`UpdateFinished` with it. So a progress view sees each image's outcome as it is
+decided, and the event and `report()` cannot disagree. (The restart and retry counts live inside
 the upload and are not plumbed out; the roadmap's backlog has the item.)
 
 **`upload_skipped` has two sources, and both matter.** The updater's own

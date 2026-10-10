@@ -91,6 +91,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **One `poll` and one `next_deadline` for the whole core.** `FirmwareUpdater` keeps timers separate from `SmpClient`'s, so every pump merges two deadlines. Running the updater's timers on `SmpClient::poll` would remove that, but it changes the public interface and touches ADR-0003 and ADR-0004. `smply::dfu_app::UpdateRun` already hides the two clocks from applications. | if an application outside `smply::dfu_app` trips over the two clocks |
 | **Several *devices* in one update.** `FirmwareUpdater` updates one device, whose own firmware keeps several images consistent (ADR-0021). A product without a coordinating MCU would need a host-side coordinator over several updaters, and ADR-0021 records why that cannot make the pair atomic. | when a product without a coordinating MCU needs it |
 | **Retry, restart and bytes-sent counters in `UpdateReport`.** A caller cannot see that an update succeeded only after retransmissions, and a resume that finds the transfer already complete cannot say how much this run moved. `UploadResult` would have to carry the counters first. `already_present` means only "no progress in this session". | when a caller asks |
 | **`Error` cannot carry an OS diagnostic.** `where()` is a static literal and `reason()` is the device's `rsn`, so an adapter drops the `HRESULT` behind every WinRT failure, and the serial adapter drops the `errno` or `GetLastError()` behind every port failure. Widen `reason()`'s contract or add a detail field. | when an adapter is next touched |
