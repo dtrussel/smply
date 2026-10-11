@@ -13,7 +13,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **eleven** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, and six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package` |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*` |
 | The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **three** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc` and `serial_dfu_pty_package`. A whole update, reset included, over a pseudo-terminal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
@@ -529,6 +529,20 @@ it commits itself. Each passes on its output lines, never on the exit code:
   must fail with "device did not apply an image", report image 1 not applied,
   and warn that the next reset reverts image 0. Both patterns were checked
   against the other test's output, so neither passes on the wrong outcome.
+
+Nine show the package board check (`--board`, protocol-notes §5). The demo
+packages name the invented board `demo_board`, a board name for image 0 and a
+board target for image 1. `cli_dfu_package_board` (`--board demo_board`) and
+`cli_dfu_package_board_target` (a board target with a revision) expect the
+two-image update completed, and `cli_dfu_xip_package_board` the direct-XIP one.
+`cli_dfu_package_board_mismatch` (`--board other_board`) runs without
+`--quiet` and must print the refusal naming image 0 and both boards; its
+`FAIL_REGULAR_EXPRESSION` matches the first state and any upload progress, so
+an update that began fails it even though the refusal is printed. The five
+`cli_dfu_board_usage_*` pass `--board` with the built-in image, a named image,
+a build pair, an empty expectation and `/cpuapp`, and expect the usage text.
+Matching usage alone would pass for an option the tool does not know, so they
+mean something only beside the three that complete.
 
 Two show the MCUboot mode (ADR-0025), again on their output lines:
 `cli_dfu_mode_reported` gives the stub a mode (`--stub-mode`) and expects it

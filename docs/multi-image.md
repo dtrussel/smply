@@ -266,8 +266,14 @@ comparison is MCUboot's default one, which ignores the build number
 cli_dfu --demo-package                  # a generated two-image package
 cli_dfu --demo-package --apply-fails    # the device fails to apply image 1
 cli_dfu --package dfu_application.zip   # a real package, against the stub
-serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
+serial_dfu --port /dev/ttyACM0 --package dfu_application.zip --board nrf54l15dk
 ```
+
+`--board` names the board the package must be for, as a board name or a board
+target (protocol-notes §5). Every image is compared by board name, and a
+package with an image for another board, or one naming no board, is refused
+before anything is sent (`dfu_package::check_board`). The generated packages
+are for the invented board `demo_board`.
 
 Without `--port` both examples run against `examples/stub_device/`, given a
 second image it commits itself. `support/dfu_app/update_inputs.hpp`

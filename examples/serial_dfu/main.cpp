@@ -97,6 +97,9 @@ struct Options
     /// Without --port: the stub fails to apply image 1.
     bool apply_fails = false;
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+    /// `--board`: the board name or board target every image of the package
+    /// must be for (docs/protocol-notes.md section 5). Packages only.
+    std::optional<std::string> board;
     /// The MCUboot mode to assume when the device does not report one
     /// (ADR-0025).
     std::optional<McubootMode> fallback_mode;
@@ -115,7 +118,7 @@ void usage()
 {
     std::cerr << "usage: serial_dfu [--port PATH [--baud N] [--flow none|rtscts]]\n"
                  "                  [--image PATH | --package PATH | --demo-package]\n"
-                 "                  [--commit N=client|device] [--apply-fails]\n"
+                 "                  [--commit N=client|device] [--apply-fails] [--board NAME]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
                  "                  [--allow-no-revert] [--no-downgrade-check]\n"
                  "                  [--image-secondary PATH] [--quiet]\n"
@@ -129,6 +132,10 @@ void usage()
                  "  --package PATH  a multi-image DFU package; image 0 is confirmed here and\n"
                  "                every other image left to the device (docs/multi-image.md)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --board NAME  with a package: refuse it, before anything is sent, unless\n"
+                 "                every image names this board; NAME is a board name or a\n"
+                 "                board target (nrf54l15dk or nrf54l15dk/nrf54l15/cpuapp);\n"
+                 "                the demo package is for the invented board demo_board\n"
                  "  --demo-package  without --port: a generated two-image package\n"
                  "  --apply-fails  without --port: the stub fails to apply image 1\n"
 
@@ -146,6 +153,43 @@ void usage()
                  "                when the device prevents downgrades; it will refuse it at boot\n"
                  "  --quiet       print only the outcome\n"
                  "With --port, one of --image or --package is required.\n";
+}
+
+/// Whether \p board has a board name: something before its first `/` or `@`,
+/// which is where `dfu_package::check_board` cuts it.
+[[nodiscard]] bool has_board_name(std::string_view board) noexcept
+{
+    return !board.empty() && board.front() != '/' && board.front() != '@';
+}
+
+/// \p text with its control characters shown as `\xNN`, C0 and DEL, and C1
+/// as UTF-8 writes it, so it cannot drive the terminal. A board refusal
+/// quotes the package's manifest, which is untrusted (`Error::reason()`).
+/// The same as cli_dfu's: each example stands alone.
+[[nodiscard]] std::string printable(std::string_view text)
+{
+    constexpr std::string_view kHex = "0123456789ABCDEF";
+    const auto escape = [&kHex](std::string& out, unsigned byte) {
+        out += "\\x";
+        out += kHex[(byte >> 4U) & 0x0FU];
+        out += kHex[byte & 0x0FU];
+    };
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto byte = static_cast<unsigned char>(text[i]);
+        const bool c1 = byte == 0xC2U && i + 1 < text.size() &&
+                        static_cast<unsigned char>(text[i + 1]) >= 0x80U &&
+                        static_cast<unsigned char>(text[i + 1]) <= 0x9FU;
+        if (c1) {
+            escape(out, byte);
+            escape(out, static_cast<unsigned char>(text[++i]));
+        } else if (byte < 0x20U || byte == 0x7FU) {
+            escape(out, byte);
+        } else {
+            out += text[i];
+        }
+    }
+    return out;
 }
 
 [[nodiscard]] bool parse_arguments(int argc, char** argv, Options& out)
@@ -215,9 +259,16 @@ void usage()
                 return false;
             }
             out.commits.push_back(*commit);
+        } else if (arg == "--board" && has_value) {
+            out.board = args[++i];
         } else {
             return false;
         }
+    }
+    // A board is compared only with a package's manifest, and an expectation
+    // with no board name before its first '/' or '@' could match nothing.
+    if (out.board.has_value() && (!out.package_mode() || !has_board_name(*out.board))) {
+        return false;
     }
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
                         (out.demo_package ? 1 : 0);
@@ -369,10 +420,12 @@ int main(int argc, char** argv)
     std::unique_ptr<UpdateInputs> inputs;
     if (options.package_mode()) {
         Result<std::unique_ptr<UpdateInputs>> read =
-            options.demo_package ? UpdateInputs::from_package_bytes(build_demo_two_image_package())
-                                 : UpdateInputs::from_package(options.package_path);
+            options.demo_package
+                ? UpdateInputs::from_package_bytes(build_demo_two_image_package(), options.board)
+                : UpdateInputs::from_package(options.package_path, options.board);
         if (!read.has_value()) {
-            std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
+            // A --board refusal quotes the package's manifest: escape it.
+            std::cerr << "serial_dfu: " << printable(to_string(read.error())) << '\n';
             return 1;
         }
         inputs = std::move(*read);

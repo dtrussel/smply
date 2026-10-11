@@ -451,7 +451,8 @@ smply/
 │   │                           deliberately does not ship: FileImageSource,
 │   │                           ReconnectPolicy, UpdateInputs (a file, a build
 │   │                           per slot or a package file into FirmwareUpdater
-│   │                           targets), the tools' MCUboot-mode option, and
+│   │                           targets, a package optionally refused for another
+│   │                           board), the tools' MCUboot-mode option, and
 │   │                           update_run.hpp: UpdateRun,
 │   │                           the loop that drives a started update to its end
 │   │                           through three hooks (open a link, approve, observe)
@@ -472,7 +473,8 @@ smply/
 │   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
 │   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs
-│   │                           in CI, --flaky-reconnect and --demo-package included
+│   │                           in CI, --flaky-reconnect, --demo-package and --board
+│   │                           included
 │   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
 │   │                           pty_stub.* — the stub device behind a pseudo-terminal, in
 │   │                           a UART and a USB CDC reset shape. Runs in CI, a two-image

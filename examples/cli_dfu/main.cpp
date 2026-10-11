@@ -105,6 +105,9 @@ struct Options
     bool apply_fails = false;
     /// `--commit N=client|device`, in the order given.
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+    /// `--board`: the board name or board target every image of the package
+    /// must be for (docs/protocol-notes.md section 5). Package modes only.
+    std::optional<std::string> board;
 
     /// `--fallback-mode`: the mode to assume when the device does not report
     /// one (ADR-0025).
@@ -129,7 +132,7 @@ void usage()
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
                  "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
                  "               [--allow-no-revert] [--no-downgrade-check]\n"
-                 "               [--image-secondary PATH | --demo-builds]\n"
+                 "               [--image-secondary PATH | --demo-builds] [--board NAME]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
                  "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
                  "                secondary slot (--image is then the primary slot's build);\n"
@@ -141,6 +144,10 @@ void usage()
                  "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
                  "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --board NAME  with a package: refuse it, before anything is sent, unless\n"
+                 "                every image names this board; NAME is a board name or a\n"
+                 "                board target (nrf54l15dk or nrf54l15dk/nrf54l15/cpuapp);\n"
+                 "                the demo packages are for the invented board demo_board\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
                  "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
@@ -156,6 +163,42 @@ void usage()
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
                  "                update gives up, which is also worth demonstrating\n";
+}
+
+/// Whether \p board has a board name: something before its first `/` or `@`,
+/// which is where `dfu_package::check_board` cuts it.
+[[nodiscard]] bool has_board_name(std::string_view board) noexcept
+{
+    return !board.empty() && board.front() != '/' && board.front() != '@';
+}
+
+/// \p text with its control characters shown as `\xNN`, C0 and DEL, and C1
+/// as UTF-8 writes it, so it cannot drive the terminal. A board refusal
+/// quotes the package's manifest, which is untrusted (`Error::reason()`).
+[[nodiscard]] std::string printable(std::string_view text)
+{
+    constexpr std::string_view kHex = "0123456789ABCDEF";
+    const auto escape = [&kHex](std::string& out, unsigned byte) {
+        out += "\\x";
+        out += kHex[(byte >> 4U) & 0x0FU];
+        out += kHex[byte & 0x0FU];
+    };
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto byte = static_cast<unsigned char>(text[i]);
+        const bool c1 = byte == 0xC2U && i + 1 < text.size() &&
+                        static_cast<unsigned char>(text[i + 1]) >= 0x80U &&
+                        static_cast<unsigned char>(text[i + 1]) <= 0x9FU;
+        if (c1) {
+            escape(out, byte);
+            escape(out, static_cast<unsigned char>(text[++i]));
+        } else if (byte < 0x20U || byte == 0x7FU) {
+            escape(out, byte);
+        } else {
+            out += text[i];
+        }
+    }
+    return out;
 }
 
 [[nodiscard]] bool parse_arguments(int argc, char** argv, Options& out)
@@ -207,9 +250,16 @@ void usage()
                 return false;
             }
             out.commits.push_back(*commit);
+        } else if (arg == "--board" && i + 1 < args.size()) {
+            out.board = args[++i];
         } else {
             return false;
         }
+    }
+    // A board is compared only with a package's manifest, and an expectation
+    // with no board name before its first '/' or '@' could match nothing.
+    if (out.board.has_value() && (!out.package_mode() || !has_board_name(*out.board))) {
+        return false;
     }
     // One thing to install, and the package-only options only with a package.
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
@@ -354,19 +404,20 @@ int main(int argc, char** argv)
     // build per slot). The demo files above must outlive it: it reads them.
     const auto read_inputs = [&]() -> Result<std::unique_ptr<UpdateInputs>> {
         if (options.demo_package) {
-            return UpdateInputs::from_package_bytes(build_demo_two_image_package());
+            return UpdateInputs::from_package_bytes(build_demo_two_image_package(), options.board);
         }
         if (options.demo_xip_package) {
-            return UpdateInputs::from_package_bytes(build_demo_xip_package());
+            return UpdateInputs::from_package_bytes(build_demo_xip_package(), options.board);
         }
         if (!options.package_path.empty()) {
-            return UpdateInputs::from_package(options.package_path);
+            return UpdateInputs::from_package(options.package_path, options.board);
         }
         return UpdateInputs::from_files(image_path, image_secondary_path);
     };
     Result<std::unique_ptr<UpdateInputs>> read = read_inputs();
     if (!read.has_value()) {
-        std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
+        // A --board refusal quotes the package's manifest: escape it.
+        std::cerr << "cli_dfu: " << printable(to_string(read.error())) << '\n';
         return 1;
     }
     const std::unique_ptr<UpdateInputs> inputs = std::move(*read);

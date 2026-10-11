@@ -32,6 +32,13 @@ serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
   ([`docs/multi-image.md`](../../docs/multi-image.md)). Image 0 is confirmed
   here; every other image is left to the device to apply and commit, and is
   waited for first. `--commit N=client|device` overrides that per image.
+* **`--board NAME` refuses a package built for another board** before anything
+  is sent. NAME is a board name or a board target (`nrf54l15dk` or
+  `nrf54l15dk/nrf54l15/cpuapp`); every image's manifest entry must name the
+  same board name ([`protocol-notes.md`](../../docs/protocol-notes.md) §5), and
+  one that names none is refused too. It is a usage error without `--package`
+  or `--demo-package`, whose generated package is for the invented board
+  `demo_board`.
 
 ## What it does about a reset
 
