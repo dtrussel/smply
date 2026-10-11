@@ -154,7 +154,7 @@ true.
 * **An upload session does not survive a BLE disconnect** (A21). A resume after
   a reconnect is answered near offset 0 and re-sends the whole image. The same
   upload abandoned on a *live* link and resumed by another process continues
-  from where it stopped. `UploadDriver::restart()` adopts whatever offset comes
+  from where it stopped. A resume (`upload::resume()`) adopts whatever offset comes
   back. Size reconnect and deadline budgets for a full re-upload, not a resume.
 * **SMP v1 destroys image-group error codes on a server with
   `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`** (A16, A24), which the bench

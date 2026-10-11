@@ -31,7 +31,6 @@ UploadDriver::UploadDriver(SmpClient& client, ImageSource& source, const UploadC
 void UploadDriver::start()
 {
     active_ = true;
-    resumable_ = false;
     starting_ = true;
     advance(plan_next(state_, config_));
     starting_ = false;
@@ -41,16 +40,8 @@ void UploadDriver::restart(Callback<UploadResult> on_done)
 {
     on_done_ = std::move(on_done);
     active_ = true;
-    resumable_ = false;
-    // Whatever the device holds, the way to find out is to ask: a first packet
-    // carrying the same sha, whose answer is adopted as authoritative
-    // (docs/protocol-notes.md section 6, rule 6).
-    state_.first_packet_pending = true;
-    state_.phase = Phase::Idle;
-    state_.retries = 0;
-    state_.consecutive_no_progress = 0;
     starting_ = true;
-    advance(plan_next(state_, config_));
+    advance(resume(state_, config_));
     starting_ = false;
 }
 
@@ -198,9 +189,6 @@ void UploadDriver::handle(Result<RawResponse> response)
         }
     }
 
-    const bool disconnected =
-        decoded.failure.has_value() && decoded.failure->code() == ErrorCode::Disconnected;
-
     const Step step = on_response(state_, decoded, config_);
 
     if (step.action == Action::SendChunk && state_.confirmed_off != reported_off_ && on_progress_) {
@@ -209,12 +197,6 @@ void UploadDriver::handle(Result<RawResponse> response)
         reported_off_ = state_.confirmed_off;
         on_progress_(
             UploadProgress{.transferred = state_.confirmed_off, .total = config_.image_size});
-    }
-
-    if (disconnected) {
-        // The session survives the link: confirmed_off and sha are still good,
-        // so resume() can pick it up. The callback still fires exactly once.
-        resumable_ = true;
     }
 
     advance(step);
@@ -237,6 +219,9 @@ void UploadDriver::advance(const Step& step)
                             .match = step.match});
         return;
     case Action::Fail:
+    case Action::Suspend:
+        // A suspended session is kept for restart(); this attempt's callback
+        // still fires exactly once.
         finish(fail(step.error));
         return;
     }

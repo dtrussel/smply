@@ -72,7 +72,7 @@ to `parse_commit`. The examples call only the image-list `start()`.
 
 ## Stages
 
-1. **The upload session suspends.** `upload_session.{hpp,cpp}`,
+1. **Done: the upload session suspends.** `upload_session.{hpp,cpp}`,
    `upload_driver.{hpp,cpp}`; table tests in `test_upload_session.cpp` for the
    suspend, what `resume()` resets and keeps, and its refusal;
    `test_upload_driver.cpp` passes unedited. `design.md`'s upload section.

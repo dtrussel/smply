@@ -156,12 +156,33 @@ Step plan_next(const UploadState& state, const UploadConfig& config)
                     .error = Error{ErrorCode::InvalidState, "upload: session already failed"},
                     .match = {}};
     }
+    if (state.phase == Phase::Suspended) {
+        return Step{.action = Action::Fail,
+                    .request = {},
+                    .error = Error{ErrorCode::InvalidState, "upload: session suspended"},
+                    .match = {}};
+    }
     if (state.confirmed_off >= config.image_size) {
         // Nothing left to send. Reachable after a resume whose first packet
         // adopted an offset that already covers the image.
         return Step{.action = Action::Complete, .request = {}, .error = {}, .match = {}};
     }
     return send_from(state, config);
+}
+
+Step resume(UploadState& state, const UploadConfig& config)
+{
+    if (state.phase != Phase::Suspended) {
+        return Step{.action = Action::Fail,
+                    .request = {},
+                    .error = Error{ErrorCode::InvalidState, "upload: no suspended session"},
+                    .match = {}};
+    }
+    state.first_packet_pending = true;
+    state.phase = Phase::Idle;
+    state.retries = 0;
+    state.consecutive_no_progress = 0;
+    return plan_next(state, config);
 }
 
 void record_sent(UploadState& state, const UploadRequest& request)
@@ -186,6 +207,13 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
                                                  .first_packet = state.in_flight_first_packet},
                         .error = {},
                         .match = {}};
+        }
+        if (response.failure->code() == ErrorCode::Disconnected) {
+            // The session survives the link: confirmed_off and sha are still
+            // good, so resume() can pick it up after a reconnect.
+            state.phase = Phase::Suspended;
+            return Step{
+                .action = Action::Suspend, .request = {}, .error = *response.failure, .match = {}};
         }
         return fail_with(state, *response.failure);
     }
