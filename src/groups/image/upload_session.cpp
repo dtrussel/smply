@@ -47,6 +47,15 @@ constexpr std::size_t kChunkDataHeaderSize = bstr_header_size(limits::kUploadChu
 }
 
 /// The request that follows from the current state.
+/// A request the session's phase does not allow. The state is left as it is.
+[[nodiscard]] Step refuse(const char* why)
+{
+    return Step{.action = Action::Fail,
+                .request = {},
+                .error = Error{ErrorCode::InvalidState, why},
+                .match = {}};
+}
+
 [[nodiscard]] Step send_from(const UploadState& state, const UploadConfig& config)
 {
     UploadRequest request;
@@ -151,10 +160,10 @@ Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget, const FirstP
 Step plan_next(const UploadState& state, const UploadConfig& config)
 {
     if (state.phase == Phase::Failed) {
-        return Step{.action = Action::Fail,
-                    .request = {},
-                    .error = Error{ErrorCode::InvalidState, "upload: session already failed"},
-                    .match = {}};
+        return refuse("upload: session already failed");
+    }
+    if (state.phase == Phase::Suspended) {
+        return refuse("upload: session suspended");
     }
     if (state.confirmed_off >= config.image_size) {
         // Nothing left to send. Reachable after a resume whose first packet
@@ -162,6 +171,18 @@ Step plan_next(const UploadState& state, const UploadConfig& config)
         return Step{.action = Action::Complete, .request = {}, .error = {}, .match = {}};
     }
     return send_from(state, config);
+}
+
+Step resume(UploadState& state, const UploadConfig& config)
+{
+    if (state.phase != Phase::Suspended) {
+        return refuse("upload: no suspended session");
+    }
+    state.first_packet_pending = true;
+    state.phase = Phase::Idle;
+    state.retries = 0;
+    state.consecutive_no_progress = 0;
+    return plan_next(state, config);
 }
 
 void record_sent(UploadState& state, const UploadRequest& request)
@@ -186,6 +207,13 @@ Step on_response(UploadState& state, const UploadResponse& response, const Uploa
                                                  .first_packet = state.in_flight_first_packet},
                         .error = {},
                         .match = {}};
+        }
+        if (response.failure->code() == ErrorCode::Disconnected) {
+            // The session survives the link: confirmed_off and sha are still
+            // good, so resume() can pick it up after a reconnect.
+            state.phase = Phase::Suspended;
+            return Step{
+                .action = Action::Suspend, .request = {}, .error = *response.failure, .match = {}};
         }
         return fail_with(state, *response.failure);
     }

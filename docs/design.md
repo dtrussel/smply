@@ -607,7 +607,8 @@ struct UploadState {
     Phase         phase = Phase::Idle;
 };
 
-enum class Action { SendChunk, Complete, Fail };
+enum class Phase  { Idle, Sending, Done, Failed, Suspended };
+enum class Action { SendChunk, Complete, Fail, Suspend };
 struct Step {
     Action action; UploadRequest request; Error error; std::optional<bool> match;
     bool completed_on_first_packet = false;  // Complete only: the server's already-present check
@@ -616,6 +617,7 @@ struct Step {
 Step plan_next  (const UploadState&, const UploadConfig&);          // what to send
 void record_sent(UploadState&, const UploadRequest&);               // what went out
 Step on_response(UploadState&, const UploadResponse&, const UploadConfig&);
+Step resume     (UploadState&, const UploadConfig&);                // after a Suspend
 
 } // namespace smply::upload
 ```
@@ -726,17 +728,28 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
   timeout retired the old sequence number, so a reply carrying it would be
   discarded as late (PN §4). A retransmission is a new request carrying the same
   bytes.
-* **Disconnect** — `on_done` fires once with `Disconnected`, and the session is
-  **kept**: `confirmed_off` and `sha` survive, so `ImageManagement::resume()`
-  can send a first packet with the same `sha` once the application has rebound
-  the transport. The server replies with its offset and the session continues
-  from there (PN §6 rule 6); if the device forgot the session it answers
-  `off == 0` and the restart path applies.
+* **Disconnect** — `on_response` answers `Disconnected` with `Suspend`, and the
+  session's phase becomes `Suspended`: `confirmed_off` and `sha` survive. The
+  driver reports `Suspend` exactly as it reports `Fail`, so `on_done` fires once
+  with `Disconnected`, and asks the session's phase whether
+  `ImageManagement::resume()` may continue it. Once the application has rebound
+  the transport, `resume()` sends a first packet with the same `sha`. The server
+  replies with its offset and the session continues from there (PN §6 rule 6);
+  if the device forgot the session it answers `off == 0` and the restart path
+  applies. Only `Disconnected` suspends: a timeout that exhausts its retries is
+  terminal.
 
-  Earlier drafts of this section said the session was "suspended" and no
-  callback fired. That breaks the promise that completion happens exactly once —
-  a caller who never resumes would wait forever — so the completion is reported
-  and the *session*, not the callback, is what survives.
+  **What a resume resets is the session's decision**, in `upload::resume()`:
+  the per-attempt budgets (`retries`, `consecutive_no_progress`) start again;
+  `restarts` is one budget for the whole upload, and `progressed` still rules
+  out already-present (A19). `plan_next` refuses a suspended session, and
+  `resume()` refuses any other. Nothing in the session bounds resumes; the
+  updater's reconnect policy does.
+
+  The *callback* does not wait for a resume. A callback that stayed pending
+  across a disconnect would break the promise that completion happens exactly
+  once — a caller who never resumes would wait forever — so the completion is
+  reported and the *session*, not the callback, is what survives.
 
   **Adopting an offset from a first packet never counts against the no-progress
   budget.** A resume that correctly lands back on the offset it already had

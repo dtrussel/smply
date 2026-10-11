@@ -17,7 +17,7 @@ target_link_libraries(cli_dfu
         smply::smply
         smply::util       # Dispatcher: the whole point of the threading in here
         smply_example_stub # the pretend device, shared with serial_dfu
-        smply::dfu_app    # FileImageSource, and UpdateRun: the pump and its reconnects
+        smply::dfu_app    # UpdateInputs, and UpdateRun: the pump and its reconnects
         smply_internal_options
 )
 

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "dfu_app/package_update.hpp"
+#include "dfu_app/update_inputs.hpp"
 
+#include "dfu_app/file_image_source.hpp"
+#include "dfu_package/dfu_package.hpp"
+#include "smply/bytes.hpp"
 #include "smply/error.hpp"
 
 #include <algorithm>
@@ -33,7 +36,51 @@ std::optional<std::pair<std::uint32_t, CommitBy>> parse_commit(std::string_view 
     return std::nullopt;
 }
 
-Result<std::unique_ptr<PackageUpdate>> PackageUpdate::load(const std::string& path)
+std::optional<UpdateMode> parse_update_mode(std::string_view text) noexcept
+{
+    if (text == "test-then-confirm") {
+        return UpdateMode::TestThenConfirm;
+    }
+    if (text == "confirm-immediately") {
+        return UpdateMode::ConfirmImmediately;
+    }
+    if (text == "upload-only") {
+        return UpdateMode::UploadOnly;
+    }
+    return std::nullopt;
+}
+
+Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_files(const std::string& primary,
+                                                               const std::string& secondary)
+{
+    if (primary.empty()) {
+        return fail(ErrorCode::InvalidArgument, secondary.empty()
+                                                    ? "inputs: no image file"
+                                                    : "inputs: a second build needs the first");
+    }
+    auto inputs = std::make_unique<UpdateInputs>(Token{});
+    Result<FileImageSource> first = FileImageSource::open(primary);
+    if (!first.has_value()) {
+        return fail(first.error());
+    }
+    ImageSource* source = inputs->adopt(std::make_unique<FileImageSource>(std::move(*first)));
+
+    ImageSource* second_build = nullptr;
+    if (!secondary.empty()) {
+        Result<FileImageSource> second = FileImageSource::open(secondary);
+        if (!second.has_value()) {
+            return fail(second.error());
+        }
+        second_build = inputs->adopt(std::make_unique<FileImageSource>(std::move(*second)));
+    }
+    inputs->targets_.push_back(ImageTarget{.image = 0,
+                                           .source = source,
+                                           .commit = CommitBy::Client,
+                                           .secondary_source = second_build});
+    return inputs;
+}
+
+Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package(const std::string& path)
 {
     std::ifstream file{path, std::ios::binary | std::ios::ate};
     if (!file) {
@@ -56,48 +103,53 @@ Result<std::unique_ptr<PackageUpdate>> PackageUpdate::load(const std::string& pa
     std::ranges::transform(raw, bytes.begin(), [](char c) {
         return static_cast<std::byte>(static_cast<unsigned char>(c));
     });
-    return from_bytes(std::move(bytes));
+    return from_package_bytes(std::move(bytes));
 }
 
-Result<std::unique_ptr<PackageUpdate>> PackageUpdate::from_bytes(std::vector<std::byte> bytes)
+Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package_bytes(std::vector<std::byte> bytes)
 {
-    auto update = std::make_unique<PackageUpdate>(Token{}, std::move(bytes));
+    auto inputs = std::make_unique<UpdateInputs>(Token{});
+    inputs->bytes_ = std::move(bytes);
     // Read from the object's own copy, so every view in the package points into
     // bytes that live as long as it does.
-    Result<dfu_package::DfuPackage> package = dfu_package::read_package(ConstBytes{update->bytes_});
+    const Result<dfu_package::DfuPackage> package =
+        dfu_package::read_package(ConstBytes{inputs->bytes_});
     if (!package.has_value()) {
         return fail(package.error());
     }
-    update->package_ = std::move(*package);
 
-    for (const dfu_package::PackageImage& image : update->package_.images) {
-        update->sources_.push_back(std::make_unique<MemoryImageSource>(image.bytes));
-        ImageSource* source = update->sources_.back().get();
+    for (const dfu_package::PackageImage& image : package->images) {
+        ImageSource* source = inputs->adopt(std::make_unique<MemoryImageSource>(image.bytes));
         // A direct-XIP image's second build, for its secondary slot: the
         // updater sends whichever matches the slot the device is not running
         // (ADR-0025).
         ImageSource* secondary = nullptr;
         if (image.secondary.has_value()) {
-            update->sources_.push_back(std::make_unique<MemoryImageSource>(image.secondary->bytes));
-            secondary = update->sources_.back().get();
+            secondary = inputs->adopt(std::make_unique<MemoryImageSource>(image.secondary->bytes));
         }
         // The coordinating-MCU default (docs/multi-image.md): the device's own
         // application is smply's to confirm, every other image the device's.
-        update->targets_.push_back(
+        inputs->targets_.push_back(
             ImageTarget{.image = image.image,
                         .source = source,
                         .commit = image.image == 0 ? CommitBy::Client : CommitBy::Device,
                         .secondary_source = secondary});
     }
-    return update;
+    return inputs;
 }
 
-Result<void> PackageUpdate::set_commit(std::uint32_t image, CommitBy commit)
+ImageSource* UpdateInputs::adopt(std::unique_ptr<ImageSource> source)
+{
+    sources_.push_back(std::move(source));
+    return sources_.back().get();
+}
+
+Result<void> UpdateInputs::set_commit(std::uint32_t image, CommitBy commit)
 {
     const auto found = std::ranges::find_if(
         targets_, [image](const ImageTarget& target) { return target.image == image; });
     if (found == targets_.end()) {
-        return fail(ErrorCode::InvalidArgument, "package: no such image");
+        return fail(ErrorCode::InvalidArgument, "inputs: no such image");
     }
     found->commit = commit;
     return {};

@@ -52,10 +52,11 @@ struct UploadConfig
 /// Where an upload has got to.
 enum class Phase : std::uint8_t
 {
-    Idle,    ///< Nothing sent yet.
-    Sending, ///< A request is out, or the next one is ready.
-    Done,    ///< The device holds the whole image.
-    Failed,  ///< Terminal.
+    Idle,      ///< Nothing sent yet, or a resume is about to ask again.
+    Sending,   ///< A request is out, or the next one is ready.
+    Done,      ///< The device holds the whole image.
+    Failed,    ///< Terminal.
+    Suspended, ///< The link dropped. The session is still good; `resume()` continues it.
 };
 
 /// The mutable half. Everything a resume needs is in here.
@@ -120,6 +121,9 @@ enum class Action : std::uint8_t
     SendChunk, ///< Send `Step::request`.
     Complete,  ///< The upload succeeded; `Step::match` carries the device's verdict.
     Fail,      ///< Terminal; `Step::error` says why.
+    /// The link dropped: this attempt is over, as for `Fail`, but the session
+    /// is kept and `resume()` continues it. `Step::error` says why.
+    Suspend,
 };
 
 /// One decision.
@@ -187,13 +191,30 @@ struct ChunkBudget
 [[nodiscard]] Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget,
                                                        const FirstPacketFields& fields);
 
-/// The first request of an upload, or of a resume.
+/// The first request of an upload, or the next one. Refuses a session that has
+/// failed or is suspended.
 [[nodiscard]] Step plan_next(const UploadState& state, const UploadConfig& config);
+
+/// Continues a suspended session: the first request of the resumed attempt.
+///
+/// Whatever the device holds, the way to find out is to ask, so the request is
+/// a first packet carrying the same sha, whose answer is adopted
+/// (docs/protocol-notes.md section 6, rule 6). The per-attempt budgets,
+/// `retries` and `consecutive_no_progress`, start again; `restarts` is one
+/// budget for the whole upload, and `progressed` still rules out
+/// already-present (A19). The session does not bound resumes: whoever reopens
+/// the link does.
+///
+/// \return `Fail` with `InvalidState`, and the state untouched, unless the
+///         session is `Suspended`.
+[[nodiscard]] Step resume(UploadState& state, const UploadConfig& config);
 
 /// Records what the driver actually sent, so a retransmission can repeat it.
 void record_sent(UploadState& state, const UploadRequest& request);
 
-/// Folds one response into the state and says what to do next.
+/// Folds one response into the state and says what to do next. A
+/// `Disconnected` failure suspends the session; any other that is not retried
+/// fails it.
 [[nodiscard]] Step on_response(UploadState& state, const UploadResponse& response,
                                const UploadConfig& config);
 

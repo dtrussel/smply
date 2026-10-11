@@ -449,9 +449,10 @@ smply/
 │   │                           test doubles and the stub device. smply::minicbor
 │   ├── dfu_app/                what a DFU *application* needs and the library
 │   │                           deliberately does not ship: FileImageSource,
-│   │                           ReconnectPolicy, PackageUpdate (a package file
-│   │                           into FirmwareUpdater targets), the tools'
-│   │                           MCUboot-mode option, and update_run.hpp: UpdateRun,
+│   │                           ReconnectPolicy, UpdateInputs (a file, a build
+│   │                           per slot or a package file into FirmwareUpdater
+│   │                           targets), the tools' MCUboot-mode option, and
+│   │                           update_run.hpp: UpdateRun,
 │   │                           the loop that drives a started update to its end
 │   │                           through three hooks (open a link, approve, observe)
 │   │                           and the UpdateWait seam, whose real adapter is

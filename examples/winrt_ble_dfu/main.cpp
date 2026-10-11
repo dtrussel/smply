@@ -32,8 +32,8 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
-#include "dfu_app/file_image_source.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
 
 #include "winrt_ble/winrt_ble_transport.hpp"
@@ -47,7 +47,6 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -121,16 +120,8 @@ struct Options
 /// and these describe how much of one a single invocation performs.
 [[nodiscard]] bool parse_mode(std::string_view text, Options& out)
 {
-    if (text == "test-then-confirm") {
-        out.mode = UpdateMode::TestThenConfirm;
-        return true;
-    }
-    if (text == "confirm-immediately") {
-        out.mode = UpdateMode::ConfirmImmediately;
-        return true;
-    }
-    if (text == "upload-only") {
-        out.mode = UpdateMode::UploadOnly;
+    if (const std::optional<UpdateMode> mode = parse_update_mode(text); mode.has_value()) {
+        out.mode = *mode;
         return true;
     }
     if (text == "test-only") {
@@ -247,26 +238,15 @@ int main(int argc, char** argv)
     // by reference and a resume reads from it again long after start() returned
     // (handoff.md, "Lifetime"). `confirm-only` installs nothing and so opens
     // nothing.
-    std::optional<FileImageSource> source;
+    std::unique_ptr<UpdateInputs> inputs;
     if (!options.confirm_only) {
-        Result<FileImageSource> opened = FileImageSource::open(options.image_path);
+        Result<std::unique_ptr<UpdateInputs>> opened =
+            UpdateInputs::from_files(options.image_path, options.image_secondary_path);
         if (!opened.has_value()) {
             std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
             return kUpdateFailed;
         }
-        // Moved into an optional of the *value*, not held as a `Result`:
-        // `Result` is deliberately not assignable, so it cannot be the thing
-        // that gets filled in conditionally.
-        source.emplace(std::move(*opened));
-    }
-    std::optional<FileImageSource> secondary;
-    if (!options.image_secondary_path.empty()) {
-        Result<FileImageSource> opened = FileImageSource::open(options.image_secondary_path);
-        if (!opened.has_value()) {
-            std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
-            return kUpdateFailed;
-        }
-        secondary.emplace(std::move(*opened));
+        inputs = std::move(*opened);
     }
 
     // --- find the device ----------------------------------------------------
@@ -461,14 +441,8 @@ int main(int argc, char** argv)
                       .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
                   }};
 
-    // One build per slot is an image list of one (ADR-0025).
-    const std::array<ImageTarget, 1> builds{ImageTarget{
-        .image = 0,
-        .source = &*source,
-        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
-    }};
-    const Result<void> begun = secondary ? updater.start(builds, plan, run.event_handler())
-                                         : updater.start(*source, plan, run.event_handler());
+    // One file, or one build per slot: an image list of one either way.
+    const Result<void> begun = updater.start(inputs->targets(), plan, run.event_handler());
 
     if (!begun.has_value()) {
         std::cerr << "winrt_ble_dfu: " << to_string(begun.error()) << '\n';

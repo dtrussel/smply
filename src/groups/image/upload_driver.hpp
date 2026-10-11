@@ -51,7 +51,7 @@ public:
     /// Sends the first request. Called once, by `ImageManagement::upload()`.
     void start();
 
-    /// Sends a fresh first packet after a disconnect, with a new callback.
+    /// Resumes a suspended session (`upload::resume()`) with a new callback.
     void restart(Callback<UploadResult> on_done);
 
     /// Abandons the session. The callback receives `Cancelled` from the
@@ -75,10 +75,10 @@ public:
         return active_;
     }
 
-    /// True once a disconnect left the session resumable.
+    /// True once a disconnect left the session suspended, until `restart()`.
     [[nodiscard]] bool resumable() const noexcept
     {
-        return resumable_;
+        return state_.phase == Phase::Suspended;
     }
 
 private:
@@ -108,7 +108,6 @@ private:
     /// The last offset reported to `on_progress_`, so a repeat is not reported.
     std::uint64_t reported_off_ = 0;
     bool active_ = false;
-    bool resumable_ = false;
     /// True while `start()` or `restart()` is on the stack.
     ///
     /// A failure there -- an unreadable source, a budget that cannot fit a

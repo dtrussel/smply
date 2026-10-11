@@ -37,6 +37,7 @@ using smply::upload::on_response;
 using smply::upload::Phase;
 using smply::upload::plan_next;
 using smply::upload::record_sent;
+using smply::upload::resume;
 using smply::upload::Step;
 using smply::upload::UploadConfig;
 using smply::upload::UploadRequest;
@@ -528,16 +529,29 @@ TEST_CASE("any other device error stops the upload at once", "[upload][session]"
     REQUIRE(state.retries == 0);
 }
 
-TEST_CASE("a disconnect stops the upload without consuming a retry", "[upload][session]")
+TEST_CASE("a disconnect suspends the upload without consuming a retry", "[upload][session]")
 {
     UploadState state = mid_upload(300);
 
     const Step step = on_response(state, failure(Error{ErrorCode::Disconnected}), config());
 
-    REQUIRE(step.action == Action::Fail);
+    REQUIRE(step.action == Action::Suspend);
     REQUIRE(step.error.code() == ErrorCode::Disconnected);
-    // The session is still good; the driver keeps it for resume().
+    REQUIRE(state.phase == Phase::Suspended);
+    REQUIRE(state.retries == 0);
+    // The session is still good: resume() picks it up from here.
     REQUIRE(state.confirmed_off == 300);
+}
+
+TEST_CASE("a suspended session refuses to plan more work until resumed", "[upload][session]")
+{
+    UploadState state = mid_upload(300);
+    static_cast<void>(on_response(state, failure(Error{ErrorCode::Disconnected}), config()));
+
+    const Step step = plan_next(state, config());
+
+    REQUIRE(step.action == Action::Fail);
+    REQUIRE(step.error.code() == ErrorCode::InvalidState);
 }
 
 TEST_CASE("progress resets the retry budget", "[upload][session]")
@@ -573,6 +587,88 @@ TEST_CASE("a resume adopts the device's offset without counting a stall", "[uplo
     REQUIRE(step.request.off == 500);
     REQUIRE_FALSE(step.request.first_packet);
     REQUIRE(state.consecutive_no_progress == 0);
+}
+
+TEST_CASE("a resume asks again with a first packet at offset zero", "[upload][session]")
+{
+    // Whatever the device holds, the way to find out is to ask: a first packet
+    // carrying the same sha, whose answer is adopted (protocol-notes section 6,
+    // rule 6).
+    UploadState state = mid_upload(300);
+    static_cast<void>(on_response(state, failure(Error{ErrorCode::Disconnected}), config()));
+
+    const Step step = resume(state, config());
+
+    REQUIRE(step.action == Action::SendChunk);
+    REQUIRE(step.request.first_packet);
+    REQUIRE(step.request.off == 0);
+    REQUIRE(step.request.length == kChunk);
+    REQUIRE(state.phase == Phase::Idle);
+}
+
+TEST_CASE("a resume clears the per-attempt budgets and keeps the session's history",
+          "[upload][session]")
+{
+    UploadState state = mid_upload(300);
+    state.retries = 2;
+    state.consecutive_no_progress = 3;
+    state.restarts = 1;
+    static_cast<void>(on_response(state, failure(Error{ErrorCode::Disconnected}), config()));
+
+    static_cast<void>(resume(state, config()));
+
+    REQUIRE(state.retries == 0);
+    REQUIRE(state.consecutive_no_progress == 0);
+    // One restart budget for the whole upload, across every resume.
+    REQUIRE(state.restarts == 1);
+    // Bytes this session moved still rule out "already present" (A19).
+    REQUIRE(state.progressed);
+    // Kept until the device answers the first packet, which is authoritative.
+    REQUIRE(state.confirmed_off == 300);
+}
+
+TEST_CASE("a resumed transfer that the device already finished is not already present",
+          "[upload][session]")
+{
+    // The session moved bytes before the link dropped, so a first packet the
+    // device answers with the whole image is the transfer completing, not the
+    // server's already-present check (protocol-notes A19).
+    UploadState state = mid_upload(900);
+    static_cast<void>(on_response(state, failure(Error{ErrorCode::Disconnected}), config()));
+    const Step planned = resume(state, config());
+    record_sent(state, planned.request);
+
+    const Step step = on_response(state, offset(kImageSize), config());
+
+    REQUIRE(step.action == Action::Complete);
+    REQUIRE_FALSE(step.completed_on_first_packet);
+}
+
+TEST_CASE("only a suspended session can be resumed", "[upload][session]")
+{
+    SECTION("one still sending")
+    {
+        UploadState state = mid_upload(300);
+
+        const Step step = resume(state, config());
+
+        REQUIRE(step.action == Action::Fail);
+        REQUIRE(step.error.code() == ErrorCode::InvalidState);
+        REQUIRE(state.phase == Phase::Sending);
+    }
+    SECTION("one that failed")
+    {
+        UploadState state = mid_upload(300);
+        const Error error{ErrorCode::ProtocolError, MgmtError::scoped(Group::Image, 31)};
+        static_cast<void>(on_response(state, failure(error), config()));
+        REQUIRE(state.phase == Phase::Failed);
+
+        const Step step = resume(state, config());
+
+        REQUIRE(step.action == Action::Fail);
+        REQUIRE(step.error.code() == ErrorCode::InvalidState);
+        REQUIRE(state.phase == Phase::Failed);
+    }
 }
 
 TEST_CASE("a resume onto a lower offset is still adopted", "[upload][session]")

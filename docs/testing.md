@@ -400,12 +400,16 @@ package whose image depends on a newer version of another image it carries
 refused, by MCUboot's default comparison, so the build number does not count
 (ADR-0022).
 
-`support/dfu_app/`'s `PackageUpdate` (`test_package_update.cpp`), the few lines
-both examples share between a package file and `FirmwareUpdater::start()`: one
-target per image in index order, image 0 committed by the client and the rest by
-the device, the per-image override refused for an image the package lacks, the
-file read whole and a bad one refused, and `parse_commit()`'s accepted and
-refused forms.
+`support/dfu_app/`'s `UpdateInputs` (`test_update_inputs.cpp`), what every
+example sends turned into the image list for `FirmwareUpdater::start()`. A
+package: one target per image in index order, image 0 committed by the client
+and the rest by the device, a direct-XIP package one target with a build per
+slot, the file read whole and a bad one refused. Files: one is image 0
+committed by the client, two are one target with a build per slot, and no file,
+a second build without a first, or a file that cannot be opened is refused.
+The per-image override is refused for an image the inputs lack, and
+`parse_commit()` and `parse_update_mode()` have their accepted and refused
+forms.
 
 `support/dfu_app/`'s `DispatcherWait`, the update run's real wait
 (`test_dispatcher_wait.cpp`), for only what needs no waiting: a deadline
@@ -506,12 +510,12 @@ it covers ground no other suite does:
 
 `cli_dfu_xip_package` reads a generated direct-XIP package
 (`--demo-xip-package`, two files for image 0 with their `slot`s) through
-`smply::dfu_package` and `PackageUpdate`, against a stub reporting direct-XIP
+`smply::dfu_package` and `UpdateInputs`, against a stub reporting direct-XIP
 with revert, and expects it completed.
 
 Two more run the multi-image update of ADR-0021 end to end, from a package
 built in memory (`--demo-package`) through `smply::dfu_package` and
-`PackageUpdate` to the image-list `start()`, against a stub with a second image
+`UpdateInputs` to the image-list `start()`, against a stub with a second image
 it commits itself. Each passes on its output lines, never on the exit code:
 * `cli_dfu_package`: `update Completed`, and `image 1 (device): committed`;
 * `cli_dfu_package_apply_fails`: the stub fails to apply image 1, so the update
