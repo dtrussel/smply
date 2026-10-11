@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <optional>
+#include <system_error>
 
 namespace smply::transport::posix {
 
@@ -52,16 +53,17 @@ std::optional<speed_t> speed_for_baud(std::uint32_t baud) noexcept
 
 Error error_from_errno(int error_number, const char* where) noexcept
 {
+    const std::error_code os_error{error_number, std::generic_category()};
     switch (error_number) {
     case ENOENT:
     case ENODEV:
     case ENXIO:
     case EIO:
-        return Error{ErrorCode::Disconnected, where};
+        return Error{ErrorCode::Disconnected, where}.with_os_error(os_error);
     case ENOTTY:
-        return Error{ErrorCode::InvalidArgument, where};
+        return Error{ErrorCode::InvalidArgument, where}.with_os_error(os_error);
     default:
-        return Error{ErrorCode::TransportError, where};
+        return Error{ErrorCode::TransportError, where}.with_os_error(os_error);
     }
 }
 

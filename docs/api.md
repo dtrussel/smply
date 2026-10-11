@@ -135,13 +135,16 @@ public:
     const std::optional<MgmtError>& mgmt()   const noexcept;
     std::string_view                reason() const noexcept; // device "rsn", may be empty
     const char*                     where()  const noexcept; // static site tag, for logs
+    const std::error_code&          os_error() const noexcept; // OS diagnostic; empty if none
     bool                            failed() const noexcept; // code() != Ok
 
     Error&  with_reason(std::string) &;
     Error&& with_reason(std::string) &&;   // for `return Error{...}.with_reason(...)`
+    Error&  with_os_error(std::error_code) & noexcept;
+    Error&& with_os_error(std::error_code) && noexcept;
 
-    // Compares code, mgmt and reason. `where` is excluded: it is a logging aid,
-    // not part of the error's identity.
+    // Compares code, mgmt and reason. `where` and `os_error` are excluded: they
+    // are diagnostics, not part of the error's identity.
     friend bool operator==(const Error&, const Error&) noexcept;
 };
 
@@ -151,7 +154,18 @@ public:
 std::optional<SmpError> smp_error(const Error&) noexcept;
 
 std::string to_string(const Error&);   // diagnostics only, never for control flow
+```
 
+**The OS diagnostic** (`os_error()`, [ADR-0026](decisions/ADR-0026-os-diagnostic-on-error.md))
+is the operating system's own number behind a transport failure: `errno`
+(`std::generic_category()`), `GetLastError()` (`std::system_category()`) or a
+WinRT `HRESULT` (`smply::transport::hresult_category()`). Only a transport
+adapter sets it; the core never sets or reads it and passes a transport's
+`Error` on with it intact. It is empty for every error the core raises, and for
+an adapter failure with no OS number behind it. Read it for logs and bug
+reports, and switch on `code()`.
+
+```cpp
 // std::expected where the standard library has it, otherwise an API-compatible
 // subset (ADR-0002). Use only the common subset: has_value/operator bool,
 // operator*, operator->, error(), value_or. There is deliberately no value().

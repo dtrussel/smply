@@ -34,6 +34,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -157,6 +158,13 @@ TEST_CASE("a port that does not exist is Disconnected, so a reconnect loop retri
     const auto opened = SerialPortTransport::open(config, context.inbound);
     REQUIRE_FALSE(opened.has_value());
     CHECK(opened.error().code() == ErrorCode::Disconnected);
+    // The OS's own answer travels with it, for the log (ADR-0026).
+#ifdef _WIN32
+    CHECK(opened.error().os_error().category() == std::system_category());
+    CHECK(opened.error().os_error().value() != 0);
+#else
+    CHECK(opened.error().os_error() == std::errc::no_such_file_or_directory);
+#endif
 }
 
 #ifndef _WIN32
@@ -307,6 +315,7 @@ TEST_CASE("a path that is not a tty is refused as InvalidArgument", "[serial_por
     std::filesystem::remove(file);
     REQUIRE_FALSE(opened.has_value());
     CHECK(opened.error().code() == ErrorCode::InvalidArgument);
+    CHECK(opened.error().os_error() == std::errc::inappropriate_io_control_operation);
 }
 
 TEST_CASE("a sent message crosses the tty as console frames", "[serial_port]")

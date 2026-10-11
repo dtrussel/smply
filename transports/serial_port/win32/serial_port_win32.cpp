@@ -43,6 +43,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -111,6 +112,20 @@ void wake(const State& state) noexcept
     static_cast<void>(::SetEvent(state.wake));
 }
 
+/// A `GetLastError()` value as the OS diagnostic an `Error` carries (ADR-0026).
+[[nodiscard]] std::error_code win32_error(DWORD code) noexcept
+{
+    return std::error_code{static_cast<int>(code), std::system_category()};
+}
+
+/// The error that ends the link once it is open, carrying \p code, the
+/// `GetLastError()` of the call that failed.
+[[nodiscard]] Error lost_error(DWORD code) noexcept
+{
+    return Error{ErrorCode::Disconnected, "serial_port: the port failed or went away"}
+        .with_os_error(win32_error(code));
+}
+
 /// What a failed Win32 call means to a `Transport` caller while **opening**.
 /// Once open, every failure ends the link and is reported as `Disconnected`,
 /// because a vanished USB CDC port answers with several different codes
@@ -122,13 +137,13 @@ void wake(const State& state) noexcept
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
     case ERROR_DEVICE_REMOVED:
-        return Error{ErrorCode::Disconnected, where};
+        return Error{ErrorCode::Disconnected, where}.with_os_error(win32_error(code));
     case ERROR_INVALID_NAME:
     case ERROR_INVALID_PARAMETER:
     case ERROR_NOT_SUPPORTED:
-        return Error{ErrorCode::InvalidArgument, where};
+        return Error{ErrorCode::InvalidArgument, where}.with_os_error(win32_error(code));
     default:
-        return Error{ErrorCode::TransportError, where};
+        return Error{ErrorCode::TransportError, where}.with_os_error(win32_error(code));
     }
 }
 
@@ -300,9 +315,10 @@ void cancel_pending(State& state) noexcept
 /// The I/O thread. Exits on `stop`, or after reporting that the port failed.
 void run(const std::shared_ptr<State>& state)
 {
-    const Error lost{ErrorCode::Disconnected, "serial_port: the port failed or went away"};
+    // Each failure below reads GetLastError() straight after the call that
+    // failed returned false, before anything else can overwrite it.
     if (!start_read(*state)) {
-        post_lost(state, lost);
+        post_lost(state, lost_error(::GetLastError()));
         state->accepting.store(false, std::memory_order_release);
         return;
     }
@@ -314,7 +330,7 @@ void run(const std::shared_ptr<State>& state)
             take_next(*state);
         }
         if (!state->writing.empty() && !state->write_pending && !start_write(*state)) {
-            post_lost(state, lost);
+            post_lost(state, lost_error(::GetLastError()));
             break;
         }
 
@@ -322,7 +338,9 @@ void run(const std::shared_ptr<State>& state)
         const DWORD count = state->write_pending ? 3U : 2U;
         const DWORD woke = ::WaitForMultipleObjects(count, handles.data(), FALSE, INFINITE);
         if (woke == WAIT_FAILED) {
-            post_lost(state, Error{ErrorCode::TransportError, "serial_port: wait failed"});
+            post_lost(state,
+                      Error{ErrorCode::TransportError, "serial_port: wait failed"}.with_os_error(
+                          win32_error(::GetLastError())));
             break;
         }
 
@@ -330,13 +348,13 @@ void run(const std::shared_ptr<State>& state)
         // ready at once, and WaitForMultipleObjects reports only the first.
         if (state->read_pending && ::WaitForSingleObject(state->read_done, 0) == WAIT_OBJECT_0) {
             if (!finish_read(state) || !start_read(*state)) {
-                post_lost(state, lost);
+                post_lost(state, lost_error(::GetLastError()));
                 break;
             }
         }
         if (state->write_pending && ::WaitForSingleObject(state->write_done, 0) == WAIT_OBJECT_0) {
             if (!finish_write(*state)) {
-                post_lost(state, lost);
+                post_lost(state, lost_error(::GetLastError()));
                 break;
             }
         }
@@ -351,7 +369,8 @@ void run(const std::shared_ptr<State>& state)
     state.read_done = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     state.write_done = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (state.wake == nullptr || state.read_done == nullptr || state.write_done == nullptr) {
-        return fail(ErrorCode::TransportError, "serial_port: cannot create the I/O events");
+        return fail(Error{ErrorCode::TransportError, "serial_port: cannot create the I/O events"}
+                        .with_os_error(win32_error(::GetLastError())));
     }
     return {};
 }

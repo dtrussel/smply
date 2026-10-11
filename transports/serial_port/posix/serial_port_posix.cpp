@@ -38,6 +38,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -317,10 +318,13 @@ void run(const std::shared_ptr<State>& state)
         fds[1].events = POLLIN;
 
         if (::poll(fds.data(), fds.size(), -1) < 0) {
-            if (errno == EINTR) {
+            const int error_number = errno;
+            if (error_number == EINTR) {
                 continue;
             }
-            post_lost(state, Error{ErrorCode::TransportError, "serial_port: poll failed"});
+            post_lost(state,
+                      Error{ErrorCode::TransportError, "serial_port: poll failed"}.with_os_error(
+                          {error_number, std::generic_category()}));
             break;
         }
 

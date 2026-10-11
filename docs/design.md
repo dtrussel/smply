@@ -1221,7 +1221,7 @@ Normative contract; full signatures in [`api.md`](api.md). Rationale in
 | May `send()` answer inline? | **No.** It must not invoke any `TransportListener` method before it returns: that re-enters reassembly mid-write, which `MessageAssembler` refuses (§2). An in-process transport queues the answer and delivers it from the application's next turn. |
 | Who outlives whom? | **The transport outlives every client bound to it.** `~SmpClient` and `rebind_transport()` both detach by calling `set_listener(nullptr)`, so a transport destroyed first leaves those calls dangling. |
 | Cancellation? | The core never cancels an in-flight write. `close()` stops all callbacks before returning. |
-| Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. |
+| Failure reporting? | Recoverable/one-off ⇒ `on_transport_error(Error)`; link is gone ⇒ `on_disconnected(Error)`. After `on_disconnected` no further callbacks may be issued. A failure that came from an OS call carries that call's error in `Error::os_error()` (ADR-0026); the core passes it on untouched and never sets it. |
 | Size hint? | `max_message_size()` — the largest whole SMP message this transport can carry. `0` means "no opinion", and that limit is simply skipped; only the device's buffer size falls back to a default (`kDefaultSmpMessageBudget`, §6). |
 | Device-side framing? | `message_overhead()` — bytes the *device's* buffer keeps per message beyond the SMP message (ADR-0024). The core takes it off the device's buffer size, or the default standing in for it, and off nothing else. Defaulted to `0`, the one member an adapter need not implement; the serial adapter returns `4`. |
 
@@ -1289,7 +1289,7 @@ target absent (enforced by CI, [`quality-gates.md`](quality-gates.md)).
 | `max_message_size()` | a configured cap (default 1024) — *not* the MTU; a whole SMP message may span many fragments |
 | inbound | `ValueChanged` → copy the `IBuffer` → post to `Dispatcher` → `on_bytes()` on the client context |
 | disconnect | `ConnectionStatusChanged == Disconnected` → post → `on_disconnected()` |
-| errors | `GattCommunicationStatus != Success`, `hresult_error` → `on_transport_error` / `on_disconnected` |
+| errors | `GattCommunicationStatus != Success`, `hresult_error` → `on_transport_error` / `on_disconnected`. A caught `hresult_error` carries its `HRESULT` in `Error::os_error()`, in `hresult_category()` (ADR-0026) |
 
 ### Threading, lifetime, shutdown
 
@@ -1708,6 +1708,11 @@ part-way cannot be resumed.
 | `open()`: held by another process, or refused (`EBUSY`, `EACCES`; `ERROR_ACCESS_DENIED`) | `TransportError` |
 | I/O: end of file, `EIO`, `POLLHUP` (a USB port gone, a pty master closed) | `on_disconnected(Disconnected)` |
 | I/O: any other error | `on_disconnected(TransportError)` |
+
+Every row that came from a failed system call carries the call's own number in
+`Error::os_error()` (ADR-0026): `errno` in `std::generic_category()` on POSIX,
+`GetLastError()` in `std::system_category()` on Windows. A hang-up seen through
+`POLLHUP` or an end of file has no number, and carries none.
 
 `close()` is the only teardown path, and it is synchronous and idempotent:
 1. `LinkState::begin_close()` (a second call stops here);

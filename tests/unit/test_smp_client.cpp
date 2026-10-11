@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <system_error>
 #include <vector>
 
 using smply::ConstBytes;
@@ -70,6 +71,7 @@ struct Outcome
 {
     int calls = 0;
     std::optional<ErrorCode> code;
+    std::error_code os_error;
     std::optional<Header> header;
     std::vector<std::byte> payload;
 
@@ -82,6 +84,7 @@ struct Outcome
                 payload.assign(result->payload.begin(), result->payload.end());
             } else {
                 code = result.error().code();
+                os_error = result.error().os_error();
             }
         };
     }
@@ -862,6 +865,40 @@ TEST_CASE("a disconnect fails every pending request", "[client][disconnect]")
     REQUIRE(second.code == ErrorCode::Disconnected);
     REQUIRE(fixture.client.in_flight() == 0);
     REQUIRE_FALSE(fixture.client.connected());
+}
+
+TEST_CASE("the adapter's OS diagnostic reaches the failed request intact", "[client][disconnect]")
+{
+    // The core never sets os_error and must never drop it either: it is the
+    // only record of why the link failed (ADR-0026).
+    const std::error_code eio = std::make_error_code(std::errc::io_error);
+
+    SECTION("through a disconnect")
+    {
+        Outcome outcome;
+        Fixture fixture;
+        static_cast<void>(fixture.client.request(spec(), outcome.callback()));
+
+        fixture.transport.disconnect(
+            smply::Error{ErrorCode::Disconnected, "fake"}.with_os_error(eio));
+
+        REQUIRE(outcome.code == ErrorCode::Disconnected);
+        REQUIRE(outcome.os_error == eio);
+    }
+
+    SECTION("through a send that failed")
+    {
+        Outcome outcome;
+        Fixture fixture;
+        fixture.transport.fail_next_send(
+            smply::Error{ErrorCode::TransportError, "fake"}.with_os_error(eio));
+
+        static_cast<void>(fixture.client.request(spec(), outcome.callback()));
+        fixture.client.poll(fixture.clock.now());
+
+        REQUIRE(outcome.code == ErrorCode::TransportError);
+        REQUIRE(outcome.os_error == eio);
+    }
 }
 
 TEST_CASE("a recoverable transport error leaves requests pending", "[client][disconnect]")

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <string>
+#include <system_error>
 
 namespace smply {
 namespace {
@@ -150,6 +151,16 @@ std::string to_string(const Error& error)
     if (!error.reason().empty()) {
         out += ": ";
         out += error.reason();
+    }
+
+    if (const std::error_code& os = error.os_error(); os) {
+        out += " [os: ";
+        out += os.category().name();
+        out += ':';
+        out += std::to_string(os.value());
+        out += ' ';
+        out += os.message();
+        out += ']';
     }
 
     if (error.where() != nullptr) {
