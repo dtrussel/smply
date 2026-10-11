@@ -46,7 +46,7 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 add_library(smply_dfu_app STATIC
     dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
-    dfu_app/package_update.cpp
+    dfu_app/update_inputs.cpp
     dfu_app/update_run.cpp
 )
 add_library(smply::dfu_app ALIAS smply_dfu_app)
@@ -58,9 +58,9 @@ target_include_directories(smply_dfu_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(smply_dfu_app
     PUBLIC
         smply::smply     # ImageSource, Result, Duration
-        smply::dfu_package # PackageUpdate: a package into FirmwareUpdater targets
         smply::util      # DispatcherWait: the update run's real wait drains a Dispatcher
     PRIVATE
+        smply::dfu_package # UpdateInputs reads a package; its interface does not show it
         smply_internal_options
 )
 

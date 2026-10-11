@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// `smply::dfu_app::PackageUpdate` and `parse_commit()`: the few lines between a
-// package file and `FirmwareUpdater::start()` that both examples share
-// (ADR-0021). The package format itself is test_dfu_package.cpp's; these check
-// the file handling, the default commit rule and its override.
+// `smply::dfu_app::UpdateInputs`, `parse_commit()` and `parse_update_mode()`:
+// what an update sends -- one file, a build per slot, or a multi-image package
+// (ADR-0021, ADR-0025) -- turned into the image list `FirmwareUpdater::start()`
+// takes, as every example tool does. The package format itself is
+// test_dfu_package.cpp's, and reading a file test_file_image_source.cpp's;
+// these check which targets come out, the default commit rule and its override,
+// and what is refused.
 
 #include "image_builder.hpp"
 #include "zip_builder.hpp"
 
-#include "dfu_app/package_update.hpp"
+#include "dfu_app/update_inputs.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 
@@ -29,8 +32,10 @@
 using smply::CommitBy;
 using smply::ConstBytes;
 using smply::ErrorCode;
-using smply::dfu_app::PackageUpdate;
+using smply::UpdateMode;
 using smply::dfu_app::parse_commit;
+using smply::dfu_app::parse_update_mode;
+using smply::dfu_app::UpdateInputs;
 using smply::test::ImageBuilder;
 using smply::test::ZipBuilder;
 
@@ -62,7 +67,7 @@ namespace {
 class TempFile
 {
 public:
-    TempFile() : path_{unique_path()} {}
+    explicit TempFile(std::string_view extension = ".zip") : path_{unique_path(extension)} {}
 
     TempFile(const TempFile&) = delete;
     TempFile& operator=(const TempFile&) = delete;
@@ -89,11 +94,11 @@ public:
     }
 
 private:
-    [[nodiscard]] static std::string unique_path()
+    [[nodiscard]] static std::string unique_path(std::string_view extension)
     {
         std::random_device entropy;
         return (std::filesystem::temp_directory_path() /
-                ("smply_package_update_" + std::to_string(entropy()) + ".zip"))
+                ("smply_update_inputs_" + std::to_string(entropy()) + std::string{extension}))
             .string();
     }
 
@@ -103,9 +108,9 @@ private:
 } // namespace
 
 TEST_CASE("a package becomes one target per image, image 0 committed by the client",
-          "[dfu_app][package]")
+          "[dfu_app][inputs][package]")
 {
-    const auto update = PackageUpdate::from_bytes(three_images());
+    const auto update = UpdateInputs::from_package_bytes(three_images());
     REQUIRE(update.has_value());
     const auto targets = (*update)->targets();
     REQUIRE(targets.size() == 3);
@@ -117,13 +122,12 @@ TEST_CASE("a package becomes one target per image, image 0 committed by the clie
     CHECK(targets[0].commit == CommitBy::Client);
     CHECK(targets[1].commit == CommitBy::Device);
     CHECK(targets[2].commit == CommitBy::Device);
-    CHECK((*update)->package().images.size() == 3);
 }
 
 TEST_CASE("who commits an image can be overridden, for an image the package has",
-          "[dfu_app][package]")
+          "[dfu_app][inputs][package]")
 {
-    const auto update = PackageUpdate::from_bytes(three_images());
+    const auto update = UpdateInputs::from_package_bytes(three_images());
     REQUIRE(update.has_value());
     REQUIRE((*update)->set_commit(2, CommitBy::Client).has_value());
     REQUIRE((*update)->set_commit(0, CommitBy::Device).has_value());
@@ -135,26 +139,26 @@ TEST_CASE("who commits an image can be overridden, for an image the package has"
     CHECK(missing.error().code() == ErrorCode::InvalidArgument);
 }
 
-TEST_CASE("a package file is read whole, and a bad one refused", "[dfu_app][package]")
+TEST_CASE("a package file is read whole, and a bad one refused", "[dfu_app][inputs][package]")
 {
     const TempFile file;
     file.write(three_images());
-    const auto update = PackageUpdate::load(file.path());
+    const auto update = UpdateInputs::from_package(file.path());
     REQUIRE(update.has_value());
     CHECK((*update)->targets().size() == 3);
 
-    const auto missing = PackageUpdate::load(file.path() + ".absent");
+    const auto missing = UpdateInputs::from_package(file.path() + ".absent");
     REQUIRE_FALSE(missing.has_value());
     CHECK(missing.error().code() == ErrorCode::InvalidArgument);
 
     const TempFile garbage;
     garbage.write(std::vector<std::byte>(64, std::byte{0x41}));
-    const auto refused = PackageUpdate::load(garbage.path());
+    const auto refused = UpdateInputs::from_package(garbage.path());
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().code() == ErrorCode::MalformedMessage);
 }
 
-TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][package]")
+TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][inputs]")
 {
     CHECK(parse_commit("0=client") == std::pair{0U, CommitBy::Client});
     CHECK(parse_commit("12=device") == std::pair{12U, CommitBy::Device});
@@ -167,7 +171,7 @@ TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][package]")
 }
 
 TEST_CASE("a direct-XIP package becomes one target with a build per slot",
-          "[dfu_app][package][xip]")
+          "[dfu_app][inputs][package][xip]")
 {
     // Two files for image 0, each with its slot (protocol-notes S58). The
     // target's source is slot 0's build and its secondary_source slot 1's.
@@ -183,7 +187,7 @@ TEST_CASE("a direct-XIP package becomes one target with a build per slot",
                      {"file": "app.signed.bin", "image_index": "0", "slot": "0"}]})"})
                                          .build();
 
-    auto update = PackageUpdate::from_bytes(std::move(archive));
+    auto update = UpdateInputs::from_package_bytes(std::move(archive));
     REQUIRE(update.has_value());
     const auto targets = (*update)->targets();
     REQUIRE(targets.size() == 1);
@@ -193,4 +197,109 @@ TEST_CASE("a direct-XIP package becomes one target with a build per slot",
     REQUIRE(targets[0].secondary_source != nullptr);
     CHECK(targets[0].source->size() == slot0.size());
     CHECK(targets[0].secondary_source->size() == slot1.size());
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+TEST_CASE("one file is one target: image 0, committed by the client", "[dfu_app][inputs][file]")
+{
+    const TempFile file{".bin"};
+    file.write(image(2));
+
+    const auto inputs = UpdateInputs::from_files(file.path());
+
+    REQUIRE(inputs.has_value());
+    const auto targets = (*inputs)->targets();
+    REQUIRE(targets.size() == 1);
+    CHECK(targets[0].image == 0);
+    CHECK(targets[0].commit == CommitBy::Client);
+    REQUIRE(targets[0].source != nullptr);
+    CHECK(targets[0].source->size() == image(2).size());
+    CHECK(targets[0].secondary_source == nullptr);
+}
+
+TEST_CASE("two files are one target with a build per slot", "[dfu_app][inputs][file][xip]")
+{
+    // The first file is the build for slot 0, the second the build for slot 1
+    // (ADR-0025): the updater sends whichever the device is not running.
+    const std::vector<std::byte> slot0 =
+        ImageBuilder{}.version(2, 0, 0, 0).body(64).tlv(0x10, std::vector<std::byte>(32)).build();
+    const std::vector<std::byte> slot1 =
+        ImageBuilder{}.version(2, 0, 0, 0).body(80).tlv(0x10, std::vector<std::byte>(32)).build();
+    const TempFile primary{".bin"};
+    primary.write(slot0);
+    const TempFile secondary{".bin"};
+    secondary.write(slot1);
+
+    const auto inputs = UpdateInputs::from_files(primary.path(), secondary.path());
+
+    REQUIRE(inputs.has_value());
+    const auto targets = (*inputs)->targets();
+    REQUIRE(targets.size() == 1);
+    CHECK(targets[0].image == 0);
+    CHECK(targets[0].commit == CommitBy::Client);
+    REQUIRE(targets[0].source != nullptr);
+    REQUIRE(targets[0].secondary_source != nullptr);
+    CHECK(targets[0].source->size() == slot0.size());
+    CHECK(targets[0].secondary_source->size() == slot1.size());
+}
+
+TEST_CASE("files that cannot make an update are refused", "[dfu_app][inputs][file]")
+{
+    const TempFile file{".bin"};
+    file.write(image(2));
+
+    SECTION("no file at all")
+    {
+        const auto inputs = UpdateInputs::from_files("");
+        REQUIRE_FALSE(inputs.has_value());
+        CHECK(inputs.error().code() == ErrorCode::InvalidArgument);
+    }
+    SECTION("a second build without a first")
+    {
+        const auto inputs = UpdateInputs::from_files("", file.path());
+        REQUIRE_FALSE(inputs.has_value());
+        CHECK(inputs.error().code() == ErrorCode::InvalidArgument);
+    }
+    SECTION("a first build that cannot be opened")
+    {
+        const auto inputs = UpdateInputs::from_files(file.path() + ".absent");
+        REQUIRE_FALSE(inputs.has_value());
+        CHECK(inputs.error().code() == ErrorCode::InvalidArgument);
+    }
+    SECTION("a second build that cannot be opened")
+    {
+        const auto inputs = UpdateInputs::from_files(file.path(), file.path() + ".absent");
+        REQUIRE_FALSE(inputs.has_value());
+        CHECK(inputs.error().code() == ErrorCode::InvalidArgument);
+    }
+}
+
+TEST_CASE("who commits a file's image can be set, for image 0 only", "[dfu_app][inputs][file]")
+{
+    const TempFile file{".bin"};
+    file.write(image(2));
+    const auto inputs = UpdateInputs::from_files(file.path());
+    REQUIRE(inputs.has_value());
+
+    REQUIRE((*inputs)->set_commit(0, CommitBy::Device).has_value());
+    CHECK((*inputs)->targets()[0].commit == CommitBy::Device);
+
+    const auto missing = (*inputs)->set_commit(1, CommitBy::Device);
+    REQUIRE_FALSE(missing.has_value());
+    CHECK(missing.error().code() == ErrorCode::InvalidArgument);
+}
+
+TEST_CASE("parse_update_mode names the three modes of one update", "[dfu_app][inputs]")
+{
+    CHECK(parse_update_mode("test-then-confirm") == UpdateMode::TestThenConfirm);
+    CHECK(parse_update_mode("confirm-immediately") == UpdateMode::ConfirmImmediately);
+    CHECK(parse_update_mode("upload-only") == UpdateMode::UploadOnly);
+    for (const char* bad :
+         {"", "test", "Upload-only", "upload-only ", "test-only", "confirm-only"}) {
+        CAPTURE(bad);
+        CHECK_FALSE(parse_update_mode(bad).has_value());
+    }
 }

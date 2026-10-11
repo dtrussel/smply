@@ -234,7 +234,7 @@ ready for a `MemoryImageSource`. It checks the manifest instead of believing it:
   version under `version_MCUBOOT+XIP` (S58). They are alternatives, not a set:
   the reader returns them as one `PackageImage` whose `secondary` is the
   secondary slot's build, after checking that the two slots are the image's
-  own pair and the two headers carry the same version. `PackageUpdate` hands
+  own pair and the two headers carry the same version. `UpdateInputs` hands
   both to the updater (`ImageTarget::secondary_source`), which sends the one
   for the slot the device is not running (ADR-0025). Any other second file for
   an image is refused, and so is a package with more than one such pair, which
@@ -270,11 +270,13 @@ serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
 ```
 
 Without `--port` both examples run against `examples/stub_device/`, given a
-second image it commits itself. `support/dfu_app/package_update.hpp`
-(`PackageUpdate`) is the few lines between a package file and
+second image it commits itself. `support/dfu_app/update_inputs.hpp`
+(`UpdateInputs`) is the few lines between a package file and
 `FirmwareUpdater::start()`: it reads the file, bounded before anything is
 allocated, and builds the target list: image 0 `Client`, every other image `Device`,
-and `set_commit()` changes that per image.
+and `set_commit()` changes that per image. The same module turns one file, or a
+build per slot, into a list of one, so a tool calls the image-list `start()`
+whatever it sends.
 
 ## What is not supported
 

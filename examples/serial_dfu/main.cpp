@@ -36,9 +36,8 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
-#include "dfu_app/file_image_source.hpp"
-#include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
 
 #include "smply/clock.hpp"
@@ -51,7 +50,6 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -150,20 +148,6 @@ void usage()
                  "With --port, one of --image or --package is required.\n";
 }
 
-[[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
-{
-    if (text == "test-then-confirm") {
-        out = UpdateMode::TestThenConfirm;
-    } else if (text == "confirm-immediately") {
-        out = UpdateMode::ConfirmImmediately;
-    } else if (text == "upload-only") {
-        out = UpdateMode::UploadOnly;
-    } else {
-        return false;
-    }
-    return true;
-}
-
 [[nodiscard]] bool parse_arguments(int argc, char** argv, Options& out)
 {
     const std::vector<std::string> args{argv + 1, argv + argc};
@@ -205,9 +189,11 @@ void usage()
             }
             out.stub_cdc = value == "cdc";
         } else if (arg == "--mode" && has_value) {
-            if (!parse_mode(args[++i], out.mode)) {
+            const std::optional<UpdateMode> mode = parse_update_mode(args[++i]);
+            if (!mode.has_value()) {
                 return false;
             }
+            out.mode = *mode;
         } else if (arg == "--package" && has_value) {
             out.package_path = args[++i];
         } else if (arg == "--demo-package") {
@@ -376,26 +362,6 @@ int main(int argc, char** argv)
 
     // --- the device: a real port, or the stub behind a pseudo-terminal -------
 
-    // A package, when there is one: the images, and who commits each.
-    std::unique_ptr<PackageUpdate> package;
-    if (options.package_mode()) {
-        Result<std::unique_ptr<PackageUpdate>> read =
-            options.demo_package ? PackageUpdate::from_bytes(build_demo_two_image_package())
-                                 : PackageUpdate::load(options.package_path);
-        if (!read.has_value()) {
-            std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
-            return 1;
-        }
-        package = std::move(*read);
-        for (const auto& [image, commit] : options.commits) {
-            if (const Result<void> set = package->set_commit(image, commit); !set.has_value()) {
-                std::cerr << "serial_dfu: --commit " << image << ": " << to_string(set.error())
-                          << '\n';
-                return 1;
-            }
-        }
-    }
-
     std::string image_path = options.image_path;
     DemoImageFile demo_file;
 #ifndef _WIN32
@@ -434,23 +400,28 @@ int main(int argc, char** argv)
 #endif
     }
 
-    // A package brings its own sources; only a single image is read from a file.
-    Result<FileImageSource> source =
-        options.package_mode()
-            ? Result<FileImageSource>{fail(ErrorCode::InvalidArgument, "serial_dfu: a package")}
-            : FileImageSource::open(image_path);
-    if (!options.package_mode() && !source.has_value()) {
-        std::cerr << "serial_dfu: " << to_string(source.error()) << '\n';
+    // What to send: a package's images, or image 0 from one file or two (one
+    // build per slot). The demo file above must outlive it: it reads it.
+    const auto read_inputs = [&]() -> Result<std::unique_ptr<UpdateInputs>> {
+        if (options.demo_package) {
+            return UpdateInputs::from_package_bytes(build_demo_two_image_package());
+        }
+        if (!options.package_path.empty()) {
+            return UpdateInputs::from_package(options.package_path);
+        }
+        return UpdateInputs::from_files(image_path, options.image_secondary_path);
+    };
+    Result<std::unique_ptr<UpdateInputs>> read = read_inputs();
+    if (!read.has_value()) {
+        std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
         return 1;
     }
-    std::optional<FileImageSource> secondary;
-    if (!options.image_secondary_path.empty()) {
-        Result<FileImageSource> opened = FileImageSource::open(options.image_secondary_path);
-        if (!opened.has_value()) {
-            std::cerr << "serial_dfu: " << to_string(opened.error()) << '\n';
+    const std::unique_ptr<UpdateInputs> inputs = std::move(*read);
+    for (const auto& [image, commit] : options.commits) {
+        if (const Result<void> set = inputs->set_commit(image, commit); !set.has_value()) {
+            std::cerr << "serial_dfu: --commit " << image << ": " << to_string(set.error()) << '\n';
             return 1;
         }
-        secondary.emplace(std::move(*opened));
     }
 
     SerialPortConfig config;
@@ -585,23 +556,8 @@ int main(int argc, char** argv)
                       .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
                   }};
 
-    // One build per slot is an image list of one (ADR-0025).
-    const std::array<ImageTarget, 1> builds{ImageTarget{
-        .image = 0,
-        .source = source.has_value() ? &*source : nullptr,
-        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
-    }};
-    // A package's image list, or the single image, with the run's handler.
-    const auto begin = [&]() -> Result<void> {
-        if (package) {
-            return updater.start(package->targets(), plan, run.event_handler());
-        }
-        if (secondary) {
-            return updater.start(builds, plan, run.event_handler());
-        }
-        return updater.start(*source, plan, run.event_handler());
-    };
-    if (const Result<void> begun = begin(); !begun.has_value()) {
+    if (const Result<void> begun = updater.start(inputs->targets(), plan, run.event_handler());
+        !begun.has_value()) {
         std::cerr << "serial_dfu: " << to_string(begun.error()) << '\n';
         return 1;
     }

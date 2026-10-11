@@ -34,9 +34,8 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
-#include "dfu_app/file_image_source.hpp"
-#include "dfu_app/package_update.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
 
 #include "smply/clock.hpp"
@@ -49,7 +48,6 @@
 #include "smply/smp_client.hpp"
 #include "smply/util/dispatcher.hpp"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -125,23 +123,6 @@ struct Options
     }
 };
 
-[[nodiscard]] bool parse_mode(std::string_view text, UpdateMode& out)
-{
-    if (text == "test-then-confirm") {
-        out = UpdateMode::TestThenConfirm;
-        return true;
-    }
-    if (text == "confirm-immediately") {
-        out = UpdateMode::ConfirmImmediately;
-        return true;
-    }
-    if (text == "upload-only") {
-        out = UpdateMode::UploadOnly;
-        return true;
-    }
-    return false;
-}
-
 void usage()
 {
     std::cerr << "usage: cli_dfu [--image PATH | --package PATH | --demo-package] [--mode MODE]\n"
@@ -191,9 +172,11 @@ void usage()
         } else if (arg == "--demo-builds") {
             out.demo_builds = true;
         } else if (arg == "--mode" && i + 1 < args.size()) {
-            if (!parse_mode(args[++i], out.mode)) {
+            const std::optional<UpdateMode> mode = parse_update_mode(args[++i]);
+            if (!mode.has_value()) {
                 return false;
             }
+            out.mode = *mode;
         } else if (arg == "--flaky-reconnect" && i + 1 < args.size()) {
             const std::string& count = args[++i];
             if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos) {
@@ -367,63 +350,45 @@ int main(int argc, char** argv)
         image_secondary_path = *written;
     }
 
-    // A package, when there is one: the images, and who commits each.
-    std::unique_ptr<PackageUpdate> package;
-    std::optional<SecondImage> second_image;
-    if (options.package_mode()) {
-        const auto read_demo_or_file = [&options]() -> Result<std::unique_ptr<PackageUpdate>> {
-            if (options.demo_package) {
-                return PackageUpdate::from_bytes(build_demo_two_image_package());
-            }
-            if (options.demo_xip_package) {
-                return PackageUpdate::from_bytes(build_demo_xip_package());
-            }
-            return PackageUpdate::load(options.package_path);
-        };
-        Result<std::unique_ptr<PackageUpdate>> read = read_demo_or_file();
-        if (!read.has_value()) {
-            std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
+    // What to send: a package's images, or image 0 from one file or two (one
+    // build per slot). The demo files above must outlive it: it reads them.
+    const auto read_inputs = [&]() -> Result<std::unique_ptr<UpdateInputs>> {
+        if (options.demo_package) {
+            return UpdateInputs::from_package_bytes(build_demo_two_image_package());
+        }
+        if (options.demo_xip_package) {
+            return UpdateInputs::from_package_bytes(build_demo_xip_package());
+        }
+        if (!options.package_path.empty()) {
+            return UpdateInputs::from_package(options.package_path);
+        }
+        return UpdateInputs::from_files(image_path, image_secondary_path);
+    };
+    Result<std::unique_ptr<UpdateInputs>> read = read_inputs();
+    if (!read.has_value()) {
+        std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
+        return 1;
+    }
+    const std::unique_ptr<UpdateInputs> inputs = std::move(*read);
+    for (const auto& [image, commit] : options.commits) {
+        if (const Result<void> set = inputs->set_commit(image, commit); !set.has_value()) {
+            std::cerr << "cli_dfu: --commit " << image << ": " << to_string(set.error()) << '\n';
             return 1;
-        }
-        package = std::move(*read);
-        for (const auto& [image, commit] : options.commits) {
-            if (const Result<void> set = package->set_commit(image, commit); !set.has_value()) {
-                std::cerr << "cli_dfu: --commit " << image << ": " << to_string(set.error())
-                          << '\n';
-                return 1;
-            }
-        }
-        // The stub's image 1: another MCU's firmware, which it applies itself
-        // after the reset. The demo device runs radio 5.0.0; a real package's
-        // image 1 lands on a device with nothing applied yet.
-        // The direct-XIP demo is one image, given twice, so its device has none.
-        if (!options.demo_xip_package) {
-            second_image = SecondImage{
-                .running = options.demo_package
-                               ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
-                               : std::vector<std::byte>{},
-                .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
-            };
         }
     }
 
-    // A package brings its own sources; only a single image is read from a file.
-    Result<FileImageSource> source =
-        options.package_mode()
-            ? Result<FileImageSource>{fail(ErrorCode::InvalidArgument, "cli_dfu: a package")}
-            : FileImageSource::open(image_path);
-    if (!options.package_mode() && !source.has_value()) {
-        std::cerr << "cli_dfu: " << to_string(source.error()) << '\n';
-        return 1;
-    }
-    std::optional<FileImageSource> secondary;
-    if (!image_secondary_path.empty()) {
-        Result<FileImageSource> opened = FileImageSource::open(image_secondary_path);
-        if (!opened.has_value()) {
-            std::cerr << "cli_dfu: " << to_string(opened.error()) << '\n';
-            return 1;
-        }
-        secondary.emplace(std::move(*opened));
+    // The stub's image 1, with a package: another MCU's firmware, which it
+    // applies itself after the reset. The demo device runs radio 5.0.0; a real
+    // package's image 1 lands on a device with nothing applied yet. The
+    // direct-XIP demo is one image, given twice, so its device has none.
+    std::optional<SecondImage> second_image;
+    if (options.package_mode() && !options.demo_xip_package) {
+        second_image = SecondImage{
+            .running = options.demo_package
+                           ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
+                           : std::vector<std::byte>{},
+            .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+        };
     }
 
     // --- the pump's wake-up, and the marshalling queue -----------------------
@@ -565,24 +530,7 @@ int main(int argc, char** argv)
                       .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
                   }};
 
-    // A package's image list, or the single image, with the run's handler.
-    // One build per slot is an image list of one: the image-list start() is
-    // the one that takes it.
-    const std::array<ImageTarget, 1> builds{ImageTarget{
-        .image = 0,
-        .source = source.has_value() ? &*source : nullptr,
-        .secondary_source = secondary.has_value() ? &*secondary : nullptr,
-    }};
-    const auto begin = [&]() -> Result<void> {
-        if (package) {
-            return updater.start(package->targets(), plan, run.event_handler());
-        }
-        if (secondary) {
-            return updater.start(builds, plan, run.event_handler());
-        }
-        return updater.start(*source, plan, run.event_handler());
-    };
-    const Result<void> begun = begin();
+    const Result<void> begun = updater.start(inputs->targets(), plan, run.event_handler());
 
     if (!begun.has_value()) {
         std::cerr << "cli_dfu: " << to_string(begun.error()) << '\n';

@@ -1626,8 +1626,11 @@ in `smply::dfu_app::UpdateRun` (`support/dfu_app/update_run.hpp`): support code
 beside `ReconnectPolicy`, not installed (ADR-0016). `examples/cli_dfu/main.cpp`,
 `examples/serial_dfu/main.cpp` and `examples/winrt_ble_dfu/main.cpp` drive their
 updates through it, against a stub device on another thread, a serial port and a
-radio; `cli_dfu` runs on every push as the `cli_dfu_demo` test. Where the
-sketches and the code differ, the code is the one that compiles.
+radio; `cli_dfu` runs on every push as the `cli_dfu_demo` test. What they send
+comes from `smply::dfu_app::UpdateInputs` (`support/dfu_app/update_inputs.hpp`):
+one file, a build per slot or a package, always handed to the image-list
+`start()`. Where the sketches and the code differ, the code is the one that
+compiles.
 
 ### Portable: one update, through the update run
 
