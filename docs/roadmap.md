@@ -39,7 +39,8 @@ they run against the simulator and the stub device only.
 
 ## In progress
 
-Nothing. Pick the next item from the backlog below, by its "When".
+**The package board check**: [`board-check-plan.md`](board-check-plan.md). A package
+built for another board is refused before the upload, compared by board name.
 
 ## Acceptance gaps that need the hardware bench
 
@@ -104,7 +105,6 @@ doing.
 | **`Dispatcher::pending()` is racy by construction** and exists for diagnostics. An adapter branching on it is a bug; a blocking `wait_and_drain()` may be the better offer. | when an adapter asks |
 | `ImageState` has no `operator==`. | when a test wants it |
 | **A direct-XIP image that is not newer than the running one is sent anyway.** A direct-XIP bootloader boots only a newer image, a tie going to the lower slot (protocol-notes §7), and MCUboot's downgrade prevention cannot be enabled in that mode. So an equal or older image is uploaded in full and then fails after the reset, reported as a rollback. The updater could refuse it before the upload, as `Refusal::Downgrade` does when the device reports `no-downgrade`; that is new behaviour ADR-0025 did not decide. | if a direct-XIP user is caught by it |
-| **Nothing checks that a package is meant for the device it is sent to.** The package names its `board` per image, but smply takes no expectation from the caller and does not compare, so a mismatch is refused only by the device's signature check, after the upload. Specified, ready for implementation: [`board-check-plan.md`](board-check-plan.md) (compare **board names**, every image, in `support/` only, `--board` on `cli_dfu` and `serial_dfu`). | when a product ships several boards from one tool |
 
 ### Protocol and images
 

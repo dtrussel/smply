@@ -1,9 +1,9 @@
 # Package board check
 
-Status: ready for implementation. Written 2026-10-11 from a design interview.
-Not started: the roadmap's backlog row ("Core library and API") points here and
-keeps the trigger, "when a product ships several boards from one tool". Delete
-this file, and that row, in the commit that lands the work.
+Status: in progress. Written 2026-10-11 from a design interview; the
+roadmap's "In progress" section points here. Work the stages below in order,
+checking each off in the commit that lands it. Delete this file, and the
+roadmap's pointer, in the commit that lands the last stage.
 
 ## Problem Statement
 
@@ -110,3 +110,34 @@ The refusal names the image and both boards. On the command line this is
 
 - The facts behind the comparison rule are protocol-notes §5 (sources S59 and S60, read from Zephyr and nRF Connect SDK `main` on 2026-10-11). The manifest writes the application image's `CONFIG_BOARD`, but the network-core image's `BOARD` as supplied. A device's `info` reports `CONFIG_BOARD_TARGET`.
 - The commit message carries the reasoning (ADR-0018), including why the comparison is by board name and why a missing board is refused.
+
+## Stages
+
+### Stage 1: the check in the package reader and `UpdateInputs`
+
+Blocked by: none.
+
+Delivers `dfu_package::check_board`, the direct-XIP pair's board-equality
+refusal in `read_package()`, the optional expected board on
+`UpdateInputs::from_package` and `from_package_bytes`, and the fuzz target's
+call, with their header documentation. No tool or example changes.
+
+- [ ] `check_board` and its unit tests, as Testing Decisions lists them
+- [ ] `read_package()` refuses a direct-XIP pair whose builds disagree on `board`, tested
+- [ ] `UpdateInputs`' package factories take the expected board, tested through `from_package_bytes`
+- [ ] `fuzz_dfu_package` calls `check_board` on every package it reads
+- [ ] Every Linux preset builds and `ctest` passes; format, lint and the `check_*.py` gates pass
+
+### Stage 2: `--board` in the tools, the demo packages and the docs
+
+Blocked by: 1.
+
+Delivers `--board` on `cli_dfu` and `serial_dfu`, a `board` per file in the
+stub's demo packages, the `cli_dfu` ctests, and every living document the
+feature touches. Deletes this plan and its roadmap pointer.
+
+- [ ] `--board NAME` on both tools, a usage error without a package
+- [ ] The demo packages' manifests carry a board name for image 0 and a board target for image 1, the same on both direct-XIP builds
+- [ ] `cli_dfu` ctests: a matching board completes, a mismatched one is refused before any upload, `--board` without a package is a usage error
+- [ ] `architecture.md`, `testing.md` and the examples' usage text updated where they enumerate what changed
+- [ ] The full checklist in `handoff.md` passes; this plan and its roadmap line deleted
