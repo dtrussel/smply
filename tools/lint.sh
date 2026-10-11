@@ -74,7 +74,8 @@ WINRT_EXCLUDE="$(winrt_exclude_pattern)"
 #
 # A line that must read the real clock -- the test of system_clock() itself --
 # says so on that line: `// lint: real clock -- <why>`. The marker is per line,
-# not per file, so a second, unexplained read in the same file still fails.
+# not per file, so a second, unexplained read in the same file still fails, and
+# a marker with no reason after the `--` does not count.
 #
 # grep's own failure (exit 2: a directory gone, a bad pattern) is an error, not
 # "no match": a check that cannot run must not read as clean.
@@ -85,7 +86,10 @@ real_clock=$(grep -rnE --include='*.cpp' --include='*.hpp' "$REAL_CLOCK_PATTERN"
 if [[ $real_clock_rc -gt 1 ]]; then
     echo "error: the real-clock check could not run (grep exit $real_clock_rc)" >&2
     status=1
-elif unmarked=$(grep -v 'lint: real clock' <<<"$real_clock"); then
+# Guarded on a non-empty match: a here-string of nothing is one empty line, which
+# `grep -v` would report as a violation on a clean tree.
+elif [[ -n "$real_clock" ]] &&
+     unmarked=$(grep -vE '// lint: real clock -- [^[:space:]]' <<<"$real_clock"); then
     echo "error: a unit or component test reads the real clock or sleeps;" >&2
     echo "       drive time with ManualClock (docs/testing.md section 2):" >&2
     echo "$unmarked" >&2

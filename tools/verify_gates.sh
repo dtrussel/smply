@@ -246,6 +246,18 @@ expect_fail_matching "lint rejects a sleep in the component suite" \
     "test_firmware_update.cpp:[0-9]+:static void planted" \
     env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
 restore tests/component/test_firmware_update.cpp
+printf 'static auto planted = std::chrono::steady_clock::now(); // lint: real clock --\n' \
+    >> "$WORK/tests/unit/test_clock.cpp"
+expect_fail_matching "lint rejects a real-clock marker that gives no reason" \
+    "test_clock.cpp:[0-9]+:static auto planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
+# With no real-clock read at all -- the marked lines removed -- the grep
+# matches nothing, and that must read as clean, not as an empty violation.
+sed -i '/lint: real clock/d' "$WORK/tests/unit/test_clock.cpp"
+expect_ok "lint passes a tree with no real-clock read at all" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
 rm -f "$WORK/tidy-stub"
 
 # 4. Public header discipline: third-party include

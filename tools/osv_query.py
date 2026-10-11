@@ -8,9 +8,8 @@ by `.github/workflows/osv.yml`.
 **Why not OSV-Scanner.** smply's two dependencies are consumed from git, so the
 SBOM can identify them only as `pkg:github/<owner>/<repo>@<commit>`.
 OSV-Scanner reads those PURLs, counts the packages, and then drops every one of
-them as "local/unscannable": the run of 2026-10-05 logged "found 2 packages"
-and "Filtered 2 local/unscannable package/s", and reported success. Every green
-scan before this script checked nothing.
+them as "local/unscannable" ("found 2 packages", then "Filtered 2
+local/unscannable package/s"), and reports success having checked nothing.
 
 **What this does instead.** OSV indexes C and C++ projects by commit: an
 advisory in the `GIT` ecosystem lists commit ranges, and `POST /v1/querybatch`

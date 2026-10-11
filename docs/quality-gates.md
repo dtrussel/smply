@@ -212,7 +212,8 @@ drive time with `ManualClock` ([`testing.md`](testing.md) §2), and a test that
 reads the real clock is slow and flaky under load or a sanitizer. A line that
 must read it carries `// lint: real clock -- <why>` on that line; only the two
 in `test_clock.cpp`, which test `system_clock()` itself, do. The grep failing
-to run (exit 2) is an error, not "no match". `verify_gates.sh` proves it
+to run (exit 2) is an error, not "no match". It matches the spelled-out
+names only: a clock reached through an alias gets past it. `verify_gates.sh` proves it
 rejects an unmarked read in `test_clock.cpp` itself and a sleep in the
 component suite, and passes the unmodified tree.
 

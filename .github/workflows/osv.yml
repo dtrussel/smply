@@ -16,9 +16,8 @@
 # and when its canary -- a commit OSV is known to flag -- comes back clean.
 #
 # This job used to run OSV-Scanner over the SBOM. The scanner reads the
-# dependencies' pkg:github PURLs and then drops both as "local/unscannable":
-# every scheduled run (first fired 2026-09-28) was green having checked
-# nothing. The script docstring has the detail.
+# dependencies' pkg:github PURLs and then drops both as "local/unscannable",
+# so it was green having checked nothing. The script docstring has the detail.
 name: osv-scan
 
 on:
