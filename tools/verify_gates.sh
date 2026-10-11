@@ -433,6 +433,29 @@ expect_fail "sbom.py --check rejects a dependency with no licence entry" \
     python3 tools/sbom.py --check
 restore cmake/dependencies.cmake
 
+# The OSV scan must not pass having checked nothing. That is exactly what the
+# OSV-Scanner action did for weeks: it dropped both pkg:github packages as
+# "unscannable" and reported success. tools/osv_query.py answers from a saved
+# response here, so each case runs without the network. The SBOM has two
+# pinned dependencies, so three questions are asked: two, then the canary.
+python3 "$WORK/tools/sbom.py" -o "$SCRATCH/osv-sbom.json" >/dev/null 2>&1
+echo '{"packages": [{"name": "smply"}]}' > "$SCRATCH/osv-no-pins.json"
+echo '{"results": [{}, {}, {"vulns": [{"id": "CANARY"}]}]}' > "$SCRATCH/osv-healthy.json"
+echo '{"results": [{"vulns": [{"id": "GHSA-x"}]}, {}, {"vulns": [{"id": "CANARY"}]}]}' \
+    > "$SCRATCH/osv-finding.json"
+echo '{"results": [{}, {}, {}]}' > "$SCRATCH/osv-blind.json"
+echo '{"results": [{}, {"vulns": [{"id": "CANARY"}]}]}' > "$SCRATCH/osv-short.json"
+expect_ok "osv_query passes a healthy answer" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-healthy.json"
+expect_ok "osv_query reports a finding without failing (advisory, ADR-0011)" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-finding.json"
+expect_fail_matching "osv_query rejects an SBOM with no pinned commit" "pins no commit" \
+    python3 tools/osv_query.py "$SCRATCH/osv-no-pins.json" --response "$SCRATCH/osv-healthy.json"
+expect_fail_matching "osv_query rejects a clean canary: the query is blind" "canary" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-blind.json"
+expect_fail_matching "osv_query rejects an answer that skips a question" "result\(s\) to 3" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-short.json"
+
 # 18. The export.
 #
 # The defect this guards against: install(EXPORT) names an exported target

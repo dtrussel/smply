@@ -38,7 +38,7 @@ A18–A24).
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
-| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV-Scanner over the SBOM: weekly, on demand, and on any change to what is pinned (*advisory* about findings; a scan that could not run **does** fail). Its scheduled firing is still unproven |
+| `osv-scan` (`osv.yml`) | ubuntu-latest | — | — | OSV, asked about each pinned commit (`tools/osv_query.py`): weekly, on demand, and on any change to what is pinned or to the scan (*advisory* about findings; a scan that established nothing **does** fail, canary included) |
 | `hil` (`hil.yml`) | **self-hosted** Windows runner labelled `smply-bench` | MSVC v143 | C++20 | `windows-hil` preset, then `tests/hil/run_hil.py` over the NUCLEO-WB55RG bench (`tests/hil/README.md`; the BL54L15 bench is run with `--profile bl54l15`, by hand). `tests/hil/crosscheck.py`, the third-party comparison, is deliberately **not** in this workflow: its HCI half needs BTVS running elevated, which is a runner-configuration question that belongs with commissioning rather than with the case suite. *Advisory*, `continue-on-error`, on demand only; **no runner is registered yet**, so it has never run in CI — the suite has run from the bench by hand. Verdicts are pass / fail / **unavailable**; a missing bench is never a pass (ADR-0015) |
 
 Minimum supported toolchains are GCC 11, Clang 14 and MSVC 19.30 (ADR-0001); CI
@@ -446,28 +446,33 @@ what the repository carries is a decision for a person.
   "found 0 packages" in any scanner that reads it.
   Each dependency carries `pkg:github/<owner>/<repo>@<commit>` — the commit,
   because that is what the build actually pins.
-* **OSV-Scanner** (`.github/workflows/osv.yml`) runs weekly, on
-  `workflow_dispatch`, and on any change to what is pinned, scanning the SBOM.
-  It is **advisory**: the result is a SARIF artefact, and acting on a finding
-  is a decision — ADR-0011 says a dependency change needs one. It does not
-  block a pull request, and it does not open an issue.
-  `osv.yml` is in its own `paths` filter, so a change to it tests itself. Two
-  ways it can fail while looking like success:
-  * **It scans nothing.** The action runs in a container that mounts only the
-    workspace, so the SBOM must be written inside the workspace.
-    `continue-on-error` would otherwise swallow the exit 127.
-  * **It finds 0 packages.** That is an SBOM without PURLs, as above.
+* **The OSV scan** (`.github/workflows/osv.yml`, `tools/osv_query.py`) runs
+  weekly, on `workflow_dispatch`, and on any change to what is pinned or to
+  the scan itself. It asks OSV's `querybatch` API about each dependency **by
+  the commit the SBOM records**: OSV indexes C and C++ projects by commit,
+  through `GIT`-ecosystem advisories that list commit ranges. It is
+  **advisory**: a finding is a warning, in the run summary and the JSON
+  report artefact, and acting on it is a decision — ADR-0011 says a
+  dependency change needs one. It does not block a pull request, and it does
+  not open an issue.
 
-  The job **fails when no SARIF was produced**. This is the same discipline
-  `hci_capture.py` applies to a packet capture: a listener that attaches and
-  records nothing is not a capture.
+  It used to run OSV-Scanner over the SBOM, which was green on every run,
+  scheduled ones included, while checking nothing: the scanner counts the
+  two `pkg:github` packages and then drops both as "local/unscannable". So
+  the job now **fails whenever it has established nothing**:
+  * the SBOM pins no commit to ask about;
+  * the query fails, or answers a different number of results than it was
+    asked;
+  * **the canary comes back clean.** The canary is a commit OSV is known to
+    flag, asked in the same batch. A clean answer for it means the commit
+    query has gone blind, and a clean answer for QCBOR would then mean
+    nothing. This is the same discipline `hci_capture.py` applies to a packet
+    capture: a listener that attaches and records nothing is not a capture.
 
-  Two things are still unproven and should not be read as passing. The
-  **scheduled** firing, which has not yet been observed. And whether
-  OSV has advisory **coverage** for two C libraries consumed from git as
-  `pkg:github` PURLs: a clean report from a database with nothing to say about
-  an ecosystem looks exactly like a clean report from one that checked. The
-  report is evidence that the scan ran, not yet that it would find something.
+  `verify_gates.sh` proves each failure fires and that a finding does not,
+  from saved responses. What a clean answer still cannot tell you is how
+  thoroughly OSV's sources cover QCBOR and Catch2: it means "no known
+  advisory lists this commit", not "audited".
 * New dependencies require an ADR (see [ADR-0011](decisions/ADR-0011-build-and-dependencies.md)).
 
 ## 10. API discipline (required)

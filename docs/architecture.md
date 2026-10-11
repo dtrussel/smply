@@ -524,6 +524,7 @@ smply/
 │                               check_public_headers.py  check_deps.py  check_docs.py
 │                               check_install.sh  sbom.py  cmake_deps.py (their shared parser)
 │                               verify_gates.sh  cppcheck-suppressions.txt
+│                               osv_query.py (the weekly OSV scan, by commit)
 └── docs/                       this documentation set + decisions/ + agents/ (how the
                                 Claude Code skills map onto it)
 ```
