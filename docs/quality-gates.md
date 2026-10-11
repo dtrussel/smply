@@ -34,7 +34,7 @@ A18–A24).
 | `linux-clang-tsan` | ubuntu-latest | Clang 18 | C++20 | the suite under ThreadSanitizer; it exists for `Dispatcher` (§7) |
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
-| `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, the real-clock grep (§3), and the three `check_*.py` scripts |
+| `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, the real-clock grep (§3), the three `check_*.py` scripts, and `.claude/validate.py` |
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |

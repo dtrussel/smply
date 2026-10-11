@@ -153,7 +153,6 @@ doing.
 | **`protocol-notes.md` has two kinds of verification date**: read from source, and observed on a radio. Nothing marks which is which. A per-fact `[source]` / `[bench]` marker would make it checkable. | when a third kind of evidence appears |
 | **`-Wnull-dereference` is off for GCC** because of false positives inside libstdc++ under `-O2` (`cmake/warnings.cmake`). | when GCC stops false-positiving |
 | **`check_docs.py` R6 does not read a root `GLOSSARY.md`.** Its living-document list names the top-level files one by one, and the glossary `/domain-modeling` creates lazily (`docs/agents/domain.md`) is not among them. | when `GLOSSARY.md` is first created |
-| **`.claude/validate.py` is not run by CI**, so a skill update or a change to `tools/sources.sh` that breaks the Claude Code setup is caught only by whoever runs it. A step in the `docs` job would do; it needs only Python and clang-format. | if the setup drifts unnoticed |
 
 ### Hardware bench
 
