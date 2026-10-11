@@ -32,10 +32,15 @@ component suite. That last one passes only on the exact failure message
 
 ### `ManualClock`
 `Clock` implementation with `advance(Duration)`. **No unit or component test
-may call `std::chrono::steady_clock::now()`.** Nothing enforces this yet; review
-does, and the roadmap's backlog has the gate.
+may read the real clock or sleep.** `tools/lint.sh` enforces it with a grep
+over `tests/unit/` and `tests/component/` for a standard clock's `now()`,
+`smply::system_clock()` and `std::this_thread::sleep_for`/`_until`, and
+`verify_gates.sh` proves the grep fires. A line that has to read the real clock
+says so on that line, `// lint: real clock -- <why>`: today only the two in
+`tests/unit/test_clock.cpp`, which test `system_clock()` itself. The marker is
+per line, so a second read in the same file still fails.
 
-One exception: `tests/unit/test_dispatcher_wait.cpp` tests `DispatcherWait`,
+One indirect exception: `tests/unit/test_dispatcher_wait.cpp` tests `DispatcherWait`,
 the update run's real wait, which reads the steady clock itself -- that is
 what makes it the real adapter. Its cases are chosen so that no wait blocks: a
 deadline already in the past, or a wake that came first. So the clock is read

@@ -34,7 +34,7 @@ A18–A24).
 | `linux-clang-tsan` | ubuntu-latest | Clang 18 | C++20 | the suite under ThreadSanitizer; it exists for `Dispatcher` (§7) |
 | `linux-clang-fuzz-smoke` | ubuntu-latest | Clang 18 | C++20 | each fuzz target, `-runs=20000` over the committed corpus |
 | `linux-gcc-coverage` | ubuntu-latest | GCC 13 | C++20 | gcovr/lcov, uploads the report |
-| `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, and the three `check_*.py` scripts |
+| `gates` | ubuntu-latest | Clang 18 | C++20 | format, clang-tidy, cppcheck, the real-clock grep (§3), and the three `check_*.py` scripts |
 | `install-check` | ubuntu-latest | GCC 13 | C++20 | installs to a prefix, then consumes it from three separate projects — `find_package`, `add_subdirectory` and `FetchContent` — building and **running** the same smoke program each time (§13). Also emits the SBOM and uploads it. Named `install-check` in the workflow, `out-of-tree consumption` in the UI |
 | `gate-self-check` | ubuntu-latest | Clang 18 | C++20 | `tools/verify_gates.sh` — proves each gate rejects a violation |
 | `nightly-fuzz-soak` | ubuntu-latest | Clang 18 | C++20 | 30 min per target, in its own scheduled workflow (*advisory*, opens an issue on a find) |
@@ -202,6 +202,19 @@ reject. Nothing in CI sets it, and under `CI=true` a missing cppcheck is an
 error rather than a note. Dependency headers under `_deps/` are not
 reported on, for the same reason they are declared `SYSTEM` for
 clang-tidy (§1).
+
+### The real clock in the deterministic suites
+
+`tools/lint.sh` also greps `tests/unit/` and `tests/component/` for a read of
+the real clock or a sleep: a standard clock's `now()`,
+`smply::system_clock()`, `std::this_thread::sleep_for`/`_until`. Those suites
+drive time with `ManualClock` ([`testing.md`](testing.md) §2), and a test that
+reads the real clock is slow and flaky under load or a sanitizer. A line that
+must read it carries `// lint: real clock -- <why>` on that line; only the two
+in `test_clock.cpp`, which test `system_clock()` itself, do. The grep failing
+to run (exit 2) is an error, not "no match". `verify_gates.sh` proves it
+rejects an unmarked read in `test_clock.cpp` itself and a sleep in the
+component suite, and passes the unmodified tree.
 
 ## 4. Formatting (required)
 

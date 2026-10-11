@@ -151,7 +151,6 @@ doing.
 | **The nightly fuzz soak dedupes on one open issue per target**, so a second, different crash in the same target is silent until the first issue is closed. | if finds become common |
 | **R5 cannot read a glob** (`server_simulator.*`), so a layout entry written with one is checked by nobody. | when a glob entry drifts |
 | **`protocol-notes.md` has two kinds of verification date**: read from source, and observed on a radio. Nothing marks which is which. A per-fact `[source]` / `[bench]` marker would make it checkable. | when a third kind of evidence appears |
-| **Nothing enforces that unit and component tests never read the real clock** (`testing.md` §2). A `lint.sh` grep for `steady_clock::now()` under `tests/unit/` and `tests/component/`, with a `verify_gates.sh` case proving it fires, would. | when a test is next found reading it |
 | **`-Wnull-dereference` is off for GCC** because of false positives inside libstdc++ under `-O2` (`cmake/warnings.cmake`). | when GCC stops false-positiving |
 | **`check_docs.py` R6 does not read a root `GLOSSARY.md`.** Its living-document list names the top-level files one by one, and the glossary `/domain-modeling` creates lazily (`docs/agents/domain.md`) is not among them. | when `GLOSSARY.md` is first created |
 | **`.claude/validate.py` is not run by CI**, so a skill update or a change to `tools/sources.sh` that breaks the Claude Code setup is caught only by whoever runs it. A step in the `docs` job would do; it needs only Python and clang-format. | if the setup drifts unnoticed |

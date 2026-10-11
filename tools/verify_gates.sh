@@ -221,6 +221,33 @@ rm -f "$WORK/transports/common/winrt_decoy.cpp" "$WORK/examples/cli_dfu/winrt_de
       "$WORK/tests/support/hil_decoy.cpp" "$WORK/transports/serial_port/win32_decoy.cpp" \
       "$WORK/tidy-stub"
 
+# 3c. The real clock in the unit and component suites (docs/testing.md
+# section 2). clang-tidy is stubbed again: this check is a grep in lint.sh, and
+# only lint.sh's verdict on it matters. The plant goes into test_clock.cpp,
+# the one file that may read the clock, to prove the exemption is the
+# per-line marker and not the file. A sleep goes into the component suite.
+# The mirror case first: the unmodified tree, marker lines included, passes.
+cat > "$WORK/tidy-stub" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "stub version 0.0"; fi
+exit 0
+STUB
+chmod +x "$WORK/tidy-stub"
+expect_ok "lint passes the unmodified tree's marked real-clock reads" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+printf 'static auto planted = std::chrono::steady_clock::now();\n' >> "$WORK/tests/unit/test_clock.cpp"
+expect_fail_matching "lint rejects an unmarked real-clock read, even in test_clock.cpp" \
+    "test_clock.cpp:[0-9]+:static auto planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
+printf 'static void planted() { std::this_thread::sleep_for(std::chrono::seconds{1}); }\n' \
+    >> "$WORK/tests/component/test_firmware_update.cpp"
+expect_fail_matching "lint rejects a sleep in the component suite" \
+    "test_firmware_update.cpp:[0-9]+:static void planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/component/test_firmware_update.cpp
+rm -f "$WORK/tidy-stub"
+
 # 4. Public header discipline: third-party include
 printf '#include <qcbor/qcbor.h>\n' >> "$WORK/include/smply/version.hpp.in"
 expect_fail "check_public_headers rejects a QCBOR include in a public header" \

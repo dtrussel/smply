@@ -62,6 +62,38 @@ winrt_exclude_pattern() {
 }
 WINRT_EXCLUDE="$(winrt_exclude_pattern)"
 
+# --- the real clock in the deterministic suites -----------------------------
+#
+# Unit and component tests drive time with ManualClock and never read the real
+# clock or sleep (docs/testing.md section 2): a test that does is slow, and
+# flaky under a loaded runner or a sanitizer.
+#
+# What it looks for: a standard clock's now(), smply::system_clock() (the
+# production Clock), and a sleep. tests/serial_port/ and tests/hil/ are out of
+# scope on purpose: real I/O is what they test.
+#
+# A line that must read the real clock -- the test of system_clock() itself --
+# says so on that line: `// lint: real clock -- <why>`. The marker is per line,
+# not per file, so a second, unexplained read in the same file still fails.
+#
+# grep's own failure (exit 2: a directory gone, a bad pattern) is an error, not
+# "no match": a check that cannot run must not read as clean.
+REAL_CLOCK_PATTERN='(steady_clock|system_clock|high_resolution_clock)::now|\bsystem_clock\(\)|this_thread::sleep_(for|until)'
+real_clock_rc=0
+real_clock=$(grep -rnE --include='*.cpp' --include='*.hpp' "$REAL_CLOCK_PATTERN" \
+                 tests/unit tests/component) || real_clock_rc=$?
+if [[ $real_clock_rc -gt 1 ]]; then
+    echo "error: the real-clock check could not run (grep exit $real_clock_rc)" >&2
+    status=1
+elif unmarked=$(grep -v 'lint: real clock' <<<"$real_clock"); then
+    echo "error: a unit or component test reads the real clock or sleeps;" >&2
+    echo "       drive time with ManualClock (docs/testing.md section 2):" >&2
+    echo "$unmarked" >&2
+    status=1
+else
+    echo "real clock: no unmarked read in tests/unit or tests/component"
+fi
+
 # --- clang-tidy (required) --------------------------------------------------
 CLANG_TIDY="${CLANG_TIDY:-clang-tidy}"
 if command -v "$CLANG_TIDY" >/dev/null 2>&1; then
