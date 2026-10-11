@@ -362,8 +362,23 @@ int main(int argc, char** argv)
 
     // --- the device: a real port, or the stub behind a pseudo-terminal -------
 
-    std::string image_path = options.image_path;
+    // What to send: a package's images, read before the device is set up, so a
+    // bad package fails before anything is opened. The demo image file is
+    // declared first because the inputs read it, so it must outlive them.
     DemoImageFile demo_file;
+    std::unique_ptr<UpdateInputs> inputs;
+    if (options.package_mode()) {
+        Result<std::unique_ptr<UpdateInputs>> read =
+            options.demo_package ? UpdateInputs::from_package_bytes(build_demo_two_image_package())
+                                 : UpdateInputs::from_package(options.package_path);
+        if (!read.has_value()) {
+            std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
+            return 1;
+        }
+        inputs = std::move(*read);
+    }
+
+    std::string image_path = options.image_path;
 #ifndef _WIN32
     std::optional<StubRig> rig;
 #endif
@@ -400,23 +415,16 @@ int main(int argc, char** argv)
 #endif
     }
 
-    // What to send: a package's images, or image 0 from one file or two (one
-    // build per slot). The demo file above must outlive it: it reads it.
-    const auto read_inputs = [&]() -> Result<std::unique_ptr<UpdateInputs>> {
-        if (options.demo_package) {
-            return UpdateInputs::from_package_bytes(build_demo_two_image_package());
+    // Or image 0 from one file or two (one build per slot).
+    if (!inputs) {
+        Result<std::unique_ptr<UpdateInputs>> opened =
+            UpdateInputs::from_files(image_path, options.image_secondary_path);
+        if (!opened.has_value()) {
+            std::cerr << "serial_dfu: " << to_string(opened.error()) << '\n';
+            return 1;
         }
-        if (!options.package_path.empty()) {
-            return UpdateInputs::from_package(options.package_path);
-        }
-        return UpdateInputs::from_files(image_path, options.image_secondary_path);
-    };
-    Result<std::unique_ptr<UpdateInputs>> read = read_inputs();
-    if (!read.has_value()) {
-        std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
-        return 1;
+        inputs = std::move(*opened);
     }
-    const std::unique_ptr<UpdateInputs> inputs = std::move(*read);
     for (const auto& [image, commit] : options.commits) {
         if (const Result<void> set = inputs->set_commit(image, commit); !set.has_value()) {
             std::cerr << "serial_dfu: --commit " << image << ": " << to_string(set.error()) << '\n';

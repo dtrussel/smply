@@ -47,6 +47,15 @@ constexpr std::size_t kChunkDataHeaderSize = bstr_header_size(limits::kUploadChu
 }
 
 /// The request that follows from the current state.
+/// A request the session's phase does not allow. The state is left as it is.
+[[nodiscard]] Step refuse(const char* why)
+{
+    return Step{.action = Action::Fail,
+                .request = {},
+                .error = Error{ErrorCode::InvalidState, why},
+                .match = {}};
+}
+
 [[nodiscard]] Step send_from(const UploadState& state, const UploadConfig& config)
 {
     UploadRequest request;
@@ -151,16 +160,10 @@ Result<std::uint32_t> compute_chunk_size(const ChunkBudget& budget, const FirstP
 Step plan_next(const UploadState& state, const UploadConfig& config)
 {
     if (state.phase == Phase::Failed) {
-        return Step{.action = Action::Fail,
-                    .request = {},
-                    .error = Error{ErrorCode::InvalidState, "upload: session already failed"},
-                    .match = {}};
+        return refuse("upload: session already failed");
     }
     if (state.phase == Phase::Suspended) {
-        return Step{.action = Action::Fail,
-                    .request = {},
-                    .error = Error{ErrorCode::InvalidState, "upload: session suspended"},
-                    .match = {}};
+        return refuse("upload: session suspended");
     }
     if (state.confirmed_off >= config.image_size) {
         // Nothing left to send. Reachable after a resume whose first packet
@@ -173,10 +176,7 @@ Step plan_next(const UploadState& state, const UploadConfig& config)
 Step resume(UploadState& state, const UploadConfig& config)
 {
     if (state.phase != Phase::Suspended) {
-        return Step{.action = Action::Fail,
-                    .request = {},
-                    .error = Error{ErrorCode::InvalidState, "upload: no suspended session"},
-                    .match = {}};
+        return refuse("upload: no suspended session");
     }
     state.first_packet_pending = true;
     state.phase = Phase::Idle;

@@ -101,6 +101,9 @@ public:
     explicit UpdateInputs(Token /*unused*/) noexcept {}
 
 private:
+    /// Keeps \p source for the life of the inputs, and returns it for a target.
+    ImageSource* adopt(std::unique_ptr<ImageSource> source);
+
     /// A package's bytes, which its sources view. Empty for files.
     std::vector<std::byte> bytes_;
     std::vector<std::unique_ptr<ImageSource>> sources_;

@@ -39,7 +39,7 @@ they run against the simulator and the stub device only.
 
 ## In progress
 
-[`update-inputs-plan.md`](update-inputs-plan.md): a suspended upload session, and one owner for an update's inputs. Its stages say what is done.
+Nothing. Pick the next item from the backlog below, by its "When".
 
 ## Acceptance gaps that need the hardware bench
 

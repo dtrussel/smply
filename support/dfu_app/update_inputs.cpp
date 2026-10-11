@@ -63,8 +63,7 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_files(const std::string
     if (!first.has_value()) {
         return fail(first.error());
     }
-    inputs->sources_.push_back(std::make_unique<FileImageSource>(std::move(*first)));
-    ImageSource* source = inputs->sources_.back().get();
+    ImageSource* source = inputs->adopt(std::make_unique<FileImageSource>(std::move(*first)));
 
     ImageSource* second_build = nullptr;
     if (!secondary.empty()) {
@@ -72,8 +71,7 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_files(const std::string
         if (!second.has_value()) {
             return fail(second.error());
         }
-        inputs->sources_.push_back(std::make_unique<FileImageSource>(std::move(*second)));
-        second_build = inputs->sources_.back().get();
+        second_build = inputs->adopt(std::make_unique<FileImageSource>(std::move(*second)));
     }
     inputs->targets_.push_back(ImageTarget{.image = 0,
                                            .source = source,
@@ -110,36 +108,40 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package(const std::stri
 
 Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package_bytes(std::vector<std::byte> bytes)
 {
-    auto update = std::make_unique<UpdateInputs>(Token{});
-    update->bytes_ = std::move(bytes);
+    auto inputs = std::make_unique<UpdateInputs>(Token{});
+    inputs->bytes_ = std::move(bytes);
     // Read from the object's own copy, so every view in the package points into
     // bytes that live as long as it does.
     const Result<dfu_package::DfuPackage> package =
-        dfu_package::read_package(ConstBytes{update->bytes_});
+        dfu_package::read_package(ConstBytes{inputs->bytes_});
     if (!package.has_value()) {
         return fail(package.error());
     }
 
     for (const dfu_package::PackageImage& image : package->images) {
-        update->sources_.push_back(std::make_unique<MemoryImageSource>(image.bytes));
-        ImageSource* source = update->sources_.back().get();
+        ImageSource* source = inputs->adopt(std::make_unique<MemoryImageSource>(image.bytes));
         // A direct-XIP image's second build, for its secondary slot: the
         // updater sends whichever matches the slot the device is not running
         // (ADR-0025).
         ImageSource* secondary = nullptr;
         if (image.secondary.has_value()) {
-            update->sources_.push_back(std::make_unique<MemoryImageSource>(image.secondary->bytes));
-            secondary = update->sources_.back().get();
+            secondary = inputs->adopt(std::make_unique<MemoryImageSource>(image.secondary->bytes));
         }
         // The coordinating-MCU default (docs/multi-image.md): the device's own
         // application is smply's to confirm, every other image the device's.
-        update->targets_.push_back(
+        inputs->targets_.push_back(
             ImageTarget{.image = image.image,
                         .source = source,
                         .commit = image.image == 0 ? CommitBy::Client : CommitBy::Device,
                         .secondary_source = secondary});
     }
-    return update;
+    return inputs;
+}
+
+ImageSource* UpdateInputs::adopt(std::unique_ptr<ImageSource> source)
+{
+    sources_.push_back(std::move(source));
+    return sources_.back().get();
 }
 
 Result<void> UpdateInputs::set_commit(std::uint32_t image, CommitBy commit)
