@@ -63,16 +63,25 @@ public:
 
     /// Reads the package file at \p path.
     ///
+    /// With \p expected_board, a board name or a board target
+    /// (docs/protocol-notes.md section 5), the package is then refused unless
+    /// every image was built for that board: `dfu_package::check_board()`. So
+    /// inputs for the wrong board never exist. Without it, no board is
+    /// compared.
+    ///
     /// \return `InvalidArgument` if it cannot be opened or read,
     ///         `MessageTooLarge` over `dfu_package::kMaxPackageSize` (checked
-    ///         before anything is allocated), or whatever `read_package()`
-    ///         refuses.
+    ///         before anything is allocated), whatever `read_package()`
+    ///         refuses, or whatever `check_board()` refuses, unchanged.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
-    from_package(const std::string& path);
+    from_package(const std::string& path,
+                 const std::optional<std::string>& expected_board = std::nullopt);
 
-    /// Takes a package already in memory.
+    /// Takes a package already in memory, checked against \p expected_board as
+    /// `from_package()` does.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
-    from_package_bytes(std::vector<std::byte> bytes);
+    from_package_bytes(std::vector<std::byte> bytes,
+                       const std::optional<std::string>& expected_board = std::nullopt);
 
     UpdateInputs(const UpdateInputs&) = delete;
     UpdateInputs(UpdateInputs&&) = delete;

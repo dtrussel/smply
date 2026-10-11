@@ -12,6 +12,7 @@
 #include "zip_builder.hpp"
 
 #include "dfu_app/update_inputs.hpp"
+#include "dfu_package/dfu_package.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 
@@ -156,6 +157,53 @@ TEST_CASE("a package file is read whole, and a bad one refused", "[dfu_app][inpu
     const auto refused = UpdateInputs::from_package(garbage.path());
     REQUIRE_FALSE(refused.has_value());
     CHECK(refused.error().code() == ErrorCode::MalformedMessage);
+}
+
+TEST_CASE("an expected board admits a package built for it, and refuses one that is not",
+          "[dfu_app][inputs][package][board]")
+{
+    // An application image naming a board name and a network-core image naming
+    // a board target, as nRF Connect SDK writes them (protocol-notes S60).
+    const std::vector<std::byte> archive = ZipBuilder{}
+                                               .add("app.bin", image(2))
+                                               .add("net.bin", image(6))
+                                               .add("manifest.json", std::string_view{R"({"files": [
+                     {"file": "app.bin", "image_index": "0", "board": "nrf5340dk"},
+                     {"file": "net.bin", "image_index": "1",
+                      "board": "nrf5340dk/nrf5340/cpunet"}]})"})
+                                               .build();
+
+    const auto unchecked = UpdateInputs::from_package_bytes(archive);
+    REQUIRE(unchecked.has_value());
+    const auto matched = UpdateInputs::from_package_bytes(archive, "nrf5340dk/nrf5340/cpuapp");
+    REQUIRE(matched.has_value());
+    const auto expected = (*unchecked)->targets();
+    const auto targets = (*matched)->targets();
+    REQUIRE(targets.size() == expected.size());
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        CHECK(targets[i].image == expected[i].image);
+        CHECK(targets[i].commit == expected[i].commit);
+        REQUIRE(targets[i].source != nullptr);
+        CHECK(targets[i].source->size() == expected[i].source->size());
+    }
+
+    // The refusal is check_board's, unchanged, and no inputs exist.
+    const auto refused = UpdateInputs::from_package_bytes(archive, "nrf54l15dk");
+    REQUIRE_FALSE(refused.has_value());
+    const auto package = smply::dfu_package::read_package(ConstBytes{archive});
+    REQUIRE(package.has_value());
+    const smply::Result<void> direct = smply::dfu_package::check_board(*package, "nrf54l15dk");
+    REQUIRE_FALSE(direct.has_value());
+    CHECK(refused.error() == direct.error());
+    CHECK(refused.error().code() == ErrorCode::InvalidArgument);
+
+    // From a file too.
+    const TempFile file;
+    file.write(archive);
+    CHECK(UpdateInputs::from_package(file.path(), "nrf5340dk").has_value());
+    const auto refused_file = UpdateInputs::from_package(file.path(), "nrf54l15dk");
+    REQUIRE_FALSE(refused_file.has_value());
+    CHECK(refused_file.error() == direct.error());
 }
 
 TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][inputs]")

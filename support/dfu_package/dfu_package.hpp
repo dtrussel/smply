@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace smply::dfu_package {
@@ -62,6 +63,8 @@ struct PackageBuild
     ConstBytes bytes;
     /// Its MCUboot header. Its version equals the first build's.
     McubootImageInfo header;
+    // No `board`: the manifest's equals the first build's, so
+    // `PackageImage::board` speaks for both.
     /// The global slot it is linked for, from the manifest's `slot`.
     std::uint32_t slot = 0;
 };
@@ -122,8 +125,33 @@ struct DfuPackage
 ///         revision, never the build number); `MalformedMessage`
 ///         for anything structurally wrong, a manifest that disagrees with
 ///         the zip or with an image's header, a direct-XIP pair whose builds
-///         differ in version, or a broken TLV area.
+///         differ in version or in `board` (compared as written, one present
+///         and one absent counting as different), or a broken TLV area.
 [[nodiscard]] Result<DfuPackage> read_package(ConstBytes archive);
+
+/// Refuses a package that was not built for the board \p expected names.
+///
+/// The comparison is by **board name** (docs/protocol-notes.md section 5):
+/// nRF Connect SDK's manifest writes a board name for the application image
+/// but, for a network-core image, the board string the build was given,
+/// usually a **board target** (S60). So each side is cut at its first `/` or
+/// `@`, and what is left is compared exactly and case-sensitively, with no
+/// alias handling. \p expected may therefore be a board name or a board
+/// target, with or without a revision.
+///
+/// Every image is checked, not only image 0, and an image whose manifest entry
+/// names no board is refused: an unknown board never counts as a match. The
+/// manifest is not authenticated, so this catches a package handed over by
+/// mistake, not one crafted to pass (docs/security.md).
+///
+/// \return `InvalidArgument` if \p expected is empty or has no board name
+///         before its first `/` or `@`, if an image names no board, or if an
+///         image names another board. A refusal's `Error::reason()` names the
+///         image index and, for a mismatch, the expected board name and the
+///         board string as the manifest wrote it. That text comes partly from
+///         the package: like a device's `rsn`, it is capped at
+///         `limits::kMaxReasonLength` and must be escaped before it is shown.
+[[nodiscard]] Result<void> check_board(const DfuPackage& package, std::string_view expected);
 
 /// The dependency TLVs of one signed image, whose header is \p header.
 ///

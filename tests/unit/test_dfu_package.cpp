@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,6 +32,7 @@ using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageVersion;
 using smply::Result;
+using smply::dfu_package::check_board;
 using smply::dfu_package::DfuPackage;
 using smply::dfu_package::ImageDependency;
 using smply::dfu_package::JsonValue;
@@ -499,6 +501,29 @@ TEST_CASE("the two builds of a direct-XIP image must be the same version", "[dfu
           ErrorCode::MalformedMessage);
 }
 
+TEST_CASE("the two builds of a direct-XIP image must name the same board", "[dfu_package][xip]")
+{
+    const std::vector<std::byte> slot0 = build_of(2, 64);
+    const std::vector<std::byte> slot1 = build_of(2, 80);
+    const auto verdict = [&](const std::string& board0, const std::string& board1) {
+        const std::string entries =
+            R"({"file": "app.signed.bin", "image_index": "0", "slot": "0")" + board0 + "}," +
+            R"({"file": "app_slot1_variant.signed.bin", "image_index": "0", "slot": "1")" + board1 +
+            "}";
+        return code_of(read_package(ConstBytes{xip_package(slot0, slot1, entries)}));
+    };
+    const std::string dk = R"(, "board": "nrf54l15dk")";
+    CHECK(verdict(dk, dk) == ErrorCode::Ok);
+    CHECK(verdict("", "") == ErrorCode::Ok);
+    CHECK(verdict(dk, R"(, "board": "nrf54lm20dk")") == ErrorCode::MalformedMessage);
+    // Compared as written: one build's board target against the other's board
+    // name is a disagreement too, so `PackageImage::board` speaks for both.
+    CHECK(verdict(dk, R"(, "board": "nrf54l15dk/nrf54l15/cpuapp")") == ErrorCode::MalformedMessage);
+    // One that says and one that does not differ.
+    CHECK(verdict(dk, "") == ErrorCode::MalformedMessage);
+    CHECK(verdict("", dk) == ErrorCode::MalformedMessage);
+}
+
 TEST_CASE("a QSPI split-image direct-XIP package is refused by name", "[dfu_package][xip]")
 {
     // Internal and external parts, each linked for both slots: two images
@@ -731,4 +756,133 @@ TEST_CASE("a package whose own images disagree is refused", "[dfu_package][tlv]"
     CHECK(verdict(6, 0, dependency(1, 6, 0, 0, 9)) == ErrorCode::Ok);
     // A dependency on an image outside the package is the device's to judge.
     CHECK(verdict(5, 0, dependency(2, 9, 0, 0, 0)) == ErrorCode::Ok);
+}
+
+// --- The board check ---------------------------------------------------------
+
+namespace {
+
+/// A package of an application image 0 and a network-core image 1 whose
+/// manifest says \p app_board and \p net_board; `std::nullopt` leaves `board`
+/// out of that entry. nRF Connect SDK writes a board name for the first and,
+/// usually, a board target for the second (protocol-notes S60).
+[[nodiscard]] std::vector<std::byte> boards_archive(const std::optional<std::string>& app_board,
+                                                    const std::optional<std::string>& net_board)
+{
+    const auto entry = [](const std::string& file, const std::string& index,
+                          const std::optional<std::string>& board) {
+        std::string text = R"({"file": ")" + file + R"(", "image_index": ")" + index + '"';
+        if (board.has_value()) {
+            text += R"(, "board": ")" + *board + '"';
+        }
+        return text + "}";
+    };
+    return ZipBuilder{}
+        .add("app.bin", image(2))
+        .add("net.bin", image(6))
+        .add("manifest.json", "{\"files\": [" + entry("app.bin", "0", app_board) + ", " +
+                                  entry("net.bin", "1", net_board) + "]}")
+        .build();
+}
+
+/// `check_board()` of the package \p archive holds, against \p expected.
+[[nodiscard]] Result<void> board_verdict(const std::vector<std::byte>& archive,
+                                         std::string_view expected)
+{
+    const Result<DfuPackage> package = read_package(ConstBytes{archive});
+    REQUIRE(package.has_value());
+    return check_board(*package, expected);
+}
+
+/// Whether the refusal's text mentions \p part.
+[[nodiscard]] bool says(const Result<void>& result, std::string_view part)
+{
+    return !result.has_value() && result.error().reason().find(part) != std::string_view::npos;
+}
+
+} // namespace
+
+TEST_CASE("check_board accepts a package whose every image names the expected board name",
+          "[dfu_package][board]")
+{
+    CHECK(board_verdict(boards_archive("nrf5340dk", "nrf5340dk"), "nrf5340dk").has_value());
+}
+
+TEST_CASE("check_board compares board names, so a board target matches on either side",
+          "[dfu_package][board]")
+{
+    // The network-core image as nRF Connect SDK writes it: a board target.
+    const std::vector<std::byte> dual = boards_archive("nrf5340dk", "nrf5340dk/nrf5340/cpunet");
+    CHECK(board_verdict(dual, "nrf5340dk").has_value());
+    // The expectation copied from a build log, or from a device's `info`.
+    CHECK(board_verdict(dual, "nrf5340dk/nrf5340/cpuapp").has_value());
+    // A revision is ignored on either side.
+    CHECK(board_verdict(dual, "nrf5340dk@0.9.0/nrf5340/cpuapp").has_value());
+    const std::vector<std::byte> revised =
+        boards_archive("nrf5340dk@2.0.0", "nrf5340dk@2.0.0/nrf5340/cpunet");
+    CHECK(board_verdict(revised, "nrf5340dk").has_value());
+    CHECK(board_verdict(revised, "nrf5340dk@1.0.0").has_value());
+}
+
+TEST_CASE("check_board refuses an image built for another board, naming it and both boards",
+          "[dfu_package][board]")
+{
+    SECTION("image 0")
+    {
+        const Result<void> verdict = board_verdict(
+            boards_archive("nrf54l15dk", "nrf5340dk/nrf5340/cpunet"), "nrf5340dk/nrf5340/cpuapp");
+        REQUIRE_FALSE(verdict.has_value());
+        CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
+        CHECK(says(verdict, "image 0"));
+        CHECK(says(verdict, "\"nrf5340dk\""));
+        CHECK(says(verdict, "\"nrf54l15dk\""));
+    }
+    SECTION("image 1 only: a partly wrong package is still wrong")
+    {
+        const Result<void> verdict =
+            board_verdict(boards_archive("nrf5340dk", "nrf5340bsim/nrf5340/cpunet"), "nrf5340dk");
+        REQUIRE_FALSE(verdict.has_value());
+        CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
+        CHECK(says(verdict, "image 1"));
+        CHECK(says(verdict, "\"nrf5340dk\""));
+        // The board string as the manifest wrote it, not cut.
+        CHECK(says(verdict, "\"nrf5340bsim/nrf5340/cpunet\""));
+    }
+    SECTION("no case folding")
+    {
+        CHECK_FALSE(
+            board_verdict(boards_archive("nRF5340DK", "nrf5340dk"), "nrf5340dk").has_value());
+    }
+}
+
+TEST_CASE("check_board refuses an image whose manifest names no board", "[dfu_package][board]")
+{
+    const Result<void> verdict =
+        board_verdict(boards_archive("nrf5340dk", std::nullopt), "nrf5340dk");
+    REQUIRE_FALSE(verdict.has_value());
+    CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
+    CHECK(says(verdict, "image 1"));
+
+    // An empty board string names no board name either.
+    CHECK_FALSE(board_verdict(boards_archive("nrf5340dk", ""), "nrf5340dk").has_value());
+}
+
+TEST_CASE("check_board refuses an expectation with no board name", "[dfu_package][board]")
+{
+    const std::vector<std::byte> archive = boards_archive("nrf5340dk", "nrf5340dk");
+    const std::string_view expected = GENERATE(std::string_view{""}, std::string_view{"/cpuapp"},
+                                               std::string_view{"@1.0.0/nrf5340"});
+    const Result<void> verdict = board_verdict(archive, expected);
+    REQUIRE_FALSE(verdict.has_value());
+    CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
+}
+
+TEST_CASE("check_board's refusal is bounded however long the manifest's board is",
+          "[dfu_package][board]")
+{
+    const Result<void> verdict =
+        board_verdict(boards_archive(std::string(4096, 'x'), "nrf5340dk"), "nrf5340dk");
+    REQUIRE_FALSE(verdict.has_value());
+    CHECK(verdict.error().reason().size() <= smply::limits::kMaxReasonLength);
+    CHECK(says(verdict, "image 0"));
 }

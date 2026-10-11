@@ -122,11 +122,11 @@ refusal in `read_package()`, the optional expected board on
 `UpdateInputs::from_package` and `from_package_bytes`, and the fuzz target's
 call, with their header documentation. No tool or example changes.
 
-- [ ] `check_board` and its unit tests, as Testing Decisions lists them
-- [ ] `read_package()` refuses a direct-XIP pair whose builds disagree on `board`, tested
-- [ ] `UpdateInputs`' package factories take the expected board, tested through `from_package_bytes`
-- [ ] `fuzz_dfu_package` calls `check_board` on every package it reads
-- [ ] Every Linux preset builds and `ctest` passes; format, lint and the `check_*.py` gates pass
+- [x] `check_board` and its unit tests, as Testing Decisions lists them
+- [x] `read_package()` refuses a direct-XIP pair whose builds disagree on `board`, tested
+- [x] `UpdateInputs`' package factories take the expected board, tested through `from_package_bytes`
+- [x] `fuzz_dfu_package` calls `check_board` on every package it reads
+- [x] Every Linux preset builds and `ctest` passes; format, lint and the `check_*.py` gates pass
 
 ### Stage 2: `--board` in the tools, the demo packages and the docs
 

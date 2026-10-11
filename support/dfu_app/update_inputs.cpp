@@ -80,7 +80,9 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_files(const std::string
     return inputs;
 }
 
-Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package(const std::string& path)
+Result<std::unique_ptr<UpdateInputs>>
+UpdateInputs::from_package(const std::string& path,
+                           const std::optional<std::string>& expected_board)
 {
     std::ifstream file{path, std::ios::binary | std::ios::ate};
     if (!file) {
@@ -103,10 +105,12 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package(const std::stri
     std::ranges::transform(raw, bytes.begin(), [](char c) {
         return static_cast<std::byte>(static_cast<unsigned char>(c));
     });
-    return from_package_bytes(std::move(bytes));
+    return from_package_bytes(std::move(bytes), expected_board);
 }
 
-Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package_bytes(std::vector<std::byte> bytes)
+Result<std::unique_ptr<UpdateInputs>>
+UpdateInputs::from_package_bytes(std::vector<std::byte> bytes,
+                                 const std::optional<std::string>& expected_board)
 {
     auto inputs = std::make_unique<UpdateInputs>(Token{});
     inputs->bytes_ = std::move(bytes);
@@ -116,6 +120,12 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_package_bytes(std::vect
         dfu_package::read_package(ConstBytes{inputs->bytes_});
     if (!package.has_value()) {
         return fail(package.error());
+    }
+    if (expected_board.has_value()) {
+        if (Result<void> board = dfu_package::check_board(*package, *expected_board);
+            !board.has_value()) {
+            return fail(board.error());
+        }
     }
 
     for (const dfu_package::PackageImage& image : package->images) {
