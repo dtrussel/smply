@@ -24,6 +24,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -37,6 +40,54 @@ namespace smply::transport {
 namespace bluetooth = winrt::Windows::Devices::Bluetooth;
 namespace gatt = winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
 namespace streams = winrt::Windows::Storage::Streams;
+
+namespace {
+
+class HresultCategory final : public std::error_category
+{
+public:
+    [[nodiscard]] const char* name() const noexcept override
+    {
+        return "hresult";
+    }
+
+    [[nodiscard]] std::string message(int value) const override
+    {
+        // The code first, always: it is what a search or a bug report needs,
+        // and the system may have no text for it.
+        constexpr std::string_view digits = "0123456789ABCDEF";
+        const auto bits = static_cast<std::uint32_t>(value);
+        std::string out = "HRESULT 0x";
+        for (int shift = 28; shift >= 0; shift -= 4) {
+            out += digits[(bits >> shift) & 0xFU];
+        }
+        try {
+            const std::string text =
+                winrt::to_string(winrt::hresult_error{winrt::hresult{value}}.message());
+            const std::size_t end = text.find_last_not_of(" \r\n");
+            if (end != std::string::npos) {
+                out += ": ";
+                out.append(text, 0, end + 1);
+            }
+        } catch (...) { // NOLINT(bugprone-empty-catch) -- the hex code is enough
+        }
+        return out;
+    }
+};
+
+/// The `HRESULT` behind a caught `hresult_error`, as an OS diagnostic.
+[[nodiscard]] std::error_code os_error_of(const winrt::hresult_error& failure) noexcept
+{
+    return std::error_code{static_cast<std::int32_t>(failure.code()), hresult_category()};
+}
+
+} // namespace
+
+const std::error_category& hresult_category() noexcept
+{
+    static const HresultCategory category;
+    return category;
+}
 
 namespace {
 
@@ -324,9 +375,10 @@ winrt::fire_and_forget write_message(std::shared_ptr<State> state)
                     break;
                 }
             }
-        } catch (const winrt::hresult_error&) {
+        } catch (const winrt::hresult_error& stack_failure) {
             failure =
-                Error{ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack failed a write"};
+                Error{ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack failed a write"}
+                    .with_os_error(os_error_of(stack_failure));
             fatal = true;
         } catch (...) {
             // Nothing may escape a detached coroutine: fire_and_forget's
@@ -505,8 +557,9 @@ void subscribe(const std::shared_ptr<State>& state)
         if (subscribed != gatt::GattCommunicationStatus::Success) {
             return fail(ErrorCode::TransportError, "winrt_ble: the device refused notifications");
         }
-    } catch (const winrt::hresult_error&) {
-        return fail(ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack raised an error");
+    } catch (const winrt::hresult_error& stack_failure) {
+        return fail(Error{ErrorCode::Disconnected, "winrt_ble: the Bluetooth stack raised an error"}
+                        .with_os_error(os_error_of(stack_failure)));
     }
 
     return {};

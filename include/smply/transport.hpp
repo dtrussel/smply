@@ -68,6 +68,10 @@ public:
     /// The link is still usable; a subsequent `send()` may succeed. Use this
     /// for a failed write or a transient stack error, and `on_disconnected()`
     /// when the link is actually gone.
+    ///
+    /// A failure that came from an OS call carries that call's error in
+    /// `Error::os_error()` (ADR-0026), here and in `on_disconnected()`. The
+    /// core passes it on untouched and never sets it.
     virtual void on_transport_error(Error error) = 0;
 
     /// The link is gone. Terminal for this transport instance.

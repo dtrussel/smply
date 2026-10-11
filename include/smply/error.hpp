@@ -8,7 +8,7 @@
 /// Errors are values, not strings and not bare integers. `ErrorCode` is the
 /// machine-readable category callers switch on; `MgmtError` preserves the
 /// device's own numbers together with the group they must be interpreted
-/// against; `reason` and `where` exist only for diagnostics.
+/// against; `reason`, `os_error` and `where` exist only for diagnostics.
 
 #include "smply/group.hpp"
 
@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace smply {
@@ -125,8 +126,9 @@ enum class SmpError : std::uint16_t
 /// diagnostic context.
 ///
 /// Comparison covers `code`, `mgmt` and `reason`. It deliberately excludes
-/// `where`, which is a logging aid rather than part of the error's identity --
-/// two failures of the same kind raised at different call sites are equal.
+/// `where` and `os_error`, which are diagnostics rather than part of the
+/// error's identity -- two failures of the same kind raised at different call
+/// sites, or behind different OS error numbers, are equal.
 class Error
 {
 public:
@@ -166,6 +168,19 @@ public:
         return reason_;
     }
 
+    /// The operating system's error behind a transport failure: `errno`,
+    /// `GetLastError()` or an `HRESULT`, with the category that numbers it
+    /// (ADR-0026). Empty when there is none.
+    ///
+    /// Only a transport adapter sets this. The core makes no OS calls, so it
+    /// never sets or reads it, and passes a transport's `Error` on with it
+    /// intact. For logs and bug reports only; never compared, and never a
+    /// substitute for switching on `code()`.
+    [[nodiscard]] const std::error_code& os_error() const noexcept
+    {
+        return os_error_;
+    }
+
     /// The static call-site tag, or nullptr. For logs only; never compared.
     [[nodiscard]] const char* where() const noexcept
     {
@@ -186,6 +201,20 @@ public:
         return std::move(*this);
     }
 
+    /// Attaches the OS diagnostic. Chainable. For transport adapters.
+    Error& with_os_error(std::error_code os_error) & noexcept
+    {
+        os_error_ = os_error;
+        return *this;
+    }
+
+    /// \overload
+    Error&& with_os_error(std::error_code os_error) && noexcept
+    {
+        os_error_ = os_error;
+        return std::move(*this);
+    }
+
     /// True when this represents an actual failure.
     [[nodiscard]] bool failed() const noexcept
     {
@@ -194,7 +223,8 @@ public:
 
     [[nodiscard]] friend bool operator==(const Error& lhs, const Error& rhs) noexcept
     {
-        // `where_` is excluded deliberately: see the class comment.
+        // `where_` and `os_error_` are excluded deliberately: see the class
+        // comment.
         return lhs.code_ == rhs.code_ && lhs.mgmt_ == rhs.mgmt_ && lhs.reason_ == rhs.reason_;
     }
 
@@ -202,6 +232,7 @@ private:
     ErrorCode code_{ErrorCode::Ok};
     std::optional<MgmtError> mgmt_;
     std::string reason_;
+    std::error_code os_error_;
     const char* where_{nullptr};
 };
 

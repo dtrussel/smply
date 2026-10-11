@@ -19,6 +19,25 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ## [Unreleased]
 
+### Added
+
+* **`Error::os_error()`**, the operating system's own error behind a
+  transport failure, as a `std::error_code`, and `with_os_error()` to attach it
+  (ADR-0026, amending ADR-0002). The serial port adapter attaches `errno` or
+  `GetLastError()`, and the WinRT adapter the `HRESULT` of every
+  `hresult_error` it catches, in the new `smply::transport::hresult_category()`.
+  `to_string(const Error&)` renders it. It is a diagnostic: `operator==`
+  ignores it, as it ignores `where()`, and the core never sets it.
+
+### Fixed
+
+* **The weekly OSV scan checked nothing.** OSV-Scanner counted the SBOM's two
+  `pkg:github` packages and then dropped both as unscannable, and the job
+  reported success. `osv.yml` now runs `tools/osv_query.py`, which asks OSV
+  about each dependency by its pinned commit and fails when it establishes
+  nothing, including when a canary commit OSV is known to flag comes back
+  clean. Findings stay advisory.
+
 ## [0.3.0] - 2026-10-09
 
 A feature release. **smply now asks the device which MCUboot mode it runs**

@@ -23,7 +23,7 @@ ADR bodies record the context of their day, including development-phase IDs
 | ADR | Title | Status |
 | --- | ----- | ------ |
 | [0001](ADR-0001-cpp-standard.md) | C++20 as the language baseline | Accepted |
-| [0002](ADR-0002-result-and-error-type.md) | `Result<T>` + structured `Error` | Accepted |
+| [0002](ADR-0002-result-and-error-type.md) | `Result<T>` + structured `Error` | Accepted; amended by 0026 |
 | [0003](ADR-0003-async-model.md) | Sans-IO callbacks with an application-driven pump | Accepted |
 | [0004](ADR-0004-threading-model.md) | Single client context, no internal threads | Accepted |
 | [0005](ADR-0005-transport-abstraction.md) | Abstract `Transport`: whole message out, byte stream in | Accepted, qualified on hardware; amended by 0024 |
@@ -47,3 +47,4 @@ ADR bodies record the context of their day, including development-phase IDs
 | [0023](ADR-0023-lost-link-around-the-confirm.md) | A lost link or answer around the confirm is recovered by re-reading the device | Accepted |
 | [0024](ADR-0024-transport-message-overhead.md) | A transport reports what the device's buffer spends beyond the message | Accepted; amends 0005 |
 | [0025](ADR-0025-bootloader-mode-aware-update.md) | The updater follows the MCUboot mode the device reports | Accepted |
+| [0026](ADR-0026-os-diagnostic-on-error.md) | An `Error` carries the OS diagnostic behind a transport failure | Accepted; amends 0002 |

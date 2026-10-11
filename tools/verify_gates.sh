@@ -221,6 +221,45 @@ rm -f "$WORK/transports/common/winrt_decoy.cpp" "$WORK/examples/cli_dfu/winrt_de
       "$WORK/tests/support/hil_decoy.cpp" "$WORK/transports/serial_port/win32_decoy.cpp" \
       "$WORK/tidy-stub"
 
+# 3c. The real clock in the unit and component suites (docs/testing.md
+# section 2). clang-tidy is stubbed again: this check is a grep in lint.sh, and
+# only lint.sh's verdict on it matters. The plant goes into test_clock.cpp,
+# the one file that may read the clock, to prove the exemption is the
+# per-line marker and not the file. A sleep goes into the component suite.
+# The mirror case first: the unmodified tree, marker lines included, passes.
+cat > "$WORK/tidy-stub" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "stub version 0.0"; fi
+exit 0
+STUB
+chmod +x "$WORK/tidy-stub"
+expect_ok "lint passes the unmodified tree's marked real-clock reads" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+printf 'static auto planted = std::chrono::steady_clock::now();\n' >> "$WORK/tests/unit/test_clock.cpp"
+expect_fail_matching "lint rejects an unmarked real-clock read, even in test_clock.cpp" \
+    "test_clock.cpp:[0-9]+:static auto planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
+printf 'static void planted() { std::this_thread::sleep_for(std::chrono::seconds{1}); }\n' \
+    >> "$WORK/tests/component/test_firmware_update.cpp"
+expect_fail_matching "lint rejects a sleep in the component suite" \
+    "test_firmware_update.cpp:[0-9]+:static void planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/component/test_firmware_update.cpp
+printf 'static auto planted = std::chrono::steady_clock::now(); // lint: real clock --\n' \
+    >> "$WORK/tests/unit/test_clock.cpp"
+expect_fail_matching "lint rejects a real-clock marker that gives no reason" \
+    "test_clock.cpp:[0-9]+:static auto planted" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
+# With no real-clock read at all -- the marked lines removed -- the grep
+# matches nothing, and that must read as clean, not as an empty violation.
+sed -i '/lint: real clock/d' "$WORK/tests/unit/test_clock.cpp"
+expect_ok "lint passes a tree with no real-clock read at all" \
+    env SMPLY_LINT_SKIP_CPPCHECK=1 CLANG_TIDY=./tidy-stub tools/lint.sh build
+restore tests/unit/test_clock.cpp
+rm -f "$WORK/tidy-stub"
+
 # 4. Public header discipline: third-party include
 printf '#include <qcbor/qcbor.h>\n' >> "$WORK/include/smply/version.hpp.in"
 expect_fail "check_public_headers rejects a QCBOR include in a public header" \
@@ -432,6 +471,29 @@ EOF
 expect_fail "sbom.py --check rejects a dependency with no licence entry" \
     python3 tools/sbom.py --check
 restore cmake/dependencies.cmake
+
+# The OSV scan must not pass having checked nothing. That is exactly what the
+# OSV-Scanner action did for weeks: it dropped both pkg:github packages as
+# "unscannable" and reported success. tools/osv_query.py answers from a saved
+# response here, so each case runs without the network. The SBOM has two
+# pinned dependencies, so three questions are asked: two, then the canary.
+python3 "$WORK/tools/sbom.py" -o "$SCRATCH/osv-sbom.json" >/dev/null 2>&1
+echo '{"packages": [{"name": "smply"}]}' > "$SCRATCH/osv-no-pins.json"
+echo '{"results": [{}, {}, {"vulns": [{"id": "CANARY"}]}]}' > "$SCRATCH/osv-healthy.json"
+echo '{"results": [{"vulns": [{"id": "GHSA-x"}]}, {}, {"vulns": [{"id": "CANARY"}]}]}' \
+    > "$SCRATCH/osv-finding.json"
+echo '{"results": [{}, {}, {}]}' > "$SCRATCH/osv-blind.json"
+echo '{"results": [{}, {"vulns": [{"id": "CANARY"}]}]}' > "$SCRATCH/osv-short.json"
+expect_ok "osv_query passes a healthy answer" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-healthy.json"
+expect_ok "osv_query reports a finding without failing (advisory, ADR-0011)" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-finding.json"
+expect_fail_matching "osv_query rejects an SBOM with no pinned commit" "pins no commit" \
+    python3 tools/osv_query.py "$SCRATCH/osv-no-pins.json" --response "$SCRATCH/osv-healthy.json"
+expect_fail_matching "osv_query rejects a clean canary: the query is blind" "canary" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-blind.json"
+expect_fail_matching "osv_query rejects an answer that skips a question" "result\(s\) to 3" \
+    python3 tools/osv_query.py "$SCRATCH/osv-sbom.json" --response "$SCRATCH/osv-short.json"
 
 # 18. The export.
 #

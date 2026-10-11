@@ -271,6 +271,14 @@ jobs:
       - name: Documentation
         run: python3 tools/check_docs.py --verbose
 
+      # The shared Claude Code setup (.claude/, docs/agents/skills.md): skill
+      # frontmatter, vendored-skill hashes, rule paths, and the format hook,
+      # whose idea of "our sources" must equal tools/sources.sh. A skill update
+      # or a sources.sh change can break it without touching anything else
+      # this job checks. Needs only Python, git and clang-format, all above.
+      - name: Claude Code setup
+        run: python3 .claude/validate.py
+
   gate-self-check:
     name: gates actually fail on violations
     runs-on: ubuntu-latest

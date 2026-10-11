@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -16,6 +17,32 @@ using smply::Error;
 using smply::ErrorCode;
 using smply::Group;
 using smply::MgmtError;
+
+namespace {
+
+/// A category with a fixed name and text, so a rendering can be checked
+/// against a literal on every platform.
+class TestOsCategory final : public std::error_category
+{
+public:
+    [[nodiscard]] const char* name() const noexcept override
+    {
+        return "test-os";
+    }
+
+    [[nodiscard]] std::string message(int /*value*/) const override
+    {
+        return "the port is on fire";
+    }
+};
+
+const std::error_category& test_os_category() noexcept
+{
+    static const TestOsCategory category;
+    return category;
+}
+
+} // namespace
 
 TEST_CASE("a default-constructed Error is not a failure", "[error]")
 {
@@ -26,6 +53,7 @@ TEST_CASE("a default-constructed Error is not a failure", "[error]")
     REQUIRE_FALSE(error.mgmt().has_value());
     REQUIRE(error.reason().empty());
     REQUIRE(error.where() == nullptr);
+    REQUIRE_FALSE(error.os_error());
 }
 
 TEST_CASE("an Error carries its code and call site", "[error]")
@@ -128,6 +156,41 @@ TEST_CASE("the call site is excluded from comparison", "[error]")
     REQUIRE(Error{ErrorCode::Timeout, "here"} == Error{ErrorCode::Timeout, nullptr});
 }
 
+TEST_CASE("with_os_error attaches the OS diagnostic and chains", "[error]")
+{
+    const std::error_code eio = std::make_error_code(std::errc::io_error);
+
+    SECTION("on a temporary, for `return Error{...}.with_os_error(...)`")
+    {
+        const Error error = Error{ErrorCode::Disconnected, "port"}.with_os_error(eio);
+        REQUIRE(error.os_error() == eio);
+        REQUIRE(error.code() == ErrorCode::Disconnected);
+        REQUIRE(std::string_view{error.where()} == "port");
+    }
+
+    SECTION("on a named error, alongside the device's reason")
+    {
+        Error error{ErrorCode::TransportError};
+        error.with_os_error(eio).with_reason("unused here");
+        REQUIRE(error.os_error() == eio);
+        REQUIRE(error.reason() == "unused here");
+    }
+}
+
+TEST_CASE("the OS diagnostic is excluded from comparison", "[error]")
+{
+    // Two disconnects are the same failure to control flow whichever errno lay
+    // behind them; os_error is a diagnostic, like `where` (ADR-0026).
+    const Error eio =
+        Error{ErrorCode::Disconnected}.with_os_error(std::make_error_code(std::errc::io_error));
+    const Error enodev = Error{ErrorCode::Disconnected}.with_os_error(
+        std::make_error_code(std::errc::no_such_device));
+
+    REQUIRE(eio == enodev);
+    REQUIRE(eio == Error{ErrorCode::Disconnected});
+    REQUIRE_FALSE(eio == Error{ErrorCode::TransportError}.with_os_error(eio.os_error()));
+}
+
 TEST_CASE("every ErrorCode has a distinct, non-empty name", "[error]")
 {
     const std::vector<ErrorCode> all{
@@ -211,6 +274,21 @@ TEST_CASE("to_string(Error) renders the category, device detail and context", "[
         const std::string text =
             smply::to_string(Error{ErrorCode::ProtocolError}.with_reason("secondary slot in use"));
         REQUIRE(text.find("secondary slot in use") != std::string::npos);
+    }
+
+    SECTION("the OS diagnostic names its category, number and text")
+    {
+        const std::string text = smply::to_string(Error{ErrorCode::TransportError}.with_os_error(
+            std::error_code{42, test_os_category()}));
+        REQUIRE(text == "transport error [os: test-os:42 the port is on fire]");
+    }
+
+    SECTION("the OS diagnostic sits between the device detail and the call site")
+    {
+        const std::string text =
+            smply::to_string(Error{ErrorCode::Disconnected, "serial"}.with_os_error(
+                std::error_code{5, test_os_category()}));
+        REQUIRE(text == "disconnected [os: test-os:5 the port is on fire] (at serial)");
     }
 }
 

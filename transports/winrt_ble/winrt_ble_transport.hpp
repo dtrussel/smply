@@ -47,8 +47,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <system_error>
 
 namespace smply::transport {
+
+/// The category of a WinRT `HRESULT`, as this adapter attaches it to
+/// `Error::os_error()` (ADR-0026). Every `winrt::hresult_error` the adapter
+/// catches is reported with its code in this category, so a caller can tell an
+/// `HRESULT` from an `errno` and log it. `message()` gives the code in hex and
+/// the system's text for it.
+[[nodiscard]] const std::error_category& hresult_category() noexcept;
 
 /// Everything about the adapter a caller may choose.
 struct WinRtBleConfig

@@ -35,7 +35,7 @@ library dependency — is unaffected.
 | **cppcheck** | complementary static analysis | GPL-3.0 (*tool only, never linked or copied from*) | n/a |
 | **libFuzzer** | fuzzing (part of Clang) | Apache-2.0 WITH LLVM-exception | n/a |
 | **gcovr / lcov / gcov** | coverage (`tools/coverage.sh` uses whichever is present) | Apache-2.0 / GPL-2.0 (*tools only*) | n/a |
-| **OSV-Scanner** | vulnerability monitoring | Apache-2.0 | n/a |
+| **OSV API** (`api.osv.dev`, queried by `tools/osv_query.py`) | vulnerability monitoring | service, no code consumed | n/a |
 
 Note on GPL tools: cppcheck and lcov are *executed*, never linked, and no code
 is copied from them. This keeps the shipped artefact free of copyleft

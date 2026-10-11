@@ -30,6 +30,9 @@
 #include <cstddef>
 #include <iostream>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <system_error>
 
 namespace {
 
@@ -70,6 +73,14 @@ int main()
         check(too_small.error().code() == ErrorCode::InvalidArgument,
               "and rejected as InvalidArgument");
     }
+
+    // The HRESULT category the adapter attaches to what it catches (ADR-0026).
+    // E_ACCESSDENIED, spelled as a number so this needs no Windows header.
+    const std::error_code denied{static_cast<int>(0x80070005U),
+                                 smply::transport::hresult_category()};
+    check(std::string_view{denied.category().name()} == "hresult", "the category is named hresult");
+    check(denied.message().find("0x80070005") != std::string::npos,
+          "an HRESULT's message carries its code in hex");
 
     // No device has address 0. What matters is that this returns a Result --
     // whatever it says -- rather than crashing, throwing out of a noexcept

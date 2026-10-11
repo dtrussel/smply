@@ -138,6 +138,8 @@ never rewrites anything, and it checks only the file just edited.
 python3 .claude/validate.py
 ```
 
+CI runs it too, in the `gates` job, on every push.
+
 It checks every skill's frontmatter against the Agent Skills specification,
 that the files each skill links to exist, that every skill another one calls
 is installed, that the copies still match `skills-lock.json`, that the hook

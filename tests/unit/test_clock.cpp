@@ -70,7 +70,7 @@ TEST_CASE("ManualClock is usable through the Clock interface", "[clock]")
 
 TEST_CASE("system_clock is monotonic and stable in identity", "[clock]")
 {
-    const smply::Clock& clock = smply::system_clock();
+    const smply::Clock& clock = smply::system_clock(); // lint: real clock -- under test
 
     // The one place a real clock is read: proving the production Clock works.
     const auto first = clock.now();
@@ -78,5 +78,5 @@ TEST_CASE("system_clock is monotonic and stable in identity", "[clock]")
     REQUIRE(second >= first);
 
     // The reference is to a single static instance.
-    REQUIRE(&smply::system_clock() == &clock);
+    REQUIRE(&smply::system_clock() == &clock); // lint: real clock -- under test
 }

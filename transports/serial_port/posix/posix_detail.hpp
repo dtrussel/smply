@@ -34,6 +34,9 @@ namespace smply::transport::posix {
 /// anything else | `TransportError` | Includes `EACCES` and `EBUSY`: the port exists but cannot be
 /// used. |
 ///
+/// The `errno` itself travels in `Error::os_error()`, in
+/// `std::generic_category()` (ADR-0026).
+///
 /// \param where A static, literal call-site tag, as `Error` requires.
 [[nodiscard]] Error error_from_errno(int error_number, const char* where) noexcept;
 

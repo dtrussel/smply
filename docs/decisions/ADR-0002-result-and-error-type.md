@@ -1,6 +1,8 @@
 # ADR-0002 — `Result<T>` plus a structured `Error`
 
-**Status:** Accepted (2026-09-04)
+**Status:** Accepted (2026-09-04); amended by
+[ADR-0026](ADR-0026-os-diagnostic-on-error.md) (2026-10-11), which adds a fifth
+part, the OS diagnostic behind a transport failure (`os_error()`)
 
 ## Context
 
