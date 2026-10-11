@@ -129,6 +129,16 @@ struct DfuPackage
 ///         and one absent counting as different), or a broken TLV area.
 [[nodiscard]] Result<DfuPackage> read_package(ConstBytes archive);
 
+/// The board name of \p board, which is a board name or a board target:
+/// everything before its first `/` or `@` (docs/protocol-notes.md section 5).
+/// `"nrf5340dk@2.0.0/nrf5340/cpunet"` and `"nrf5340dk"` both give
+/// `"nrf5340dk"`. Empty when \p board is empty or starts with `/` or `@`,
+/// which names no board. The result is a view into \p board.
+///
+/// This is the cut `check_board()` applies to both sides, and the one a tool
+/// uses to reject an expectation `check_board()` would refuse.
+[[nodiscard]] std::string_view board_name(std::string_view board) noexcept;
+
 /// Refuses a package that was not built for the board \p expected names.
 ///
 /// The comparison is by **board name** (docs/protocol-notes.md section 5):

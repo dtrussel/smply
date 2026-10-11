@@ -266,13 +266,6 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
     return {};
 }
 
-/// The board name of \p board, a board name or a board target: everything
-/// before its first `/` or `@` (protocol-notes section 5).
-[[nodiscard]] std::string_view board_name(std::string_view board) noexcept
-{
-    return board.substr(0, board.find_first_of("/@"));
-}
-
 /// A board refusal: \p where for logs, and \p text, which quotes the package,
 /// capped as a device's `rsn` is (security.md, T12).
 [[nodiscard]] unexpected<Error> board_refusal(const char* where, std::string text)
@@ -284,6 +277,11 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
 }
 
 } // namespace
+
+std::string_view board_name(std::string_view board) noexcept
+{
+    return board.substr(0, board.find_first_of("/@"));
+}
 
 Result<void> check_board(const DfuPackage& package, std::string_view expected)
 {

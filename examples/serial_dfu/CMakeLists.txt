@@ -20,6 +20,7 @@ target_link_libraries(serial_dfu
         smply::util
         smply::serial_port
         smply::dfu_app
+        smply::dfu_package # board_name(): --board is checked as check_board cuts it
         smply_example_stub
         smply_internal_options
 )
@@ -69,6 +70,24 @@ if(SMPLY_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(serial_dfu_pty_package PROPERTIES
         PASS_REGULAR_EXPRESSION
             "serial_dfu: Completed reset=grace links=2 devices=1 packets=[1-9][0-9]* .*framing_errors=0 crc_failures=0 refused=0 images=2 applied=1 committed=1"
+        TIMEOUT 60
+    )
+    # The package board check (protocol-notes section 5): --board without a
+    # package is a usage error, and a package for another board is refused
+    # before anything is sent.
+    add_test(NAME serial_dfu_board_usage_no_package
+             COMMAND serial_dfu --stub uart --board demo_board)
+    set_tests_properties(serial_dfu_board_usage_no_package PROPERTIES
+        PASS_REGULAR_EXPRESSION "usage: serial_dfu"
+        FAIL_REGULAR_EXPRESSION "serial_dfu: Completed"
+        TIMEOUT 60
+    )
+    add_test(NAME serial_dfu_pty_package_board_mismatch
+             COMMAND serial_dfu --quiet --stub uart --demo-package --board other_board)
+    set_tests_properties(serial_dfu_pty_package_board_mismatch PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "serial_dfu: invalid argument: image 0: expected board name \"other_board\", the manifest says \"demo_board\""
+        FAIL_REGULAR_EXPRESSION "serial_dfu: Completed"
         TIMEOUT 60
     )
 endif()

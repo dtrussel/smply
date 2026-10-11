@@ -32,6 +32,7 @@ using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageVersion;
 using smply::Result;
+using smply::dfu_package::board_name;
 using smply::dfu_package::check_board;
 using smply::dfu_package::DfuPackage;
 using smply::dfu_package::ImageDependency;
@@ -795,12 +796,27 @@ namespace {
 }
 
 /// Whether the refusal's text mentions \p part.
-[[nodiscard]] bool says(const Result<void>& result, std::string_view part)
+[[nodiscard]] bool reason_mentions(const Result<void>& result, std::string_view part)
 {
     return !result.has_value() && result.error().reason().find(part) != std::string_view::npos;
 }
 
 } // namespace
+
+TEST_CASE("board_name cuts a board name or a board target at its first '/' or '@'",
+          "[dfu_package][board]")
+{
+    CHECK(board_name("nrf5340dk") == "nrf5340dk");
+    CHECK(board_name("nrf5340dk/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(board_name("nrf5340dk@2.0.0/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(board_name("nrf5340dk@2.0.0") == "nrf5340dk");
+    // The first separator wins, whichever it is.
+    CHECK(board_name("a/b@c") == "a");
+    // Nothing before the first separator: no board name.
+    CHECK(board_name("").empty());
+    CHECK(board_name("/nrf5340/cpuapp").empty());
+    CHECK(board_name("@1.0.0").empty());
+}
 
 TEST_CASE("check_board accepts a package whose every image names the expected board name",
           "[dfu_package][board]")
@@ -833,9 +849,9 @@ TEST_CASE("check_board refuses an image built for another board, naming it and b
             boards_archive("nrf54l15dk", "nrf5340dk/nrf5340/cpunet"), "nrf5340dk/nrf5340/cpuapp");
         REQUIRE_FALSE(verdict.has_value());
         CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
-        CHECK(says(verdict, "image 0"));
-        CHECK(says(verdict, "\"nrf5340dk\""));
-        CHECK(says(verdict, "\"nrf54l15dk\""));
+        CHECK(reason_mentions(verdict, "image 0"));
+        CHECK(reason_mentions(verdict, "\"nrf5340dk\""));
+        CHECK(reason_mentions(verdict, "\"nrf54l15dk\""));
     }
     SECTION("image 1 only: a partly wrong package is still wrong")
     {
@@ -843,10 +859,10 @@ TEST_CASE("check_board refuses an image built for another board, naming it and b
             board_verdict(boards_archive("nrf5340dk", "nrf5340bsim/nrf5340/cpunet"), "nrf5340dk");
         REQUIRE_FALSE(verdict.has_value());
         CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
-        CHECK(says(verdict, "image 1"));
-        CHECK(says(verdict, "\"nrf5340dk\""));
+        CHECK(reason_mentions(verdict, "image 1"));
+        CHECK(reason_mentions(verdict, "\"nrf5340dk\""));
         // The board string as the manifest wrote it, not cut.
-        CHECK(says(verdict, "\"nrf5340bsim/nrf5340/cpunet\""));
+        CHECK(reason_mentions(verdict, "\"nrf5340bsim/nrf5340/cpunet\""));
     }
     SECTION("no case folding")
     {
@@ -861,7 +877,7 @@ TEST_CASE("check_board refuses an image whose manifest names no board", "[dfu_pa
         board_verdict(boards_archive("nrf5340dk", std::nullopt), "nrf5340dk");
     REQUIRE_FALSE(verdict.has_value());
     CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
-    CHECK(says(verdict, "image 1"));
+    CHECK(reason_mentions(verdict, "image 1"));
 
     // An empty board string names no board name either.
     CHECK_FALSE(board_verdict(boards_archive("nrf5340dk", ""), "nrf5340dk").has_value());
@@ -884,5 +900,5 @@ TEST_CASE("check_board's refusal is bounded however long the manifest's board is
         board_verdict(boards_archive(std::string(4096, 'x'), "nrf5340dk"), "nrf5340dk");
     REQUIRE_FALSE(verdict.has_value());
     CHECK(verdict.error().reason().size() <= smply::limits::kMaxReasonLength);
-    CHECK(says(verdict, "image 0"));
+    CHECK(reason_mentions(verdict, "image 0"));
 }

@@ -18,6 +18,7 @@ target_link_libraries(cli_dfu
         smply::util       # Dispatcher: the whole point of the threading in here
         smply_example_stub # the pretend device, shared with serial_dfu
         smply::dfu_app    # UpdateInputs, and UpdateRun: the pump and its reconnects
+        smply::dfu_package # board_name(): --board is checked as check_board cuts it
         smply_internal_options
 )
 
@@ -144,15 +145,20 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
     # A package for another board is refused before anything is sent. Run
-    # without --quiet, so an update that had begun would print its states and
-    # its upload progress: FAIL_REGULAR_EXPRESSION turns any of that into a
-    # failure even though the refusal is also printed.
+    # without --quiet, so an update that had begun would print something:
+    # opening the link prints nothing, but every line the tool writes once
+    # updater.start() has been called is indented by two spaces (each state
+    # change, QueryingParameters first, the upload progress, the reboot and
+    # reconnect lines, a failure's details) or starts "update " (the report,
+    # "update failed"), and the refusal line is neither.
+    # FAIL_REGULAR_EXPRESSION turns any of that into a failure even though the
+    # refusal is also printed.
     add_test(NAME cli_dfu_package_board_mismatch
         COMMAND cli_dfu --demo-package --board other_board)
     set_tests_properties(cli_dfu_package_board_mismatch PROPERTIES
         PASS_REGULAR_EXPRESSION
             "cli_dfu: invalid argument: image 0: expected board name \"other_board\", the manifest says \"demo_board\""
-        FAIL_REGULAR_EXPRESSION "QueryingParameters|Uploading|uploading|update Completed"
+        FAIL_REGULAR_EXPRESSION "  [A-Za-z]|update |gave up waiting"
         TIMEOUT 60
     )
     # --board with anything but a package is a usage error, as is a board with

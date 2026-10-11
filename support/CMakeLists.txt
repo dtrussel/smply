@@ -46,6 +46,7 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 add_library(smply_dfu_app STATIC
     dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
+    dfu_app/printable.cpp
     dfu_app/update_inputs.cpp
     dfu_app/update_run.cpp
 )

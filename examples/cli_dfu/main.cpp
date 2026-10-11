@@ -34,9 +34,11 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
+#include "dfu_app/printable.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 #include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
+#include "dfu_package/dfu_package.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -165,42 +167,6 @@ void usage()
                  "                update gives up, which is also worth demonstrating\n";
 }
 
-/// Whether \p board has a board name: something before its first `/` or `@`,
-/// which is where `dfu_package::check_board` cuts it.
-[[nodiscard]] bool has_board_name(std::string_view board) noexcept
-{
-    return !board.empty() && board.front() != '/' && board.front() != '@';
-}
-
-/// \p text with its control characters shown as `\xNN`, C0 and DEL, and C1
-/// as UTF-8 writes it, so it cannot drive the terminal. A board refusal
-/// quotes the package's manifest, which is untrusted (`Error::reason()`).
-[[nodiscard]] std::string printable(std::string_view text)
-{
-    constexpr std::string_view kHex = "0123456789ABCDEF";
-    const auto escape = [&kHex](std::string& out, unsigned byte) {
-        out += "\\x";
-        out += kHex[(byte >> 4U) & 0x0FU];
-        out += kHex[byte & 0x0FU];
-    };
-    std::string out;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const auto byte = static_cast<unsigned char>(text[i]);
-        const bool c1 = byte == 0xC2U && i + 1 < text.size() &&
-                        static_cast<unsigned char>(text[i + 1]) >= 0x80U &&
-                        static_cast<unsigned char>(text[i + 1]) <= 0x9FU;
-        if (c1) {
-            escape(out, byte);
-            escape(out, static_cast<unsigned char>(text[++i]));
-        } else if (byte < 0x20U || byte == 0x7FU) {
-            escape(out, byte);
-        } else {
-            out += text[i];
-        }
-    }
-    return out;
-}
-
 [[nodiscard]] bool parse_arguments(int argc, char** argv, Options& out)
 {
     const std::vector<std::string> args{argv + 1, argv + argc};
@@ -258,7 +224,8 @@ void usage()
     }
     // A board is compared only with a package's manifest, and an expectation
     // with no board name before its first '/' or '@' could match nothing.
-    if (out.board.has_value() && (!out.package_mode() || !has_board_name(*out.board))) {
+    if (out.board.has_value() &&
+        (!out.package_mode() || dfu_package::board_name(*out.board).empty())) {
         return false;
     }
     // One thing to install, and the package-only options only with a package.

@@ -452,8 +452,9 @@ smply/
 │   │                           ReconnectPolicy, UpdateInputs (a file, a build
 │   │                           per slot or a package file into FirmwareUpdater
 │   │                           targets, a package optionally refused for another
-│   │                           board), the tools' MCUboot-mode option, and
-│   │                           update_run.hpp: UpdateRun,
+│   │                           board), the tools' MCUboot-mode option,
+│   │                           printable() (untrusted text escaped for a
+│   │                           terminal), and update_run.hpp: UpdateRun,
 │   │                           the loop that drives a started update to its end
 │   │                           through three hooks (open a link, approve, observe)
 │   │                           and the UpdateWait seam, whose real adapter is

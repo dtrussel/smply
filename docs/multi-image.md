@@ -234,7 +234,9 @@ ready for a `MemoryImageSource`. It checks the manifest instead of believing it:
   version under `version_MCUBOOT+XIP` (S58). They are alternatives, not a set:
   the reader returns them as one `PackageImage` whose `secondary` is the
   secondary slot's build, after checking that the two slots are the image's
-  own pair and the two headers carry the same version. `UpdateInputs` hands
+  own pair, that the two headers carry the same version, and that the two
+  builds name the same `board`, compared as written (one present and one
+  absent count as different). `UpdateInputs` hands
   both to the updater (`ImageTarget::secondary_source`), which sends the one
   for the slot the device is not running (ADR-0025). Any other second file for
   an image is refused, and so is a package with more than one such pair, which
