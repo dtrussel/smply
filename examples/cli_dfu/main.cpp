@@ -218,12 +218,10 @@ void usage()
             }
             out.commits.push_back(*commit);
         } else if (arg == "--board" && i + 1 < args.size()) {
-            // An expectation with no board name could match nothing.
-            Result<dfu_package::BoardName> board = dfu_package::BoardName::parse(args[++i]);
-            if (!board.has_value()) {
+            out.board = parse_board(args[++i]);
+            if (!out.board.has_value()) {
                 return false;
             }
-            out.board = std::move(*board);
         } else {
             return false;
         }

@@ -36,6 +36,15 @@ std::optional<std::pair<std::uint32_t, CommitBy>> parse_commit(std::string_view 
     return std::nullopt;
 }
 
+std::optional<dfu_package::BoardName> parse_board(std::string_view text)
+{
+    Result<dfu_package::BoardName> board = dfu_package::BoardName::parse(text);
+    if (!board.has_value()) {
+        return std::nullopt;
+    }
+    return std::move(*board);
+}
+
 std::optional<UpdateMode> parse_update_mode(std::string_view text) noexcept
 {
     if (text == "test-then-confirm") {

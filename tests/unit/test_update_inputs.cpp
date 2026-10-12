@@ -35,6 +35,7 @@ using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::Result;
 using smply::UpdateMode;
+using smply::dfu_app::parse_board;
 using smply::dfu_app::parse_commit;
 using smply::dfu_app::parse_update_mode;
 using smply::dfu_app::UpdateInputs;
@@ -213,6 +214,19 @@ TEST_CASE("an expected board admits a package built for it, and refuses one that
     const auto refused_file = UpdateInputs::from_package(file.path(), board("nrf54l15dk"));
     REQUIRE_FALSE(refused_file.has_value());
     CHECK(refused_file.error() == direct.error());
+}
+
+TEST_CASE("parse_board reads a board name or a board target, and refuses no board name",
+          "[dfu_app][inputs][board]")
+{
+    const std::optional<BoardName> name = parse_board("nrf5340dk");
+    REQUIRE(name.has_value());
+    CHECK(name->view() == "nrf5340dk");
+    CHECK(parse_board("nrf5340dk@2.0.0/nrf5340/cpunet") == name);
+    for (const char* bad : {"", "/nrf5340/cpuapp", "@1.0.0"}) {
+        CAPTURE(bad);
+        CHECK_FALSE(parse_board(bad).has_value());
+    }
 }
 
 TEST_CASE("parse_commit reads N=client and N=device", "[dfu_app][inputs]")

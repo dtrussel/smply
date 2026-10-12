@@ -799,7 +799,7 @@ namespace {
 }
 
 /// The board name \p board parses to, as text; empty if it is refused.
-[[nodiscard]] std::string parsed(std::string_view board)
+[[nodiscard]] std::string board_name_or_empty(std::string_view board)
 {
     const Result<BoardName> name = BoardName::parse(board);
     return name.has_value() ? std::string{name->view()} : std::string{};
@@ -816,12 +816,12 @@ namespace {
 TEST_CASE("BoardName cuts a board name or a board target at its first '/' or '@'",
           "[dfu_package][board]")
 {
-    CHECK(parsed("nrf5340dk") == "nrf5340dk");
-    CHECK(parsed("nrf5340dk/nrf5340/cpunet") == "nrf5340dk");
-    CHECK(parsed("nrf5340dk@2.0.0/nrf5340/cpunet") == "nrf5340dk");
-    CHECK(parsed("nrf5340dk@2.0.0") == "nrf5340dk");
+    CHECK(board_name_or_empty("nrf5340dk") == "nrf5340dk");
+    CHECK(board_name_or_empty("nrf5340dk/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(board_name_or_empty("nrf5340dk@2.0.0/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(board_name_or_empty("nrf5340dk@2.0.0") == "nrf5340dk");
     // The first separator wins, whichever it is.
-    CHECK(parsed("a/b@c") == "a");
+    CHECK(board_name_or_empty("a/b@c") == "a");
     // A board target and its board name are the same board name.
     CHECK(BoardName::parse("nrf5340dk@2.0.0/nrf5340/cpunet") == BoardName::parse("nrf5340dk"));
     CHECK_FALSE(BoardName::parse("nrf5340dk") == BoardName::parse("nRF5340DK"));

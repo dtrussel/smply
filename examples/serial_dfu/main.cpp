@@ -99,8 +99,9 @@ struct Options
     /// Without --port: the stub fails to apply image 1.
     bool apply_fails = false;
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
-    /// `--board`: the board name or board target every image of the package
-    /// must be for (docs/protocol-notes.md section 5). Packages only.
+    /// `--board`: the board name every image of the package must be for, from
+    /// a board name or a board target (docs/protocol-notes.md section 5).
+    /// Packages only.
     std::optional<dfu_package::BoardName> board;
     /// The MCUboot mode to assume when the device does not report one
     /// (ADR-0025).
@@ -225,12 +226,10 @@ void usage()
             }
             out.commits.push_back(*commit);
         } else if (arg == "--board" && has_value) {
-            // An expectation with no board name could match nothing.
-            Result<dfu_package::BoardName> board = dfu_package::BoardName::parse(args[++i]);
-            if (!board.has_value()) {
+            out.board = parse_board(args[++i]);
+            if (!out.board.has_value()) {
                 return false;
             }
-            out.board = std::move(*board);
         } else {
             return false;
         }

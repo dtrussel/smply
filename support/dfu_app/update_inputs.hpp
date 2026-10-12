@@ -44,6 +44,11 @@ namespace smply::dfu_app {
 /// for those first.
 [[nodiscard]] std::optional<UpdateMode> parse_update_mode(std::string_view text) noexcept;
 
+/// Parses a `--board` value, a board name or a board target, into the board
+/// name a package is checked against (`dfu_package::BoardName::parse()`).
+/// Empty when \p text names no board, which could match nothing.
+[[nodiscard]] std::optional<dfu_package::BoardName> parse_board(std::string_view text);
+
 /// The images of one update, with a target per image.
 ///
 /// Non-copyable and non-movable: the targets point at sources it owns, and a

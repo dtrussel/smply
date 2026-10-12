@@ -290,7 +290,8 @@ Result<BoardName> BoardName::parse(std::string_view board)
 {
     const std::string_view name = board_name(board);
     if (name.empty()) {
-        return fail(ErrorCode::InvalidArgument, "package: the board has no board name");
+        return fail(ErrorCode::InvalidArgument,
+                    "board: names no board name before its first '/' or '@'");
     }
     return BoardName{std::string{name}};
 }
