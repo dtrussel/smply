@@ -512,7 +512,11 @@ private:
     {
         return guarded<UploadResult>([](Impl& self, const Result<UploadResult>& result) {
             if (!result.has_value()) {
-                self.dispatch(failure(result.error()));
+                // Only the group knows whether the session survived the
+                // failure; the code alone cannot say (ADR-0008).
+                self.dispatch(self.image_->resumable(self.upload_)
+                                  ? plain(Event::Kind::UploadSuspended)
+                                  : failure(result.error()));
                 return;
             }
             Event event;

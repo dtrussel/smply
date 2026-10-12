@@ -114,6 +114,10 @@ struct Event
         BootloaderRead,
         StateRead,
         UploadFinished,
+        /// The upload stopped with its session kept, so a reconnect resumes
+        /// it: `ImageManagement::resumable()` said so. The machine does not
+        /// guess that from an error code (ADR-0008).
+        UploadSuspended,
         MarkedForTest,
         ResetAccepted,
         Disconnected,

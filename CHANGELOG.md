@@ -21,6 +21,9 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Added
 
+* **`ImageManagement::resumable(handle)`**: whether a dropped link suspended
+  the upload, so that `resume()` continues it. It is already true inside the
+  completion callback that reports the drop.
 * **`Error::os_error()`**, the operating system's own error behind a
   transport failure, as a `std::error_code`, and `with_os_error()` to attach it
   (ADR-0026, amending ADR-0002). The serial port adapter attaches `errno` or
@@ -28,6 +31,15 @@ git; commit `97f1647` is the last to carry the per-phase record in
   `hresult_error` it catches, in the new `smply::transport::hresult_category()`.
   `to_string(const Error&)` renders it. It is a diagnostic: `operator==`
   ignores it, as it ignores `where()`, and the core never sets it.
+
+### Changed
+
+* **An image source that fails with `Disconnected` now fails the update.**
+  `FirmwareUpdater` used to read any `Disconnected` upload failure as a
+  dropped link and ask for a reconnect, whose resume `ImageManagement` then
+  refused with `InvalidState`. It now asks `ImageManagement::resumable()`, and
+  only an upload the device link suspended is resumed. The update fails with
+  the source's own error, and `ReconnectRequired` is not sent.
 
 ### Fixed
 

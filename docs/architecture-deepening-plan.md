@@ -89,13 +89,13 @@ Blocked by: Stage 0.
 
 Blocked by: Stage 1.
 
-- [ ] `ImageManagement::resumable(const UploadHandle&)`.
-- [ ] `Impl` asks it when an upload fails, and sends the machine
+- [x] `ImageManagement::resumable(const UploadHandle&)`.
+- [x] `Impl` asks it when an upload fails, and sends the machine
       `UploadSuspended` or `Failed`. The machine reads no error codes for
       this.
-- [ ] A test shows an image source failing with `Disconnected` fails the
+- [x] A test shows an image source failing with `Disconnected` fails the
       update.
-- [ ] `api.md` and `CHANGELOG.md` updated.
+- [x] `api.md` and `CHANGELOG.md` updated.
 
 ### Stage 3: `UpdateRun` starts the update
 

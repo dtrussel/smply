@@ -1137,7 +1137,7 @@ TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][mac
     // The device keeps its session and resumes by `sha` (section 6, rule 6).
     Scenario scenario;
     scenario.reach(UpdateState::Uploading);
-    const Step step = scenario.feed(failed(ErrorCode::Disconnected));
+    const Step step = scenario.feed(just(Event::Kind::UploadSuspended));
     CHECK(step.next == UpdateState::AwaitingReconnect);
     CHECK(step.effect == Effect::RequestReconnect);
     CHECK_FALSE(scenario.report().cause.has_value());
@@ -1147,14 +1147,20 @@ TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][mac
     CHECK(resumed.effect == Effect::ResumeUpload);
 }
 
-TEST_CASE("any other upload failure is fatal", "[dfu][machine]")
+TEST_CASE("any other upload failure is fatal, whatever its code", "[dfu][machine]")
 {
-    Scenario scenario;
-    scenario.reach(UpdateState::Uploading);
-    const Step step = scenario.feed(failed(ErrorCode::ImageMismatch));
-    CHECK(step.next == UpdateState::Failed);
-    REQUIRE(scenario.report().cause.has_value());
-    CHECK(scenario.report().cause->code() == ErrorCode::ImageMismatch);
+    // Only `UploadSuspended` says the session survived. A `Disconnected`
+    // without it is a failure that kept nothing to resume -- an image source
+    // that failed to read, say -- and a reconnect would only be refused.
+    for (const ErrorCode code : {ErrorCode::ImageMismatch, ErrorCode::Disconnected}) {
+        CAPTURE(code);
+        Scenario scenario;
+        scenario.reach(UpdateState::Uploading);
+        const Step step = scenario.feed(failed(code));
+        CHECK(step.next == UpdateState::Failed);
+        REQUIRE(scenario.report().cause.has_value());
+        CHECK(scenario.report().cause->code() == code);
+    }
 }
 
 // --- Verifying the upload ---------------------------------------------------
@@ -1389,7 +1395,7 @@ TEST_CASE("a reconnect resumes an upload, or verifies the boot", "[dfu][machine]
 {
     Scenario mid_upload;
     mid_upload.reach(UpdateState::Uploading);
-    static_cast<void>(mid_upload.feed(failed(ErrorCode::Disconnected)));
+    static_cast<void>(mid_upload.feed(just(Event::Kind::UploadSuspended)));
     const Step resumed = mid_upload.feed(just(Event::Kind::Reconnected));
     CHECK(resumed.next == UpdateState::Uploading);
     CHECK(resumed.effect == Effect::ResumeUpload);

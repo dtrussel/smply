@@ -736,8 +736,10 @@ Let `rsp_off` be the server's `"off"` (PN §6 rule 5: **authoritative**).
   the transport, `resume()` sends a first packet with the same `sha`. The server
   replies with its offset and the session continues from there (PN §6 rule 6);
   if the device forgot the session it answers `off == 0` and the restart path
-  applies. Only `Disconnected` suspends: a timeout that exhausts its retries is
-  terminal.
+  applies. Only a `Disconnected` *answer* suspends: a timeout that exhausts its
+  retries is terminal, and so is an `ImageSource` read that fails, whatever
+  code it carries. `ImageManagement::resumable()` reports the phase, and is
+  what `FirmwareUpdater` asks before it requests a reconnect.
 
   **What a resume resets is the session's decision**, in `upload::resume()`:
   the per-attempt budgets (`retries`, `consecutive_no_progress`) start again;
@@ -888,6 +890,10 @@ is made inside the machine and the updater's I/O code makes none
   `ParametersRead` carries the device's buffer size, `BootloaderRead` its
   bootloader mode, `UploadFinished` the bytes transferred and the server's
   already-present verdict, and `Failed` and `ReconnectFailed` the `Error`.
+  An upload that stops with its session kept arrives as `UploadSuspended`,
+  which the updater sends when `ImageManagement::resumable()` says so: whether
+  a session survived is the group's to know (ADR-0008), so the machine reads
+  no error code to guess it, and an upload `Failed` with any code is final.
 * **Effects carry their parameters.** `StartUpload` names the target (its
   index in the update, which is also its source's), the build to send (0 or 1,
   for direct-XIP's per-slot files), the image number and the device's buffer
@@ -1175,6 +1181,7 @@ that forgets a kind does not compile:
 | `Planning` | the bootloader mode rules the update out (ADR-0025) | fatal `UpdateRefused`, with `UpdateReport::refusal`; checked before the first command that would change the device, so nothing has |
 | `Uploading` | timeout | chunk retry (design §6) |
 | `Uploading` | disconnect | suspend; `ReconnectRequired`; resume via `sha` (PN §6 rule 6) |
+| `Uploading` | image source read fails, any code | `Failed`: nothing is suspended, so there is nothing to resume |
 | `Uploading` | server `off == 0` | restart from the first packet, bounded by `max_restarts` |
 | `VerifyingUpload` | target hash absent from any slot | fatal `ImageMismatch` — the device did not store what we sent |
 | `MarkingForTest` | `IMAGE_ALREADY_PENDING`, **or a group-less `EBADSTATE`** | re-read state **once**; the planner then sees our own image already marked and steps straight to `Resetting`, or re-marks it if the refusal was not ours after all. The second shape is not a second rule: a v1 server that translates group codes sends `NO_FREE_SLOT`, `CURRENT_VERSION_IS_NEWER` and `IMAGE_ALREADY_PENDING` all as a flat `EBADSTATE` (PN §9 A16, A24), so without it the recovery cannot fire at all on the commonest configuration. Deliberately not extended to `EUNKNOWN`, which the same table gives to every flash failure |

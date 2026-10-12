@@ -532,6 +532,67 @@ TEST_CASE("an upload interrupted by a disconnect is resumed", "[dfu][update]")
     CHECK(std::equal(primary.begin(), primary.end(), update.begin()));
 }
 
+namespace {
+
+/// Serves \p image until `drop()`, then fails every read with
+/// `Disconnected`: an image fetched over a link of its own, which dropped.
+class DroppingImageSource final : public smply::ImageSource
+{
+public:
+    explicit DroppingImageSource(ConstBytes image) noexcept : inner_{image} {}
+
+    void drop() noexcept
+    {
+        dropped_ = true;
+    }
+
+    [[nodiscard]] std::uint64_t size() const noexcept override
+    {
+        return inner_.size();
+    }
+
+    [[nodiscard]] smply::Result<std::size_t> read(std::uint64_t offset,
+                                                  smply::MutBytes into) override
+    {
+        if (dropped_) {
+            return smply::fail(smply::Error{ErrorCode::Disconnected, "image source"});
+        }
+        return inner_.read(offset, into);
+    }
+
+private:
+    MemoryImageSource inner_;
+    bool dropped_ = false;
+};
+
+} // namespace
+
+TEST_CASE("an image source that fails with Disconnected fails the update", "[dfu][update]")
+{
+    // The code says "link", but the device's link is up: it is the source that
+    // is gone. The upload keeps no session, so the update fails rather than
+    // asking for a reconnect it could not resume from.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    DroppingImageSource source{ConstBytes{update}};
+
+    Application application{fixture, {&reconnected}, outcome};
+    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.wait.when([&] { return outcome.last_progress > 0; }, [&] { source.drop(); });
+
+    REQUIRE(application.run());
+    REQUIRE(application.wait.all_fired());
+    CHECK(outcome.code == ErrorCode::Disconnected);
+    CHECK(outcome.reconnects == 0);
+    CHECK(fixture.updater.report().final_state == UpdateState::Failed);
+    CHECK_FALSE(fixture.updater.report().revert_pending);
+}
+
 TEST_CASE("a busy reset is retried with force", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);

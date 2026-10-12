@@ -727,6 +727,13 @@ public:
     void          cancel(const UploadHandle&) noexcept;   // Cancelled on next poll()
     std::uint64_t transferred(const UploadHandle&) const noexcept;
     bool          uploading(const UploadHandle&) const noexcept;
+
+    // True when a dropped link suspended the upload, so resume() continues it;
+    // already true inside the callback that reports the drop. False for every
+    // other end, whatever the error code: an ImageSource read failing with
+    // Disconnected ends the upload for good, because the device's link is up
+    // and a resume could not read the source either.
+    bool          resumable(const UploadHandle&) const noexcept;
 };
 
 } // namespace smply

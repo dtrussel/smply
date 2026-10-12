@@ -372,6 +372,16 @@ public:
     /// True while \p handle names an upload that has not finished.
     [[nodiscard]] bool uploading(const UploadHandle& handle) const noexcept;
 
+    /// True when \p handle names an upload a dropped link suspended, so that
+    /// `resume()` continues it. False for a stale handle, a running upload, and
+    /// one that ended any other way -- completed, cancelled while running, or
+    /// failed, a source that failed to read included, whatever code it failed
+    /// with.
+    ///
+    /// Already true inside the completion callback that reports the drop, so
+    /// the callback can decide there whether to reconnect or give up.
+    [[nodiscard]] bool resumable(const UploadHandle& handle) const noexcept;
+
 private:
     class Upload;
 

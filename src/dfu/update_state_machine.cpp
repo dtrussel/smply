@@ -709,17 +709,6 @@ void summarise(Context& context)
     return Step{UpdateState::VerifyingUpload, Effect::ReadState};
 }
 
-/// `Uploading`, on a failure.
-[[nodiscard]] Step upload_failed(const Error& error, Context& context)
-{
-    // A dropped link suspends the transfer rather than ending it: the device
-    // keeps the session and resumes by `sha` (section 6, rule 6).
-    if (error.code() == ErrorCode::Disconnected) {
-        return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
-    }
-    return fail(context, error);
-}
-
 /// `MarkingForTest`, on a refusal: recover once from a lost response, or fail.
 ///
 /// `ImageAlreadyPending` means a swap is scheduled -- possibly the one this
@@ -994,8 +983,15 @@ void keep_time(const Step& step, TimePoint now, const UpdatePlan& plan, Context&
         if (event.kind == Event::Kind::UploadFinished) {
             return upload_finished(event, plan, context);
         }
+        // A dropped link suspends the transfer rather than ending it: the
+        // device keeps the session and resumes by `sha` (section 6, rule 6).
+        // Whether the session survived is `ImageManagement`'s to say, so a
+        // failure that kept nothing to resume is final, whatever its code.
+        if (event.kind == Event::Kind::UploadSuspended) {
+            return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
+        }
         if (event.kind == Event::Kind::Failed) {
-            return upload_failed(event.error, context);
+            return fail(context, event.error);
         }
         break;
 
