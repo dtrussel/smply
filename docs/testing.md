@@ -13,8 +13,8 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*` |
-| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **seven** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc`, `serial_dfu_pty_device_buffer` and `serial_dfu_pty_package`, each a whole update, reset included, over a pseudo-terminal; `serial_dfu_pty_package_apply_fails`, the failure report; and two for `--board`: `serial_dfu_board_usage_no_package` expects the usage text, and `serial_dfu_pty_package_board_mismatch` the refusal |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty-six** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*`; and six `cli_dfu_usage_*` for the shared flag rules and this tool's |
+| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **eleven** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc`, `serial_dfu_pty_device_buffer` and `serial_dfu_pty_package`, each a whole update, reset included, over a pseudo-terminal; `serial_dfu_pty_package_apply_fails`, the failure report; and two for `--board`: `serial_dfu_board_usage_no_package` expects the usage text, and `serial_dfu_pty_package_board_mismatch` the refusal; and four `serial_dfu_usage_*` for the shared flag rules and a real port's |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
@@ -417,6 +417,17 @@ a second build without a first, or a file that cannot be opened is refused.
 The per-image override is refused for an image the inputs lack, and
 `parse_commit()` and `parse_update_mode()` have their accepted and refused
 forms.
+
+`support/dfu_app/`'s update command (`test_update_command.cpp`), the flags the
+example tools share and their console. Each shared flag parsed into the
+command and its plan; a flag taken, unknown or missing its value, and the
+package flags unknown to a tool without packages; each rule of `valid()`, one
+thing to install, `--commit` and `--board` only with a package, a second build
+only beside a named first, and a named input for real hardware; every error
+line escaped, a device's `rsn` included (security.md T12); the event lines, and
+none under `--quiet`; and the report, a completed update on the output stream
+and a failure with what it left behind on the error stream. The tools'
+`*_usage_*` ctests run the same rules from each command line.
 
 `support/dfu_app/`'s `DispatcherWait`, the update run's real wait
 (`test_dispatcher_wait.cpp`), for only what needs no waiting: a deadline

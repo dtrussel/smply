@@ -12,28 +12,30 @@
 /// * **the device has to be found** before anything else happens (`scanner.*`);
 /// * **reconnection is a loop, not a statement.** After the reset the device is
 ///   gone for a second or two and the first attempts fail. The backoff lives in
-///   `smply::dfu_app::ReconnectPolicy`, shared with `cli_dfu` so that CI
-///   exercises it on Linux -- none of the code in *this* file is ever run by
+///   `smply::dfu_app::ReconnectPolicy`, shared with the portable tools so that
+///   CI exercises it on Linux -- none of the code in *this* file is ever run by
 ///   CI, so anything that can live over there does;
 /// * **giving up is a real outcome.** `reconnect_failed()` ends the update
 ///   rather than leaving the pump spinning, and this tool exits 4 for it.
 ///
 /// For the same reason the pump itself is shared: it is
 /// `smply::dfu_app::UpdateRun` (`support/dfu_app/update_run.hpp`), which the
-/// component suite and `cli_dfu` run on every push. What is left here is what a
-/// radio changes: the three hooks the run calls -- open a link, approve the
-/// image, observe events.
+/// component suite and `cli_dfu` run on every push. So are the update's flags,
+/// their checks and its output (`support/dfu_app/update_command.hpp`). What is
+/// left here is what a radio changes: finding the device, its own two modes,
+/// and the three hooks the run calls -- open a link, approve the image,
+/// observe events.
 ///
-/// **This program has never been run.** It is compiled by CI at `/W4 /WX` on a
-/// runner with no Bluetooth radio. See the README.
+/// **CI never runs this program.** It is compiled at `/W4 /WX` on a runner
+/// with no Bluetooth radio, and has run only on the hardware bench, by hand.
+/// See the README.
 
 #include "scanner.hpp"
 #include "winrt_prelude.hpp"
 
-#include "dfu_app/bootloader_mode.hpp"
-#include "dfu_app/console_report.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/reconnect_policy.hpp"
+#include "dfu_app/update_command.hpp"
 #include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
 
@@ -55,7 +57,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
 namespace {
@@ -78,15 +79,12 @@ enum ExitCode : int
 
 struct Options
 {
-    std::string image_path; ///< Required: see the note in main().
-    /// `--image-secondary`: the same image linked for the secondary slot, for
-    /// a direct-XIP device; `image_path` is then the primary slot's build.
-    std::string image_secondary_path;
+    /// The flags every tool shares, but the package ones: an image is
+    /// required, see the note in main().
+    UpdateCommand command;
     std::string name;    ///< --name: match a substring of the advertised name.
     std::string address; ///< --address: skip scanning entirely.
-    UpdateMode mode = UpdateMode::TestThenConfirm;
     std::chrono::milliseconds scan_timeout{std::chrono::seconds{10}};
-    bool quiet = false;
 
     /// `--mode test-only`: install and reboot, then stop without confirming.
     ///
@@ -100,18 +98,14 @@ struct Options
 
     /// `--mode confirm-only`: confirm whatever the device is running, and stop.
     ///
-    /// The other half of the same split. It installs nothing, so it needs no
+    /// The other half of the same split. It installs nothing, so it takes no
     /// `--image`, and it is the only mode that does not build an updater.
     bool confirm_only = false;
-
-    /// `--fallback-mode`: the MCUboot mode to assume when the device does not
-    /// report one (ADR-0025).
-    std::optional<McubootMode> fallback_mode;
-    /// `--allow-no-revert`: accept an update the bootloader cannot revert.
-    bool allow_no_revert = false;
-    /// `--no-downgrade-check`: skip the downgrade check (ADR-0025).
-    bool check_downgrade = true;
 };
+
+/// The shared flags this tool offers: no package, so no `--package`,
+/// `--commit` or `--board` (see the roadmap's backlog).
+constexpr UpdateFlags kFlags{.packages = false};
 
 /// Parses `--mode`. Two of the five are not `UpdateMode` values at all.
 ///
@@ -122,11 +116,11 @@ struct Options
 [[nodiscard]] bool parse_mode(std::string_view text, Options& out)
 {
     if (const std::optional<UpdateMode> mode = parse_update_mode(text); mode.has_value()) {
-        out.mode = *mode;
+        out.command.mode = *mode;
         return true;
     }
     if (text == "test-only") {
-        out.mode = UpdateMode::TestThenConfirm;
+        out.command.mode = UpdateMode::TestThenConfirm;
         out.stop_before_confirm = true;
         return true;
     }
@@ -143,29 +137,16 @@ void usage()
                  "                     [--mode MODE] [--fallback-mode M] [--scan-timeout MS]\n"
                  "                     [--allow-no-revert] [--no-downgrade-check]\n"
                  "                     [--image-secondary PATH] [--quiet]\n"
-                 "  --image PATH   the firmware to install (required)\n"
-                 "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
-                 "                 secondary slot (--image is then the primary slot's build)\n"
                  "  --name NAME    connect to the first device whose advertised name\n"
                  "                 contains NAME; without it, the first device that\n"
                  "                 advertises the SMP service is used\n"
                  "  --address ADDR AA:BB:CC:DD:EE:FF, or bare hex -- skips scanning\n"
-                 "  --mode MODE    test-then-confirm (default) | confirm-immediately |\n"
-                 "                 upload-only | test-only | confirm-only\n"
-                 "                 test-only installs and reboots but does not confirm,\n"
-                 "                 so the device is left in its trial boot;\n"
-                 "                 confirm-only confirms the running image and needs\n"
-                 "                 no --image\n"
-                 "  --fallback-mode M  the MCUboot mode to assume when the device does\n"
-                 "                 not report one, named as the report prints it\n"
-                 "                 (swap-using-move, upgrade-only, direct-xip, ...)\n"
-                 "  --allow-no-revert  update a device whose bootloader cannot revert\n"
-                 "                 (upgrade-only); without it, such an update is refused\n"
-                 "  --no-downgrade-check  send an image older than the running one even\n"
-                 "                 when the device prevents downgrades; it will refuse it\n"
-                 "                 at boot\n"
-                 "  --scan-timeout MS  how long to look for a device (default 10000)\n"
-                 "  --quiet        print only the outcome\n"
+                 "  --scan-timeout MS  how long to look for a device (default 10000)\n";
+    print_update_flags_help(std::cerr, kFlags);
+    std::cerr << "  --mode test-only  installs and reboots but does not confirm, so the\n"
+                 "                 device is left in its trial boot\n"
+                 "  --mode confirm-only  confirms the running image; takes no --image\n"
+                 "--image is required, but for confirm-only.\n"
                  "\n"
                  "exit: 0 ok, 1 update failed, 2 usage, 3 no device, 4 reconnect failed\n";
 }
@@ -175,19 +156,14 @@ void usage()
     const std::vector<std::string> args{argv + 1, argv + argc};
     for (std::size_t i = 0; i < args.size(); ++i) {
         const std::string& arg = args[i];
-        if (arg == "--quiet") {
-            out.quiet = true;
-        } else if (arg == "--image" && i + 1 < args.size()) {
-            out.image_path = args[++i];
-        } else if (arg == "--image-secondary" && i + 1 < args.size()) {
-            out.image_secondary_path = args[++i];
-        } else if (arg == "--name" && i + 1 < args.size()) {
+        if (arg == "--name" && i + 1 < args.size()) {
             out.name = args[++i];
         } else if (arg == "--address" && i + 1 < args.size()) {
             out.address = args[++i];
         } else if (arg == "--scan-timeout" && i + 1 < args.size()) {
             const std::string& ms = args[++i];
-            if (ms.empty() || ms.find_first_not_of("0123456789") != std::string::npos) {
+            if (ms.empty() || ms.size() > 9 ||
+                ms.find_first_not_of("0123456789") != std::string::npos) {
                 return false;
             }
             out.scan_timeout = std::chrono::milliseconds{std::stoul(ms)};
@@ -195,16 +171,7 @@ void usage()
             if (!parse_mode(args[++i], out)) {
                 return false;
             }
-        } else if (arg == "--allow-no-revert") {
-            out.allow_no_revert = true;
-        } else if (arg == "--no-downgrade-check") {
-            out.check_downgrade = false;
-        } else if (arg == "--fallback-mode" && i + 1 < args.size()) {
-            out.fallback_mode = parse_mcuboot_mode(args[++i]);
-            if (!out.fallback_mode.has_value()) {
-                return false;
-            }
-        } else {
+        } else if (parse_update_flag(args, i, kFlags, out.command) != FlagResult::Taken) {
             return false;
         }
     }
@@ -212,11 +179,12 @@ void usage()
     // synthetic image to a stub in its own process; writing one to real
     // hardware would install firmware that does not run.
     //
-    // `--mode confirm-only` uploads nothing, so requiring an image there would
-    // make the caller name a file that is never opened -- and a file named but
-    // unused is the sort of argument that goes stale without anyone noticing.
-    return (out.confirm_only || !out.image_path.empty()) &&
-           (out.image_secondary_path.empty() || (!out.confirm_only && !out.image_path.empty())) &&
+    // `--mode confirm-only` uploads nothing, so it takes no image: a file named
+    // but never opened is the sort of argument that goes stale without anyone
+    // noticing.
+    const UpdateCommand& command = out.command;
+    const bool no_image = command.image_path.empty() && command.image_secondary_path.empty();
+    return (out.confirm_only ? no_image : valid(command, true)) &&
            !(!out.name.empty() && !out.address.empty());
 }
 
@@ -239,15 +207,14 @@ int main(int argc, char** argv)
     // by reference and a resume reads from it again long after start() returned
     // (handoff.md, "Lifetime"). `confirm-only` installs nothing and so opens
     // nothing.
+    const UpdateCommand& command = options.command;
+    UpdateConsole console{"winrt_ble_dfu", command.quiet, std::cout, std::cerr};
     std::unique_ptr<UpdateInputs> inputs;
     if (!options.confirm_only) {
-        Result<std::unique_ptr<UpdateInputs>> opened =
-            UpdateInputs::from_files(options.image_path, options.image_secondary_path);
-        if (!opened.has_value()) {
-            std::cerr << "winrt_ble_dfu: " << to_string(opened.error()) << '\n';
+        inputs = console.open_inputs(command);
+        if (!inputs) {
             return kUpdateFailed;
         }
-        inputs = std::move(*opened);
     }
 
     // --- find the device ----------------------------------------------------
@@ -256,23 +223,23 @@ int main(int argc, char** argv)
     if (!options.address.empty()) {
         const Result<std::uint64_t> parsed = parse_address(options.address);
         if (!parsed.has_value()) {
-            std::cerr << "winrt_ble_dfu: " << to_string(parsed.error()) << '\n';
+            console.error(parsed.error());
             return kUsage;
         }
         address = *parsed;
     } else {
-        if (!options.quiet) {
+        if (!command.quiet) {
             std::cout << "scanning\n";
         }
         const Result<std::uint64_t> found =
             find_device(ScanFilter{.name = options.name, .timeout = options.scan_timeout});
         if (!found.has_value()) {
-            std::cerr << "winrt_ble_dfu: " << to_string(found.error()) << '\n';
+            console.error(found.error());
             return kNoDevice;
         }
         address = *found;
     }
-    if (!options.quiet) {
+    if (!command.quiet) {
         std::cout << "connecting to " << format_address(address) << '\n';
     }
 
@@ -296,7 +263,7 @@ int main(int argc, char** argv)
         Result<std::unique_ptr<WinRtBleTransport>> link =
             WinRtBleTransport::connect(address, inbound);
         if (!link.has_value()) {
-            std::cerr << "winrt_ble_dfu: " << to_string(link.error()) << '\n';
+            console.error(link.error());
             return kNoDevice;
         }
         links.push_back(std::move(*link));
@@ -334,7 +301,7 @@ int main(int argc, char** argv)
             wait.wait_until(client.next_deadline());
         }
         if (!confirmed.has_value()) {
-            std::cerr << "winrt_ble_dfu: confirm failed: " << to_string(confirmed.error()) << '\n';
+            console.error("confirm failed", confirmed.error());
             return kUpdateFailed;
         }
         std::cout << "confirmed the running image\n";
@@ -345,11 +312,7 @@ int main(int argc, char** argv)
 
     // --- the update ---------------------------------------------------------
 
-    UpdatePlan plan;
-    plan.mode = options.mode;
-    plan.fallback_mode = options.fallback_mode;
-    plan.allow_no_revert = options.allow_no_revert;
-    plan.check_downgrade = options.check_downgrade;
+    const UpdatePlan plan = command.plan();
 
     // The reconnect settings are the defaults -- 500 ms doubling to 8 s, six
     // attempts -- and there is no overall deadline: over a real radio, how
@@ -365,39 +328,7 @@ int main(int argc, char** argv)
     // real link that is the only way to see *where* the time goes -- the
     // device's own work on the final chunk, the reboot, the reconnect -- and it
     // is what the bench measured the reconnect policy from.
-    const auto started = std::chrono::steady_clock::now();
-    const auto elapsed_ms = [&] {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-                   std::chrono::steady_clock::now() - started)
-            .count();
-    };
-
-    // One handler per kind of event; std::visit refuses to compile if a kind
-    // is left out. Output only: the run itself acts on the last three.
-    const auto on_event = overloaded{
-        [&](const UpdateStateChanged& changed) {
-            if (!options.quiet) {
-                std::cout << "  [" << elapsed_ms() << " ms] " << to_string(changed.to) << '\n';
-            }
-        },
-        [&](const UploadProgress& progress) {
-            if (!options.quiet && progress.total != 0) {
-                std::cout << "\r  [" << elapsed_ms() << " ms] uploading " << progress.transferred
-                          << '/' << progress.total << " bytes" << std::flush;
-                if (progress.transferred == progress.total) {
-                    std::cout << '\n';
-                }
-            }
-        },
-        [&](const DisconnectExpected&) {
-            if (!options.quiet) {
-                std::cout << "  the device is about to reboot\n";
-            }
-        },
-        [](const ReconnectRequired&) {},
-        [](const ConfirmationRequired&) {},
-        [](const UpdateFinished&) {},
-    };
+    console.stamp_lines();
 
     // The three hooks. The run calls each on this thread, never inside a
     // library callback, so the open-a-link hook may block in connect().
@@ -408,7 +339,7 @@ int main(int argc, char** argv)
                       // Every failure is worth another try: a device mid-boot answers
                       // nothing, and that is what all of them look like.
                       .open_link = [&](const ReconnectAttempt& attempt) -> LinkAttempt {
-                          if (!options.quiet) {
+                          if (!command.quiet) {
                               std::cout << "  reconnect attempt " << attempt.number << '\n';
                           }
                           Result<std::unique_ptr<WinRtBleTransport>> fresh =
@@ -417,7 +348,7 @@ int main(int argc, char** argv)
                               return LinkAttempt::retry();
                           }
                           links.push_back(std::move(*fresh));
-                          if (!options.quiet) {
+                          if (!command.quiet) {
                               std::cout << "  reconnected\n";
                           }
                           return LinkAttempt::opened(*links.back());
@@ -433,13 +364,10 @@ int main(int argc, char** argv)
                                   // still waiting on this application.
                                   return Approval::Stop;
                               }
-                              if (!options.quiet) {
-                                  std::cout
-                                      << "  the new image is running unconfirmed; confirming\n";
-                              }
+                              console.confirming();
                               return Approval::Confirm;
                           },
-                      .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
+                      .observe = [&](const UpdateEvent& event) { console.event(event); },
                   }};
 
     // --- the pump -----------------------------------------------------------
@@ -450,7 +378,7 @@ int main(int argc, char** argv)
     case RunEnd::Finished:
         break;
     case RunEnd::Refused:
-        std::cerr << "winrt_ble_dfu: " << to_string(ran.result.error()) << '\n';
+        console.error(ran.result.error());
         return kUpdateFailed;
     case RunEnd::StoppedBeforeConfirm:
         // Leaving the update waiting is the behaviour, not a leak: the process
@@ -460,30 +388,17 @@ int main(int argc, char** argv)
         return kOk;
     case RunEnd::TimedOut:
         // Not reachable: there is no overall deadline.
-        std::cerr << "winrt_ble_dfu: " << to_string(ran.result.error()) << '\n';
+        console.error(ran.result.error());
         return kUpdateFailed;
     }
-    const Result<UpdateReport>& outcome = ran.result;
 
     // --- the report ---------------------------------------------------------
 
-    if (!outcome.has_value()) {
-        std::cerr << "winrt_ble_dfu: update failed: " << to_string(outcome.error()) << '\n';
-        print_failure_details(updater.report(), std::cerr);
+    const bool completed = console.finish(ran.result, updater.report());
+    if (!ran.result.has_value()) {
         return ran.gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
     }
 
-    const UpdateReport& report = *outcome;
-    std::cout << "update " << to_string(report.final_state) << '\n';
-    std::cout << "  bytes transferred: " << report.bytes_transferred
-              << (report.upload_skipped ? " (the device already held this image)" : "") << '\n';
-    if (report.rolled_back) {
-        std::cout << "  the device reverted to its previous image\n";
-    }
-    if (report.revert_pending) {
-        std::cout << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
-    }
-    std::cout << "  " << describe_mode(report) << '\n';
     // The client's counters, because a real link is where they earn their keep:
     // a retransmitted final chunk is answered as a fresh session (protocol-notes
     // section 6, rules 9b then 9a) and reads as "already held" above, and the
@@ -495,7 +410,7 @@ int main(int argc, char** argv)
               << " unmatched, " << stats.mismatched << " mismatched, " << stats.malformed
               << " malformed\n";
 
-    if (report.final_state == UpdateState::Completed) {
+    if (completed) {
         return kOk;
     }
     return ran.gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;

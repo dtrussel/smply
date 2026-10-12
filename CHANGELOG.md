@@ -51,6 +51,13 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Fixed
 
+* **The example tools print every error escaped.** A device's `rsn` reached
+  the terminal raw in `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` (security.md
+  T12). The three now share one update command,
+  `support/dfu_app/update_command.hpp`: the shared flags, one set of rules for
+  them, the event lines, and the report, each error through `printable()`. The
+  rules are the strictest the tools had, so `winrt_ble_dfu --mode
+  confirm-only` now refuses an `--image` it would not have read.
 * **The weekly OSV scan checked nothing.** OSV-Scanner counted the SBOM's two
   `pkg:github` packages and then dropped both as unscannable, and the job
   reported success. `osv.yml` now runs `tools/osv_query.py`, which asks OSV

@@ -85,6 +85,27 @@ if(SMPLY_BUILD_TESTS AND NOT WIN32)
     # The package board check (protocol-notes section 5): --board without a
     # package is a usage error, and a package for another board is refused
     # before anything is sent.
+    # The rules every tool shares (support/dfu_app/update_command.hpp), and
+    # this tool's: a real port needs a named image or package and takes no
+    # generated one, a second build needs a named first, and --commit needs a
+    # package. Each is a usage error before any port is opened.
+    foreach(case IN ITEMS port_demo port_nothing secondary commit)
+        if(case STREQUAL "port_demo")
+            set(args --port /nonexistent/tty --demo-package)
+        elseif(case STREQUAL "port_nothing")
+            set(args --port /nonexistent/tty)
+        elseif(case STREQUAL "secondary")
+            set(args --stub uart --image-secondary app_slot1.bin)
+        else()
+            set(args --stub uart --commit 1=device)
+        endif()
+        add_test(NAME serial_dfu_usage_${case} COMMAND serial_dfu ${args})
+        set_tests_properties(serial_dfu_usage_${case} PROPERTIES
+            PASS_REGULAR_EXPRESSION "usage: serial_dfu"
+            FAIL_REGULAR_EXPRESSION "serial_dfu: Completed|nonexistent"
+            TIMEOUT 60
+        )
+    endforeach()
     add_test(NAME serial_dfu_board_usage_no_package
              COMMAND serial_dfu --stub uart --board demo_board)
     set_tests_properties(serial_dfu_board_usage_no_package PROPERTIES

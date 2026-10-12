@@ -19,7 +19,7 @@ target_link_libraries(winrt_ble_dfu
         smply::smply
         smply::util        # Dispatcher: WinRT calls back on pool threads
         smply::winrt_ble   # the transport itself
-        smply::dfu_app     # UpdateInputs and UpdateRun, shared with cli_dfu
+        smply::dfu_app     # the update command and UpdateRun, shared with the other tools
         smply_internal_options
 )
 

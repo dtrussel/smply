@@ -187,4 +187,30 @@ if(SMPLY_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "QueryingParameters|update Completed"
         TIMEOUT 60
     )
+    # The rules every tool shares (support/dfu_app/update_command.hpp), and
+    # this tool's own, each rejected as a usage error before anything starts:
+    # two things to install, --commit without a package, a second build without
+    # a named first, two generated packages, a failed apply with no device
+    # image to fail, and the generated second build beside a named first.
+    foreach(case IN ITEMS two_sources commit secondary two_packages apply_fails builds)
+        if(case STREQUAL "two_sources")
+            set(args --image app.bin --package app.zip)
+        elseif(case STREQUAL "commit")
+            set(args --commit 1=device)
+        elseif(case STREQUAL "secondary")
+            set(args --image-secondary app_slot1.bin)
+        elseif(case STREQUAL "two_packages")
+            set(args --demo-package --demo-xip-package)
+        elseif(case STREQUAL "apply_fails")
+            set(args --apply-fails)
+        else()
+            set(args --image app.bin --demo-builds)
+        endif()
+        add_test(NAME cli_dfu_usage_${case} COMMAND cli_dfu ${args})
+        set_tests_properties(cli_dfu_usage_${case} PROPERTIES
+            PASS_REGULAR_EXPRESSION "usage: cli_dfu"
+            FAIL_REGULAR_EXPRESSION "QueryingParameters|update Completed"
+            TIMEOUT 60
+        )
+    endforeach()
 endif()
