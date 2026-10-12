@@ -225,39 +225,29 @@ public:
 
     void poll(TimePoint now)
     {
-        // Recorded first: an effect applied from a group callback needs a
-        // reference point for the grace timer, and this is the only time the
+        // Recorded first: every event is stamped with it, including those a
+        // group callback raises between polls, and this is the only time the
         // updater is given one.
         last_poll_ = now;
         if (!running_) {
             return;
         }
-        const UpdateState current = state();
-        if (current == UpdateState::AwaitingDeviceApply ||
-            current == UpdateState::AwaitingDeviceCommit) {
-            poll_apply(now);
-            return;
-        }
-        if (current != UpdateState::AwaitingDisconnect) {
-            return;
-        }
         // The updater never touches the transport, so it learns about the drop
         // the only way it can: by asking the client whether the link is still
         // there (ADR-0004).
-        if (!client_->connected()) {
+        if (state() == UpdateState::AwaitingDisconnect && !client_->connected()) {
             dispatch(plain(Event::Kind::Disconnected));
             return;
         }
-        if (grace_deadline_.has_value() && now >= *grace_deadline_) {
-            grace_deadline_.reset();
-            dispatch(plain(Event::Kind::GraceExpired));
+        // The deadlines are the machine's; the updater only says the time.
+        if (const std::optional<TimePoint> due = next_deadline(); due.has_value() && now >= *due) {
+            dispatch(plain(Event::Kind::Tick));
         }
     }
 
     [[nodiscard]] std::optional<TimePoint> next_deadline() const noexcept
     {
-        // At most one is armed: they belong to different states.
-        return grace_deadline_.has_value() ? grace_deadline_ : apply_poll_;
+        return machine_.has_value() ? machine_->next_deadline() : std::nullopt;
     }
 
     [[nodiscard]] UpdateState state() const noexcept
@@ -318,20 +308,6 @@ private:
         return {};
     }
 
-    /// `AwaitingDeviceApply`: read the state again once the interval is up.
-    ///
-    /// The timeout is judged only when a poll falls due, never while a read is
-    /// outstanding, so no answer can arrive after the update has ended on it.
-    void poll_apply(TimePoint now)
-    {
-        if (!apply_poll_.has_value() || now < *apply_poll_) {
-            return;
-        }
-        apply_poll_.reset();
-        const bool timed_out = apply_deadline_.has_value() && now >= *apply_deadline_;
-        dispatch(plain(timed_out ? Event::Kind::ApplyTimedOut : Event::Kind::ApplyPollDue));
-    }
-
     /// Queues an event for the next `poll()`.
     ///
     /// Every externally triggered event goes through here, so that no callback
@@ -348,11 +324,14 @@ private:
         });
     }
 
-    void dispatch(const Event& event)
+    /// Hands \p event to the machine, stamped with the time of the last
+    /// `poll()`, and carries out the step.
+    void dispatch(Event event)
     {
         if (!running_ || !machine_.has_value()) {
             return;
         }
+        event.now = last_poll_;
         dfu::Machine& machine = *machine_;
         UpdateState previous = machine.state();
         dfu::Step step = machine.apply(event);
@@ -365,7 +344,9 @@ private:
             // A decision that needed no I/O: re-enter immediately, so the state
             // it was decided in is still a real, observable state.
             previous = step.next;
-            step = machine.apply(plain(Event::Kind::Continue));
+            Event next = plain(Event::Kind::Continue);
+            next.now = last_poll_;
+            step = machine.apply(next);
         }
     }
 
@@ -386,6 +367,8 @@ private:
         switch (effect) {
         case Effect::None:
         case Effect::Continue:
+        case Effect::AwaitApply:
+            // The machine has armed what it waits for; `poll()` ticks it.
             return;
 
         case Effect::QueryParameters:
@@ -412,15 +395,8 @@ private:
                         self.dispatch(event);
                         return;
                     }
-                    // The device answered, but not with a mode: the command is
-                    // missing, the bootloader is not MCUboot, or the answer is
-                    // malformed. That is no answer. Anything else -- a timeout,
-                    // a dropped link -- fails the update (ADR-0025).
-                    const ErrorCode code = result.error().code();
-                    if (code == ErrorCode::ProtocolError || code == ErrorCode::CborDecode) {
-                        self.dispatch(plain(Event::Kind::BootloaderUnavailable));
-                        return;
-                    }
+                    // Whether that is "no answer" or a failure is the machine's
+                    // call (ADR-0025).
                     self.dispatch(failure(result.error()));
                 })));
             return;
@@ -467,29 +443,13 @@ private:
             return;
         }
 
-        case Effect::AwaitDisconnect: {
-            grace_deadline_ = last_poll_ + plan_.disconnect_grace;
+        case Effect::AwaitDisconnect:
             emit(DisconnectExpected{});
             return;
-        }
 
-        case Effect::RequestReconnect: {
-            grace_deadline_.reset();
+        case Effect::RequestReconnect:
             emit(ReconnectRequired{.hint = plan_.reconnect_hint});
             return;
-        }
-
-        case Effect::AwaitApply: {
-            // The timeout runs from the first poll of each wait -- the apply,
-            // then the commit -- not from each poll, and not again after a
-            // reconnect that returns to the same wait (ADR-0022).
-            if (apply_phase_ != step.next) {
-                apply_phase_ = step.next;
-                apply_deadline_ = last_poll_ + plan_.apply_timeout;
-            }
-            apply_poll_ = last_poll_ + plan_.apply_poll_interval;
-            return;
-        }
 
         case Effect::RequestConfirmation: {
             emit(ConfirmationRequired{});
@@ -566,10 +526,6 @@ private:
     void finish()
     {
         running_ = false;
-        grace_deadline_.reset();
-        apply_poll_.reset();
-        apply_deadline_.reset();
-        apply_phase_.reset();
 
         // The one report, which the machine completed on the step that
         // finished the update: `report()` and the `UpdateFinished` result
@@ -671,12 +627,7 @@ private:
     UpdateReport no_update_;
     bool running_ = false;
 
-    std::optional<TimePoint> grace_deadline_;
-    /// `AwaitingDeviceApply`: when to read the state next, and when to give up.
-    std::optional<TimePoint> apply_poll_;
-    std::optional<TimePoint> apply_deadline_;
-    /// The wait `apply_deadline_` was armed for.
-    std::optional<UpdateState> apply_phase_;
+    /// The time of the last `poll()`, which every event is stamped with.
     TimePoint last_poll_;
 
     /// Kept alive only while this object is; every callback holds a weak

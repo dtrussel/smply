@@ -864,11 +864,12 @@ callbacks).
   and returns a `Step`: the next state, one `Effect`, and the parameters that
   effect needs. A `Continue` effect asks for a `Continue` event at once; the
   updater feeds it, and announces each state it passes through.
+* **`next_deadline()`**, when the machine next wants a `Tick` event.
 * **`state()`** and **`report()`**, read-only.
 
 Everything the machine carries between events (the current target, the last
 slot table, the buffer size, the chosen build, the recovery budgets, whether a
-swap is scheduled) is its own, defined beside the decisions and visible to
+swap is scheduled, and its deadlines) is its own, defined beside the decisions and visible to
 nothing else. A state is therefore reached only by the events that reach it,
 in the unit suite as in production. The updater holds one machine per
 `start()` and keeps it after the update ends, so `report()` still answers.
@@ -891,8 +892,21 @@ is made inside the machine and the updater's I/O code makes none
   index in the update, which is also its source's), the build to send (0 or 1,
   for direct-XIP's per-slot files), the image number and the device's buffer
   size. `MarkForTest` and `Confirm` name the image-state hash and the image.
-  The updater carries out an effect from the step alone. Its timers (`AwaitDisconnect`, `AwaitApply`) read only the
-  plan and the updater's own clock state.
+  The updater carries out an effect from the step alone.
+* **Time is a value in an event.** Every event carries `now`, the time of
+  the updater's last `poll()`, and the machine arms its own deadlines from
+  it: the reconnect grace on `AwaitDisconnect`, and on `AwaitApply` the next
+  read of a device that applies an image itself, and that wait's timeout.
+  `next_deadline()` returns whichever is armed (at most one is: they belong
+  to different states), the updater's `next_deadline()` passes it on, and
+  `poll()` sends a `Tick` once it has passed. A `Tick` is legal in every
+  state and changes nothing when no deadline is due. So the timing rules are
+  decisions like the rest, and unit-tested the same way. The machine reads no
+  clock: there is none in `src/` (ADR-0004).
+* **The machine reads failures, too.** The bootloader-information query
+  failing arrives as `Failed`, and the machine decides that `ProtocolError`
+  and `CborDecode` mean the device gave no answer (ADR-0025) while anything
+  else fails the update. The updater never inspects an error code.
 * **The report is the machine's.** The machine writes it as it decides and,
   on the step whose effect is `Finish`, adds the final state, the target hash
   and the last slot table. The updater writes nothing to it; it reads
@@ -1086,13 +1100,13 @@ target.
 
 After the reset, `VerifyingBooted` checks every `Client` image, then
 `AwaitingDeviceApply` waits for every `Device` image to run on trial. The
-wait is a poll timer, not a clock in the machine:
-* the `AwaitApply` effect makes the updater arm `apply_poll_interval`, and
-  `apply_timeout` once per wait (not again when a reconnect returns to the
-  same wait);
-* both are exposed through `next_deadline()`, like the disconnect grace;
-* `poll()` feeds back `ApplyPollDue`, or `ApplyTimedOut` once the timeout
-  has passed.
+wait is a poll the machine times:
+* the step whose effect is `AwaitApply` arms the next read,
+  `apply_poll_interval` after the event, and `apply_timeout` once per wait
+  (not again when a reconnect returns to the same wait, ADR-0022);
+* the next read is `next_deadline()`, like the disconnect grace;
+* a `Tick` at or after it reads the state again, or fails the update with
+  `Timeout` once the timeout has passed.
 
 The timeout is judged only when a poll falls due, never while a read is
 outstanding, so no answer can arrive after the update has ended. Slot 0 of

@@ -71,19 +71,19 @@ but unconfirmed.
 
 Blocked by: Stage 0.
 
-- [ ] A component test pins ADR-0022's rule: with an apply timeout set, a
+- [x] A component test pins ADR-0022's rule: with an apply timeout set, a
       link that drops while the device applies and then reconnects still
       times out on the original deadline. If it fails today, the fix lands
       first, in its own commit.
-- [ ] Every `dfu::Event` carries `now`. The machine keeps the reconnect
+- [x] Every `dfu::Event` carries `now`. The machine keeps the reconnect
       grace, the apply poll and the apply timeout, exposes
       `next_deadline()`, and takes a `Tick` event. `Impl::poll(now)` sends
       a tick, and `Impl` has no timer or phase state left.
-- [ ] The machine reads the bootloader-info refusal: `Impl` passes the
+- [x] The machine reads the bootloader-info refusal: `Impl` passes the
       error, and the machine decides that `ProtocolError` and `CborDecode`
       mean "not available".
-- [ ] Unit tests pin each timing rule, ADR-0022's included.
-- [ ] `design.md` §8 and `architecture.md` describe the new split.
+- [x] Unit tests pin each timing rule, ADR-0022's included.
+- [x] `design.md` §8 and `architecture.md` describe the new split.
 
 ### Stage 2: `ImageManagement` says whether an upload can resume
 

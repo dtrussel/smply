@@ -2,6 +2,7 @@
 
 #include "dfu/update_state_machine.hpp"
 
+#include "smply/clock.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/groups/os.hpp"
@@ -76,6 +77,17 @@ struct Context
     /// The refusal checks have run, and passed. They run once, before the
     /// first command that changes the device (ADR-0025, decision 3).
     bool preconditions_checked = false;
+
+    /// `AwaitingDisconnect`: when to stop waiting for the link to drop.
+    std::optional<TimePoint> grace_deadline;
+    /// `AwaitingDeviceApply` and `AwaitingDeviceCommit`: when to read the
+    /// state next. Unset while a read is outstanding.
+    std::optional<TimePoint> apply_poll;
+    /// When the wait gives up, and the wait it was armed for. Armed once per
+    /// wait, so a reconnect that returns to the same wait keeps it
+    /// (ADR-0022).
+    std::optional<TimePoint> apply_deadline;
+    std::optional<UpdateState> apply_phase;
 };
 
 namespace {
@@ -826,6 +838,92 @@ void parameterise(Step& step, Context& context)
     }
 }
 
+/// A `Tick` in \p state at \p now: whichever of the state's deadlines has
+/// passed, if any.
+///
+/// The apply timeout is judged only when a poll falls due, never while a read
+/// is outstanding, so no answer can arrive after the update has ended on it.
+[[nodiscard]] Step tick(UpdateState state, TimePoint now, Context& context)
+{
+    if (state == UpdateState::AwaitingDisconnect && context.grace_deadline.has_value() &&
+        now >= *context.grace_deadline) {
+        // A link still up is not proof the device ignored the reset, so the
+        // grace running out is not a failure: the reconnect is asked for
+        // either way.
+        return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
+    }
+    const bool waiting =
+        state == UpdateState::AwaitingDeviceApply || state == UpdateState::AwaitingDeviceCommit;
+    if (!waiting || !context.apply_poll.has_value() || now < *context.apply_poll) {
+        return Step{state, Effect::None};
+    }
+    context.apply_poll.reset();
+    if (context.apply_deadline.has_value() && now >= *context.apply_deadline) {
+        return fail(context, ErrorCode::Timeout,
+                    state == UpdateState::AwaitingDeviceApply
+                        ? "dfu: device did not apply an image in time"
+                        : "dfu: device did not commit an image in time");
+    }
+    return Step{state, Effect::ReadState};
+}
+
+/// Arms or clears the deadlines \p step needs, from \p now.
+void keep_time(const Step& step, TimePoint now, const UpdatePlan& plan, Context& context)
+{
+    if (step.next != UpdateState::AwaitingDisconnect) {
+        context.grace_deadline.reset();
+    }
+    switch (step.effect) {
+    case Effect::AwaitDisconnect:
+        context.grace_deadline = now + plan.disconnect_grace;
+        return;
+    case Effect::AwaitApply:
+        // The timeout runs from the first poll of each wait -- the apply, then
+        // the commit -- not from each poll, and not again after a reconnect
+        // that returns to the same wait (ADR-0022).
+        if (context.apply_phase != step.next) {
+            context.apply_phase = step.next;
+            context.apply_deadline = now + plan.apply_timeout;
+        }
+        context.apply_poll = now + plan.apply_poll_interval;
+        return;
+    case Effect::Finish:
+        context.apply_poll.reset();
+        context.apply_deadline.reset();
+        context.apply_phase.reset();
+        return;
+    case Effect::None:
+    case Effect::Continue:
+    case Effect::QueryParameters:
+    case Effect::QueryBootloader:
+    case Effect::ReadState:
+    case Effect::StartUpload:
+    case Effect::ResumeUpload:
+    case Effect::MarkForTest:
+    case Effect::Reset:
+    case Effect::ForceReset:
+    case Effect::RequestReconnect:
+    case Effect::RequestConfirmation:
+    case Effect::Confirm:
+        return;
+    }
+}
+
+/// `QueryingBootloader`, on a failure. The device answered, but not with a
+/// mode -- the command is missing, the bootloader is not MCUboot, or the
+/// answer is malformed -- and that is no answer: the update goes on with the
+/// plan's fallback. A lost link or a timeout is not "no answer", and a link
+/// that cannot carry one query is not given an upload (ADR-0025).
+[[nodiscard]] Step bootloader_failed(const Error& error, const UpdatePlan& plan, Context& context)
+{
+    if (error.code() == ErrorCode::ProtocolError || error.code() == ErrorCode::CborDecode) {
+        record_mode(McubootMode::Unknown, plan, context.report);
+        return Step{UpdateState::InspectingImages, Effect::ReadState};
+    }
+    // Nothing has been changed on the device yet.
+    return fail(context, error);
+}
+
 [[nodiscard]] Step decide(UpdateState state, const Event& event, const UpdatePlan& plan,
                           Context& context)
 {
@@ -837,6 +935,10 @@ void parameterise(Step& step, Context& context)
         }
         context.report.revert_pending = context.swap_scheduled;
         return Step{UpdateState::Cancelled, Effect::Finish};
+    }
+    // Time passing is legal everywhere too; only a few states keep a deadline.
+    if (event.kind == Event::Kind::Tick) {
+        return tick(state, event.now, context);
     }
 
     switch (state) {
@@ -860,20 +962,14 @@ void parameterise(Step& step, Context& context)
 
     case UpdateState::QueryingBootloader:
         // Optional too: no answer leaves the mode unknown, and the update runs
-        // as it always has. A lost link or a timeout is not "no answer", and a
-        // link that cannot answer one query is not given an upload (ADR-0025).
+        // as it always has (ADR-0025).
         if (event.kind == Event::Kind::BootloaderRead) {
             record_mode(event.bootloader.mode, plan, context.report);
             context.no_downgrade = event.bootloader.no_downgrade;
             return Step{UpdateState::InspectingImages, Effect::ReadState};
         }
-        if (event.kind == Event::Kind::BootloaderUnavailable) {
-            record_mode(McubootMode::Unknown, plan, context.report);
-            return Step{UpdateState::InspectingImages, Effect::ReadState};
-        }
         if (event.kind == Event::Kind::Failed) {
-            // Nothing has been changed on the device yet.
-            return fail(context, event.error);
+            return bootloader_failed(event.error, plan, context);
         }
         break;
 
@@ -943,10 +1039,8 @@ void parameterise(Step& step, Context& context)
         break;
 
     case UpdateState::AwaitingDisconnect:
-        // Either way the application is asked to reconnect. A link that never
-        // dropped is not proof the device ignored the reset, so the grace
-        // expiring is not a failure.
-        if (event.kind == Event::Kind::Disconnected || event.kind == Event::Kind::GraceExpired) {
+        // The drop the reset causes; the grace running out is a `Tick`.
+        if (event.kind == Event::Kind::Disconnected) {
             return Step{UpdateState::AwaitingReconnect, Effect::RequestReconnect};
         }
         break;
@@ -974,15 +1068,10 @@ void parameterise(Step& step, Context& context)
         break;
 
     case UpdateState::AwaitingDeviceApply:
-        if (event.kind == Event::Kind::ApplyPollDue) {
-            return Step{UpdateState::AwaitingDeviceApply, Effect::ReadState};
-        }
+        // A read falls due, or the wait times out, on a `Tick`.
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
             return await_device(plan, context);
-        }
-        if (event.kind == Event::Kind::ApplyTimedOut) {
-            return fail(context, ErrorCode::Timeout, "dfu: device did not apply an image in time");
         }
         if (event.kind == Event::Kind::Failed) {
             return wait_read_failed(state, event.error, context);
@@ -990,15 +1079,9 @@ void parameterise(Step& step, Context& context)
         break;
 
     case UpdateState::AwaitingDeviceCommit:
-        if (event.kind == Event::Kind::ApplyPollDue) {
-            return Step{UpdateState::AwaitingDeviceCommit, Effect::ReadState};
-        }
         if (event.kind == Event::Kind::StateRead) {
             context.device = *event.state;
             return await_commit(context);
-        }
-        if (event.kind == Event::Kind::ApplyTimedOut) {
-            return fail(context, ErrorCode::Timeout, "dfu: device did not commit an image in time");
         }
         if (event.kind == Event::Kind::Failed) {
             return wait_read_failed(state, event.error, context);
@@ -1107,6 +1190,7 @@ Step Machine::apply(const Event& event)
     }
     summarise(context);
     parameterise(step, context);
+    keep_time(step, event.now, plan_, context);
     state_ = step.next;
     return step;
 }
@@ -1114,6 +1198,12 @@ Step Machine::apply(const Event& event)
 UpdateState Machine::state() const noexcept
 {
     return state_;
+}
+
+std::optional<TimePoint> Machine::next_deadline() const noexcept
+{
+    const Context& context = *context_;
+    return context.grace_deadline.has_value() ? context.grace_deadline : context.apply_poll;
 }
 
 const UpdateReport& Machine::report() const noexcept

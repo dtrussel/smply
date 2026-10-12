@@ -2260,6 +2260,48 @@ TEST_CASE("the link dropping while the device applies its image is a reconnect, 
     CHECK(outcome.report->images[1].committed);
 }
 
+TEST_CASE("a reconnect while the device applies does not restart the apply timeout",
+          "[dfu][update][multi]")
+{
+    // ADR-0022: the timeout runs from the first poll of the wait. Restarted by
+    // each reconnect, a device that drops its link while it applies would
+    // never time out at all.
+    UpdateOutcome outcome;
+    FakeTransport after_reset;
+    FakeTransport after_drop;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1'000'000);
+
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{2};
+    plan.apply_poll_interval = std::chrono::milliseconds{200};
+    Application application{fixture, {&after_reset, &after_drop}, outcome};
+    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    std::optional<smply::TimePoint> waiting_since;
+    application.wait.when(
+        [&] { return fixture.updater.state() == UpdateState::AwaitingDeviceApply; },
+        [&] { waiting_since = fixture.clock.now(); });
+    // Most of the timeout gone, then the link drops and comes back.
+    application.wait.when(
+        [&] {
+            return waiting_since.has_value() &&
+                   fixture.clock.now() >= *waiting_since + std::chrono::milliseconds{1500};
+        },
+        [&] { after_reset.disconnect(); });
+
+    REQUIRE(application.run());
+    REQUIRE(application.wait.all_fired());
+    CHECK(outcome.code == ErrorCode::Timeout);
+    CHECK(outcome.reconnects == 2);
+    // On the original deadline, to within a poll and a turn; a restarted
+    // timeout would have run to 3.5 s. `waiting_since` is read on the turn
+    // after the deadline was armed, so the lower bound gives that turn back.
+    const smply::TimePoint ended = fixture.clock.now();
+    CHECK(ended >= *waiting_since + std::chrono::milliseconds{1990});
+    CHECK(ended <= *waiting_since + std::chrono::milliseconds{2500});
+}
+
 TEST_CASE("a read lost while the device applies its image is asked again", "[dfu][update][multi]")
 {
     UpdateOutcome outcome;

@@ -469,6 +469,17 @@ with no image to work on. ADR-0022 added:
 * in both waits: a dropped link asks for a reconnect, a lost read is
   retried, and anything else is fatal.
 
+The machine keeps its own deadlines, and the `Scenario` keeps a time of its
+own, stamped on every event it feeds; `advance()` and `tick()` move it on and
+send a `Tick`. The `[time]` cases: the reconnect grace runs from the reset's
+answer and only its expiry moves on; a tick with nothing due changes nothing
+in any state; a poll falls due at its time and never while a read is
+outstanding; the apply timeout runs from the wait's first poll and survives a
+reconnect that returns to the wait (ADR-0022), which the component suite
+checks again end to end; and the commit wait has a timeout of its own. A
+bootloader query the device refuses (`ProtocolError`, `CborDecode`) is no
+answer, and one the link loses fails the update (ADR-0025).
+
 The `[confirm]` cases for ADR-0023 cover `Confirming` and `VerifyingConfirmed`:
 * a dropped link reconnects;
 * a lost answer is re-read once, and a second is fatal with `revert_pending`;
