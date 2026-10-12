@@ -454,7 +454,9 @@ smply/
 │   │                           targets, a package optionally refused for another
 │   │                           board), the tools' MCUboot-mode option,
 │   │                           printable() (untrusted text escaped for a
-│   │                           terminal), and update_run.hpp: UpdateRun,
+│   │                           terminal), console_report.hpp (the report
+│   │                           lines every tool prints, a failure's included),
+│   │                           and update_run.hpp: UpdateRun,
 │   │                           the loop that drives a started update to its end
 │   │                           through three hooks (open a link, approve, observe)
 │   │                           and the UpdateWait seam, whose real adapter is

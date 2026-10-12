@@ -14,7 +14,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
 | The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*` |
-| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **six** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc`, `serial_dfu_pty_device_buffer` and `serial_dfu_pty_package`, each a whole update, reset included, over a pseudo-terminal; and two for `--board`: `serial_dfu_board_usage_no_package` expects the usage text, and `serial_dfu_pty_package_board_mismatch` the refusal |
+| The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **seven** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc`, `serial_dfu_pty_device_buffer` and `serial_dfu_pty_package`, each a whole update, reset included, over a pseudo-terminal; `serial_dfu_pty_package_apply_fails`, the failure report; and two for `--board`: `serial_dfu_board_usage_no_package` expects the usage text, and `serial_dfu_pty_package_board_mismatch` the refusal |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
 | HIL / interoperability | `tests/hil/` | minutes | manual, from the bench. The nightly self-hosted job is committed and advisory, and **no runner is registered** — see §6 |
@@ -584,6 +584,10 @@ question:
   (ADR-0021). `images=2 applied=1 committed=1` at the end of the summary line
   says both were staged, and image 1 was applied and then committed by the
   stub.
+* `serial_dfu_pty_package_apply_fails`: the same package with the stub failing
+  to apply image 1. It matches the failure report: each image's line, and the
+  warning that image 0, on trial and never confirmed, reverts at the next
+  reset.
 
 Both pass on one summary line (`PASS_REGULAR_EXPRESSION`), never on the exit
 code alone: an update that completed with the wrong reset shape, a framing

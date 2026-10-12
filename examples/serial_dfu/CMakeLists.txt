@@ -71,6 +71,17 @@ if(SMPLY_BUILD_TESTS AND NOT WIN32)
             "serial_dfu: Completed reset=grace links=2 devices=1 packets=[1-9][0-9]* .*framing_errors=0 crc_failures=0 refused=0 images=2 applied=1 committed=1"
         TIMEOUT 60
     )
+    # The same package with the stub failing to apply image 1: the failure
+    # report still says what each image reached and that image 0, on trial
+    # and never confirmed, reverts at the next reset.
+    add_test(NAME serial_dfu_pty_package_apply_fails
+             COMMAND serial_dfu --quiet --stub uart --demo-package --apply-fails)
+    set_tests_properties(serial_dfu_pty_package_apply_fails PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "serial_dfu: update failed: firmware update failed \\(at dfu: device did not apply an image\\).*image 1 \\(device\\): not applied.*will revert on the next reset"
+        FAIL_REGULAR_EXPRESSION "serial_dfu: Completed"
+        TIMEOUT 60
+    )
     # The package board check (protocol-notes section 5): --board without a
     # package is a usage error, and a package for another board is refused
     # before anything is sent.

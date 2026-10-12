@@ -39,7 +39,9 @@ they run against the simulator and the stub device only.
 
 ## In progress
 
-Nothing. Pick the next item from the backlog below, by its "When".
+Deepening four shallow modules: the update machine, the upload's
+resumability, `UpdateRun`'s wiring and the example tools' update command.
+The stages are in [`architecture-deepening-plan.md`](architecture-deepening-plan.md).
 
 ## Acceptance gaps that need the hardware bench
 

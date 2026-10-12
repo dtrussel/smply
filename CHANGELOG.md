@@ -37,6 +37,12 @@ git; commit `97f1647` is the last to carry the per-phase record in
   about each dependency by its pinned commit and fails when it establishes
   nothing, including when a canary commit OSV is known to flag comes back
   clean. Findings stay advisory.
+* **`serial_dfu` and `winrt_ble_dfu` said too little when an update failed.**
+  They printed the error and the bootloader mode and stopped, so a failure
+  that left a swap scheduled read as if nothing had changed. They now print
+  what `cli_dfu` always did: each image's line and the warning that the next
+  reset reverts the unconfirmed swap. The lines are shared, in
+  `support/dfu_app/console_report.hpp`.
 
 ## [0.3.0] - 2026-10-09
 

@@ -33,6 +33,7 @@
 #include "stub_device/stub_device.hpp"
 
 #include "dfu_app/bootloader_mode.hpp"
+#include "dfu_app/console_report.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/printable.hpp"
 #include "dfu_app/reconnect_policy.hpp"
@@ -241,35 +242,6 @@ void usage()
                            (one_image || (out.image_secondary_path.empty() && !out.demo_builds));
     return sources <= 1 && builds_ok &&
            (out.package_mode() || (!out.apply_fails && out.commits.empty()));
-}
-
-/// How far the device took an image it commits itself (ADR-0022).
-[[nodiscard]] std::string_view device_image_state(const ImageReport& image)
-{
-    if (image.committed) {
-        return "committed";
-    }
-    return image.applied ? "applied, not committed" : "not applied";
-}
-
-/// One line per image of a multi-image update.
-void print_images(const UpdateReport& report, std::ostream& out)
-{
-    if (report.images.size() < 2) {
-        return;
-    }
-    for (const ImageReport& image : report.images) {
-        out << "  image " << image.image << " ("
-            << (image.commit == CommitBy::Client ? "client" : "device") << "): ";
-        if (image.commit == CommitBy::Device) {
-            out << device_image_state(image);
-        } else if (image.rolled_back) {
-            out << "reverted";
-        } else {
-            out << image.bytes_transferred << " bytes transferred";
-        }
-        out << '\n';
-    }
 }
 
 /// The generated image, as a file: `FileImageSource` reads through a real file
@@ -579,13 +551,7 @@ int main(int argc, char** argv)
         std::cerr << "cli_dfu: update failed: " << to_string(outcome.error()) << '\n';
         // The report still says what happened to each image, and what the next
         // reset will do.
-        // On stderr with the failure itself, so the lines keep their order.
-        std::cerr << "  " << describe_mode(updater.report()) << '\n';
-        print_images(updater.report(), std::cerr);
-        if (updater.report().revert_pending) {
-            std::cerr
-                << "  a swap is scheduled but unconfirmed: it will revert on the next reset\n";
-        }
+        print_failure_details(updater.report(), std::cerr);
         return 1;
     }
 

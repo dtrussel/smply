@@ -31,6 +31,7 @@
 #include "winrt_prelude.hpp"
 
 #include "dfu_app/bootloader_mode.hpp"
+#include "dfu_app/console_report.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 #include "dfu_app/update_inputs.hpp"
@@ -472,7 +473,7 @@ int main(int argc, char** argv)
 
     if (!outcome.has_value()) {
         std::cerr << "winrt_ble_dfu: update failed: " << to_string(outcome.error()) << '\n';
-        std::cerr << "  " << describe_mode(updater.report()) << '\n';
+        print_failure_details(updater.report(), std::cerr);
         return ran.gave_up_reconnecting ? kReconnectFailed : kUpdateFailed;
     }
 

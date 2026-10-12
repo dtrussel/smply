@@ -44,6 +44,7 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # reconnect that is pure arithmetic is put somewhere cli_dfu can exercise it on
 # every push.
 add_library(smply_dfu_app STATIC
+    dfu_app/console_report.cpp
     dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
     dfu_app/printable.cpp
