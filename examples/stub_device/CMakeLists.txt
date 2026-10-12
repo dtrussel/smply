@@ -9,6 +9,7 @@
 add_library(smply_example_stub STATIC
     stub_device.cpp
     demo_image.cpp
+    demo_image_file.cpp
     demo_package.cpp
 )
 

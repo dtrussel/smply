@@ -20,6 +20,7 @@ add_executable(smply_unit_tests
     test_mgmt_error.cpp
     test_os_group.cpp
     test_printable.cpp
+    test_update_command.cpp
     test_update_inputs.cpp
     test_reconnect_policy.cpp
     test_result.cpp

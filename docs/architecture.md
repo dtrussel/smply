@@ -457,6 +457,9 @@ smply/
 │   │                           printable() (untrusted text escaped for a
 │   │                           terminal), console_report.hpp (the report
 │   │                           lines every tool prints, a failure's included),
+│   │                           update_command.hpp (the tools' shared flags,
+│   │                           the one set of rules for them, and the update's
+│   │                           console: events, escaped errors, the report),
 │   │                           and update_run.hpp: UpdateRun,
 │   │                           the loop that starts an update and drives it to its
 │   │                           end through three hooks (open a link, approve, observe)
@@ -470,11 +473,12 @@ smply/
 │                               installed, unit-tested and fuzzed
 ├── examples/
 │   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp
-│   │                           device_link.hpp — the pretend device both portable
-│   │                           examples drive, behind a DeviceLink, optionally with a
-│   │                           second image it commits itself; and the demo image and
-│   │                           two-image package it is given. Scaffolding, not a
-│   │                           protocol reference
+│   │                           demo_image_file.hpp  device_link.hpp — the pretend
+│   │                           device both portable examples drive, behind a
+│   │                           DeviceLink, optionally with a second image it commits
+│   │                           itself; and the demo image and two-image package it is
+│   │                           given, and the temporary file the image is read from.
+│   │                           Scaffolding, not a protocol reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
 │   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs
