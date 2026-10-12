@@ -32,7 +32,7 @@ using smply::ConstBytes;
 using smply::ErrorCode;
 using smply::ImageVersion;
 using smply::Result;
-using smply::dfu_package::board_name;
+using smply::dfu_package::BoardName;
 using smply::dfu_package::check_board;
 using smply::dfu_package::DfuPackage;
 using smply::dfu_package::ImageDependency;
@@ -786,13 +786,23 @@ namespace {
         .build();
 }
 
-/// `check_board()` of the package \p archive holds, against \p expected.
+/// `check_board()` of the package \p archive holds, against the board name of
+/// \p expected.
 [[nodiscard]] Result<void> board_verdict(const std::vector<std::byte>& archive,
                                          std::string_view expected)
 {
     const Result<DfuPackage> package = read_package(ConstBytes{archive});
     REQUIRE(package.has_value());
-    return check_board(*package, expected);
+    const Result<BoardName> board = BoardName::parse(expected);
+    REQUIRE(board.has_value());
+    return check_board(*package, *board);
+}
+
+/// The board name \p board parses to, as text; empty if it is refused.
+[[nodiscard]] std::string parsed(std::string_view board)
+{
+    const Result<BoardName> name = BoardName::parse(board);
+    return name.has_value() ? std::string{name->view()} : std::string{};
 }
 
 /// Whether the refusal's text mentions \p part.
@@ -803,19 +813,27 @@ namespace {
 
 } // namespace
 
-TEST_CASE("board_name cuts a board name or a board target at its first '/' or '@'",
+TEST_CASE("BoardName cuts a board name or a board target at its first '/' or '@'",
           "[dfu_package][board]")
 {
-    CHECK(board_name("nrf5340dk") == "nrf5340dk");
-    CHECK(board_name("nrf5340dk/nrf5340/cpunet") == "nrf5340dk");
-    CHECK(board_name("nrf5340dk@2.0.0/nrf5340/cpunet") == "nrf5340dk");
-    CHECK(board_name("nrf5340dk@2.0.0") == "nrf5340dk");
+    CHECK(parsed("nrf5340dk") == "nrf5340dk");
+    CHECK(parsed("nrf5340dk/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(parsed("nrf5340dk@2.0.0/nrf5340/cpunet") == "nrf5340dk");
+    CHECK(parsed("nrf5340dk@2.0.0") == "nrf5340dk");
     // The first separator wins, whichever it is.
-    CHECK(board_name("a/b@c") == "a");
-    // Nothing before the first separator: no board name.
-    CHECK(board_name("").empty());
-    CHECK(board_name("/nrf5340/cpuapp").empty());
-    CHECK(board_name("@1.0.0").empty());
+    CHECK(parsed("a/b@c") == "a");
+    // A board target and its board name are the same board name.
+    CHECK(BoardName::parse("nrf5340dk@2.0.0/nrf5340/cpunet") == BoardName::parse("nrf5340dk"));
+    CHECK_FALSE(BoardName::parse("nrf5340dk") == BoardName::parse("nRF5340DK"));
+}
+
+TEST_CASE("BoardName refuses a string with no board name", "[dfu_package][board]")
+{
+    const std::string_view board = GENERATE(std::string_view{""}, std::string_view{"/cpuapp"},
+                                            std::string_view{"@1.0.0/nrf5340"});
+    const Result<BoardName> name = BoardName::parse(board);
+    REQUIRE_FALSE(name.has_value());
+    CHECK(name.error().code() == ErrorCode::InvalidArgument);
 }
 
 TEST_CASE("check_board accepts a package whose every image names the expected board name",
@@ -881,16 +899,6 @@ TEST_CASE("check_board refuses an image whose manifest names no board", "[dfu_pa
 
     // An empty board string names no board name either.
     CHECK_FALSE(board_verdict(boards_archive("nrf5340dk", ""), "nrf5340dk").has_value());
-}
-
-TEST_CASE("check_board refuses an expectation with no board name", "[dfu_package][board]")
-{
-    const std::vector<std::byte> archive = boards_archive("nrf5340dk", "nrf5340dk");
-    const std::string_view expected = GENERATE(std::string_view{""}, std::string_view{"/cpuapp"},
-                                               std::string_view{"@1.0.0/nrf5340"});
-    const Result<void> verdict = board_verdict(archive, expected);
-    REQUIRE_FALSE(verdict.has_value());
-    CHECK(verdict.error().code() == ErrorCode::InvalidArgument);
 }
 
 TEST_CASE("check_board's refusal is bounded however long the manifest's board is",

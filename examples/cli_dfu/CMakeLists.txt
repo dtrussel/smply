@@ -18,7 +18,7 @@ target_link_libraries(cli_dfu
         smply::util       # Dispatcher: the whole point of the threading in here
         smply_example_stub # the pretend device, shared with serial_dfu
         smply::dfu_app    # UpdateInputs, and UpdateRun: the pump and its reconnects
-        smply::dfu_package # board_name(): --board is checked as check_board cuts it
+        smply::dfu_package # BoardName::parse(): --board is refused as check_board would
         smply_internal_options
 )
 

@@ -64,8 +64,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
                 }
             }
         }
-        const smply::Result<void> board =
-            smply::dfu_package::check_board(*package, "nrf5340dk/nrf5340/cpuapp");
+        static const smply::dfu_package::BoardName expected =
+            *smply::dfu_package::BoardName::parse("nrf5340dk/nrf5340/cpuapp");
+        const smply::Result<void> board = smply::dfu_package::check_board(*package, expected);
         assert(board.has_value() ||
                board.error().reason().size() <= smply::limits::kMaxReasonLength);
         static_cast<void>(board);

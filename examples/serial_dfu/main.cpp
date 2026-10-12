@@ -101,7 +101,7 @@ struct Options
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
     /// `--board`: the board name or board target every image of the package
     /// must be for (docs/protocol-notes.md section 5). Packages only.
-    std::optional<std::string> board;
+    std::optional<dfu_package::BoardName> board;
     /// The MCUboot mode to assume when the device does not report one
     /// (ADR-0025).
     std::optional<McubootMode> fallback_mode;
@@ -225,15 +225,18 @@ void usage()
             }
             out.commits.push_back(*commit);
         } else if (arg == "--board" && has_value) {
-            out.board = args[++i];
+            // An expectation with no board name could match nothing.
+            Result<dfu_package::BoardName> board = dfu_package::BoardName::parse(args[++i]);
+            if (!board.has_value()) {
+                return false;
+            }
+            out.board = std::move(*board);
         } else {
             return false;
         }
     }
-    // A board is compared only with a package's manifest, and an expectation
-    // with no board name before its first '/' or '@' could match nothing.
-    if (out.board.has_value() &&
-        (!out.package_mode() || dfu_package::board_name(*out.board).empty())) {
+    // A board is compared only with a package's manifest.
+    if (out.board.has_value() && !out.package_mode()) {
         return false;
     }
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +

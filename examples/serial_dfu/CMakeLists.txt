@@ -20,7 +20,7 @@ target_link_libraries(serial_dfu
         smply::util
         smply::serial_port
         smply::dfu_app
-        smply::dfu_package # board_name(): --board is checked as check_board cuts it
+        smply::dfu_package # BoardName::parse(): --board is refused as check_board would
         smply_example_stub
         smply_internal_options
 )

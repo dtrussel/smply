@@ -60,8 +60,8 @@ target_link_libraries(smply_dfu_app
     PUBLIC
         smply::smply     # ImageSource, Result, Duration
         smply::util      # DispatcherWait: the update run's real wait drains a Dispatcher
+        smply::dfu_package # UpdateInputs reads a package, and takes a dfu_package::BoardName
     PRIVATE
-        smply::dfu_package # UpdateInputs reads a package; its interface does not show it
         smply_internal_options
 )
 

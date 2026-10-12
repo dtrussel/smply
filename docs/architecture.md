@@ -461,8 +461,9 @@ smply/
 │   │                           dispatcher_wait.hpp. smply::dfu_app, used by the
 │   │                           examples, unit-tested, and the run component-tested
 │   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
-│                               stored-zip lister, a bounded JSON reader and the
-│                               manifest cross-checks. smply::dfu_package, not
+│                               stored-zip lister, a bounded JSON reader, the
+│                               manifest cross-checks and the board check
+│                               (BoardName, check_board). smply::dfu_package, not
 │                               installed, unit-tested and fuzzed
 ├── examples/
 │   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp

@@ -266,6 +266,14 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
     return {};
 }
 
+/// The board name of \p board, a board name or a board target: everything
+/// before its first `/` or `@` (docs/protocol-notes.md section 5). Empty when
+/// \p board names no board. A view into \p board.
+[[nodiscard]] std::string_view board_name(std::string_view board) noexcept
+{
+    return board.substr(0, board.find_first_of("/@"));
+}
+
 /// A board refusal: \p where for logs, and \p text, which quotes the package,
 /// capped as a device's `rsn` is (security.md, T12).
 [[nodiscard]] unexpected<Error> board_refusal(const char* where, std::string text)
@@ -278,17 +286,18 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
 
 } // namespace
 
-std::string_view board_name(std::string_view board) noexcept
+Result<BoardName> BoardName::parse(std::string_view board)
 {
-    return board.substr(0, board.find_first_of("/@"));
+    const std::string_view name = board_name(board);
+    if (name.empty()) {
+        return fail(ErrorCode::InvalidArgument, "package: the board has no board name");
+    }
+    return BoardName{std::string{name}};
 }
 
-Result<void> check_board(const DfuPackage& package, std::string_view expected)
+Result<void> check_board(const DfuPackage& package, const BoardName& expected)
 {
-    const std::string_view wanted = board_name(expected);
-    if (wanted.empty()) {
-        return fail(ErrorCode::InvalidArgument, "package: the expected board has no board name");
-    }
+    const std::string_view wanted = expected.view();
     for (const PackageImage& image : package.images) {
         const std::string index = std::to_string(image.image);
         if (!image.board.has_value()) {

@@ -18,6 +18,7 @@
 /// of docs/multi-image.md -- image 0 committed by smply, every other image,
 /// one per target, by the device -- and `set_commit()` overrides it per image.
 
+#include "dfu_package/dfu_package.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/image_source.hpp"
 #include "smply/result.hpp"
@@ -63,8 +64,7 @@ public:
 
     /// Reads the package file at \p path.
     ///
-    /// With \p expected_board, a board name or a board target
-    /// (docs/protocol-notes.md section 5), the package is then refused unless
+    /// With \p expected_board, the package is then refused unless
     /// every image was built for that board: `dfu_package::check_board()`. So
     /// inputs for the wrong board never exist. Without it, no board is
     /// compared.
@@ -75,13 +75,13 @@ public:
     ///         refuses, or whatever `check_board()` refuses, unchanged.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
     from_package(const std::string& path,
-                 const std::optional<std::string>& expected_board = std::nullopt);
+                 const std::optional<dfu_package::BoardName>& expected_board = std::nullopt);
 
     /// Takes a package already in memory, checked against \p expected_board as
     /// `from_package()` does.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
     from_package_bytes(std::vector<std::byte> bytes,
-                       const std::optional<std::string>& expected_board = std::nullopt);
+                       const std::optional<dfu_package::BoardName>& expected_board = std::nullopt);
 
     UpdateInputs(const UpdateInputs&) = delete;
     UpdateInputs(UpdateInputs&&) = delete;

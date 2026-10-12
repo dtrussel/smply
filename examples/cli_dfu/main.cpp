@@ -107,9 +107,10 @@ struct Options
     bool apply_fails = false;
     /// `--commit N=client|device`, in the order given.
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
-    /// `--board`: the board name or board target every image of the package
-    /// must be for (docs/protocol-notes.md section 5). Package modes only.
-    std::optional<std::string> board;
+    /// `--board`: the board name every image of the package must be for, from
+    /// a board name or a board target (docs/protocol-notes.md section 5).
+    /// Package modes only.
+    std::optional<dfu_package::BoardName> board;
 
     /// `--fallback-mode`: the mode to assume when the device does not report
     /// one (ADR-0025).
@@ -217,15 +218,18 @@ void usage()
             }
             out.commits.push_back(*commit);
         } else if (arg == "--board" && i + 1 < args.size()) {
-            out.board = args[++i];
+            // An expectation with no board name could match nothing.
+            Result<dfu_package::BoardName> board = dfu_package::BoardName::parse(args[++i]);
+            if (!board.has_value()) {
+                return false;
+            }
+            out.board = std::move(*board);
         } else {
             return false;
         }
     }
-    // A board is compared only with a package's manifest, and an expectation
-    // with no board name before its first '/' or '@' could match nothing.
-    if (out.board.has_value() &&
-        (!out.package_mode() || dfu_package::board_name(*out.board).empty())) {
+    // A board is compared only with a package's manifest.
+    if (out.board.has_value() && !out.package_mode()) {
         return false;
     }
     // One thing to install, and the package-only options only with a package.

@@ -28,6 +28,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace smply::dfu_package {
@@ -129,15 +130,36 @@ struct DfuPackage
 ///         and one absent counting as different), or a broken TLV area.
 [[nodiscard]] Result<DfuPackage> read_package(ConstBytes archive);
 
-/// The board name of \p board, which is a board name or a board target:
-/// everything before its first `/` or `@` (docs/protocol-notes.md section 5).
-/// `"nrf5340dk@2.0.0/nrf5340/cpunet"` and `"nrf5340dk"` both give
-/// `"nrf5340dk"`. Empty when \p board is empty or starts with `/` or `@`,
-/// which names no board. The result is a view into \p board.
+/// A **board name** (docs/protocol-notes.md section 5): the board alone, such
+/// as `nrf5340dk`, never empty. The expectation `check_board()` compares a
+/// package against.
 ///
-/// This is the cut `check_board()` applies to both sides, and the one a tool
-/// uses to reject an expectation `check_board()` would refuse.
-[[nodiscard]] std::string_view board_name(std::string_view board) noexcept;
+/// Built only by `parse()`, from a board name or a **board target**: the text
+/// before its first `/` or `@`, so `"nrf5340dk@2.0.0/nrf5340/cpunet"` and
+/// `"nrf5340dk"` give the same board name. That cut is the one
+/// `check_board()` applies to the manifest's side as well.
+class BoardName
+{
+public:
+    /// The board name of \p board, a board name or a board target.
+    ///
+    /// \return `InvalidArgument` if \p board is empty or starts with `/` or
+    ///         `@`: it names no board, and would match nothing.
+    [[nodiscard]] static Result<BoardName> parse(std::string_view board);
+
+    /// The board name, without revision or qualifiers.
+    [[nodiscard]] std::string_view view() const noexcept
+    {
+        return name_;
+    }
+
+    [[nodiscard]] friend bool operator==(const BoardName&, const BoardName&) = default;
+
+private:
+    explicit BoardName(std::string name) noexcept : name_{std::move(name)} {}
+
+    std::string name_;
+};
 
 /// Refuses a package that was not built for the board \p expected names.
 ///
@@ -145,23 +167,21 @@ struct DfuPackage
 /// nRF Connect SDK's manifest writes a board name for the application image
 /// but, for a network-core image, the board string the build was given,
 /// usually a **board target** (S60). So each side is cut at its first `/` or
-/// `@`, and what is left is compared exactly and case-sensitively, with no
-/// alias handling. \p expected may therefore be a board name or a board
-/// target, with or without a revision.
+/// `@` (`BoardName`), and what is left is compared exactly and
+/// case-sensitively, with no alias handling.
 ///
 /// Every image is checked, not only image 0, and an image whose manifest entry
 /// names no board is refused: an unknown board never counts as a match. The
 /// manifest is not authenticated, so this catches a package handed over by
 /// mistake, not one crafted to pass (docs/security.md).
 ///
-/// \return `InvalidArgument` if \p expected is empty or has no board name
-///         before its first `/` or `@`, if an image names no board, or if an
-///         image names another board. A refusal's `Error::reason()` names the
+/// \return `InvalidArgument` if an image names no board, or names another
+///         board. A refusal's `Error::reason()` names the
 ///         image index and, for a mismatch, the expected board name and the
 ///         board string as the manifest wrote it. That text comes partly from
 ///         the package: like a device's `rsn`, it is capped at
 ///         `limits::kMaxReasonLength` and must be escaped before it is shown.
-[[nodiscard]] Result<void> check_board(const DfuPackage& package, std::string_view expected);
+[[nodiscard]] Result<void> check_board(const DfuPackage& package, const BoardName& expected);
 
 /// The dependency TLVs of one signed image, whose header is \p header.
 ///

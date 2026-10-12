@@ -33,10 +33,12 @@
 using smply::CommitBy;
 using smply::ConstBytes;
 using smply::ErrorCode;
+using smply::Result;
 using smply::UpdateMode;
 using smply::dfu_app::parse_commit;
 using smply::dfu_app::parse_update_mode;
 using smply::dfu_app::UpdateInputs;
+using smply::dfu_package::BoardName;
 using smply::test::ImageBuilder;
 using smply::test::ZipBuilder;
 
@@ -173,9 +175,15 @@ TEST_CASE("an expected board admits a package built for it, and refuses one that
                       "board": "nrf5340dk/nrf5340/cpunet"}]})"})
                                                .build();
 
+    const auto board = [](std::string_view text) {
+        Result<BoardName> name = BoardName::parse(text);
+        REQUIRE(name.has_value());
+        return std::move(*name);
+    };
     const auto unchecked = UpdateInputs::from_package_bytes(archive);
     REQUIRE(unchecked.has_value());
-    const auto matched = UpdateInputs::from_package_bytes(archive, "nrf5340dk/nrf5340/cpuapp");
+    const auto matched =
+        UpdateInputs::from_package_bytes(archive, board("nrf5340dk/nrf5340/cpuapp"));
     REQUIRE(matched.has_value());
     const auto expected = (*unchecked)->targets();
     const auto targets = (*matched)->targets();
@@ -188,11 +196,12 @@ TEST_CASE("an expected board admits a package built for it, and refuses one that
     }
 
     // The refusal is check_board's, unchanged, and no inputs exist.
-    const auto refused = UpdateInputs::from_package_bytes(archive, "nrf54l15dk");
+    const auto refused = UpdateInputs::from_package_bytes(archive, board("nrf54l15dk"));
     REQUIRE_FALSE(refused.has_value());
     const auto package = smply::dfu_package::read_package(ConstBytes{archive});
     REQUIRE(package.has_value());
-    const smply::Result<void> direct = smply::dfu_package::check_board(*package, "nrf54l15dk");
+    const smply::Result<void> direct =
+        smply::dfu_package::check_board(*package, board("nrf54l15dk"));
     REQUIRE_FALSE(direct.has_value());
     CHECK(refused.error() == direct.error());
     CHECK(refused.error().code() == ErrorCode::InvalidArgument);
@@ -200,8 +209,8 @@ TEST_CASE("an expected board admits a package built for it, and refuses one that
     // From a file too.
     const TempFile file;
     file.write(archive);
-    CHECK(UpdateInputs::from_package(file.path(), "nrf5340dk").has_value());
-    const auto refused_file = UpdateInputs::from_package(file.path(), "nrf54l15dk");
+    CHECK(UpdateInputs::from_package(file.path(), board("nrf5340dk")).has_value());
+    const auto refused_file = UpdateInputs::from_package(file.path(), board("nrf54l15dk"));
     REQUIRE_FALSE(refused_file.has_value());
     CHECK(refused_file.error() == direct.error());
 }

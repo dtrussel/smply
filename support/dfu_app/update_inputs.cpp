@@ -82,7 +82,7 @@ Result<std::unique_ptr<UpdateInputs>> UpdateInputs::from_files(const std::string
 
 Result<std::unique_ptr<UpdateInputs>>
 UpdateInputs::from_package(const std::string& path,
-                           const std::optional<std::string>& expected_board)
+                           const std::optional<dfu_package::BoardName>& expected_board)
 {
     std::ifstream file{path, std::ios::binary | std::ios::ate};
     if (!file) {
@@ -110,7 +110,7 @@ UpdateInputs::from_package(const std::string& path,
 
 Result<std::unique_ptr<UpdateInputs>>
 UpdateInputs::from_package_bytes(std::vector<std::byte> bytes,
-                                 const std::optional<std::string>& expected_board)
+                                 const std::optional<dfu_package::BoardName>& expected_board)
 {
     auto inputs = std::make_unique<UpdateInputs>(Token{});
     inputs->bytes_ = std::move(bytes);
