@@ -818,8 +818,13 @@ open-a-link and approve hooks, so CI tests the loop that ships. Shipped:
 simulator under `SimulatedWait`:
 * a clean update through the three hooks, each attempt told its number, bound
   and delay;
-* no hook called from inside a library callback, and every event raised
-  observed afterwards, in order;
+* no hook called from inside a library callback: `SimulatedWait` says when it
+  is delivering the device's answers, which is where the callbacks run;
+* a start the updater refuses, which is the run's outcome with nothing sent,
+  and a `run()` with no update to carry on;
+* a `confirm()` or `resume_after_reconnect()` the updater refuses, provoked by
+  a hook that calls the library behind the run's back: the run cancels the
+  update and reports `Internal`, naming the call;
 * refused attempts backing off by the policy's exact delays, read off the
   `ManualClock`;
 * giving up by the policy's exhaustion (the settings' error, or the last

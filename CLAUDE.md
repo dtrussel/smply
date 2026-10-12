@@ -47,8 +47,8 @@ portable BLE helpers in `common/` and the platform adapters beside them ·
 `support/` code shared by the tests and the examples and part of neither
 (`smply::minicbor`, `smply::dfu_app` for `FileImageSource`,
 `ReconnectPolicy`, `UpdateInputs` (a file, a build pair or a package as the
-updater's image list) and `UpdateRun`, the update run that drives a
-started update to its end through three hooks and a wait seam (`DispatcherWait`
+updater's image list) and `UpdateRun`, the update run that starts an
+update and drives it to its end through three hooks and a wait seam (`DispatcherWait`
 for real, the component suite's `SimulatedWait` under `ManualClock`), and
 `smply::dfu_package` for the multi-image package reader) · `examples/` `cli_dfu` (portable, runs in CI) and
 `winrt_ble_dfu` (Windows) · `tests/` unit, component, fuzz, HIL · `docs/` living

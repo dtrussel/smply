@@ -458,8 +458,8 @@ smply/
 │   │                           terminal), console_report.hpp (the report
 │   │                           lines every tool prints, a failure's included),
 │   │                           and update_run.hpp: UpdateRun,
-│   │                           the loop that drives a started update to its end
-│   │                           through three hooks (open a link, approve, observe)
+│   │                           the loop that starts an update and drives it to its
+│   │                           end through three hooks (open a link, approve, observe)
 │   │                           and the UpdateWait seam, whose real adapter is
 │   │                           dispatcher_wait.hpp. smply::dfu_app, used by the
 │   │                           examples, unit-tested, and the run component-tested

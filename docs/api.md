@@ -1655,11 +1655,14 @@ compiles.
 
 ### Portable: one update, through the update run
 
-An application builds the client, the groups and the updater, starts the update
-with the run's event handler, and supplies three hooks. The run owns the rest:
-noting events and acting on them after the poll that raised them, the reconnect
-episode around `ReconnectPolicy`, the confirm, and the wait on the earliest
-deadline.
+An application builds the client, the groups and the updater, supplies three
+hooks, and hands the run its image list and plan. The run owns the rest:
+starting the update with its own event handler, noting events and acting on
+them after the poll that raised them, the reconnect episode around
+`ReconnectPolicy`, the confirm, and the wait on the earliest deadline. Should
+the updater refuse the run's `confirm()` or `resume_after_reconnect()`, which
+only a bug can cause, the run cancels the update and reports
+`ErrorCode::Internal` naming the call, rather than leave it waiting.
 
 ```cpp
 smply::dfu_app::DispatcherWait wait;          // the real wait: steady clock,
@@ -1688,12 +1691,13 @@ smply::dfu_app::UpdateRun run{client, updater, wait,
         .observe = [&](const smply::UpdateEvent& ev) { ui.show(ev); },
     }};
 
-if (const auto begun = updater.start(source, plan, run.event_handler()); !begun) {
-    return ui.error(smply::to_string(begun.error()));
-}
-const smply::dfu_app::UpdateRunOutcome outcome = run.run();  // blocks
-// outcome.end: Finished (outcome.result is the updater's own), StoppedBeforeConfirm,
-// or TimedOut; outcome.gave_up_reconnecting says whether the updater was told.
+// Starts the update and blocks until it ends. Or run(targets, plan) for an
+// image list.
+const smply::dfu_app::UpdateRunOutcome outcome = run.run(source, plan);
+// outcome.end: Finished (outcome.result is the updater's own), Refused (start()
+// refused it, and nothing was sent), StoppedBeforeConfirm, or TimedOut;
+// outcome.gave_up_reconnecting says whether the updater was told. After a stop
+// or a timeout, run() with no arguments carries the same update on.
 ```
 
 `open_link` may also answer `LinkAttempt::retry(error)` (not yet, and why: the

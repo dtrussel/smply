@@ -101,13 +101,13 @@ Blocked by: Stage 1.
 
 Blocked by: Stage 2.
 
-- [ ] `UpdateRun::run(ImageSource&, const UpdatePlan&)` and
+- [x] `UpdateRun::run(ImageSource&, const UpdatePlan&)` and
       `run(std::span<const ImageTarget>, const UpdatePlan&)` start the
       update with the run's own handler. A refused start is the outcome.
       `event_handler()` is gone.
-- [ ] A refused `confirm()` or `resume_after_reconnect()` cancels the
+- [x] A refused `confirm()` or `resume_after_reconnect()` cancels the
       update and ends the run with `ErrorCode::Internal`, naming the call.
-- [ ] The examples, the component tests and `test_update_run.cpp` use it.
+- [x] The examples, the component tests and `test_update_run.cpp` use it.
 
 ### Stage 4: one update command for the example tools
 

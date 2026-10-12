@@ -586,18 +586,15 @@ int main(int argc, char** argv)
                       .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
                   }};
 
-    if (const Result<void> begun = updater.start(inputs->targets(), plan, run.event_handler());
-        !begun.has_value()) {
-        std::cerr << "serial_dfu: " << to_string(begun.error()) << '\n';
-        return 1;
-    }
-
     // --- the pump -----------------------------------------------------------
 
-    const UpdateRunOutcome ran = run.run();
+    const UpdateRunOutcome ran = run.run(inputs->targets(), plan);
     switch (ran.end) {
     case RunEnd::Finished:
         break;
+    case RunEnd::Refused:
+        std::cerr << "serial_dfu: " << to_string(ran.result.error()) << '\n';
+        return 1;
     case RunEnd::TimedOut:
         std::cerr << "serial_dfu: gave up waiting\n";
         return 1;

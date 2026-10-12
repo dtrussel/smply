@@ -25,7 +25,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -120,21 +122,16 @@ struct Rig
         });
     }
 
-    /// The handler to start the update with: the run's, wrapped so the hooks
-    /// can tell whether they are being called from inside it.
-    [[nodiscard]] smply::UpdateEventCallback handler()
-    {
-        return [this, inner = run.event_handler()](const UpdateEvent& event) {
-            in_callback = true;
-            inner(event);
-            in_callback = false;
-        };
-    }
-
     [[nodiscard]] UpdateRunOutcome start_and_run(const UpdatePlan& plan = {})
     {
-        REQUIRE(fixture.updater.start(images.source, plan, handler()).has_value());
-        return run.run();
+        return run.run(images.source, plan);
+    }
+
+    /// Whether a hook is being called from inside a library callback: one the
+    /// device's answers raise as the wait delivers them.
+    [[nodiscard]] bool in_callback() const noexcept
+    {
+        return wait.delivering();
     }
 
     Images images;
@@ -153,8 +150,12 @@ struct Rig
     std::optional<Error> give_up_with;
     Approval approval = Approval::Confirm;
 
-    bool in_callback = false;
     int hooks_inside_callback = 0;
+    /// Called by the approve hook before it answers: an application calling
+    /// the library from there.
+    std::function<void()> while_approving;
+    /// Called by the open hook before it opens a link.
+    std::function<void()> while_opening;
     unsigned refused = 0;
 
     UpdateRun run;
@@ -165,7 +166,10 @@ private:
         return UpdateRunHooks{
             .open_link =
                 [this](const ReconnectAttempt& attempt) {
-                    hooks_inside_callback += in_callback ? 1 : 0;
+                    hooks_inside_callback += in_callback() ? 1 : 0;
+                    if (while_opening) {
+                        while_opening();
+                    }
                     seen.attempts.push_back(fixture.clock.now());
                     seen.attempt_args.push_back(attempt);
                     if (attempt.number == 1) {
@@ -187,13 +191,16 @@ private:
                 },
             .approve =
                 [this] {
-                    hooks_inside_callback += in_callback ? 1 : 0;
+                    hooks_inside_callback += in_callback() ? 1 : 0;
                     ++seen.approvals;
+                    if (while_approving) {
+                        while_approving();
+                    }
                     return approval;
                 },
             .observe =
                 [this](const UpdateEvent& event) {
-                    hooks_inside_callback += in_callback ? 1 : 0;
+                    hooks_inside_callback += in_callback() ? 1 : 0;
                     seen.events.push_back(event);
                 },
         };
@@ -237,20 +244,79 @@ TEST_CASE("the update run completes a clean update through its hooks", "[dfu][ru
 TEST_CASE("no hook is called from inside a library callback", "[dfu][run]")
 {
     Rig rig;
-    std::size_t raised = 0;
-    const smply::UpdateEventCallback counted = [&, inner = rig.handler()](const UpdateEvent& e) {
-        ++raised;
-        inner(e);
-    };
-    REQUIRE(rig.fixture.updater.start(rig.images.source, UpdatePlan{}, counted).has_value());
-    const UpdateRunOutcome outcome = rig.run.run();
+    const UpdateRunOutcome outcome = rig.start_and_run();
 
     REQUIRE(outcome.end == RunEnd::Finished);
     CHECK(rig.hooks_inside_callback == 0);
-    // Every event raised was observed, in a later step of the run.
-    CHECK(rig.seen.events.size() == raised);
     CHECK(rig.seen.approvals == 1);
     CHECK(rig.seen.attempts.size() == 1);
+}
+
+TEST_CASE("a start the updater refuses is the run's outcome, and nothing is sent", "[dfu][run]")
+{
+    Rig rig;
+    UpdatePlan plan;
+    plan.upload.sha = smply::Hash{};
+    const std::array<smply::ImageTarget, 2> targets{
+        smply::ImageTarget{.image = 0, .source = &rig.images.source},
+        smply::ImageTarget{.image = 1, .source = &rig.images.source}};
+    // upload.sha is the hash of one file, and there are two.
+    const UpdateRunOutcome outcome = rig.run.run(targets, plan);
+
+    REQUIRE(outcome.end == RunEnd::Refused);
+    REQUIRE_FALSE(outcome.result.has_value());
+    CHECK(outcome.result.error().code() == ErrorCode::InvalidArgument);
+    CHECK(rig.fixture.simulator.requests().empty());
+    CHECK(rig.seen.events.empty());
+}
+
+TEST_CASE("a run with no update to carry on is refused", "[dfu][run]")
+{
+    Rig rig;
+    const UpdateRunOutcome nothing = rig.run.run();
+    REQUIRE(nothing.end == RunEnd::Refused);
+    CHECK(nothing.result.error().code() == ErrorCode::InvalidState);
+
+    // Nor after the update has finished.
+    REQUIRE(rig.start_and_run().end == RunEnd::Finished);
+    CHECK(rig.run.run().end == RunEnd::Refused);
+}
+
+TEST_CASE("a confirm the updater refuses cancels the update and is reported as internal",
+          "[dfu][run]")
+{
+    // A bug in the application: its approve hook confirms, and polls, behind
+    // the run's back, so the run's own confirm finds the update moved on.
+    Rig rig;
+    rig.while_approving = [&] {
+        REQUIRE(rig.fixture.updater.confirm().has_value());
+        rig.fixture.client.poll(rig.fixture.clock.now());
+    };
+    const UpdateRunOutcome outcome = rig.start_and_run();
+
+    REQUIRE(outcome.end == RunEnd::Finished);
+    REQUIRE_FALSE(outcome.result.has_value());
+    CHECK(outcome.result.error().code() == ErrorCode::Internal);
+    CHECK(std::string_view{outcome.result.error().where()}.find("confirm()") !=
+          std::string_view::npos);
+    CHECK(rig.fixture.updater.state() == UpdateState::Cancelled);
+}
+
+TEST_CASE("a resume the updater refuses ends the run as internal", "[dfu][run][reconnect]")
+{
+    // The open hook cancels the update itself, so the run's resume is refused.
+    Rig rig;
+    rig.while_opening = [&] {
+        rig.fixture.updater.cancel();
+        rig.fixture.client.poll(rig.fixture.clock.now());
+    };
+    const UpdateRunOutcome outcome = rig.start_and_run();
+
+    REQUIRE(outcome.end == RunEnd::Finished);
+    REQUIRE_FALSE(outcome.result.has_value());
+    CHECK(outcome.result.error().code() == ErrorCode::Internal);
+    CHECK(std::string_view{outcome.result.error().where()}.find("resume_after_reconnect()") !=
+          std::string_view::npos);
 }
 
 TEST_CASE("refused attempts back off by the policy's exact delays", "[dfu][run][reconnect]")

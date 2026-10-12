@@ -40,6 +40,14 @@ git; commit `97f1647` is the last to carry the per-phase record in
   refused with `InvalidState`. It now asks `ImageManagement::resumable()`, and
   only an upload the device link suspended is resumed. The update fails with
   the source's own error, and `ReconnectRequired` is not sent.
+* **`dfu_app::UpdateRun` starts the update itself**, in `run(source, plan)` or
+  `run(targets, plan)`; `run()` with no arguments carries on one a stop or a
+  timeout left running. `event_handler()` is gone, so no caller can start the
+  update with another handler and leave the run deaf, and a refused start is
+  `RunEnd::Refused`. A `confirm()` or `resume_after_reconnect()` the updater
+  refuses now cancels the update and ends the run as `ErrorCode::Internal`;
+  it used to be ignored, leaving the update waiting for ever. Support code,
+  outside the stable surface (ADR-0016).
 
 ### Fixed
 

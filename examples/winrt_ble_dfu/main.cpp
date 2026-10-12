@@ -442,20 +442,16 @@ int main(int argc, char** argv)
                       .observe = [&](const UpdateEvent& event) { std::visit(on_event, event); },
                   }};
 
-    // One file, or one build per slot: an image list of one either way.
-    const Result<void> begun = updater.start(inputs->targets(), plan, run.event_handler());
-
-    if (!begun.has_value()) {
-        std::cerr << "winrt_ble_dfu: " << to_string(begun.error()) << '\n';
-        return kUpdateFailed;
-    }
-
     // --- the pump -----------------------------------------------------------
 
-    const UpdateRunOutcome ran = run.run();
+    // One file, or one build per slot: an image list of one either way.
+    const UpdateRunOutcome ran = run.run(inputs->targets(), plan);
     switch (ran.end) {
     case RunEnd::Finished:
         break;
+    case RunEnd::Refused:
+        std::cerr << "winrt_ble_dfu: " << to_string(ran.result.error()) << '\n';
+        return kUpdateFailed;
     case RunEnd::StoppedBeforeConfirm:
         // Leaving the update waiting is the behaviour, not a leak: the process
         // exits, the link closes, and the device stays in a trial boot that
