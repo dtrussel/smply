@@ -120,4 +120,71 @@ if(SMPLY_BUILD_TESTS)
             "update failed: firmware update failed \\(at dfu: device did not apply an image\\).*image 1 \\(device\\): not applied.*will revert on the next reset"
         TIMEOUT 60
     )
+    # The package board check (protocol-notes section 5). The demo packages'
+    # manifests name the invented board "demo_board": a bare board name for
+    # image 0, a board target for image 1. A matching --board completes, also
+    # given as a board target; the direct-XIP package's two builds are checked
+    # too.
+    add_test(NAME cli_dfu_package_board COMMAND cli_dfu --quiet --demo-package --board demo_board)
+    set_tests_properties(cli_dfu_package_board PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*image 1 \\(device\\): committed"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_package_board_target
+        COMMAND cli_dfu --quiet --demo-package --board demo_board@1.0.0/demo_soc/cpuapp)
+    set_tests_properties(cli_dfu_package_board_target PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed.*image 1 \\(device\\): committed"
+        TIMEOUT 60
+    )
+    add_test(NAME cli_dfu_xip_package_board
+        COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-xip-package
+                --board demo_board)
+    set_tests_properties(cli_dfu_xip_package_board PROPERTIES
+        PASS_REGULAR_EXPRESSION "update Completed"
+        TIMEOUT 60
+    )
+    # A package for another board is refused before anything is sent. Run
+    # without --quiet, so an update that had begun would print something:
+    # opening the link prints nothing, but every line the tool writes once
+    # updater.start() has been called is indented by two spaces (each state
+    # change, QueryingParameters first, the upload progress, the reboot and
+    # reconnect lines, a failure's details) or starts "update " (the report,
+    # "update failed"), and the refusal line is neither.
+    # FAIL_REGULAR_EXPRESSION turns any of that into a failure even though the
+    # refusal is also printed.
+    add_test(NAME cli_dfu_package_board_mismatch
+        COMMAND cli_dfu --demo-package --board other_board)
+    set_tests_properties(cli_dfu_package_board_mismatch PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "cli_dfu: invalid argument: image 0: expected board name \"other_board\", the manifest says \"demo_board\""
+        FAIL_REGULAR_EXPRESSION "  [A-Za-z]|update |gave up waiting"
+        TIMEOUT 60
+    )
+    # --board with anything but a package is a usage error, as is a board with
+    # no board name: the built-in image, a named image, a build pair, an empty
+    # expectation, and one that is empty once cut at its first '/' or '@'.
+    foreach(case IN ITEMS builtin image pair qualifier)
+        if(case STREQUAL "builtin")
+            set(args --board demo_board)
+        elseif(case STREQUAL "image")
+            set(args --image app.bin --board demo_board)
+        elseif(case STREQUAL "pair")
+            set(args --image app.bin --image-secondary app_slot1.bin --board demo_board)
+        else()
+            set(args --demo-package --board /cpuapp)
+        endif()
+        add_test(NAME cli_dfu_board_usage_${case} COMMAND cli_dfu ${args})
+        set_tests_properties(cli_dfu_board_usage_${case} PROPERTIES
+            PASS_REGULAR_EXPRESSION "usage: cli_dfu"
+            FAIL_REGULAR_EXPRESSION "QueryingParameters|update Completed"
+            TIMEOUT 60
+        )
+    endforeach()
+    # Spelled out: an empty list element would vanish from ${args}.
+    add_test(NAME cli_dfu_board_usage_empty COMMAND cli_dfu --demo-package --board "")
+    set_tests_properties(cli_dfu_board_usage_empty PROPERTIES
+        PASS_REGULAR_EXPRESSION "usage: cli_dfu"
+        FAIL_REGULAR_EXPRESSION "QueryingParameters|update Completed"
+        TIMEOUT 60
+    )
 endif()

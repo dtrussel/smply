@@ -46,6 +46,7 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 add_library(smply_dfu_app STATIC
     dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
+    dfu_app/printable.cpp
     dfu_app/update_inputs.cpp
     dfu_app/update_run.cpp
 )
@@ -59,8 +60,8 @@ target_link_libraries(smply_dfu_app
     PUBLIC
         smply::smply     # ImageSource, Result, Duration
         smply::util      # DispatcherWait: the update run's real wait drains a Dispatcher
+        smply::dfu_package # UpdateInputs reads a package, and takes a dfu_package::BoardName
     PRIVATE
-        smply::dfu_package # UpdateInputs reads a package; its interface does not show it
         smply_internal_options
 )
 

@@ -234,7 +234,9 @@ ready for a `MemoryImageSource`. It checks the manifest instead of believing it:
   version under `version_MCUBOOT+XIP` (S58). They are alternatives, not a set:
   the reader returns them as one `PackageImage` whose `secondary` is the
   secondary slot's build, after checking that the two slots are the image's
-  own pair and the two headers carry the same version. `UpdateInputs` hands
+  own pair, that the two headers carry the same version, and that the two
+  builds name the same `board`, compared as written (one present and one
+  absent count as different). `UpdateInputs` hands
   both to the updater (`ImageTarget::secondary_source`), which sends the one
   for the slot the device is not running (ADR-0025). Any other second file for
   an image is refused, and so is a package with more than one such pair, which
@@ -266,8 +268,14 @@ comparison is MCUboot's default one, which ignores the build number
 cli_dfu --demo-package                  # a generated two-image package
 cli_dfu --demo-package --apply-fails    # the device fails to apply image 1
 cli_dfu --package dfu_application.zip   # a real package, against the stub
-serial_dfu --port /dev/ttyACM0 --package dfu_application.zip
+serial_dfu --port /dev/ttyACM0 --package dfu_application.zip --board nrf54l15dk
 ```
+
+`--board` names the board the package must be for, as a board name or a board
+target (protocol-notes §5). Every image is compared by board name, and a
+package with an image for another board, or one naming no board, is refused
+before anything is sent (`dfu_package::BoardName`, `check_board`). The
+generated packages are for the invented board `demo_board`.
 
 Without `--port` both examples run against `examples/stub_device/`, given a
 second image it commits itself. `support/dfu_app/update_inputs.hpp`

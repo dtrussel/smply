@@ -34,9 +34,11 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
+#include "dfu_app/printable.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 #include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
+#include "dfu_package/dfu_package.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -105,6 +107,10 @@ struct Options
     bool apply_fails = false;
     /// `--commit N=client|device`, in the order given.
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+    /// `--board`: the board name every image of the package must be for, from
+    /// a board name or a board target (docs/protocol-notes.md section 5).
+    /// Package modes only.
+    std::optional<dfu_package::BoardName> board;
 
     /// `--fallback-mode`: the mode to assume when the device does not report
     /// one (ADR-0025).
@@ -129,7 +135,7 @@ void usage()
                  "               [--quiet] [--flaky-reconnect N] [--commit N=client|device]\n"
                  "               [--apply-fails] [--fallback-mode M] [--stub-mode M]\n"
                  "               [--allow-no-revert] [--no-downgrade-check]\n"
-                 "               [--image-secondary PATH | --demo-builds]\n"
+                 "               [--image-secondary PATH | --demo-builds] [--board NAME]\n"
                  "  --image PATH  firmware to install; without it, a demo image is generated\n"
                  "  --image-secondary PATH  direct-XIP: the same image linked for the\n"
                  "                secondary slot (--image is then the primary slot's build);\n"
@@ -141,6 +147,10 @@ void usage()
                  "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
                  "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --board NAME  with a package: refuse it, before anything is sent, unless\n"
+                 "                every image names this board; NAME is a board name or a\n"
+                 "                board target (nrf54l15dk or nrf54l15dk/nrf54l15/cpuapp);\n"
+                 "                the demo packages are for the invented board demo_board\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
                  "  --mode MODE   test-then-confirm (default) | confirm-immediately | upload-only\n"
                  "  --fallback-mode M  the MCUboot mode to assume when the device does not\n"
@@ -207,9 +217,18 @@ void usage()
                 return false;
             }
             out.commits.push_back(*commit);
+        } else if (arg == "--board" && i + 1 < args.size()) {
+            out.board = parse_board(args[++i]);
+            if (!out.board.has_value()) {
+                return false;
+            }
         } else {
             return false;
         }
+    }
+    // A board is compared only with a package's manifest.
+    if (out.board.has_value() && !out.package_mode()) {
+        return false;
     }
     // One thing to install, and the package-only options only with a package.
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
@@ -354,19 +373,20 @@ int main(int argc, char** argv)
     // build per slot). The demo files above must outlive it: it reads them.
     const auto read_inputs = [&]() -> Result<std::unique_ptr<UpdateInputs>> {
         if (options.demo_package) {
-            return UpdateInputs::from_package_bytes(build_demo_two_image_package());
+            return UpdateInputs::from_package_bytes(build_demo_two_image_package(), options.board);
         }
         if (options.demo_xip_package) {
-            return UpdateInputs::from_package_bytes(build_demo_xip_package());
+            return UpdateInputs::from_package_bytes(build_demo_xip_package(), options.board);
         }
         if (!options.package_path.empty()) {
-            return UpdateInputs::from_package(options.package_path);
+            return UpdateInputs::from_package(options.package_path, options.board);
         }
         return UpdateInputs::from_files(image_path, image_secondary_path);
     };
     Result<std::unique_ptr<UpdateInputs>> read = read_inputs();
     if (!read.has_value()) {
-        std::cerr << "cli_dfu: " << to_string(read.error()) << '\n';
+        // A --board refusal quotes the package's manifest: escape it.
+        std::cerr << "cli_dfu: " << printable(to_string(read.error())) << '\n';
         return 1;
     }
     const std::unique_ptr<UpdateInputs> inputs = std::move(*read);

@@ -36,9 +36,11 @@
 
 #include "dfu_app/bootloader_mode.hpp"
 #include "dfu_app/dispatcher_wait.hpp"
+#include "dfu_app/printable.hpp"
 #include "dfu_app/reconnect_policy.hpp"
 #include "dfu_app/update_inputs.hpp"
 #include "dfu_app/update_run.hpp"
+#include "dfu_package/dfu_package.hpp"
 
 #include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
@@ -97,6 +99,10 @@ struct Options
     /// Without --port: the stub fails to apply image 1.
     bool apply_fails = false;
     std::vector<std::pair<std::uint32_t, CommitBy>> commits;
+    /// `--board`: the board name every image of the package must be for, from
+    /// a board name or a board target (docs/protocol-notes.md section 5).
+    /// Packages only.
+    std::optional<dfu_package::BoardName> board;
     /// The MCUboot mode to assume when the device does not report one
     /// (ADR-0025).
     std::optional<McubootMode> fallback_mode;
@@ -115,7 +121,7 @@ void usage()
 {
     std::cerr << "usage: serial_dfu [--port PATH [--baud N] [--flow none|rtscts]]\n"
                  "                  [--image PATH | --package PATH | --demo-package]\n"
-                 "                  [--commit N=client|device] [--apply-fails]\n"
+                 "                  [--commit N=client|device] [--apply-fails] [--board NAME]\n"
                  "                  [--stub uart|cdc] [--mode MODE] [--fallback-mode M]\n"
                  "                  [--allow-no-revert] [--no-downgrade-check]\n"
                  "                  [--image-secondary PATH] [--quiet]\n"
@@ -129,6 +135,10 @@ void usage()
                  "  --package PATH  a multi-image DFU package; image 0 is confirmed here and\n"
                  "                every other image left to the device (docs/multi-image.md)\n"
                  "  --commit N=client|device  who commits image N (repeatable)\n"
+                 "  --board NAME  with a package: refuse it, before anything is sent, unless\n"
+                 "                every image names this board; NAME is a board name or a\n"
+                 "                board target (nrf54l15dk or nrf54l15dk/nrf54l15/cpuapp);\n"
+                 "                the demo package is for the invented board demo_board\n"
                  "  --demo-package  without --port: a generated two-image package\n"
                  "  --apply-fails  without --port: the stub fails to apply image 1\n"
 
@@ -215,9 +225,18 @@ void usage()
                 return false;
             }
             out.commits.push_back(*commit);
+        } else if (arg == "--board" && has_value) {
+            out.board = parse_board(args[++i]);
+            if (!out.board.has_value()) {
+                return false;
+            }
         } else {
             return false;
         }
+    }
+    // A board is compared only with a package's manifest.
+    if (out.board.has_value() && !out.package_mode()) {
+        return false;
     }
     const int sources = (out.image_path.empty() ? 0 : 1) + (out.package_path.empty() ? 0 : 1) +
                         (out.demo_package ? 1 : 0);
@@ -369,10 +388,12 @@ int main(int argc, char** argv)
     std::unique_ptr<UpdateInputs> inputs;
     if (options.package_mode()) {
         Result<std::unique_ptr<UpdateInputs>> read =
-            options.demo_package ? UpdateInputs::from_package_bytes(build_demo_two_image_package())
-                                 : UpdateInputs::from_package(options.package_path);
+            options.demo_package
+                ? UpdateInputs::from_package_bytes(build_demo_two_image_package(), options.board)
+                : UpdateInputs::from_package(options.package_path, options.board);
         if (!read.has_value()) {
-            std::cerr << "serial_dfu: " << to_string(read.error()) << '\n';
+            // A --board refusal quotes the package's manifest: escape it.
+            std::cerr << "serial_dfu: " << printable(to_string(read.error())) << '\n';
             return 1;
         }
         inputs = std::move(*read);

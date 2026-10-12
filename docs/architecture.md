@@ -451,16 +451,19 @@ smply/
 │   │                           deliberately does not ship: FileImageSource,
 │   │                           ReconnectPolicy, UpdateInputs (a file, a build
 │   │                           per slot or a package file into FirmwareUpdater
-│   │                           targets), the tools' MCUboot-mode option, and
-│   │                           update_run.hpp: UpdateRun,
+│   │                           targets, a package optionally refused for another
+│   │                           board), the tools' MCUboot-mode option,
+│   │                           printable() (untrusted text escaped for a
+│   │                           terminal), and update_run.hpp: UpdateRun,
 │   │                           the loop that drives a started update to its end
 │   │                           through three hooks (open a link, approve, observe)
 │   │                           and the UpdateWait seam, whose real adapter is
 │   │                           dispatcher_wait.hpp. smply::dfu_app, used by the
 │   │                           examples, unit-tested, and the run component-tested
 │   └── dfu_package/            the multi-image DFU package reader (ADR-0021): a
-│                               stored-zip lister, a bounded JSON reader and the
-│                               manifest cross-checks. smply::dfu_package, not
+│                               stored-zip lister, a bounded JSON reader, the
+│                               manifest cross-checks and the board check
+│                               (BoardName, check_board). smply::dfu_package, not
 │                               installed, unit-tested and fuzzed
 ├── examples/
 │   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp
@@ -472,7 +475,8 @@ smply/
 │   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
 │   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs
-│   │                           in CI, --flaky-reconnect and --demo-package included
+│   │                           in CI, --flaky-reconnect, --demo-package and --board
+│   │                           included
 │   ├── serial_dfu/             the same loop over smply::serial_port: main.cpp, and
 │   │                           pty_stub.* — the stub device behind a pseudo-terminal, in
 │   │                           a UART and a USB CDC reset shape. Runs in CI, a two-image

@@ -65,6 +65,9 @@ void text(std::vector<std::byte>& out, std::string_view value)
         if (file.slot.has_value()) {
             out += R"(, "slot": ")" + std::to_string(*file.slot) + R"(")";
         }
+        if (file.board.has_value()) {
+            out += R"(, "board": ")" + *file.board + R"(")";
+        }
         out += "}";
     }
     return out + "]}";
@@ -144,11 +147,13 @@ std::vector<std::byte> build_demo_two_image_package()
         DemoPackageFile{.name = "app.bin",
                         .image_index = 0,
                         .version = "2.0.0",
-                        .content = build_demo_image(DemoVersion{.major = 2})},
+                        .content = build_demo_image(DemoVersion{.major = 2}),
+                        .board = kDemoBoard},
         DemoPackageFile{.name = "radio.bin",
                         .image_index = 1,
                         .version = "6.0.0",
-                        .content = build_demo_image(DemoVersion{.major = 6})},
+                        .content = build_demo_image(DemoVersion{.major = 6}),
+                        .board = std::string{kDemoBoard} + "/demo_soc/cpunet"},
     });
 }
 
@@ -162,12 +167,14 @@ std::vector<std::byte> build_demo_xip_package()
                         .image_index = 0,
                         .version = "2.0.0",
                         .content = build_demo_image(DemoVersion{.major = 2}),
-                        .slot = 0},
+                        .slot = 0,
+                        .board = kDemoBoard},
         DemoPackageFile{.name = "app_slot1_variant.signed.bin",
                         .image_index = 0,
                         .version = "2.0.0",
                         .content = build_demo_image(DemoVersion{.major = 2}, kSlot1Body),
-                        .slot = 1},
+                        .slot = 1,
+                        .board = kDemoBoard},
     });
 }
 

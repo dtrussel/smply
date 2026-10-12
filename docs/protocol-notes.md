@@ -86,6 +86,8 @@ earlier.
 | S56 | `boot/bootutil/include/bootutil/boot_status.h` (`enum mcuboot_mode`), `boot/zephyr/Kconfig` (`MCUBOOT_DOWNGRADE_PREVENTION`) | MCUboot's ten mode values, 0 to 9 (§7); software downgrade prevention `depends on !BOOT_DIRECT_XIP` and enforces a greater version | `mcu-tools/mcuboot@main` (verified 2026-10-09 from source) |
 | S57 | `subsys/mgmt/mcumgr/grp/os_mgmt/Kconfig` (`MCUMGR_GRP_OS_BOOTLOADER_INFO`, `_HOOK`), `modules/Kconfig.mcuboot` (`MCUBOOT_BOOTLOADER_NO_DOWNGRADE`) | The bootloader-information command is opt-in; `no-downgrade` is an application-side option the build sets by hand to mirror MCUboot's `MCUBOOT_DOWNGRADE_PREVENTION` | `zephyrproject-rtos/zephyr@main` (verified 2026-10-09 from source) |
 | S58 | `nrfconnect/sdk-nrf`: `cmake/sysbuild/zip.cmake` (direct-XIP branches) | A plain direct-XIP package lists two files for one `image_index`, each with `slot` as a **global** slot index (`image × 2 + 0/1`, no +1 unlike `slot_index_primary`), its own `load_address` and `version_MCUBOOT+XIP`; a QSPI split-image build lists four (internal and external part per slot) | `nrfconnect/sdk-nrf@main` (read 2026-10-09). A **format** reference, as S38 |
+| S59 | `subsys/mgmt/mcumgr/grp/os_mgmt/src/os_mgmt.c` (`os_mgmt_info`), `subsys/mgmt/mcumgr/grp/os_mgmt/Kconfig` (`MCUMGR_GRP_OS_INFO`, `_MAX_RESPONSE_SIZE`, `_CUSTOM_HOOKS`), `boards/Kconfig` (`BOARD`, `BOARD_TARGET`) | The OS information command (cmd 7), opt-in with no default; letter `i` prints `CONFIG_BOARD_TARGET`, the **board target**, not `CONFIG_BOARD` | `zephyrproject-rtos/zephyr@main` (read 2026-10-11 from source) |
+| S60 | `nrfconnect/sdk-nrf`: `cmake/fw_zip.cmake`, `cmake/sysbuild/zip.cmake` (network-core branch), `scripts/bootloader/generate_zip.py` | The manifest's `board` is the image's `CONFIG_BOARD` (a **board name**) for the application image, but the network-core image's cache `BOARD` as supplied (usually a **board target**), merged over the shared keys per file | `nrfconnect/sdk-nrf@main` (read 2026-10-11). A **format** reference, as S38 |
 
 Reference-only (behavioural comparison, **not** a source of protocol truth, and
 never a source of copied code): `zephyrproject-rtos/mcumgr-client` (Go),
@@ -368,6 +370,39 @@ or override answers, so neither shape is guaranteed to be the whole map.
 > ⚠ Optional command, behind `CONFIG_MCUMGR_GRP_OS_BOOTLOADER_INFO` (S57),
 > off by default. A device without it answers `MGMT_ERR_ENOTSUP`, which is
 > ordinary (A8).
+
+### OS information — op `0` (read), group `0`, cmd `7` (S59) — not implemented
+
+Request: `{ "format": (str, opt) }`, one letter per field: `s` kernel name,
+`n` node name, `r` kernel release, `v` kernel version, `b` build date and time
+(only with `CONFIG_MCUMGR_GRP_OS_INFO_BUILD_DATE_TIME`), `m` machine, `p`
+processor, `i` hardware platform, `o` OS, `a` all. Response:
+`{ "output": (str) }`, the fields in that fixed order whatever the order asked,
+joined by single spaces. A missing or empty `format` means `s`; an unknown
+letter is `OS_MGMT_ERR_INVALID_FORMAT` (rc 2) in v2. The output is built in a
+stack buffer of `CONFIG_MCUMGR_GRP_OS_INFO_MAX_RESPONSE_SIZE` (default 256,
+range 32 to 512); output that does not fit is `MGMT_ERR_EMSGSIZE`. With
+`CONFIG_MCUMGR_GRP_OS_INFO_CUSTOM_HOOKS` an application callback may claim
+extra letters, append text after the built-in fields, or replace the `o` name,
+so the output is not guaranteed to hold only what was asked.
+
+Two terms, used wherever smply compares boards:
+
+* **Board name**: Zephyr's `CONFIG_BOARD`, the board alone, such as
+  `nrf54l15dk`.
+* **Board target**: Zephyr's `CONFIG_BOARD_TARGET`, the board name with its
+  revision and qualifiers, `<name>[@<revision>]/<soc>[/<cluster>][/<variant>]`,
+  such as `nrf5340dk/nrf5340/cpunet` or `nrf54l15dk@1.0.0/nrf54l15/cpuapp`.
+  Cutting a board target at its first `/` or `@` gives its board name.
+
+Letter `i` prints the **board target**. nRF Connect SDK's package manifest
+(S60) writes a **board name** for the application image and, for a network-core
+image, the board string the build was given, usually a board target. Neither
+side normalises the other, so the two compare equal only as board names.
+
+> ⚠ Optional command, behind `CONFIG_MCUMGR_GRP_OS_INFO` (S59), which has no
+> default and is off. A device without it answers `MGMT_ERR_ENOTSUP`. smply
+> does not send it; asking the device for its board is on the roadmap backlog.
 
 ---
 

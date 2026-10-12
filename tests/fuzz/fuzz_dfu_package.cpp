@@ -11,8 +11,11 @@
 // Properties beyond "no crash": a package that reads has images sorted by
 // index, each index once and in range, each image a view inside the input,
 // each dependency list within the TLV bound, and no image depending on a
-// newer version of another image in the package (ADR-0022). The JSON reader is run over
-// the same bytes on its own as well, since the manifest reaches it only
+// newer version of another image in the package (ADR-0022). Every package that
+// reads is also put through the board check with a fixed expectation, so the
+// manifest's board strings, which the file controls, reach it; its verdict is
+// arbitrary, but a refusal's text stays within its cap. The JSON reader is run
+// over the same bytes on its own as well, since the manifest reaches it only
 // inside a valid zip.
 
 #include "fuzz_support.hpp"
@@ -61,6 +64,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
                 }
             }
         }
+        static const smply::Result<smply::dfu_package::BoardName> expected =
+            smply::dfu_package::BoardName::parse("nrf5340dk/nrf5340/cpuapp");
+        assert(expected.has_value());
+        const smply::Result<void> board = smply::dfu_package::check_board(*package, *expected);
+        assert(board.has_value() ||
+               board.error().reason().size() <= smply::limits::kMaxReasonLength);
+        static_cast<void>(board);
     }
 
     // The reader is only reached through the zip above; this reaches it

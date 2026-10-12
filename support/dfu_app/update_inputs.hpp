@@ -18,6 +18,7 @@
 /// of docs/multi-image.md -- image 0 committed by smply, every other image,
 /// one per target, by the device -- and `set_commit()` overrides it per image.
 
+#include "dfu_package/dfu_package.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/image_source.hpp"
 #include "smply/result.hpp"
@@ -43,6 +44,11 @@ namespace smply::dfu_app {
 /// for those first.
 [[nodiscard]] std::optional<UpdateMode> parse_update_mode(std::string_view text) noexcept;
 
+/// Parses a `--board` value, a board name or a board target, into the board
+/// name a package is checked against (`dfu_package::BoardName::parse()`).
+/// Empty when \p text names no board, which could match nothing.
+[[nodiscard]] std::optional<dfu_package::BoardName> parse_board(std::string_view text);
+
 /// The images of one update, with a target per image.
 ///
 /// Non-copyable and non-movable: the targets point at sources it owns, and a
@@ -63,16 +69,24 @@ public:
 
     /// Reads the package file at \p path.
     ///
+    /// With \p expected_board, the package is then refused unless
+    /// every image was built for that board: `dfu_package::check_board()`. So
+    /// inputs for the wrong board never exist. Without it, no board is
+    /// compared.
+    ///
     /// \return `InvalidArgument` if it cannot be opened or read,
     ///         `MessageTooLarge` over `dfu_package::kMaxPackageSize` (checked
-    ///         before anything is allocated), or whatever `read_package()`
-    ///         refuses.
+    ///         before anything is allocated), whatever `read_package()`
+    ///         refuses, or whatever `check_board()` refuses, unchanged.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
-    from_package(const std::string& path);
+    from_package(const std::string& path,
+                 const std::optional<dfu_package::BoardName>& expected_board = std::nullopt);
 
-    /// Takes a package already in memory.
+    /// Takes a package already in memory, checked against \p expected_board as
+    /// `from_package()` does.
     [[nodiscard]] static Result<std::unique_ptr<UpdateInputs>>
-    from_package_bytes(std::vector<std::byte> bytes);
+    from_package_bytes(std::vector<std::byte> bytes,
+                       const std::optional<dfu_package::BoardName>& expected_board = std::nullopt);
 
     UpdateInputs(const UpdateInputs&) = delete;
     UpdateInputs(UpdateInputs&&) = delete;

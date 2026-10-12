@@ -8,6 +8,7 @@
 #include "smply/limits.hpp"
 
 #include <algorithm>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -195,7 +196,7 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
 
 /// Joins \p second to \p first as a direct-XIP pair: both carry a `slot`, one
 /// the image's primary (`2n`) and one its secondary (`2n + 1`), and both the
-/// same version. \p first keeps the primary's build.
+/// same version and the same `board`. \p first keeps the primary's build.
 [[nodiscard]] Result<void> pair_builds(PackageImage& first, PackageImage second)
 {
     if (first.secondary.has_value()) {
@@ -211,6 +212,11 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
     }
     if (first.header.version != second.header.version) {
         return malformed("package: the two builds of a direct-XIP image differ in version");
+    }
+    // Compared as written, absent included: `PackageBuild` has no board of its
+    // own, so the image's `board` must speak for both builds (check_board).
+    if (first.board != second.board) {
+        return malformed("package: the two builds of a direct-XIP image differ in board");
     }
     if (*first.slot != primary) {
         std::swap(first, second);
@@ -260,7 +266,54 @@ small_number(const JsonValue& entry, std::string_view key, std::uint32_t max,
     return {};
 }
 
+/// The board name of \p board, a board name or a board target: everything
+/// before its first `/` or `@` (docs/protocol-notes.md section 5). Empty when
+/// \p board names no board. A view into \p board.
+[[nodiscard]] std::string_view board_name(std::string_view board) noexcept
+{
+    return board.substr(0, board.find_first_of("/@"));
+}
+
+/// A board refusal: \p where for logs, and \p text, which quotes the package,
+/// capped as a device's `rsn` is (security.md, T12).
+[[nodiscard]] unexpected<Error> board_refusal(const char* where, std::string text)
+{
+    if (text.size() > limits::kMaxReasonLength) {
+        text.resize(limits::kMaxReasonLength);
+    }
+    return fail(Error{ErrorCode::InvalidArgument, where}.with_reason(std::move(text)));
+}
+
 } // namespace
+
+Result<BoardName> BoardName::parse(std::string_view board)
+{
+    const std::string_view name = board_name(board);
+    if (name.empty()) {
+        return fail(ErrorCode::InvalidArgument,
+                    "board: names no board name before its first '/' or '@'");
+    }
+    return BoardName{std::string{name}};
+}
+
+Result<void> check_board(const DfuPackage& package, const BoardName& expected)
+{
+    const std::string_view wanted = expected.view();
+    for (const PackageImage& image : package.images) {
+        const std::string index = std::to_string(image.image);
+        if (!image.board.has_value()) {
+            return board_refusal("package: an image names no board",
+                                 "image " + index + ": the manifest names no board");
+        }
+        if (board_name(*image.board) != wanted) {
+            return board_refusal("package: an image is for another board",
+                                 "image " + index + ": expected board name \"" +
+                                     std::string{wanted} + "\", the manifest says \"" +
+                                     *image.board + "\"");
+        }
+    }
+    return {};
+}
 
 Result<std::vector<ImageDependency>> read_dependencies(ConstBytes image,
                                                        const McubootImageInfo& header)
