@@ -39,12 +39,17 @@ winrt_ble_dfu --image firmware.bin --address AA:BB:CC:DD:EE:FF
 
 | Option | Meaning |
 | ------ | ------- |
-| `--image PATH` | The firmware to install. **Required** — see below. |
+| `--image PATH` | The firmware to install. **Required** — see below — but for `--mode confirm-only`, which takes none. |
 | `--name NAME` | Connect to the first device whose advertised name contains `NAME`. |
 | `--address ADDR` | `AA:BB:CC:DD:EE:FF` or bare hex. Skips scanning. |
-| `--mode MODE` | `test-then-confirm` (default), `confirm-immediately`, `upload-only`. |
+| `--mode MODE` | `test-then-confirm` (default), `confirm-immediately`, `upload-only`; or `test-only`, which installs and reboots and stops before the confirm, and `confirm-only`, which confirms the running image. |
 | `--scan-timeout MS` | How long to look for a device. Default 10000. |
 | `--quiet` | Print only the outcome. |
+
+The flags it shares with `cli_dfu` and `serial_dfu`, `--image-secondary`,
+`--fallback-mode`, `--allow-no-revert` and `--no-downgrade-check` among them,
+are parsed and checked by the same code in all three
+(`support/dfu_app/update_command.hpp`); `--help`'s usage text lists them.
 
 Exit codes: `0` success · `1` update failed · `2` usage · `3` no device ·
 `4` reconnection gave up.

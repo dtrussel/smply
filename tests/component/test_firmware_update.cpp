@@ -199,17 +199,29 @@ struct Application
     /// Where the device turns happen, and where a test injects a fault.
     smply::test::SimulatedWait wait;
 
-    /// The handler to start the update with.
-    [[nodiscard]] smply::UpdateEventCallback handler() const
+    /// The update the next `run()` starts: \p source under \p plan. Both
+    /// are borrowed until then.
+    void start(smply::ImageSource& source, const UpdatePlan& plan)
     {
-        return run_.event_handler();
+        start_ = [this, &source, plan] { return run_.run(source, plan); };
     }
 
-    /// Runs the update until it finishes, the approve hook stops it, or the
+    /// \overload The image list \p targets.
+    void start(std::span<const smply::ImageTarget> targets, const UpdatePlan& plan)
+    {
+        start_ = [this, targets, plan] { return run_.run(targets, plan); };
+    }
+
+    /// Starts the update `start()` named, or carries on the one a previous
+    /// call left waiting, until it finishes, the approve hook stops it, or the
     /// budget runs out. True if it finished.
     bool run()
     {
-        last = run_.run();
+        if (start_) {
+            last = std::exchange(start_, {})();
+        } else {
+            last = run_.run();
+        }
         return last->end == RunEnd::Finished;
     }
 
@@ -280,6 +292,7 @@ private:
     UpdateOutcome& outcome_;
     int disconnects_served_ = 0;
     std::size_t next_spare_ = 0;
+    std::function<UpdateRunOutcome()> start_;
     UpdateRun run_;
 };
 
@@ -338,7 +351,7 @@ TEST_CASE("a clean update runs upload, test, reset, verify and confirm", "[dfu][
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     // Nothing is emitted from inside start(); the first event arrives on a poll.
     CHECK(outcome.events == 0);
 
@@ -382,7 +395,7 @@ TEST_CASE("ConfirmImmediately never asks the application", "[dfu][update]")
     UpdatePlan plan;
     plan.mode = UpdateMode::ConfirmImmediately;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
 
     application.confirm = false; // Nothing should be waiting on us.
     REQUIRE(application.run());
@@ -432,7 +445,7 @@ TEST_CASE("an image already in the secondary slot is not uploaded again", "[dfu]
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -464,7 +477,7 @@ TEST_CASE("the server's own already-present check is reported as a skip too", "[
     plan.skip_if_already_present = false;
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -511,7 +524,7 @@ TEST_CASE("an upload interrupted by a disconnect is resumed", "[dfu][update]")
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&resumed_link, &rebooted_link}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
 
     // Let the transfer start, then drop the link under it.
     application.wait.when([&] { return outcome.last_progress > 0; },
@@ -532,6 +545,67 @@ TEST_CASE("an upload interrupted by a disconnect is resumed", "[dfu][update]")
     CHECK(std::equal(primary.begin(), primary.end(), update.begin()));
 }
 
+namespace {
+
+/// Serves \p image until `drop()`, then fails every read with
+/// `Disconnected`: an image fetched over a link of its own, which dropped.
+class DroppingImageSource final : public smply::ImageSource
+{
+public:
+    explicit DroppingImageSource(ConstBytes image) noexcept : inner_{image} {}
+
+    void drop() noexcept
+    {
+        dropped_ = true;
+    }
+
+    [[nodiscard]] std::uint64_t size() const noexcept override
+    {
+        return inner_.size();
+    }
+
+    [[nodiscard]] smply::Result<std::size_t> read(std::uint64_t offset,
+                                                  smply::MutBytes into) override
+    {
+        if (dropped_) {
+            return smply::fail(smply::Error{ErrorCode::Disconnected, "image source"});
+        }
+        return inner_.read(offset, into);
+    }
+
+private:
+    MemoryImageSource inner_;
+    bool dropped_ = false;
+};
+
+} // namespace
+
+TEST_CASE("an image source that fails with Disconnected fails the update", "[dfu][update]")
+{
+    // The code says "link", but the device's link is up: it is the source that
+    // is gone. The upload keeps no session, so the update fails rather than
+    // asking for a reconnect it could not resume from.
+    const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
+    const std::vector<std::byte> update = make_firmware(kBodySize, 2, 0, 0, 2);
+
+    UpdateOutcome outcome;
+    FakeTransport reconnected;
+    Fixture fixture;
+    fixture.simulator.load_slot(0, running);
+    DroppingImageSource source{ConstBytes{update}};
+
+    Application application{fixture, {&reconnected}, outcome};
+    application.start(source, UpdatePlan{});
+    application.wait.when([&] { return outcome.last_progress > 0; }, [&] { source.drop(); });
+
+    REQUIRE(application.run());
+    REQUIRE(application.wait.all_fired());
+    CHECK(outcome.code == ErrorCode::Disconnected);
+    CHECK(outcome.reconnects == 0);
+    CHECK(fixture.updater.report().final_state == UpdateState::Failed);
+    CHECK_FALSE(fixture.updater.report().revert_pending);
+}
+
 TEST_CASE("a busy reset is retried with force", "[dfu][update]")
 {
     const std::vector<std::byte> running = make_firmware(kBodySize, 1, 0, 0, 1);
@@ -545,7 +619,7 @@ TEST_CASE("a busy reset is retried with force", "[dfu][update]")
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -567,7 +641,7 @@ TEST_CASE("a lost reset response is not a failure", "[dfu][update]")
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome, std::chrono::milliseconds{100}};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
 
     // Swallow the answer to the reset, once the update gets that far.
     application.wait.when([&] { return fixture.updater.state() == UpdateState::Resetting; },
@@ -597,7 +671,7 @@ TEST_CASE("a device that reverts is reported as a rollback", "[dfu][update]")
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     application.reboot_twice = true;
     REQUIRE(application.run());
 
@@ -624,7 +698,7 @@ TEST_CASE("a refused confirm is terminal and warns that a revert is coming", "[d
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
 
     // Armed for the *write* specifically: the group's read and write share
     // command 0, and failing the get-state that precedes the confirm would let
@@ -657,7 +731,7 @@ TEST_CASE("declining to confirm ends the update with a revert pending", "[dfu][u
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
 
     application.confirm = false;
     // The update parks in AwaitingConfirmation rather than finishing.
@@ -688,7 +762,7 @@ TEST_CASE("an application that cannot reconnect fails the update", "[dfu][update
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     application.fail_reconnect = true;
     REQUIRE(application.run());
 
@@ -725,7 +799,7 @@ TEST_CASE("a device without mcumgr parameters still updates", "[dfu][update]")
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -762,7 +836,7 @@ TEST_CASE("the device's MCUboot mode is queried after its parameters and reporte
     UpdatePlan plan;
     plan.fallback_mode = McubootMode::UpgradeOnly;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -793,7 +867,7 @@ TEST_CASE("a device without bootloader information updates as before, mode assum
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -816,7 +890,7 @@ TEST_CASE("a device that does not report its mode takes the plan's fallback", "[
     UpdatePlan plan;
     plan.fallback_mode = McubootMode::SwapUsingScratch;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -891,7 +965,7 @@ TEST_CASE("an upgrade-only update the plan accepts is permanent, and never asks"
     UpdatePlan plan;
     plan.allow_no_revert = true;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -980,7 +1054,7 @@ TEST_CASE("the same version is not a downgrade, and updates", "[dfu][update][mod
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1004,7 +1078,7 @@ TEST_CASE("with the check off, the device itself refuses the downgrade at boot",
     UpdatePlan plan;
     plan.check_downgrade = false;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     static_cast<void>(application.run());
 
     CHECK(outcome.code == ErrorCode::UpdateFailed);
@@ -1070,7 +1144,7 @@ TEST_CASE("direct-XIP without revert uploads to the free slot, resets, and sends
     UpdatePlan plan;
     plan.allow_no_revert = true;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1099,7 +1173,7 @@ TEST_CASE("a direct-XIP image that is not newer is not booted, which reads as a 
     UpdatePlan plan;
     plan.allow_no_revert = true;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     static_cast<void>(application.run());
 
     CHECK(outcome.code == ErrorCode::UpdateFailed);
@@ -1120,7 +1194,7 @@ TEST_CASE("direct-XIP with revert tests, resets and confirms in the free slot",
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1148,7 +1222,7 @@ TEST_CASE("a direct-XIP trial nobody confirms reverts at the next reset",
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     application.reboot_twice = true; // the trial is reset out of, unconfirmed
     static_cast<void>(application.run());
 
@@ -1221,7 +1295,7 @@ TEST_CASE("the build for the free slot is the one sent", "[dfu][update][mode][xi
         ImageTarget{.image = 0, .source = &primary, .secondary_source = &secondary}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(targets, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1457,7 +1531,7 @@ TEST_CASE("a device that never drops the link is given up on after the grace per
     UpdatePlan plan;
     plan.disconnect_grace = std::chrono::seconds{2};
     Application application{fixture, {&reconnected}, outcome, std::chrono::milliseconds{100}};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
 
     // Wait for the reset to be accepted, then reboot the device *without*
     // dropping the link, so only the grace timer can move things on.
@@ -1525,7 +1599,7 @@ TEST_CASE("a lost mark-for-test is recovered over SMP v1", "[dfu][update]")
     // get-state that reads the slot table first.
     fixture.simulator.fail_next(ImageError::ImageAlreadyPending, smply::Operation::Write);
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1554,7 +1628,7 @@ TEST_CASE("the same refusal in its group-scoped shape still recovers", "[dfu][up
 
     fixture.simulator.fail_next(ImageError::ImageAlreadyPending, smply::Operation::Write);
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1579,7 +1653,7 @@ TEST_CASE("a caller-supplied buffer size is used as given", "[dfu][update]")
     UpdatePlan plan;
     plan.upload.server_buf_size = 128;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan, application.handler()).has_value());
+    application.start(source, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1708,7 +1782,7 @@ TEST_CASE("image 1 is updated and image 0 is left exactly as it was", "[dfu][upd
     MemoryImageSource source{ConstBytes{other_update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan_for_image(1), application.handler()).has_value());
+    application.start(source, plan_for_image(1));
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -1738,7 +1812,7 @@ TEST_CASE("an interrupted image-1 upload resumes on image 1", "[dfu][update][mul
     MemoryImageSource source{ConstBytes{other_update}};
 
     Application application{fixture, {&resumed_link, &rebooted_link}, outcome};
-    REQUIRE(fixture.updater.start(source, plan_for_image(1), application.handler()).has_value());
+    application.start(source, plan_for_image(1));
     application.wait.when([&] { return outcome.last_progress > 0; },
                           [&] { fixture.transport.disconnect(); });
 
@@ -1766,7 +1840,7 @@ TEST_CASE("a revert of image 1 is reported as a rollback", "[dfu][update][multi]
     MemoryImageSource source{ConstBytes{other_update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan_for_image(1), application.handler()).has_value());
+    application.start(source, plan_for_image(1));
     application.reboot_twice = true;
     REQUIRE(application.run());
 
@@ -1789,7 +1863,7 @@ TEST_CASE("a plan for an image the device does not have fails cleanly", "[dfu][u
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {}, outcome};
-    REQUIRE(fixture.updater.start(source, plan_for_image(2), application.handler()).has_value());
+    application.start(source, plan_for_image(2));
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::ProtocolError);
@@ -1818,7 +1892,7 @@ TEST_CASE("a default build refuses to confirm image 1, and the update says so",
     MemoryImageSource source{ConstBytes{other_update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, plan_for_image(1), application.handler()).has_value());
+    application.start(source, plan_for_image(1));
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::ProtocolError);
@@ -1881,7 +1955,7 @@ TEST_CASE("two images, one reset, and image 0 confirmed only after the device ap
     images.install(fixture, ApplyOutcome::Applied, 3);
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
 
     // While waiting, the poll timer is what the application must wake for.
     application.wait.when(
@@ -1924,7 +1998,7 @@ TEST_CASE("a failed device apply leaves image 0 unconfirmed", "[dfu][update][mul
     images.install(fixture, ApplyOutcome::Failed, 2);
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::UpdateFailed);
@@ -1948,7 +2022,7 @@ TEST_CASE("the report shows what is decided while the update runs, and is the re
     images.install(fixture, ApplyOutcome::Applied, 3);
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
 
     // Partway: both images are uploaded, and the report already says so.
     application.wait.when(
@@ -1999,7 +2073,7 @@ TEST_CASE("after a failure the report has the final state, the target hash and t
     images.install(fixture, ApplyOutcome::Failed, 2);
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::UpdateFailed);
@@ -2035,7 +2109,7 @@ TEST_CASE("a device that never finishes applying times out", "[dfu][update][mult
     plan.apply_timeout = std::chrono::seconds{2};
     plan.apply_poll_interval = std::chrono::milliseconds{200};
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::Timeout);
@@ -2056,7 +2130,7 @@ TEST_CASE("an update resumed while the device applies waits, and does not reset 
 
     // The first process gets as far as the wait, then goes away.
     Application application{fixture, {&reconnected}, first};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
     application.wait.when([&] { return first.reached(UpdateState::AwaitingDeviceApply); },
                           [&] { fixture.updater.cancel(); });
     REQUIRE(application.run());
@@ -2064,7 +2138,7 @@ TEST_CASE("an update resumed while the device applies waits, and does not reset 
 
     // A second one picks it up from the slot table alone.
     Application again{fixture, {}, second};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, again.handler()).has_value());
+    again.start(images.targets, UpdatePlan{});
     REQUIRE(again.run());
 
     REQUIRE(second.report.has_value());
@@ -2089,7 +2163,7 @@ TEST_CASE("an update resumed after the device applied goes to the confirmation w
 
     // The first process reaches the window and never answers it.
     Application undecided{fixture, {&reconnected}, first};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, undecided.handler()).has_value());
+    undecided.start(images.targets, UpdatePlan{});
     undecided.confirm = false;
     static_cast<void>(undecided.run());
     REQUIRE(first.confirmations > 0);
@@ -2098,7 +2172,7 @@ TEST_CASE("an update resumed after the device applied goes to the confirmation w
     CHECK(fixture.updater.report().revert_pending);
 
     Application application{fixture, {}, second};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
     REQUIRE(application.run());
 
     REQUIRE(second.report.has_value());
@@ -2120,7 +2194,7 @@ TEST_CASE("an image-1 upload interrupted after image 0 finished resumes on image
     images.install(fixture, ApplyOutcome::Applied, 1);
 
     Application application{fixture, {&resumed_link, &rebooted_link}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, UpdatePlan{}, application.handler()).has_value());
+    application.start(images.targets, UpdatePlan{});
     // The second upload has started and is part-way through.
     application.wait.when(
         [&] {
@@ -2155,7 +2229,7 @@ TEST_CASE("two client images are each confirmed by their own hash", "[dfu][updat
     UpdatePlan plan;
     plan.mode = UpdateMode::ConfirmImmediately;
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -2217,7 +2291,7 @@ TEST_CASE("a commit that never comes fails the update, with nothing left to reve
     plan.apply_timeout = std::chrono::seconds{2};
     plan.apply_poll_interval = std::chrono::milliseconds{200};
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::Timeout);
@@ -2246,7 +2320,7 @@ TEST_CASE("the link dropping while the device applies its image is a reconnect, 
     UpdatePlan plan;
     plan.apply_poll_interval = std::chrono::milliseconds{50};
     Application application{fixture, {&after_reset, &after_apply}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     application.wait.when(
         [&] { return fixture.updater.state() == UpdateState::AwaitingDeviceApply; },
         [&] { after_reset.disconnect(); });
@@ -2260,6 +2334,48 @@ TEST_CASE("the link dropping while the device applies its image is a reconnect, 
     CHECK(outcome.report->images[1].committed);
 }
 
+TEST_CASE("a reconnect while the device applies does not restart the apply timeout",
+          "[dfu][update][multi]")
+{
+    // ADR-0022: the timeout runs from the first poll of the wait. Restarted by
+    // each reconnect, a device that drops its link while it applies would
+    // never time out at all.
+    UpdateOutcome outcome;
+    FakeTransport after_reset;
+    FakeTransport after_drop;
+    AppAndRadio images;
+    Fixture fixture{two_image_device(false), v2_client()};
+    images.install(fixture, ApplyOutcome::Applied, 1'000'000);
+
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{2};
+    plan.apply_poll_interval = std::chrono::milliseconds{200};
+    Application application{fixture, {&after_reset, &after_drop}, outcome};
+    application.start(images.targets, plan);
+    std::optional<smply::TimePoint> waiting_since;
+    application.wait.when(
+        [&] { return fixture.updater.state() == UpdateState::AwaitingDeviceApply; },
+        [&] { waiting_since = fixture.clock.now(); });
+    // Most of the timeout gone, then the link drops and comes back.
+    application.wait.when(
+        [&] {
+            return waiting_since.has_value() &&
+                   fixture.clock.now() >= *waiting_since + std::chrono::milliseconds{1500};
+        },
+        [&] { after_reset.disconnect(); });
+
+    REQUIRE(application.run());
+    REQUIRE(application.wait.all_fired());
+    CHECK(outcome.code == ErrorCode::Timeout);
+    CHECK(outcome.reconnects == 2);
+    // On the original deadline, to within a poll and a turn; a restarted
+    // timeout would have run to 3.5 s. `waiting_since` is read on the turn
+    // after the deadline was armed, so the lower bound gives that turn back.
+    const smply::TimePoint ended = fixture.clock.now();
+    CHECK(ended >= *waiting_since + std::chrono::milliseconds{1990});
+    CHECK(ended <= *waiting_since + std::chrono::milliseconds{2500});
+}
+
 TEST_CASE("a read lost while the device applies its image is asked again", "[dfu][update][multi]")
 {
     UpdateOutcome outcome;
@@ -2271,7 +2387,7 @@ TEST_CASE("a read lost while the device applies its image is asked again", "[dfu
     UpdatePlan plan;
     plan.apply_poll_interval = std::chrono::milliseconds{50};
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     application.wait.when(
         [&] { return fixture.updater.state() == UpdateState::AwaitingDeviceApply; },
         [&] { fixture.simulator.drop_next_response(); });
@@ -2299,7 +2415,7 @@ TEST_CASE("an update resumed after the confirm waits for the device's commit",
     // The first process confirms image 0, then goes away while the device is
     // still committing image 1.
     Application application{fixture, {&reconnected}, first};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     application.wait.when([&] { return first.reached(UpdateState::AwaitingDeviceCommit); },
                           [&] { fixture.updater.cancel(); });
     REQUIRE(application.run());
@@ -2307,7 +2423,7 @@ TEST_CASE("an update resumed after the confirm waits for the device's commit",
     CHECK_FALSE(fixture.updater.report().revert_pending);
 
     Application again{fixture, {}, second};
-    REQUIRE(fixture.updater.start(images.targets, plan, again.handler()).has_value());
+    again.start(images.targets, plan);
     REQUIRE(again.run());
 
     REQUIRE(second.report.has_value());
@@ -2335,7 +2451,7 @@ TEST_CASE("a link lost before the confirm reconnects and confirms without asking
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&after_reset, &after_drop}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     // The link goes while the application tests the image, so the confirm
     // meets a link that is already gone.
     bool dropped = false;
@@ -2369,7 +2485,7 @@ TEST_CASE("a confirm whose answer is lost is read back rather than failed",
     MemoryImageSource source{ConstBytes{update}};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(source, UpdatePlan{}, application.handler()).has_value());
+    application.start(source, UpdatePlan{});
     // The confirm lands; its answer does not.
     bool armed = false;
     application.while_approving = [&] {
@@ -2407,7 +2523,7 @@ TEST_CASE("a confirm lost on the product still waits for the device's commit",
     plan.apply_poll_interval = std::chrono::milliseconds{50};
 
     Application application{fixture, {&after_reset, &after_drop}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     bool lost = false;
     application.while_approving = [&] {
         CHECK(fixture.updater.state() == UpdateState::AwaitingConfirmation);
@@ -2489,7 +2605,7 @@ TEST_CASE("two targets: image 0 waits for both to run on trial, and the update f
     plan.apply_poll_interval = std::chrono::milliseconds{50};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     REQUIRE(application.run());
 
     REQUIRE(outcome.report.has_value());
@@ -2520,7 +2636,7 @@ TEST_CASE("two targets: one failed apply confirms nothing, though the other appl
     plan.apply_poll_interval = std::chrono::milliseconds{50};
 
     Application application{fixture, {&reconnected}, outcome};
-    REQUIRE(fixture.updater.start(images.targets, plan, application.handler()).has_value());
+    application.start(images.targets, plan);
     REQUIRE(application.run());
 
     CHECK(outcome.code == ErrorCode::UpdateFailed);

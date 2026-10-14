@@ -11,6 +11,12 @@
 /// value-in, value-out unit test rather than a scenario needing a device --
 /// the same split ADR-0008 established for the upload, and for the same reason.
 ///
+/// Time is a value here too. Every event says when it happened, the machine
+/// keeps its own deadlines -- the reconnect grace, the apply poll and the
+/// apply timeout -- and `next_deadline()` says when it next wants a `Tick`.
+/// So the timing rules are decisions like any other, and ADR-0022's "the
+/// apply timeout is not restarted by a reconnect" is a unit test.
+///
 /// Three rules live here and nowhere else, each read out of the server's
 /// source (docs/protocol-notes.md section 7):
 ///
@@ -34,6 +40,7 @@
 ///   reported applied.** A failed or timed-out apply leaves them unconfirmed,
 ///   so the device reverts them, rather than keeping half a package.
 
+#include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
@@ -71,11 +78,15 @@ enum class Effect : std::uint8_t
     Reset,
     /// Retry the reset with `force`, after the device answered `Busy`.
     ForceReset,
-    /// Emit `DisconnectExpected` and arm the grace timer.
+    /// Emit `DisconnectExpected`. The machine has armed the grace: a `Tick`
+    /// at `next_deadline()` moves on if the link has not dropped by then.
     AwaitDisconnect,
     /// Emit `ReconnectRequired`.
     RequestReconnect,
-    /// Arm the apply-poll timer, and the apply timeout if it is not armed yet.
+    /// Nothing to carry out: the machine waits on a device that applies or
+    /// commits an image itself, and has armed its next read, and the wait's
+    /// timeout if it was not armed yet. A `Tick` at `next_deadline()` reads
+    /// the state again, or ends the wait.
     AwaitApply,
     /// Emit `ConfirmationRequired` and wait for the application (ADR-0014).
     RequestConfirmation,
@@ -97,23 +108,24 @@ struct Event
         ParametersRead,
         /// The optional parameters command failed. Not fatal (A8).
         ParametersUnavailable,
-        /// The device answered the bootloader-information `mode` query.
+        /// The device answered the bootloader-information `mode` query. A
+        /// failure of the query is `Failed`, and the machine tells a device
+        /// that gave no answer from a link that did not carry one (ADR-0025).
         BootloaderRead,
-        /// It gave no answer: a device error, not a lost link (ADR-0025).
-        BootloaderUnavailable,
         StateRead,
         UploadFinished,
+        /// The upload stopped with its session kept, so a reconnect resumes
+        /// it: `ImageManagement::resumable()` said so. The machine does not
+        /// guess that from an error code (ADR-0008).
+        UploadSuspended,
         MarkedForTest,
         ResetAccepted,
         Disconnected,
-        /// The grace period expired with the link still up.
-        GraceExpired,
         Reconnected,
         ReconnectFailed,
-        /// The apply-poll timer fired: time to read the state again.
-        ApplyPollDue,
-        /// The apply-poll timer fired after `UpdatePlan::apply_timeout`.
-        ApplyTimedOut,
+        /// Time has passed: `now` may have reached `Machine::next_deadline()`.
+        /// Legal in every state, and nothing happens when no deadline is due.
+        Tick,
         /// The application called `confirm()`.
         ConfirmApproved,
         /// The device accepted the confirm.
@@ -124,6 +136,9 @@ struct Event
     };
 
     Kind kind{};
+    /// When it happened, by the updater's clock: the time of its most recent
+    /// `poll()`. Every deadline the machine arms runs from here.
+    TimePoint now;
     /// `ParametersRead`.
     std::uint32_t buf_size = 0;
     /// `BootloaderRead`.
@@ -224,6 +239,11 @@ public:
 
     /// `Idle` until the first event.
     [[nodiscard]] UpdateState state() const noexcept;
+
+    /// When the machine next wants a `Tick`: the end of the reconnect grace,
+    /// or the next read of a device that applies an image itself. None when
+    /// nothing is armed. At most one is: they belong to different states.
+    [[nodiscard]] std::optional<TimePoint> next_deadline() const noexcept;
 
     /// The report as the machine has written it so far: the outcomes decided,
     /// and, once the state is terminal, the final state, the target hash and

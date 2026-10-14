@@ -63,7 +63,16 @@ public:
                 fault.action();
             }
         }
+        delivering_ = true;
         fixture_.simulator.pump(fixture_.clock.now());
+        delivering_ = false;
+    }
+
+    /// True while the device's answers are being delivered: inside the
+    /// library callbacks they raise, the update's event handler among them.
+    [[nodiscard]] bool delivering() const noexcept
+    {
+        return delivering_;
     }
 
     /// A reconnect delay: nothing happens on the device's side but time.
@@ -123,6 +132,7 @@ private:
     std::vector<Fault> faults_;
     std::vector<Duration> sleeps_;
     std::size_t turns_ = 0;
+    bool delivering_ = false;
 };
 
 } // namespace smply::test

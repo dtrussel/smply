@@ -41,8 +41,40 @@ UpdateEventCallback UpdateRun::event_handler() const
     return [inbox = inbox_](const UpdateEvent& event) { inbox->push_back(event); };
 }
 
+UpdateRunOutcome UpdateRun::run(ImageSource& source, const UpdatePlan& plan)
+{
+    return started(running_ ? fail(ErrorCode::InvalidState, "update run: an update is running")
+                            : updater_.start(source, plan, event_handler()));
+}
+
+UpdateRunOutcome UpdateRun::run(std::span<const ImageTarget> targets, const UpdatePlan& plan)
+{
+    return started(running_ ? fail(ErrorCode::InvalidState, "update run: an update is running")
+                            : updater_.start(targets, plan, event_handler()));
+}
+
+UpdateRunOutcome UpdateRun::started(Result<void> start)
+{
+    if (!start.has_value()) {
+        return UpdateRunOutcome{RunEnd::Refused, fail(start.error()), false};
+    }
+    running_ = true;
+    return run();
+}
+
+void UpdateRun::refused(const char* call)
+{
+    internal_ = Error{ErrorCode::Internal, call};
+    updater_.cancel();
+}
+
 UpdateRunOutcome UpdateRun::run()
 {
+    if (!running_) {
+        return UpdateRunOutcome{RunEnd::Refused,
+                                fail(ErrorCode::InvalidState, "update run: no update to carry on"),
+                                false};
+    }
     const std::optional<TimePoint> deadline =
         settings_.overall_timeout.has_value()
             ? std::optional<TimePoint>{wait_.now() + *settings_.overall_timeout}
@@ -57,7 +89,13 @@ UpdateRunOutcome UpdateRun::run()
 
         if (finished_.has_value()) {
             UpdateRunOutcome outcome{RunEnd::Finished, std::move(*finished_), gave_up};
+            if (internal_.has_value()) {
+                // The cancellation was the run's own doing; say why.
+                outcome.result = fail(std::move(*internal_));
+                internal_.reset();
+            }
             finished_.reset();
+            running_ = false;
             return outcome;
         }
 
@@ -86,9 +124,11 @@ UpdateRunOutcome UpdateRun::run()
             const Approval approval = hooks_.approve ? hooks_.approve() : Approval::Confirm;
             switch (approval) {
             case Approval::Confirm:
-                // Refused only outside AwaitingConfirmation, which a cancel in
-                // the meantime would explain; the updater reports that itself.
-                static_cast<void>(updater_.confirm());
+                // The run saw ConfirmationRequired and nothing has polled
+                // since, so the update is still waiting for exactly this.
+                if (!updater_.confirm().has_value()) {
+                    refused("update run: FirmwareUpdater::confirm() refused");
+                }
                 break;
             case Approval::Stop:
                 return UpdateRunOutcome{
@@ -166,9 +206,11 @@ UpdateRun::Episode UpdateRun::reconnect(std::optional<TimePoint> deadline)
                 // before the updater resumes and sends on it.
                 client_.rebind_transport(*link);
                 policy_.succeeded();
-                // Refused only outside AwaitingReconnect, which a cancel in
-                // the meantime would explain; the updater reports that itself.
-                static_cast<void>(updater_.resume_after_reconnect());
+                // The run saw ReconnectRequired and nothing has polled since,
+                // so the update is still waiting for exactly this.
+                if (!updater_.resume_after_reconnect().has_value()) {
+                    refused("update run: FirmwareUpdater::resume_after_reconnect() refused");
+                }
                 return Episode::Rebound;
             }
             if (attempt.error().has_value()) {

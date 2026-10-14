@@ -21,6 +21,9 @@ git; commit `97f1647` is the last to carry the per-phase record in
 
 ### Added
 
+* **`ImageManagement::resumable(handle)`**: whether a dropped link suspended
+  the upload, so that `resume()` continues it. It is already true inside the
+  completion callback that reports the drop.
 * **`Error::os_error()`**, the operating system's own error behind a
   transport failure, as a `std::error_code`, and `with_os_error()` to attach it
   (ADR-0026, amending ADR-0002). The serial port adapter attaches `errno` or
@@ -29,14 +32,44 @@ git; commit `97f1647` is the last to carry the per-phase record in
   `to_string(const Error&)` renders it. It is a diagnostic: `operator==`
   ignores it, as it ignores `where()`, and the core never sets it.
 
+### Changed
+
+* **An image source that fails with `Disconnected` now fails the update.**
+  `FirmwareUpdater` used to read any `Disconnected` upload failure as a
+  dropped link and ask for a reconnect, whose resume `ImageManagement` then
+  refused with `InvalidState`. It now asks `ImageManagement::resumable()`, and
+  only an upload the device link suspended is resumed. The update fails with
+  the source's own error, and `ReconnectRequired` is not sent.
+* **`dfu_app::UpdateRun` starts the update itself**, in `run(source, plan)` or
+  `run(targets, plan)`; `run()` with no arguments carries on one a stop or a
+  timeout left running. `event_handler()` is gone, so no caller can start the
+  update with another handler and leave the run deaf, and a refused start is
+  `RunEnd::Refused`. A `confirm()` or `resume_after_reconnect()` the updater
+  refuses now cancels the update and ends the run as `ErrorCode::Internal`;
+  it used to be ignored, leaving the update waiting for ever. Support code,
+  outside the stable surface (ADR-0016).
+
 ### Fixed
 
+* **The example tools print every error escaped.** A device's `rsn` reached
+  the terminal raw in `cli_dfu`, `serial_dfu` and `winrt_ble_dfu` (security.md
+  T12). The three now share one update command,
+  `support/dfu_app/update_command.hpp`: the shared flags, one set of rules for
+  them, the event lines, and the report, each error through `printable()`. The
+  rules are the strictest the tools had, so `winrt_ble_dfu --mode
+  confirm-only` now refuses an `--image` it would not have read.
 * **The weekly OSV scan checked nothing.** OSV-Scanner counted the SBOM's two
   `pkg:github` packages and then dropped both as unscannable, and the job
   reported success. `osv.yml` now runs `tools/osv_query.py`, which asks OSV
   about each dependency by its pinned commit and fails when it establishes
   nothing, including when a canary commit OSV is known to flag comes back
   clean. Findings stay advisory.
+* **`serial_dfu` and `winrt_ble_dfu` said too little when an update failed.**
+  They printed the error and the bootloader mode and stopped, so a failure
+  that left a swap scheduled read as if nothing had changed. They now print
+  what `cli_dfu` always did: each image's line and the warning that the next
+  reset reverts the unconfirmed swap. The lines are shared, in
+  `support/dfu_app/console_report.hpp`.
 
 ## [0.3.0] - 2026-10-09
 

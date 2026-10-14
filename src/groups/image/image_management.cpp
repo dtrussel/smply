@@ -215,14 +215,19 @@ UploadHandle ImageManagement::upload(ImageSource& source, const UploadOptions& o
 
 UploadHandle ImageManagement::resume(const UploadHandle& handle, Callback<UploadResult> on_done)
 {
-    if (upload_ == nullptr || handle.generation_ != upload_->generation ||
-        !upload_->driver.resumable()) {
+    if (!resumable(handle)) {
         reject(*client_, std::move(on_done),
                Error{ErrorCode::InvalidState, "image: no upload to resume"});
         return UploadHandle{};
     }
     upload_->driver.restart(std::move(on_done));
     return handle;
+}
+
+bool ImageManagement::resumable(const UploadHandle& handle) const noexcept
+{
+    return upload_ != nullptr && handle.generation_ == upload_->generation &&
+           upload_->driver.resumable();
 }
 
 void ImageManagement::cancel(const UploadHandle& handle) noexcept

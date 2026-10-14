@@ -20,6 +20,7 @@
 
 #include "dfu/update_state_machine.hpp"
 
+#include "smply/clock.hpp"
 #include "smply/dfu/firmware_updater.hpp"
 #include "smply/error.hpp"
 #include "smply/groups/image.hpp"
@@ -31,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -312,11 +314,38 @@ public:
     /// the first apply poll rather than at the reset.
     bool device_applies_late = false;
 
-    /// Hands the machine \p event.
-    Step feed(const Event& event)
+    /// Hands the machine \p event, stamped with the scenario's time.
+    Step feed(Event event)
     {
+        event.now = now_;
         last_ = machine_->apply(event);
         return last_;
+    }
+
+    /// Moves the scenario's time on by \p by, and says so with a `Tick`.
+    Step advance(smply::Duration by)
+    {
+        now_ += by;
+        return feed(just(Event::Kind::Tick));
+    }
+
+    /// Moves the scenario's time to the machine's next deadline, and ticks.
+    Step tick()
+    {
+        const std::optional<smply::TimePoint> due = machine_->next_deadline();
+        REQUIRE(due.has_value());
+        now_ = std::max(now_, *due);
+        return feed(just(Event::Kind::Tick));
+    }
+
+    [[nodiscard]] smply::TimePoint now() const noexcept
+    {
+        return now_;
+    }
+
+    [[nodiscard]] std::optional<smply::TimePoint> next_deadline() const noexcept
+    {
+        return machine_->next_deadline();
     }
 
     /// Answers the last step as the device would.
@@ -390,8 +419,9 @@ private:
             return event;
         }
         case Effect::QueryBootloader:
+            // A device without the command refuses it.
             return mode.has_value() ? bootloader_read(*mode, no_downgrade)
-                                    : just(Event::Kind::BootloaderUnavailable);
+                                    : failed(ErrorCode::ProtocolError);
         case Effect::ReadState:
             return state_read(device);
         case Effect::StartUpload:
@@ -424,7 +454,9 @@ private:
                     slot.confirmed = slot.confirmed || (slot.active && is_device_image(slot.image));
                 }
             }
-            return just(Event::Kind::ApplyPollDue);
+            // The next read falls due.
+            now_ = machine_->next_deadline().value_or(now_);
+            return just(Event::Kind::Tick);
         case Effect::RequestConfirmation:
             return just(Event::Kind::ConfirmApproved);
         case Effect::Confirm:
@@ -496,6 +528,7 @@ private:
     static constexpr std::uint64_t kUploadBytes = 4096;
 
     std::vector<Target> targets_;
+    smply::TimePoint now_;
     std::unique_ptr<Machine> machine_;
     Step last_{};
     Step upload_{};
@@ -617,7 +650,7 @@ TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machi
 
     Scenario with{supplied};
     with.reach(UpdateState::QueryingBootloader);
-    const Step step = with.feed(just(Event::Kind::BootloaderUnavailable));
+    const Step step = with.feed(failed(ErrorCode::ProtocolError));
     CHECK(step.next == UpdateState::InspectingImages);
     CHECK(step.effect == Effect::ReadState);
     CHECK(with.report().bootloader_mode == McubootMode::SwapUsingScratch);
@@ -625,7 +658,7 @@ TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machi
 
     Scenario without;
     without.reach(UpdateState::QueryingBootloader);
-    static_cast<void>(without.feed(just(Event::Kind::BootloaderUnavailable)));
+    static_cast<void>(without.feed(failed(ErrorCode::ProtocolError)));
     CHECK(without.report().bootloader_mode == McubootMode::Unknown);
     CHECK(without.report().mode_source == ModeSource::Assumed);
 
@@ -634,8 +667,35 @@ TEST_CASE("no answer uses the plan's fallback, or assumes nothing", "[dfu][machi
     unknown.fallback_mode = McubootMode::Unknown;
     Scenario nothing{unknown};
     nothing.reach(UpdateState::QueryingBootloader);
-    static_cast<void>(nothing.feed(just(Event::Kind::BootloaderUnavailable)));
+    static_cast<void>(nothing.feed(failed(ErrorCode::ProtocolError)));
     CHECK(nothing.report().mode_source == ModeSource::Assumed);
+}
+
+TEST_CASE("a bootloader query the device refuses is no answer; a lost one fails the update",
+          "[dfu][machine][mode]")
+{
+    // Refused or malformed: the command is missing, or the bootloader is not
+    // MCUboot. The update goes on as it always has (ADR-0025).
+    for (const ErrorCode code : {ErrorCode::ProtocolError, ErrorCode::CborDecode}) {
+        CAPTURE(code);
+        Scenario scenario;
+        scenario.reach(UpdateState::QueryingBootloader);
+        const Step step = scenario.feed(failed(code));
+        CHECK(step.next == UpdateState::InspectingImages);
+        CHECK(step.effect == Effect::ReadState);
+        CHECK(scenario.report().mode_source == ModeSource::Assumed);
+    }
+    // Not carried: a link that cannot answer one query is given no upload.
+    for (const ErrorCode code :
+         {ErrorCode::Timeout, ErrorCode::Disconnected, ErrorCode::TransportError}) {
+        CAPTURE(code);
+        Scenario scenario;
+        scenario.reach(UpdateState::QueryingBootloader);
+        CHECK(scenario.feed(failed(code)).next == UpdateState::Failed);
+        REQUIRE(scenario.report().cause.has_value());
+        CHECK(scenario.report().cause->code() == code);
+        CHECK_FALSE(scenario.report().revert_pending);
+    }
 }
 
 TEST_CASE("a reported unknown mode is no answer, so the fallback applies", "[dfu][machine][mode]")
@@ -1077,7 +1137,7 @@ TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][mac
     // The device keeps its session and resumes by `sha` (section 6, rule 6).
     Scenario scenario;
     scenario.reach(UpdateState::Uploading);
-    const Step step = scenario.feed(failed(ErrorCode::Disconnected));
+    const Step step = scenario.feed(just(Event::Kind::UploadSuspended));
     CHECK(step.next == UpdateState::AwaitingReconnect);
     CHECK(step.effect == Effect::RequestReconnect);
     CHECK_FALSE(scenario.report().cause.has_value());
@@ -1087,14 +1147,20 @@ TEST_CASE("a dropped link suspends the upload rather than ending it", "[dfu][mac
     CHECK(resumed.effect == Effect::ResumeUpload);
 }
 
-TEST_CASE("any other upload failure is fatal", "[dfu][machine]")
+TEST_CASE("any other upload failure is fatal, whatever its code", "[dfu][machine]")
 {
-    Scenario scenario;
-    scenario.reach(UpdateState::Uploading);
-    const Step step = scenario.feed(failed(ErrorCode::ImageMismatch));
-    CHECK(step.next == UpdateState::Failed);
-    REQUIRE(scenario.report().cause.has_value());
-    CHECK(scenario.report().cause->code() == ErrorCode::ImageMismatch);
+    // Only `UploadSuspended` says the session survived. A `Disconnected`
+    // without it is a failure that kept nothing to resume -- an image source
+    // that failed to read, say -- and a reconnect would only be refused.
+    for (const ErrorCode code : {ErrorCode::ImageMismatch, ErrorCode::Disconnected}) {
+        CAPTURE(code);
+        Scenario scenario;
+        scenario.reach(UpdateState::Uploading);
+        const Step step = scenario.feed(failed(code));
+        CHECK(step.next == UpdateState::Failed);
+        REQUIRE(scenario.report().cause.has_value());
+        CHECK(scenario.report().cause->code() == code);
+    }
 }
 
 // --- Verifying the upload ---------------------------------------------------
@@ -1276,12 +1342,52 @@ TEST_CASE("a refused reset is fatal, and the scheduled swap is reported", "[dfu]
 TEST_CASE("the reconnect is requested whether or not the link actually dropped", "[dfu][machine]")
 {
     // A link still up is not proof the device ignored the reset.
-    for (const Event::Kind kind : {Event::Kind::Disconnected, Event::Kind::GraceExpired}) {
-        Scenario scenario;
-        scenario.reach(UpdateState::AwaitingDisconnect);
-        const Step step = scenario.feed(just(kind));
-        CHECK(step.next == UpdateState::AwaitingReconnect);
-        CHECK(step.effect == Effect::RequestReconnect);
+    Scenario dropped;
+    dropped.reach(UpdateState::AwaitingDisconnect);
+    const Step step = dropped.feed(just(Event::Kind::Disconnected));
+    CHECK(step.next == UpdateState::AwaitingReconnect);
+    CHECK(step.effect == Effect::RequestReconnect);
+    CHECK_FALSE(dropped.next_deadline().has_value());
+
+    Scenario stayed_up;
+    stayed_up.reach(UpdateState::AwaitingDisconnect);
+    const Step expired = stayed_up.tick();
+    CHECK(expired.next == UpdateState::AwaitingReconnect);
+    CHECK(expired.effect == Effect::RequestReconnect);
+}
+
+TEST_CASE("the grace runs from the reset's answer, and only the grace moves on",
+          "[dfu][machine][time]")
+{
+    UpdatePlan plan;
+    plan.disconnect_grace = std::chrono::seconds{3};
+    Scenario scenario{plan};
+    scenario.reach(UpdateState::Resetting);
+    const smply::TimePoint accepted = scenario.now();
+    REQUIRE(scenario.next().next == UpdateState::AwaitingDisconnect);
+    REQUIRE(scenario.next_deadline().has_value());
+    CHECK(*scenario.next_deadline() == accepted + std::chrono::seconds{3});
+
+    // A tick before the deadline changes nothing.
+    const Step early = scenario.advance(std::chrono::milliseconds{2999});
+    CHECK(early.next == UpdateState::AwaitingDisconnect);
+    CHECK(early.effect == Effect::None);
+    CHECK(scenario.advance(std::chrono::milliseconds{1}).effect == Effect::RequestReconnect);
+    CHECK_FALSE(scenario.next_deadline().has_value());
+}
+
+TEST_CASE("a tick with nothing due is ignored in every state", "[dfu][machine][time]")
+{
+    for (const UpdateState state : kNonTerminal) {
+        CAPTURE(state);
+        const std::unique_ptr<Scenario> scenario = through_every_state();
+        scenario->reach(state);
+        if (scenario->next_deadline().has_value()) {
+            continue;
+        }
+        const Step step = scenario->advance(std::chrono::hours{1});
+        CHECK(step.next == state);
+        CHECK(step.effect == Effect::None);
     }
 }
 
@@ -1289,7 +1395,7 @@ TEST_CASE("a reconnect resumes an upload, or verifies the boot", "[dfu][machine]
 {
     Scenario mid_upload;
     mid_upload.reach(UpdateState::Uploading);
-    static_cast<void>(mid_upload.feed(failed(ErrorCode::Disconnected)));
+    static_cast<void>(mid_upload.feed(just(Event::Kind::UploadSuspended)));
     const Step resumed = mid_upload.feed(just(Event::Kind::Reconnected));
     CHECK(resumed.next == UpdateState::Uploading);
     CHECK(resumed.effect == Effect::ResumeUpload);
@@ -1968,7 +2074,7 @@ TEST_CASE("a device image still applying is waited for", "[dfu][machine][multi]"
     CHECK(booted.next == UpdateState::AwaitingDeviceApply);
     CHECK(booted.effect == Effect::AwaitApply);
 
-    const Step due = scenario.feed(just(Event::Kind::ApplyPollDue));
+    const Step due = scenario.tick();
     CHECK(due.next == UpdateState::AwaitingDeviceApply);
     CHECK(due.effect == Effect::ReadState);
 
@@ -2021,7 +2127,7 @@ TEST_CASE("waiting for the device ends on a timeout, and survives a dropped link
         CAPTURE(wait);
         const std::unique_ptr<Scenario> timed_out = through_every_state();
         timed_out->reach(wait);
-        const Step late = timed_out->feed(just(Event::Kind::ApplyTimedOut));
+        const Step late = timed_out->advance(UpdatePlan{}.apply_timeout);
         CHECK(late.next == UpdateState::Failed);
         REQUIRE(timed_out->report().cause.has_value());
         CHECK(timed_out->report().cause->code() == ErrorCode::Timeout);
@@ -2067,6 +2173,62 @@ namespace {
 
 } // namespace
 
+TEST_CASE("the apply timeout runs from the first poll and survives a reconnect",
+          "[dfu][machine][multi][time]")
+{
+    // ADR-0022. Restarted by a reconnect, the timeout would never fire on a
+    // product whose link runs through the MCU being updated.
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{10};
+    plan.apply_poll_interval = std::chrono::seconds{1};
+    Scenario scenario{app_and_radio(), plan};
+    scenario.reach(UpdateState::VerifyingBooted);
+    const ImageState applying = radio_applying();
+    REQUIRE(scenario.feed(state_read(applying)).effect == Effect::AwaitApply);
+    const smply::TimePoint waiting_since = scenario.now();
+    REQUIRE(scenario.next_deadline() == waiting_since + std::chrono::seconds{1});
+
+    // The first read loses the link. Nothing is armed while it is down.
+    REQUIRE(scenario.tick().effect == Effect::ReadState);
+    CHECK_FALSE(scenario.next_deadline().has_value());
+    REQUIRE(scenario.feed(failed(ErrorCode::Disconnected)).next == UpdateState::AwaitingReconnect);
+    CHECK_FALSE(scenario.next_deadline().has_value());
+    CHECK(scenario.advance(std::chrono::seconds{5}).effect == Effect::None);
+    REQUIRE(scenario.feed(just(Event::Kind::Reconnected)).next == UpdateState::VerifyingBooted);
+    REQUIRE(scenario.feed(state_read(applying)).next == UpdateState::AwaitingDeviceApply);
+
+    // Back in the same wait: polled again, and timed out on the first deadline.
+    // Bounded, so a timeout that never comes fails rather than hangs.
+    Step step = scenario.last();
+    for (int polls = 0; polls < 20 && step.next == UpdateState::AwaitingDeviceApply; ++polls) {
+        step = scenario.tick();
+        if (step.effect == Effect::ReadState) {
+            step = scenario.feed(state_read(applying));
+        }
+    }
+    CHECK(step.next == UpdateState::Failed);
+    REQUIRE(scenario.report().cause.has_value());
+    CHECK(scenario.report().cause->code() == ErrorCode::Timeout);
+    CHECK(scenario.now() == waiting_since + std::chrono::seconds{10});
+    CHECK_FALSE(scenario.next_deadline().has_value());
+}
+
+TEST_CASE("a poll falls due before its time only on a tick at or after it",
+          "[dfu][machine][multi][time]")
+{
+    UpdatePlan plan;
+    plan.apply_poll_interval = std::chrono::milliseconds{500};
+    Scenario scenario{app_and_radio(), plan};
+    scenario.reach(UpdateState::VerifyingBooted);
+    const ImageState applying = radio_applying();
+    REQUIRE(scenario.feed(state_read(applying)).effect == Effect::AwaitApply);
+    CHECK(scenario.advance(std::chrono::milliseconds{499}).effect == Effect::None);
+    CHECK(scenario.advance(std::chrono::milliseconds{1}).effect == Effect::ReadState);
+    // A read is outstanding: no tick judges the timeout under it.
+    CHECK(scenario.advance(std::chrono::hours{1}).effect == Effect::None);
+    CHECK(scenario.state() == UpdateState::AwaitingDeviceApply);
+}
+
 TEST_CASE("after the confirm, smply waits for the device to commit its image",
           "[dfu][machine][multi]")
 {
@@ -2083,10 +2245,10 @@ TEST_CASE("after the confirm, smply waits for the device to commit its image",
     CHECK(verified.next == UpdateState::AwaitingDeviceCommit);
     CHECK(verified.effect == Effect::AwaitApply);
 
-    REQUIRE(scenario.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    REQUIRE(scenario.tick().effect == Effect::ReadState);
     CHECK(scenario.feed(state_read(on_trial)).next == UpdateState::AwaitingDeviceCommit);
 
-    REQUIRE(scenario.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    REQUIRE(scenario.tick().effect == Effect::ReadState);
     CHECK(scenario.feed(state_read(committed)).next == UpdateState::Completed);
     CHECK(scenario.report().images[1].committed);
     CHECK_FALSE(scenario.report().revert_pending);
@@ -2095,12 +2257,52 @@ TEST_CASE("after the confirm, smply waits for the device to commit its image",
     // here -- image 0 is already confirmed.
     Scenario lost{app_and_radio()};
     lost.reach(UpdateState::AwaitingDeviceCommit);
-    REQUIRE(lost.feed(just(Event::Kind::ApplyPollDue)).effect == Effect::ReadState);
+    REQUIRE(lost.tick().effect == Effect::ReadState);
     CHECK(lost.feed(state_read(reverted)).next == UpdateState::Failed);
     REQUIRE(lost.report().cause.has_value());
     CHECK(lost.report().cause->code() == ErrorCode::UpdateFailed);
     CHECK_FALSE(lost.report().revert_pending);
     CHECK_FALSE(lost.report().images[1].committed);
+}
+
+TEST_CASE("the commit wait has its own timeout, from its own first poll",
+          "[dfu][machine][multi][time]")
+{
+    UpdatePlan plan;
+    plan.apply_timeout = std::chrono::seconds{10};
+    plan.apply_poll_interval = std::chrono::seconds{1};
+    Scenario scenario{app_and_radio(), plan};
+    scenario.reach(UpdateState::VerifyingBooted);
+    const ImageState applying = radio_applying();
+    REQUIRE(scenario.feed(state_read(applying)).effect == Effect::AwaitApply);
+    // Nine of the apply wait's ten seconds go by: eight polls, and the ninth
+    // finds the image on trial. The commit wait then outlives the apply's
+    // deadline.
+    for (int poll = 0; poll < 8; ++poll) {
+        REQUIRE(scenario.tick().effect == Effect::ReadState);
+        REQUIRE(scenario.feed(state_read(applying)).effect == Effect::AwaitApply);
+    }
+    const ImageState on_trial =
+        after_reset(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
+    REQUIRE(scenario.tick().effect == Effect::ReadState);
+    REQUIRE(scenario.feed(state_read(on_trial)).next == UpdateState::AwaitingConfirmation);
+    REQUIRE(scenario.feed(just(Event::Kind::ConfirmApproved)).effect == Effect::Confirm);
+    const ImageState confirmed_on_trial =
+        after_confirm(SlotSpec{.hash = kRadio}, SlotSpec{.hash = kRadioOld, .confirmed = true});
+    REQUIRE(scenario.feed(confirmed(confirmed_on_trial)).effect == Effect::ReadState);
+    REQUIRE(scenario.feed(state_read(confirmed_on_trial)).next ==
+            UpdateState::AwaitingDeviceCommit);
+
+    const smply::TimePoint committing_since = scenario.now();
+    Step step = scenario.last();
+    for (int polls = 0; polls < 20 && step.next == UpdateState::AwaitingDeviceCommit; ++polls) {
+        step = scenario.tick();
+        if (step.effect == Effect::ReadState) {
+            step = scenario.feed(state_read(confirmed_on_trial));
+        }
+    }
+    CHECK(step.next == UpdateState::Failed);
+    CHECK(scenario.now() == committing_since + std::chrono::seconds{10});
 }
 
 TEST_CASE("with no client image on trial, the commit is waited for at once",
@@ -2187,7 +2389,7 @@ TEST_CASE("a link lost after the confirm goes on to wait for the device's commit
     CHECK(wait.next == UpdateState::AwaitingDeviceCommit);
     CHECK(wait.effect == Effect::AwaitApply);
     // Image 0 is confirmed, so a failure now leaves nothing to revert.
-    CHECK(scenario.feed(just(Event::Kind::ApplyTimedOut)).next == UpdateState::Failed);
+    CHECK(scenario.advance(UpdatePlan{}.apply_timeout).next == UpdateState::Failed);
     CHECK_FALSE(scenario.report().revert_pending);
 }
 

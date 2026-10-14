@@ -3,8 +3,8 @@
 #define SMPLY_DFU_APP_UPDATE_RUN_HPP
 
 /// \file
-/// Drives a started update to its end: the loop every application used to
-/// write for itself.
+/// Starts an update and drives it to its end: the loop every application used
+/// to write for itself.
 ///
 /// `FirmwareUpdater` deliberately leaves two jobs to the application --
 /// re-establishing the link after the device reboots, and deciding whether the
@@ -28,10 +28,16 @@
 ///   the overall one, and it wakes even when there is none, so the overall
 ///   deadline stays reachable while the library waits on the application.
 ///
+/// * the run starts the update itself, with its own event handler, so no
+///   caller can start one with another handler and leave the run deaf;
+/// * a call the updater refuses mid-run -- `confirm()` or
+///   `resume_after_reconnect()`, which only a bug can cause -- cancels the
+///   update and ends the run as `ErrorCode::Internal`, rather than leaving the
+///   update waiting for a call that never comes.
+///
 /// The application keeps what differs between products: building the client,
-/// the groups and the updater, choosing which `start()` to call (passing
-/// `event_handler()`), and three hooks -- open a link, approve the image,
-/// observe events.
+/// the groups and the updater, the image list and the plan, and three hooks --
+/// open a link, approve the image, observe events.
 ///
 /// Support code, not the library (ADR-0016): it is application policy, it
 /// runs on the application's client context -- the thread that calls `run()`
@@ -47,8 +53,7 @@
 ///     .approve = [&] { return self_test() ? Approval::Confirm : Approval::Stop; },
 ///     .observe = [&](const UpdateEvent& event) { print(event); },
 /// }};
-/// updater.start(source, plan, run.event_handler());
-/// const UpdateRunOutcome outcome = run.run();
+/// const UpdateRunOutcome outcome = run.run(source, plan);
 /// \endcode
 
 #include "dfu_app/reconnect_policy.hpp"
@@ -60,10 +65,13 @@
 #include "smply/smp_client.hpp"
 #include "smply/transport.hpp"
 
+#include "smply/image_source.hpp"
+
 #include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 
 namespace smply::dfu_app {
@@ -206,8 +214,14 @@ struct UpdateRunSettings
 /// How a run ended.
 enum class RunEnd
 {
-    /// The update finished; `UpdateRunOutcome::result` is the updater's own.
+    /// The update finished; `UpdateRunOutcome::result` is the updater's own,
+    /// or `ErrorCode::Internal` when the run had to cancel it (see
+    /// `UpdateRun`).
     Finished,
+    /// Nothing ran: `FirmwareUpdater::start()` refused the update, or there
+    /// was no started update to carry on. `UpdateRunOutcome::result` says why,
+    /// and nothing was sent.
+    Refused,
     /// The approve hook answered `Approval::Stop`. The update is still
     /// running, in `AwaitingConfirmation`.
     StoppedBeforeConfirm,
@@ -219,15 +233,16 @@ enum class RunEnd
 struct UpdateRunOutcome
 {
     RunEnd end = RunEnd::Finished;
-    /// For `Finished`, the result `UpdateFinished` carried. Otherwise an error
-    /// naming the end: `InvalidState` for a stop, `Timeout` for the deadline.
+    /// For `Finished`, the result `UpdateFinished` carried; for `Refused`, the
+    /// refusal. Otherwise an error naming the end: `InvalidState` for a stop,
+    /// `Timeout` for the deadline.
     Result<UpdateReport> result;
     /// True if a reconnect episode of this run gave up and told the updater.
     bool gave_up_reconnecting = false;
 };
 
-/// Runs one started update to its end. Not copyable or movable: the hooks
-/// usually capture what is around it.
+/// Starts one update and runs it to its end. Not copyable or movable: the
+/// hooks usually capture what is around it.
 ///
 /// Holds the client, the updater and the wait adapter by reference; declare
 /// them, and every link, before the run.
@@ -243,22 +258,26 @@ public:
     UpdateRun& operator=(UpdateRun&&) = delete;
     ~UpdateRun() = default;
 
-    /// The handler to pass to `FirmwareUpdater::start()`. It only queues the
-    /// event; the run acts on it, and forwards it to `observe`, after the poll
-    /// that raised it. It holds the queue by shared ownership, so an updater
-    /// that outlives the run -- and completes the update in its destructor --
-    /// does not reach a dangling run.
-    [[nodiscard]] UpdateEventCallback event_handler() const;
-
-    /// Drives the update until it finishes, the approve hook stops it, or the
-    /// overall deadline passes. Blocks. After a stop or a timeout, the update
-    /// is still running and `run()` may be called again.
+    /// Starts an update of \p source under \p plan -- one image, committed
+    /// by smply, as `FirmwareUpdater::start(ImageSource&, ...)` -- and drives
+    /// it until it finishes, the approve hook stops it, or the overall
+    /// deadline passes. Blocks. A refused start is `RunEnd::Refused`.
     ///
-    /// A timeout during a reconnect episode leaves the reconnect owed: the
-    /// next `run()` starts with it, as a **fresh** episode -- first attempt,
-    /// first delay -- under its own overall deadline, rather than continuing
-    /// the old one's count. A reconnect delay that would reach the deadline is
-    /// cut to the time left, so no link is opened after it.
+    /// \p source is borrowed until the update ends, as by the updater.
+    [[nodiscard]] UpdateRunOutcome run(ImageSource& source, const UpdatePlan& plan);
+
+    /// \overload Starts an update of the image list \p targets.
+    [[nodiscard]] UpdateRunOutcome run(std::span<const ImageTarget> targets,
+                                       const UpdatePlan& plan);
+
+    /// Carries on an update this run started, after a stop or a timeout left
+    /// it running. Without one, `RunEnd::Refused` with `InvalidState`.
+    ///
+    /// A timeout during a reconnect episode leaves the reconnect owed: this
+    /// starts with it, as a **fresh** episode -- first attempt, first delay --
+    /// under its own overall deadline, rather than continuing the old one's
+    /// count. A reconnect delay that would reach the deadline is cut to the
+    /// time left, so no link is opened after it.
     [[nodiscard]] UpdateRunOutcome run();
 
 private:
@@ -269,6 +288,20 @@ private:
         GaveUp,
         TimedOut,
     };
+
+    /// The handler the run starts the update with. It only queues the event;
+    /// the run acts on it, and forwards it to `observe`, after the poll that
+    /// raised it. It holds the queue by shared ownership, so an updater that
+    /// outlives the run -- and completes the update in its destructor -- does
+    /// not reach a dangling run.
+    [[nodiscard]] UpdateEventCallback event_handler() const;
+
+    /// Runs the update `start` began, or reports its refusal.
+    [[nodiscard]] UpdateRunOutcome started(Result<void> start);
+
+    /// The updater refused \p call, which it does only outside the state the
+    /// run saw it in. Cancels the update, so it ends, and records why.
+    void refused(const char* call);
 
     /// Delivers queued events to `observe`, noting the ones the run acts on.
     void deliver();
@@ -283,9 +316,14 @@ private:
     ReconnectPolicy policy_;
     std::shared_ptr<std::deque<UpdateEvent>> inbox_;
 
+    /// An update this run started has not finished.
+    bool running_ = false;
     bool reconnect_pending_ = false;
     bool confirm_pending_ = false;
     std::optional<Result<UpdateReport>> finished_;
+    /// Set when the run cancelled the update over a refused call: what the
+    /// run then reports instead of the cancellation.
+    std::optional<Error> internal_;
 };
 
 } // namespace smply::dfu_app

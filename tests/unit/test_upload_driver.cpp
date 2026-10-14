@@ -672,6 +672,90 @@ TEST_CASE("resuming re-sends a first packet and continues from the device's offs
     REQUIRE(resumed.calls == 0);
 }
 
+TEST_CASE("only an upload a dropped link suspended is resumable", "[upload][driver][resume]")
+{
+    Fixture fixture;
+    UploadHandle handle;
+    std::optional<bool> resumable_when_told;
+    handle =
+        fixture.management.upload(fixture.source, Fixture::options(), fixture.outcome.on_progress(),
+                                  [&](const Result<UploadResult>&) {
+                                      resumable_when_told = fixture.management.resumable(handle);
+                                  });
+    REQUIRE(handle.valid());
+    CHECK_FALSE(fixture.management.resumable(handle));
+    CHECK_FALSE(fixture.management.resumable(UploadHandle{}));
+
+    fixture.respond(40);
+    fixture.transport.disconnect();
+    // Already true where the drop is reported, so the caller can decide there.
+    REQUIRE(resumable_when_told.has_value());
+    CHECK(*resumable_when_told);
+    CHECK(fixture.management.resumable(handle));
+}
+
+TEST_CASE("a cancelled upload is not resumable", "[upload][driver][resume]")
+{
+    Fixture fixture;
+    const UploadHandle handle = fixture.start();
+    fixture.management.cancel(handle);
+    fixture.client.poll(fixture.clock.now());
+    REQUIRE(fixture.outcome.code == ErrorCode::Cancelled);
+    CHECK_FALSE(fixture.management.resumable(handle));
+}
+
+namespace {
+
+/// Serves \p image until a read reaches \p from, then fails that read and
+/// every later one with `Disconnected`: a source behind a link of its own,
+/// which dropped.
+class DroppingSource final : public smply::ImageSource
+{
+public:
+    DroppingSource(ConstBytes image, std::uint64_t from) noexcept : inner_{image}, from_{from} {}
+
+    [[nodiscard]] std::uint64_t size() const noexcept override
+    {
+        return inner_.size();
+    }
+
+    [[nodiscard]] Result<std::size_t> read(std::uint64_t offset, smply::MutBytes into) override
+    {
+        if (offset >= from_) {
+            return smply::fail(smply::Error{ErrorCode::Disconnected, "dropping source"});
+        }
+        return inner_.read(offset, into);
+    }
+
+private:
+    MemoryImageSource inner_;
+    std::uint64_t from_;
+};
+
+} // namespace
+
+TEST_CASE("a source failing with Disconnected ends the upload for good", "[upload][driver][resume]")
+{
+    // The code says "link", but the device's link is up and its session is
+    // intact: it is the source that is gone, and a resume could not read it
+    // either. So nothing is kept, and the caller is not told to reconnect.
+    Fixture fixture;
+    DroppingSource source{ConstBytes{fixture.image}, 40};
+    const UploadHandle handle = fixture.management.upload(
+        source, Fixture::options(), fixture.outcome.on_progress(), fixture.outcome.on_done());
+    REQUIRE(handle.valid());
+    fixture.respond(40);
+
+    REQUIRE(fixture.outcome.calls == 1);
+    CHECK(fixture.outcome.code == ErrorCode::Disconnected);
+    CHECK_FALSE(fixture.management.resumable(handle));
+
+    Outcome resumed;
+    CHECK_FALSE(fixture.management.resume(handle, resumed.on_done()).valid());
+    fixture.client.poll(fixture.clock.now());
+    CHECK(resumed.code == ErrorCode::InvalidState);
+}
+
 TEST_CASE("resuming an upload that never disconnected is refused", "[upload][driver][resume]")
 {
     Fixture fixture;

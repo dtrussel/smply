@@ -33,9 +33,9 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # platform-specific, so they live here rather than in one example -- two
 # examples need them, and two copies drift.
 #
-# The update run (update_run.hpp) is the loop around both: it drives a started
-# update to its end through three application hooks, and waits through a seam
-# whose real adapter, DispatcherWait, is the one piece here that touches a
+# The update run (update_run.hpp) is the loop around both: it starts an update
+# and drives it to its end through three application hooks, and waits through a
+# seam whose real adapter, DispatcherWait, is the one piece here that touches a
 # mutex -- which is why this target links smply::util, and why it is still not
 # the core (ADR-0004 is about libsmply, which links none of this).
 #
@@ -44,9 +44,11 @@ target_compile_features(smply_minicbor PUBLIC cxx_std_20)
 # reconnect that is pure arithmetic is put somewhere cli_dfu can exercise it on
 # every push.
 add_library(smply_dfu_app STATIC
+    dfu_app/console_report.cpp
     dfu_app/dispatcher_wait.cpp
     dfu_app/file_image_source.cpp
     dfu_app/printable.cpp
+    dfu_app/update_command.cpp
     dfu_app/update_inputs.cpp
     dfu_app/update_run.cpp
 )
