@@ -144,6 +144,7 @@ doing.
 
 | Item | When |
 | ---- | ---- |
+| **One boot model behind both device fakes.** `ServerSimulator` and the stub device each hold their own copy of MCUboot's slot rules, and the copies have drifted (the stub's A27 row below). [`boot-model-plan.md`](boot-model-plan.md) is the plan: one pure model in `support/`, both fakes as wire adapters over it, and the stub running the mode it reports. | next: the plan is ready for implementation |
 | **`fuzz_smp_client_rx` drives one pending request**, so it cannot reach the retired-sequence table (`kMaxRetiredSeqs`, `security.md` T5). The unit suite covers that table. | when the target is next touched |
 | **The per-directory coverage targets are measured, not enforced.** `coverage.sh --enforce` applies only the two whole-core thresholds (`quality-gates.md` §6). | if a directory regresses unnoticed |
 | **The nightly fuzz soak dedupes on one open issue per target**, so a second, different crash in the same target is silent until the first issue is closed. | if finds become common |
