@@ -118,7 +118,9 @@ A deterministic in-memory MCUmgr device: groups 0 and 1 per
 [`protocol-notes.md`](protocol-notes.md) §§5-7, including the awkward parts --
 offset correction in both directions, session resume by `sha`, the `off == 0`
 restart, `match` on the final chunk, reset-then-drop, and the MCUboot swap and
-revert bookkeeping across a simulated reboot.
+revert bookkeeping across a simulated reboot. The wire, the upload session and
+the scripted faults are its own; every swap-mode boot decision is the **boot
+model**'s (below), which it holds and asks.
 
 **It does not answer from inside `send()`.** `Transport::send()` may not deliver
 inbound bytes before it returns, so a simulator that replied inline would
@@ -208,6 +210,39 @@ each with a `[multi]` test in `test_simulator.cpp`:
 the staged image of a second MCU in `docs/multi-image.md`. A reboot swaps it in
 as an unconfirmed trial. After `reads` more state reads, the device finishes:
 confirmed, or the old image swapped back with nothing pending.
+
+### The boot model (`support/boot_model/`)
+The **boot model** is a device's slot table and what MCUboot and Zephyr's image
+group do to it, with no wire, no thread and no clock: `smply::boot_model`, a
+static target in `support/` that links only smply's public headers and is not
+installed. `BootModel` is configured with the device's build (`BootConfig`:
+the image count, the three A27 Kconfigs, which images the device commits) and
+answers operations with values:
+
+* `load_slot()` and `slot_content()`, over global slots (image `n` owns `2n`
+  and `2n + 1`);
+* `upload_target()` (the image's secondary, or none: `NoFreeSlot`, S36),
+  `begin_upload()` (the implicit erase) and `write()`;
+* `set_state()` by hash or hashless, answering Zephyr's `ImageError` in
+  `img_mgmt_set_next_boot_slot()`'s order (S14, S35, A27), and
+  `find_by_hash()`;
+* `erase()` (`InvalidSlot`, or `NoFreeSlot` for a slot marked for the next
+  boot);
+* `reboot()`: every image's swap at once, a device-committed image starting
+  its apply instead (ADR-0022);
+* the listing in two forms: `read_state()`, which first advances
+  device-committed applies and commits by one read, and `listing()`, which a
+  set-state answer carries; plus `swap_type()`.
+
+It reads slots with its own image reader (`image_reader.hpp`: magic, version
+string, `bootable`, the SHA-256 TLV), never with `src/image/` or smply's public
+parser, so a test cannot pass because the parser under test and the oracle
+agree on a misreading. Each rule cites its protocol-notes entry, and
+`tests/unit/test_boot_model.cpp` checks each one at the model's interface,
+with no SMP encoded. The simulator still runs direct-XIP, overwrite and
+downgrade prevention itself; `end_swap_without_trial()` is the one operation
+those need from the model until they move into it
+([`boot-model-plan.md`](boot-model-plan.md)).
 
 ### `SimulatedWait` (`tests/component/simulated_wait.hpp`)
 

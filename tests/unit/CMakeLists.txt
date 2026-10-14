@@ -3,6 +3,7 @@
 add_executable(smply_unit_tests
     test_assembler.cpp
     test_ble_framing.cpp
+    test_boot_model.cpp
     test_bootloader_mode_option.cpp
     test_cbor.cpp
     test_clock.cpp
@@ -57,6 +58,9 @@ target_link_libraries(smply_unit_tests
         smply::dfu_app
         # The multi-image package reader (ADR-0021): support code, tested here.
         smply::dfu_package
+        # The boot model the device fakes decide with: support code, tested
+        # here at its own interface.
+        smply::boot_model
         smply::test_support
         smply_internal_options
         Catch2::Catch2WithMain

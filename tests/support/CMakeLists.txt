@@ -19,6 +19,8 @@ target_link_libraries(smply_test_support
         # The CBOR codec lives in support/ so the cli_dfu example can use it
         # too. PUBLIC: the suites build request bodies with it directly.
         smply::minicbor
+        # Every boot decision the simulator answers with is the boot model's.
+        smply::boot_model
     PRIVATE
         smply_internal_options
 )

@@ -94,3 +94,29 @@ target_link_libraries(smply_dfu_package
 )
 
 target_compile_features(smply_dfu_package PUBLIC cxx_std_20)
+
+# --- smply::boot_model ------------------------------------------------------
+#
+# The boot model: a device's slot table and what MCUboot and Zephyr's image
+# group do to it (docs/testing.md section 2). Pure: no wire, no thread, no
+# clock. ServerSimulator is a wire adapter over it. It reads flash with its own
+# image reader and links only smply's public headers, so that a test cannot
+# pass because the parser under test and the oracle agree on a misreading, and
+# so that an example may link it. A test double, not the library: not
+# installed (ADR-0016).
+add_library(smply_boot_model STATIC
+    boot_model/boot_model.cpp
+    boot_model/image_reader.cpp
+)
+add_library(smply::boot_model ALIAS smply_boot_model)
+
+target_include_directories(smply_boot_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(smply_boot_model
+    PUBLIC
+        smply::smply     # ConstBytes and ImageError, and nothing private
+    PRIVATE
+        smply_internal_options
+)
+
+target_compile_features(smply_boot_model PUBLIC cxx_std_20)

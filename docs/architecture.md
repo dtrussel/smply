@@ -448,6 +448,11 @@ smply/
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
+│   ├── boot_model/             the boot model (testing.md §2): a device's slot table
+│   │                           and what MCUboot and the image group do to it, with
+│   │                           its own image reader, independent of src/image/.
+│   │                           Pure; ServerSimulator decides through it.
+│   │                           smply::boot_model, not installed, unit-tested
 │   ├── dfu_app/                what a DFU *application* needs and the library
 │   │                           deliberately does not ship: FileImageSource,
 │   │                           ReconnectPolicy, UpdateInputs (a file, a build

@@ -270,23 +270,23 @@ The boot model exists, with its own image reader and the swap-with-revert
 rules, and `ServerSimulator` decides every swap-mode answer through it.
 Direct-XIP, overwrite and downgrade prevention stay in the simulator for now.
 
-- [ ] The boot model module and its target in `support/`, linking only
+- [x] The boot model module and its target in `support/`, linking only
       smply's public headers, not installed.
-- [ ] Its image reader is the simulator's, moved with the comment on why it
+- [x] Its image reader is the simulator's, moved with the comment on why it
       is independent of `src/image/`.
-- [ ] The model owns, for swap with revert: the flag table, the reboot
+- [x] The model owns, for swap with revert: the flag table, the reboot
       transitions, set-state by hash and hashless (A27 and Zephyr's denial
       order included), erase, the upload target and the upload's erase and
       writes, the listing in both forms, and device-committed applies and
       commits (ADR-0022).
-- [ ] `ServerSimulator` uses it for all of the above. Its public interface is
+- [x] `ServerSimulator` uses it for all of the above. Its public interface is
       unchanged, `SwapType`, `ApplyOutcome` and `CommitOutcome` re-exported
       under their current names.
-- [ ] A unit suite for the model covers each of those rules, with a case per
+- [x] A unit suite for the model covers each of those rules, with a case per
       protocol-notes entry it cites.
-- [ ] `test_simulator.cpp`, the component suites and the example ctests pass
+- [x] `test_simulator.cpp`, the component suites and the example ctests pass
       unedited.
-- [ ] `testing.md` §2 defines the boot model beside `ServerSimulator`;
+- [x] `testing.md` §2 defines the boot model beside `ServerSimulator`;
       `architecture.md`'s layout tree lists the new directory.
 
 ### Stage 2: the boot model takes over overwrite, downgrade prevention and direct-XIP
