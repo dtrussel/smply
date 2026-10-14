@@ -34,13 +34,15 @@
 ///
 /// The behaviour is specified by docs/protocol-notes.md sections 5, 6 and 7,
 /// which are written as server behaviour precisely so they can be implemented
-/// here. Every swap-mode boot decision -- the swap types and the flags derived
-/// from them, set-state, erase, the upload target, the reboot and the
-/// device-committed apply and commit -- is the boot model's
-/// (`support/boot_model/`); this class is the wire, the upload session and the
-/// faults around it. Three answers matter more than the rest, because each makes a correct
-/// client look broken, and all three fall out of implementing the real decision
-/// order rather than being special cases:
+/// here. Every boot decision -- the swap types and the flags derived from them,
+/// set-state and whether it exists, erase, the upload target, the reboot with
+/// overwrite, downgrade prevention and direct-XIP, and the device-committed
+/// apply and commit -- is the boot model's (`support/boot_model/`), run in the
+/// behaviour `ServerConfig::bootloader_mode` names. This class holds no boot
+/// state of its own: it is the wire, the upload session and the faults around
+/// the model. Three answers matter more than the rest, because each makes a
+/// correct client look broken, and all three fall out of implementing the real
+/// decision order rather than being special cases:
 ///
 /// * an upload can complete on the **first** packet, with no data transferred
 ///   (section 6, rule 9a);
@@ -58,7 +60,6 @@
 #include "smply/groups/image.hpp"
 #include "smply/smp/header.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -95,6 +96,11 @@ struct ServerConfig
     /// the command out, so it answers `ENOTSUP`, as Zephyr does by default.
     /// The number is sent as given, so `-1` and numbers outside MCUboot's enum
     /// can be tested.
+    ///
+    /// It also picks what the device does, through
+    /// `boot_model::behaviour_for_mode()`: 2 overwrites, 4 and 5 run
+    /// direct-XIP without and with revert, and every other number, or none,
+    /// swaps with revert.
     std::optional<std::int64_t> bootloader_mode{};
 
     /// `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`: the `mode` answer carries
@@ -195,7 +201,7 @@ public:
     /// moves to it when MCUboot would (protocol-notes section 7).
     [[nodiscard]] std::size_t active_slot() const noexcept
     {
-        return xip_active_;
+        return model_.active_slot();
     }
 
     /// Direct-XIP only: start the device running from \p slot instead, as
@@ -334,8 +340,7 @@ private:
     [[nodiscard]] std::vector<std::byte> handle_image(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_upload(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_state_read();
-    /// Encodes a listing of the boot model's, with direct-XIP's flags for
-    /// image 0 when the device runs in place.
+    /// Encodes a listing of the boot model's.
     [[nodiscard]] std::vector<std::byte>
     encode_state(const std::vector<boot_model::SlotEntry>& listing) const;
     [[nodiscard]] std::vector<std::byte> handle_state_write(Version version, ConstBytes payload);
@@ -350,44 +355,12 @@ private:
     /// An OS-group error, in the v2 `err` shape whatever the request's version:
     /// the simulator does not model Zephyr's v1 translation of OS-group codes.
     [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
-    /// With `no_downgrade`, whether MCUboot would erase \p image's scheduled
-    /// image instead of booting it: it is older than the running one.
-    [[nodiscard]] bool refuses_downgrade(std::uint32_t image) const;
-    /// Direct-XIP, with or without revert: image 0 runs in place from either
-    /// slot, and the newest valid one boots.
-    [[nodiscard]] bool direct_xip() const noexcept;
-    [[nodiscard]] bool xip_with_revert() const noexcept;
-    /// MCUboot would prefer the slot that is not running: it holds a valid
-    /// image with a higher version, or the same version in a lower slot.
-    [[nodiscard]] bool xip_prefers_other() const;
-    /// Whether the other slot boots next, and if so as a one-boot trial.
-    [[nodiscard]] std::optional<bool> xip_next_is_trial() const;
-    /// The flags image-state reports for one of image 0's slots.
-    [[nodiscard]] std::array<bool, 4> xip_flags(std::size_t slot) const;
-    void xip_reboot();
-    [[nodiscard]] ImageError xip_set_next(std::size_t slot, bool confirm);
-    /// The configured mode is upgrade-only (overwrite): a test is permanent.
-    [[nodiscard]] bool upgrade_only() const noexcept;
-
     std::reference_wrapper<FakeTransport> transport_;
     ServerConfig config_;
 
-    /// The slots and every swap-mode boot rule over them.
+    /// The slots and every boot rule over them.
     boot_model::BootModel model_;
 
-    /// Direct-XIP's boot state per slot of image 0, as Zephyr's
-    /// read_boot_swap_state() names it: unset, marked for one boot, or
-    /// confirmed for good (S14). Only the with-revert variant writes it.
-    enum class XipState : std::uint8_t
-    {
-        Unset,
-        Once,
-        Forever,
-    };
-    std::size_t xip_active_ = 0;
-    std::array<XipState, 2> xip_state_{XipState::Forever, XipState::Unset};
-    /// Running a one-boot trial nobody confirmed: the next reboot reverts.
-    bool xip_trial_ = false;
     Session session_;
 
     std::vector<Pending> pending_;

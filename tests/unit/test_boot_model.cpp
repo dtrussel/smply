@@ -28,6 +28,8 @@
 using smply::ConstBytes;
 using smply::ImageError;
 using smply::boot_model::ApplyOutcome;
+using smply::boot_model::behaviour_for_mode;
+using smply::boot_model::BootBehaviour;
 using smply::boot_model::BootConfig;
 using smply::boot_model::BootModel;
 using smply::boot_model::CommitOutcome;
@@ -656,26 +658,404 @@ TEST_CASE("a device that never commits keeps the image on trial, and a reboot re
     CHECK(version_in(model, 1, 0) == "3.0.0");
 }
 
-// --- The bridge to overwrite and downgrade prevention ----------------------------
+// --- The boot behaviour (protocol-notes section 7, "MCUboot modes") ----------
 
-TEST_CASE("a swap ended without a trial installs or drops the secondary and erases it",
-          "[boot-model][bridge]")
+TEST_CASE("a reported mode number picks the behaviour, anything unmodelled swapping with revert",
+          "[boot-model][behaviour]")
 {
-    BootModel model = one_image();
+    struct Row
+    {
+        std::optional<std::int64_t> reported;
+        BootBehaviour behaviour;
+    };
+
+    // S56's enum: 2 is upgrade-only, 4 and 5 are direct-XIP without and with
+    // revert. Every swap mode (1, 3, 9), a mode the model does not run (0, 6,
+    // 7, 8), Zephyr's -1, a number past the enum and no report at all are
+    // modelled as swap with revert.
+    const Row row = GENERATE(Row{std::int64_t{2}, BootBehaviour::Overwrite},
+                             Row{std::int64_t{4}, BootBehaviour::DirectXip},
+                             Row{std::int64_t{5}, BootBehaviour::DirectXipWithRevert},
+                             Row{std::int64_t{1}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{3}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{9}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{0}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{6}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{7}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{8}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{-1}, BootBehaviour::SwapWithRevert},
+                             Row{std::int64_t{10}, BootBehaviour::SwapWithRevert},
+                             Row{std::nullopt, BootBehaviour::SwapWithRevert});
+    INFO(row.reported.value_or(-99));
+    CHECK(behaviour_for_mode(row.reported) == row.behaviour);
+}
+
+TEST_CASE("set-state exists in every behaviour but plain direct-XIP", "[boot-model][behaviour]")
+{
+    // S10: the write handler is NULL under DIRECT_XIP; the with-revert
+    // variant keeps it (S14).
+    CHECK(BootModel{BootConfig{.behaviour = BootBehaviour::SwapWithRevert}}.supports_set_state());
+    CHECK(BootModel{BootConfig{.behaviour = BootBehaviour::Overwrite}}.supports_set_state());
+    CHECK(BootModel{BootConfig{.behaviour = BootBehaviour::DirectXipWithRevert}}
+              .supports_set_state());
+    CHECK_FALSE(BootModel{BootConfig{.behaviour = BootBehaviour::DirectXip}}.supports_set_state());
+}
+
+// --- Overwrite (protocol-notes section 7, "MCUboot modes") --------------------
+
+TEST_CASE("an overwrite installs a scheduled image for good, with no trial and nothing to revert",
+          "[boot-model][overwrite]")
+{
+    // Mode 2, upgrade-only: set-state works, but a test is a permanent copy.
+    BootModel model = one_image(
+        BootConfig{.behaviour = BootBehaviour::Overwrite, .allow_confirm_non_active_slot = true});
+    const bool confirm = GENERATE(false, true);
+    INFO((confirm ? "marked permanent" : "marked for test"));
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, confirm) == ImageError::Ok);
+
+    model.reboot();
+    CHECK(model.swap_type() == SwapType::None);
+    CHECK(version_in(model, 0, 0) == "2.0.0");
+    // The secondary is consumed: erased, so it lists nothing.
+    CHECK(model.slot_content(1).empty());
+    const std::vector<SlotEntry> listing = model.listing();
+    REQUIRE(listing.size() == 1);
+    CHECK(flags_of(listing[0]) == Flags{.confirmed = true, .active = true});
+
+    // Nothing reverts at the next boot.
+    model.reboot();
+    CHECK(version_in(model, 0, 0) == "2.0.0");
+}
+
+TEST_CASE("an overwrite device still applies an image it commits itself", "[boot-model][overwrite]")
+{
+    // A device-committed image is not this MCU's to boot (ADR-0022).
+    BootModel model{BootConfig{.behaviour = BootBehaviour::Overwrite, .image_count = 2}};
+    model.load_slot(0, image(1, 1));
+    model.load_slot(2, image(3, 3));
+    model.load_slot(3, image(4, 4));
+    model.device_commits(1, DeviceCommit{});
+    REQUIRE(model.set_state(ConstBytes{hash(4)}, false) == ImageError::Ok);
+    model.reboot();
+    CHECK(model.swap_type(1) == SwapType::Test);
+    CHECK(version_in(model, 1, 0) == "3.0.0");
+    CHECK(version_in(model, 1, 1) == "4.0.0");
+}
+
+// --- Downgrade prevention (S41, protocol-notes section 7) -------------------
+
+TEST_CASE("with no_downgrade an older scheduled image is erased and the running one stays",
+          "[boot-model][downgrade]")
+{
+    const BootBehaviour behaviour =
+        GENERATE(BootBehaviour::SwapWithRevert, BootBehaviour::Overwrite);
+    INFO((behaviour == BootBehaviour::Overwrite ? "overwrite" : "swap"));
+    BootModel model{BootConfig{.behaviour = behaviour, .no_downgrade = true}};
+    model.load_slot(0, image(2, 2));
+    model.load_slot(1, image(1, 1));
+    REQUIRE(model.set_state(ConstBytes{hash(1)}, false) == ImageError::Ok);
+
+    model.reboot();
+    CHECK(model.swap_type() == SwapType::None);
+    CHECK(version_in(model, 0, 0) == "2.0.0");
+    CHECK(model.slot_content(1).empty());
+}
+
+TEST_CASE("downgrade prevention compares major, minor and revision only, and accepts an equal one",
+          "[boot-model][downgrade]")
+{
+    // boot_compare_version() (S41): the build number does not count, so 1.2.3+9
+    // over 1.2.3+1 is equal, and an equal version is accepted.
+    BootModel model{BootConfig{.no_downgrade = true}};
+    model.load_slot(0,
+                    ImageBuilder{}.version(1, 2, 3, 9).tlv(kTlvSha256, digest_of(32, 1)).build());
+    model.load_slot(1,
+                    ImageBuilder{}.version(1, 2, 3, 1).tlv(kTlvSha256, digest_of(32, 2)).build());
     REQUIRE(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
 
-    SECTION("installed, as an overwrite does")
+    model.reboot();
+    CHECK(model.swap_type() == SwapType::Revert);
+    CHECK(version_in(model, 0, 0) == "1.2.3.1");
+}
+
+TEST_CASE("without no_downgrade an older image swaps in like any other", "[boot-model][downgrade]")
+{
+    BootModel model;
+    model.load_slot(0, image(2, 2));
+    model.load_slot(1, image(1, 1));
+    REQUIRE(model.set_state(ConstBytes{hash(1)}, false) == ImageError::Ok);
+    model.reboot();
+    CHECK(model.swap_type() == SwapType::Revert);
+    CHECK(version_in(model, 0, 0) == "1.0.0");
+}
+
+// --- Direct-XIP (S10, S14, protocol-notes section 7) -------------------------
+
+namespace {
+
+/// A direct-XIP device running from slot 0, with \p first in slot 0 and
+/// \p second in slot 1.
+[[nodiscard]] BootModel xip(BootBehaviour behaviour, std::vector<std::byte> first,
+                            std::vector<std::byte> second, BootConfig config = {})
+{
+    config.behaviour = behaviour;
+    BootModel model{std::move(config)};
+    model.load_slot(0, std::move(first));
+    model.load_slot(1, std::move(second));
+    return model;
+}
+
+/// The flags image 0's \p slot reports, or nullopt when it is not listed.
+[[nodiscard]] std::optional<Flags> flags_at(const BootModel& model, std::size_t slot)
+{
+    const std::optional<SlotEntry> entry = entry_for(model.listing(), 0, slot);
+    return entry.has_value() ? std::optional<Flags>{flags_of(*entry)} : std::nullopt;
+}
+
+constexpr std::uint32_t kImageFlagNonBootable = 0x10;
+
+} // namespace
+
+TEST_CASE("plain direct-XIP boots the newer slot, reported pending and permanent, never confirmed",
+          "[boot-model][direct-xip]")
+{
+    BootModel model = xip(BootBehaviour::DirectXip, image(1, 1), image(2, 2));
+    CHECK(model.active_slot() == 0);
+    // Without revert the running slot is only active (S14).
+    CHECK(flags_at(model, 0) == Flags{.active = true});
+    CHECK(flags_at(model, 1) == Flags{.pending = true, .permanent = true});
+
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+    CHECK(flags_at(model, 1) == Flags{.active = true});
+    // The older image in slot 0 is held but never booted.
+    CHECK(flags_at(model, 0) == Flags{});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+}
+
+TEST_CASE("direct-XIP breaks a version tie towards the lower slot", "[boot-model][direct-xip]")
+{
+    SECTION("running the higher slot, an equal image in the lower one boots")
     {
-        model.end_swap_without_trial(0, true);
-        CHECK(version_in(model, 0, 0) == "2.0.0");
+        BootModel model = xip(BootBehaviour::DirectXip, image(2, 1), image(2, 2));
+        model.boot_from_slot(1);
+        CHECK(flags_at(model, 0) == Flags{.pending = true, .permanent = true});
+        model.reboot();
+        CHECK(model.active_slot() == 0);
     }
-    SECTION("dropped, as a refused downgrade does (S41)")
+    SECTION("running the lower slot, an equal image in the higher one does not")
     {
-        model.end_swap_without_trial(0, false);
-        CHECK(version_in(model, 0, 0) == "1.0.0");
+        BootModel model = xip(BootBehaviour::DirectXip, image(2, 1), image(2, 2));
+        CHECK(flags_at(model, 1) == Flags{});
+        model.reboot();
+        CHECK(model.active_slot() == 0);
     }
-    CHECK(model.swap_type() == SwapType::None);
+}
+
+TEST_CASE("direct-XIP never boots an older, invalid or non-bootable image",
+          "[boot-model][direct-xip]")
+{
+    struct Row
+    {
+        const char* name;
+        std::vector<std::byte> other;
+    };
+
+    const Row row =
+        GENERATE(Row{"older", image(0, 2)}, Row{"erased", {}},
+                 Row{"not an image", ImageBuilder{}.magic(0x12345678).version(9, 0, 0, 0).build()},
+                 Row{"non-bootable", ImageBuilder{}
+                                         .version(9, 0, 0, 0)
+                                         .flags(kImageFlagNonBootable)
+                                         .tlv(kTlvSha256, digest_of(32, 2))
+                                         .build()});
+    INFO(row.name);
+    BootModel model = xip(BootBehaviour::DirectXip, image(1, 1), row.other);
+    const std::optional<Flags> other = flags_at(model, 1);
+    CHECK((!other.has_value() || !other->pending));
+    model.reboot();
+    CHECK(model.active_slot() == 0);
+}
+
+TEST_CASE("direct-XIP leaves a running slot that holds no valid image for a valid one",
+          "[boot-model][direct-xip]")
+{
+    BootModel model = xip(BootBehaviour::DirectXip, {}, image(1, 1));
+    CHECK(flags_at(model, 1) == Flags{.pending = true, .permanent = true});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+}
+
+TEST_CASE("a direct-XIP upload goes to the slot not running", "[boot-model][direct-xip][upload]")
+{
+    // S10: the slot opposite the active one.
+    const BootBehaviour behaviour =
+        GENERATE(BootBehaviour::DirectXip, BootBehaviour::DirectXipWithRevert);
+    BootModel model = xip(behaviour, image(1, 1), image(2, 2));
+    CHECK(model.upload_target(0) == std::optional<std::size_t>{1});
+    model.boot_from_slot(1);
+    CHECK(model.active_slot() == 1);
+    CHECK(model.upload_target(0) == std::optional<std::size_t>{0});
+    CHECK_FALSE(model.upload_target(1).has_value());
+}
+
+TEST_CASE("a direct-XIP device started in a slot runs it confirmed", "[boot-model][direct-xip]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(2, 1), image(2, 2));
+    model.boot_from_slot(1);
+    CHECK(model.active_slot() == 1);
+    CHECK(flags_at(model, 1) == Flags{.confirmed = true, .active = true});
+    // A confirmed running slot is not on trial: the reboot keeps it, even
+    // though the equal image in the lower slot would win were it marked.
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+}
+
+TEST_CASE("direct-XIP with revert boots a newer slot only once it is marked",
+          "[boot-model][direct-xip][revert]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2));
+    // Unmarked: held, not pending, and not booted (S14).
+    CHECK(flags_at(model, 0) == Flags{.confirmed = true, .active = true});
+    CHECK(flags_at(model, 1) == Flags{});
+    model.reboot();
+    CHECK(model.active_slot() == 0);
+}
+
+TEST_CASE("direct-XIP with revert does not boot a marked image that is not newer",
+          "[boot-model][direct-xip][revert]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(2, 1), image(1, 2));
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+    CHECK(flags_at(model, 1) == Flags{});
+    model.reboot();
+    CHECK(model.active_slot() == 0);
+}
+
+TEST_CASE("an unconfirmed direct-XIP trial is reverted and its slot erased",
+          "[boot-model][direct-xip][revert]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2));
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+    // Marked for one boot: the ordinary table's Test row.
+    CHECK(flags_at(model, 1) == Flags{.pending = true});
+
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+    // On trial: the ordinary table's Revert row.
+    CHECK(flags_at(model, 1) == Flags{.active = true});
+    CHECK(flags_at(model, 0) == Flags{.confirmed = true});
+    // Any test during a trial is already pending.
+    CHECK(model.set_state(ConstBytes{hash(1)}, false) == ImageError::ImageAlreadyPending);
+
+    model.reboot();
+    CHECK(model.active_slot() == 0);
     CHECK(model.slot_content(1).empty());
-    REQUIRE(model.listing().size() == 1);
-    CHECK(flags_of(model.listing()[0]) == Flags{.confirmed = true, .active = true});
+    CHECK(flags_at(model, 0) == Flags{.confirmed = true, .active = true});
+}
+
+TEST_CASE("a confirmed direct-XIP trial stays", "[boot-model][direct-xip][revert]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2));
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+    model.reboot();
+    REQUIRE(model.active_slot() == 1);
+
+    // A hashless confirm names the slot running, not slot 0.
+    REQUIRE(model.set_state(std::nullopt, true) == ImageError::Ok);
+    CHECK(flags_at(model, 1) == Flags{.confirmed = true, .active = true});
+    CHECK(flags_at(model, 0) == Flags{});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+    CHECK(version_in(model, 0, 1) == "2.0.0");
+}
+
+TEST_CASE("a direct-XIP slot confirmed before it runs boots for good",
+          "[boot-model][direct-xip][revert]")
+{
+    // Confirming the other slot needs the Kconfig, as anywhere (A27).
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2),
+                          BootConfig{.allow_confirm_non_active_slot = true});
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, true) == ImageError::Ok);
+    // The ordinary table's Perm row.
+    CHECK(flags_at(model, 1) == Flags{.pending = true, .permanent = true});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+    CHECK(flags_at(model, 1) == Flags{.confirmed = true, .active = true});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+}
+
+TEST_CASE("direct-XIP's set-state refuses what img_mgmt_set_next_boot_slot() refuses",
+          "[boot-model][direct-xip][set-state]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2));
+    model.boot_from_slot(1);
+
+    // Confirming the slot not running (S14, A27).
+    CHECK(model.set_state(ConstBytes{hash(1)}, true) == ImageError::ImageConfirmationDenied);
+    // Testing the slot running (S14).
+    CHECK(model.set_state(ConstBytes{hash(2)}, false) ==
+          ImageError::ImageSettingTestToActiveDenied);
+    // A hash nowhere on the device.
+    CHECK(model.set_state(ConstBytes{hash(9)}, false) == ImageError::HashNotFound);
+    // A test with no hash names no image.
+    CHECK(model.set_state(std::nullopt, false) == ImageError::InvalidHash);
+    // Confirming the slot running is fine, and changes nothing.
+    CHECK(model.set_state(std::nullopt, true) == ImageError::Ok);
+    CHECK(model.active_slot() == 1);
+}
+
+TEST_CASE("a direct-XIP mark repeats, but a confirmed slot cannot be marked for one boot",
+          "[boot-model][direct-xip][set-state]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2),
+                          BootConfig{.allow_confirm_non_active_slot = true});
+    SECTION("marking twice succeeds and does nothing more")
+    {
+        CHECK(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+        CHECK(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+        CHECK(flags_at(model, 1) == Flags{.pending = true});
+    }
+    SECTION("a confirmed slot is already pending for a test")
+    {
+        REQUIRE(model.set_state(ConstBytes{hash(2)}, true) == ImageError::Ok);
+        CHECK(model.set_state(ConstBytes{hash(2)}, false) == ImageError::ImageAlreadyPending);
+    }
+}
+
+TEST_CASE("plain direct-XIP has no set-state, so a request changes nothing",
+          "[boot-model][direct-xip][set-state]")
+{
+    BootModel model = xip(BootBehaviour::DirectXip, image(1, 1), image(2, 2));
+    REQUIRE_FALSE(model.supports_set_state());
+    CHECK(model.set_state(ConstBytes{hash(1)}, true) == ImageError::Unknown);
+    CHECK(flags_at(model, 0) == Flags{.active = true});
+}
+
+TEST_CASE("starting a direct-XIP upload erases the slot's mark with it",
+          "[boot-model][direct-xip][upload]")
+{
+    BootModel model = xip(BootBehaviour::DirectXipWithRevert, image(1, 1), image(2, 2));
+    REQUIRE(model.set_state(ConstBytes{hash(2)}, false) == ImageError::Ok);
+
+    // The same image again: only the erase of the trailer can unmark it.
+    const std::vector<std::byte> again = image(2, 2);
+    model.begin_upload(1, again.size());
+    REQUIRE(model.write(1, 0, ConstBytes{again}));
+    CHECK(flags_at(model, 1) == Flags{});
+    model.reboot();
+    CHECK(model.active_slot() == 0);
+}
+
+TEST_CASE("downgrade prevention does not apply under direct-XIP", "[boot-model][direct-xip]")
+{
+    // MCUboot's downgrade prevention depends on !BOOT_DIRECT_XIP (S56), and a
+    // direct-XIP device only ever boots the newer slot anyway.
+    BootModel model =
+        xip(BootBehaviour::DirectXip, image(1, 1), image(2, 2), BootConfig{.no_downgrade = true});
+    model.reboot();
+    CHECK(model.active_slot() == 1);
+    CHECK(version_in(model, 0, 0) == "1.0.0");
 }
