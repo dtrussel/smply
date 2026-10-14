@@ -48,6 +48,16 @@ git; commit `97f1647` is the last to carry the per-phase record in
   refuses now cancels the update and ends the run as `ErrorCode::Internal`;
   it used to be ignored, leaving the update waiting for ever. Support code,
   outside the stable surface (ADR-0016).
+* **The examples' stub device runs the MCUboot mode it reports.** It used to
+  report `--stub-mode` and swap with revert whatever it claimed. Its boot
+  rules now come from the boot model `ServerSimulator` decides with
+  (`support/boot_model/`): a direct-XIP stub runs from either slot and takes
+  the upload into the one not running, plain direct-XIP answers set-state
+  `ENOTSUP`, and an upgrade-only stub overwrites. A stub with two images
+  refuses a client confirm of image 1 (`IMAGE_CONFIRMATION_DENIED`), as a
+  default Zephyr build does (protocol-notes A27), so `cli_dfu --demo-package
+  --commit 1=client` now fails. The simulator stays the reference for the
+  wire.
 
 ### Fixed
 

@@ -484,7 +484,8 @@ smply/
 │   │                           DeviceLink, optionally with a second image, by default
 │   │                           one it commits itself; and the demo image and two-image package it is
 │   │                           given, and the temporary file the image is read from.
-│   │                           Its boot rules are smply::boot_model's; not a wire reference
+│   │                           Its boot rules are smply::boot_model's, in the mode it
+│   │                           reports; not a wire reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
 │   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs

@@ -13,7 +13,7 @@ Framework: **Catch2 v3** ([ADR-0012](decisions/ADR-0012-test-and-fuzz-tooling.md
 | Component (full stack over a simulated device) | `tests/component/` | < 20 s | every PR |
 | Fuzz (smoke: committed corpus, 20 000 runs per target) | `tests/fuzz/` | ~70 s | every push and PR (Linux/Clang) |
 | Fuzz (soak) | same targets | 30 min | nightly |
-| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty-six** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, six for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*`; and six `cli_dfu_usage_*` for the shared flag rules and this tool's |
+| The example, end to end | `examples/cli_dfu/` | < 2 s | every push, as **twenty-eight** tests: `cli_dfu_demo`, `cli_dfu_flaky_reconnect`, `cli_dfu_reconnect_gives_up`, `cli_dfu_package`, `cli_dfu_package_apply_fails`, `cli_dfu_package_client_confirm_denied`, seven for the MCUboot mode (ADR-0025): `cli_dfu_mode_reported`, `cli_dfu_mode_fallback`, `cli_dfu_mode_refused`, `cli_dfu_mode_allow_no_revert`, `cli_dfu_mode_two_builds`, `cli_dfu_mode_direct_xip` and `cli_dfu_xip_package`, and nine for the package board check: `cli_dfu_package_board`, `cli_dfu_package_board_target`, `cli_dfu_xip_package_board`, `cli_dfu_package_board_mismatch` and five `cli_dfu_board_usage_*`; and six `cli_dfu_usage_*` for the shared flag rules and this tool's |
 | The serial example, end to end | `examples/serial_dfu/` | ~2.5 s | every push, on every Linux preset, as **eleven** tests: `serial_dfu_pty_uart`, `serial_dfu_pty_cdc`, `serial_dfu_pty_device_buffer` and `serial_dfu_pty_package`, each a whole update, reset included, over a pseudo-terminal; `serial_dfu_pty_package_apply_fails`, the failure report; and two for `--board`: `serial_dfu_board_usage_no_package` expects the usage text, and `serial_dfu_pty_package_board_mismatch` the refusal; and four `serial_dfu_usage_*` for the shared flag rules and a real port's |
 | The serial port adapter over a real tty | `tests/serial_port/` | < 2 s | every push, on every Linux preset, and on `windows-msvc` with only its port-free cases. A pseudo-terminal stands in for the port, so a real I/O thread, a real hang-up and real, bounded waits are involved. That is why it is its own executable and not part of the unit or component suites, which never read the real clock (§2) |
 | The Windows targets | `transports/winrt_ble/`, `examples/winrt_ble_dfu/` | — | **no CI job runs them.** `windows-winrt` compiles both and runs `winrt_ble_smoke`, which links the adapter and checks it refuses a bad configuration; the runner has no radio, so nothing crosses GATT there. Their behavioural coverage is the HIL row below, on a bench |
@@ -591,8 +591,9 @@ it covers ground no other suite does:
 
 `cli_dfu_xip_package` reads a generated direct-XIP package
 (`--demo-xip-package`, two files for image 0 with their `slot`s) through
-`smply::dfu_package` and `UpdateInputs`, against a stub reporting direct-XIP
-with revert, and expects it completed.
+`smply::dfu_package` and `UpdateInputs`, against a stub running direct-XIP
+with revert, and expects it completed: the build for slot 1 sent, and the
+device booting from slot 1 on trial.
 
 Two more run the multi-image update of ADR-0021 end to end, from a package
 built in memory (`--demo-package`) through `smply::dfu_package` and
@@ -637,17 +638,27 @@ printed as reported by the device; `cli_dfu_mode_fallback` gives the stub none
 and expects the plan's `--fallback-mode` printed as the fallback. Two more
 show a refusal: `cli_dfu_mode_refused` (an upgrade-only stub, refused, with the
 reason and the mode on the failure output) and `cli_dfu_mode_allow_no_revert`
-(the same stub with `--allow-no-revert`, completed). `cli_dfu_mode_two_builds`
-gives a direct-XIP-with-revert stub both builds of the demo image
-(`--demo-builds`) and expects it completed. The stub only *reports* a mode; it
-swaps with revert whatever it claims, so that test shows the build chosen and
-the image-list `start()`, not direct-XIP itself.
+(the same stub with `--allow-no-revert`, completed through an overwrite).
+`cli_dfu_mode_two_builds` gives a direct-XIP-with-revert stub both builds of
+the demo image (`--demo-builds`) and expects it completed: the stub runs slot
+0, so the build for slot 1 is sent, and the device boots from slot 1 on trial
+and is confirmed there. `cli_dfu_mode_direct_xip` does the same with plain
+direct-XIP and `--allow-no-revert`, where set-state does not exist (S10). It
+runs without `--quiet` and expects the upload, the reset, the boot check,
+`update Completed` and the 4172-byte second build transferred, and its
+`FAIL_REGULAR_EXPRESSION` rejects any mark or confirm. That is what the
+updater does against `ServerSimulator` in mode 4: upload to the free slot,
+reset, no set-state.
 
 Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`.
 Its **boot rules are the boot model's** (§2): the slot table, the flags, the
 set-state answers, the reboot and a device-committed image's apply and commit
-are decided by the same `smply::boot_model` the simulator uses, run in
-swap-with-revert mode, and its slots are read with the model's image reader.
+are decided by the same `smply::boot_model` the simulator uses, and its
+slots are read with the model's image reader. It **runs the mode it reports**
+(`--stub-mode`), mapped as the simulator maps it: direct-XIP runs image 0 from
+either slot and uploads to the one not running, plain direct-XIP answers
+set-state `ENOTSUP`, upgrade-only overwrites, and every other mode, or none,
+swaps with revert. It never prevents a downgrade.
 So it refuses what a default Zephyr build refuses, a client confirm of image 1
 included. It answers an image-group refusal as the group-scoped `err` map in
 either SMP version, as a server without `ORIGINAL_PROTOCOL` does (A16). It is
@@ -662,9 +673,11 @@ match it would be building a second test double outside `tests/`.
 ### The serial example as a test (`examples/serial_dfu/`)
 
 Two ctests run a whole update over a pseudo-terminal, against the same stub
-device, behind `pty_stub.*`. That makes them the first test in which smply's
-serial framing crosses a real byte stream in both directions for a complete
-update. They differ only in the shape of the reset, which is roadmap O7's
+device, behind `pty_stub.*`. It reports no MCUboot mode, so it runs swap with
+revert; its boot rules are the boot model's, and the simulator stays the
+reference for the wire, as above. That makes them the first test in which
+smply's serial framing crosses a real byte stream in both directions for a
+complete update. They differ only in the shape of the reset, which is roadmap O7's
 question:
 * `serial_dfu_pty_uart`: the port stays open. The updater leaves
   `AwaitingDisconnect` on the grace timer. Boot banners arrive as ignored

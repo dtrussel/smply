@@ -93,8 +93,9 @@ struct Options
     /// The stub device fails to apply image 1 (package modes only).
     bool apply_fails = false;
 
-    /// `--stub-mode`: the mode the stub device reports. Without it, the stub
-    /// has no bootloader-information command, like most Zephyr builds.
+    /// `--stub-mode`: the mode the stub device reports, and runs. Without it,
+    /// the stub has no bootloader-information command, like most Zephyr
+    /// builds, and swaps with revert.
     std::optional<McubootMode> stub_mode;
 };
 
@@ -113,7 +114,8 @@ void usage()
                  "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
                  "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
-                 "  --stub-mode M  the mode the demo device reports (it still swaps)\n"
+                 "  --stub-mode M  the mode the demo device reports and runs: direct-XIP\n"
+                 "                boots either slot, upgrade-only overwrites, the rest swap\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
                  "                update gives up, which is also worth demonstrating\n";

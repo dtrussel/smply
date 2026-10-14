@@ -26,10 +26,14 @@
 /// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` answers (protocol-notes A16),
 /// so that the example tools show the device's own reason.
 ///
-/// It also answers the bootloader-information command with a mode it is given,
-/// so that the examples can show the mode being reported and an update being
-/// refused for it (ADR-0025). It reports the mode and runs the model in
-/// swap-with-revert mode whatever it reports.
+/// It also answers the bootloader-information command with a mode it is given
+/// (ADR-0025), and **runs the mode it reports**: the mode picks the boot
+/// model's behaviour, mapped as the simulator maps it
+/// (`boot_model::behaviour_for_mode()`). A direct-XIP device runs from either
+/// slot and takes an upload into the one not running, and without revert it
+/// answers set-state `ENOTSUP` (protocol-notes S10). An upgrade-only device
+/// overwrites. Every swap mode, a mode the model does not cover, and no mode
+/// at all swap with revert. It never prevents a downgrade.
 ///
 /// The one extension is a **second image** (`SecondImage`), because the
 /// multi-image examples need a device to take a package (ADR-0021): by default
@@ -101,9 +105,9 @@ public:
     /// \param second  An image 1, or nothing for the ordinary one-image device.
     /// \param bootloader_mode The number the device reports to the bootloader-
     ///                information `mode` query, or nothing for a device without
-    ///                the command. **Reported only**: the device still swaps
-    ///                with revert whatever it claims, so a demo of a refusal
-    ///                is honest and a demo of any other mode is not.
+    ///                the command. The device also runs it: a direct-XIP or
+    ///                upgrade-only number makes it boot that way, and any other
+    ///                number, or none, swaps with revert.
     explicit StubDevice(std::vector<std::byte> primary,
                         std::optional<SecondImage> second = std::nullopt,
                         std::optional<std::int64_t> bootloader_mode = std::nullopt);

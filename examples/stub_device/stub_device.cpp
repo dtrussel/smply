@@ -125,11 +125,15 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
     return out.bytes();
 }
 
-/// The device's build: one image, or two with image 1 committed by the device
-/// or by the client. The three A27 Kconfigs stay off, as in Zephyr.
-[[nodiscard]] boot_model::BootConfig boot_config(const std::optional<SecondImage>& second)
+/// The device's build: the bootloader behind the mode it reports, mapped as the
+/// simulator maps it (a swap mode, an unmodelled one and none all swap with
+/// revert), and one image, or two with image 1 committed by the device or by
+/// the client. The three A27 Kconfigs stay off, as in Zephyr.
+[[nodiscard]] boot_model::BootConfig boot_config(const std::optional<SecondImage>& second,
+                                                 std::optional<std::int64_t> bootloader_mode)
 {
     boot_model::BootConfig config;
+    config.behaviour = boot_model::behaviour_for_mode(bootloader_mode);
     if (!second.has_value()) {
         return config;
     }
@@ -147,7 +151,7 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
 
 StubDevice::StubDevice(std::vector<std::byte> primary, std::optional<SecondImage> second,
                        std::optional<std::int64_t> bootloader_mode)
-    : model_{boot_config(second)}, bootloader_mode_{bootloader_mode}
+    : model_{boot_config(second, bootloader_mode)}, bootloader_mode_{bootloader_mode}
 {
     // Global slots, as Zephyr numbers them: image n's primary is slot 2n.
     model_.load_slot(0, std::move(primary));
@@ -194,8 +198,9 @@ void StubDevice::submit(std::vector<std::byte> request)
 
 void StubDevice::reboot()
 {
-    // MCUboot runs every image's swap, and the device starts applying an image
-    // it commits itself: the boot model's reboot.
+    // MCUboot does what its mode does -- swaps, overwrites, or picks the
+    // direct-XIP slot to run -- and the device starts applying an image it
+    // commits itself: the boot model's reboot.
     model_.reboot();
 
     // A reboot forgets any upload session, which is the `area_id == -1` case in
@@ -252,6 +257,10 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
     }
 
     if (header->command == kImageState && header->op == Operation::Write) {
+        if (!model_.supports_set_state()) {
+            // Plain direct-XIP: Zephyr's write handler is NULL (S10).
+            return respond(*header, ConstBytes{error_map(8)}); // MGMT_ERR_ENOTSUP
+        }
         if (!request.has_value()) {
             return respond(*header, ConstBytes{error_map(3)}); // MGMT_ERR_EINVAL
         }
@@ -294,10 +303,11 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
             if (data->bytes.size() < kImageHeaderSize) {
                 return respond(*header, ConstBytes{error_map(3)});
             }
-            // Read on first packets only, where it picks the image whose
-            // secondary slot receives the upload (protocol-notes section 6,
-            // S36). Whether the bytes are an image is the model's reader's
-            // call once they are in flash: one that is not is never listed.
+            // Read on first packets only, where it picks the image whose slot
+            // receives the upload: its secondary, or under direct-XIP the slot
+            // not running (protocol-notes section 6, S10, S36). Whether the
+            // bytes are an image is the model's reader's call once they are in
+            // flash: one that is not is never listed.
             const std::optional<std::size_t> slot =
                 model_.upload_target(request->get_uint("image").value_or(0));
             if (!slot.has_value()) {

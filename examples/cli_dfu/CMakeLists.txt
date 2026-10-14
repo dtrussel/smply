@@ -69,8 +69,8 @@ if(SMPLY_BUILD_TESTS)
     )
 
     # A mode that cannot revert is refused before anything is sent, and the
-    # plan's opt-in lets the same update through (ADR-0025). The stub only
-    # reports the mode, so the second run swaps as usual.
+    # plan's opt-in lets the same update through (ADR-0025). The stub runs the
+    # mode it reports, so the second run overwrites the image.
     add_test(NAME cli_dfu_mode_refused COMMAND cli_dfu --quiet --stub-mode upgrade-only)
     set_tests_properties(cli_dfu_mode_refused PROPERTIES
         PASS_REGULAR_EXPRESSION "update failed: firmware update refused \\(at dfu: the bootloader cannot revert this update\\).*bootloader: upgrade-only \\(reported by the device\\)"
@@ -84,8 +84,8 @@ if(SMPLY_BUILD_TESTS)
     )
 
     # One build per slot (ADR-0025): the stub reports direct-XIP with revert,
-    # and the build for the free slot is the one sent. The stub swaps as usual,
-    # so this shows the choice and the image-list start(), not direct-XIP.
+    # and the build for the free slot is the one sent. The stub runs it: the
+    # upload lands in slot 1, and the device boots from it on trial.
     add_test(NAME cli_dfu_mode_two_builds
         COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-builds)
     set_tests_properties(cli_dfu_mode_two_builds PROPERTIES
@@ -93,9 +93,24 @@ if(SMPLY_BUILD_TESTS)
         TIMEOUT 60
     )
 
+    # Plain direct-XIP (ADR-0025): no revert, so the update needs the opt-in,
+    # and no set-state (protocol-notes S10). The expected lines are what the
+    # updater does against ServerSimulator in mode 4: the build for the free
+    # slot sent (the 4172-byte second build, the stub running slot 0), a reset
+    # with no mark and no confirm, and the device found running the new image.
+    # Run without --quiet so that a mark or a confirm would show.
+    add_test(NAME cli_dfu_mode_direct_xip
+        COMMAND cli_dfu --stub-mode direct-xip --demo-builds --allow-no-revert)
+    set_tests_properties(cli_dfu_mode_direct_xip PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "Uploading.*Resetting.*VerifyingBooted.*update Completed.*bytes transferred: 4172.*bootloader: direct-xip \\(reported by the device\\)"
+        FAIL_REGULAR_EXPRESSION "MarkingForTest|Confirming|confirming"
+        TIMEOUT 60
+    )
+
     # An nRF Connect SDK direct-XIP package (S58): one image, a build per slot,
     # read by smply::dfu_package as one image with two builds, and the free
-    # slot's build sent. The stub only reports direct-XIP.
+    # slot's build sent, and the stub booting from that slot.
     add_test(NAME cli_dfu_xip_package
         COMMAND cli_dfu --quiet --stub-mode direct-xip-with-revert --demo-xip-package)
     set_tests_properties(cli_dfu_xip_package PROPERTIES
