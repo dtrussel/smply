@@ -12,6 +12,24 @@
 
 namespace smply::boot_model {
 
+BootBehaviour behaviour_for_mode(std::optional<std::int64_t> reported) noexcept
+{
+    // enum mcuboot_mode (S56), protocol-notes section 7, "MCUboot modes".
+    constexpr std::int64_t kUpgradeOnly = 2;
+    constexpr std::int64_t kDirectXip = 4;
+    constexpr std::int64_t kDirectXipWithRevert = 5;
+    if (reported == kUpgradeOnly) {
+        return BootBehaviour::Overwrite;
+    }
+    if (reported == kDirectXip) {
+        return BootBehaviour::DirectXip;
+    }
+    if (reported == kDirectXipWithRevert) {
+        return BootBehaviour::DirectXipWithRevert;
+    }
+    return BootBehaviour::SwapWithRevert;
+}
+
 BootModel::BootModel(BootConfig config)
     : config_{std::move(config)}, images_(config_.image_count == 0 ? 1U : config_.image_count)
 {
@@ -24,6 +42,17 @@ BootModel::BootModel(BootConfig config)
 std::uint32_t BootModel::image_count() const noexcept
 {
     return static_cast<std::uint32_t>(images_.size());
+}
+
+BootBehaviour BootModel::behaviour() const noexcept
+{
+    return config_.behaviour;
+}
+
+bool BootModel::supports_set_state() const noexcept
+{
+    // The write handler is NULL under DIRECT_XIP (S10); with revert it stays.
+    return config_.behaviour != BootBehaviour::DirectXip;
 }
 
 // --- Flash -------------------------------------------------------------------
@@ -48,6 +77,10 @@ std::optional<std::size_t> BootModel::upload_target(std::uint64_t image) const
     if (image >= images_.size()) {
         return std::nullopt;
     }
+    if (direct_xip() && image == 0) {
+        // Direct-XIP writes the slot that is not running (S10).
+        return 1 - xip_active_;
+    }
     return (static_cast<std::size_t>(image) * 2) + 1;
 }
 
@@ -57,6 +90,10 @@ void BootModel::begin_upload(std::size_t slot, std::size_t size)
     // rule 12).
     assert(slot / 2 < images_.size());
     images_[slot / 2].slots[slot % 2].assign(size, std::byte{0xFF});
+    if (direct_xip() && slot < xip_state_.size()) {
+        // The erase took the slot's trailer, and its boot state with it.
+        xip_state_[slot] = XipState::Unset;
+    }
 }
 
 bool BootModel::write(std::size_t slot, std::size_t offset, ConstBytes data)
@@ -103,9 +140,15 @@ std::optional<std::size_t> BootModel::find_by_hash(ConstBytes hash) const
 
 ImageError BootModel::set_state(std::optional<ConstBytes> hash, bool confirm)
 {
+    if (!supports_set_state()) {
+        // The write handler is NULL under DIRECT_XIP (S10): a server answers
+        // ENOTSUP before it would get here.
+        return ImageError::Unknown;
+    }
     // img_mgmt_state_write() (S14, S35). A hashless confirm names the RUNNING
-    // image's active slot, never any other image's: global slot 0.
-    std::size_t slot = 0;
+    // image's active slot, never any other image's: global slot 0, or under
+    // direct-XIP whichever of image 0's slots runs.
+    std::size_t slot = direct_xip() ? xip_active_ : 0;
     if (!hash.has_value()) {
         if (!confirm) {
             // A test with no hash names no image, and is refused (S14).
@@ -117,6 +160,9 @@ ImageError BootModel::set_state(std::optional<ConstBytes> hash, bool confirm)
             return ImageError::HashNotFound;
         }
         slot = *found;
+    }
+    if (direct_xip()) {
+        return xip_set_next(slot, confirm);
     }
     return set_next_boot_slot(slot, confirm);
 }
@@ -200,6 +246,33 @@ ImageError BootModel::set_next_boot_slot(std::size_t global_slot, bool confirm)
 
 void BootModel::reboot()
 {
+    if (direct_xip()) {
+        // Image 0 runs in place; the image group supports no other image
+        // under direct-XIP (S10), so nothing else is swapped.
+        xip_reboot();
+        return;
+    }
+    // Downgrade prevention and overwrite end a scheduled swap without a
+    // trial. Neither applies to an image the device commits itself, which is
+    // not this MCU's to boot (ADR-0022).
+    for (std::uint32_t image = 0; image < images_.size(); ++image) {
+        const ImagePair& pair = images_[image];
+        if ((pair.swap != SwapType::Test && pair.swap != SwapType::Perm) ||
+            pair.device.has_value()) {
+            continue;
+        }
+        if (refuses_downgrade(image)) {
+            // MCUboot's check_downgrade_prevention(): the new image is erased,
+            // and the old one boots as though nothing had been scheduled (S41).
+            end_swap_without_trial(image, false);
+        } else if (config_.behaviour == BootBehaviour::Overwrite) {
+            // Upgrade-only: the new image is copied over the old one for good,
+            // and the secondary is erased. No trial, nothing to revert
+            // (protocol-notes section 7, "MCUboot modes").
+            end_swap_without_trial(image, true);
+        }
+    }
+
     // MCUboot runs every image's swap at the same boot (protocol-notes
     // section 7, S36).
     for (ImagePair& pair : images_) {
@@ -345,13 +418,17 @@ std::vector<SlotEntry> BootModel::listing() const
                 continue;
             }
             const bool is_active = slot == 0;
-            entries.push_back(SlotEntry{.image = image,
-                                        .slot = slot,
-                                        .content = std::move(*described),
-                                        .pending = !is_active && other_pending,
-                                        .confirmed = is_active ? active_confirmed : other_confirmed,
-                                        .active = is_active,
-                                        .permanent = !is_active && other_permanent});
+            SlotEntry entry{.image = image,
+                            .slot = slot,
+                            .content = std::move(*described),
+                            .pending = !is_active && other_pending,
+                            .confirmed = is_active ? active_confirmed : other_confirmed,
+                            .active = is_active,
+                            .permanent = !is_active && other_permanent};
+            if (direct_xip() && image == 0) {
+                entry = xip_flags(std::move(entry));
+            }
+            entries.push_back(std::move(entry));
         }
     }
     return entries;
@@ -362,7 +439,21 @@ SwapType BootModel::swap_type(std::uint32_t image) const
     return images_.at(image).swap;
 }
 
-// --- Bridge ------------------------------------------------------------------
+// --- Ending a swap without a trial ------------------------------------------
+
+bool BootModel::refuses_downgrade(std::uint32_t image) const
+{
+    if (!config_.no_downgrade) {
+        return false;
+    }
+    // major, minor and revision, as boot_compare_version() reads them (S41).
+    // An equal version is accepted.
+    const std::optional<HeaderVersion> running =
+        header_version(slot_content(std::size_t{image} * 2));
+    const std::optional<HeaderVersion> scheduled =
+        header_version(slot_content((std::size_t{image} * 2) + 1));
+    return running.has_value() && scheduled.has_value() && *scheduled < *running;
+}
 
 void BootModel::end_swap_without_trial(std::uint32_t image, bool install)
 {
@@ -376,6 +467,152 @@ void BootModel::end_swap_without_trial(std::uint32_t image, bool install)
     // MCUboot's check_downgrade_prevention() erases a refused image (S41).
     pair.slots[1].clear();
     pair.swap = SwapType::None;
+}
+
+// --- Direct-XIP --------------------------------------------------------------
+//
+// Image 0 runs in place from whichever slot MCUboot chose. The rules are
+// Zephyr's predictions of MCUboot's choice in img_mgmt_state.c (S14), which is
+// what a client sees: the newest valid slot boots, a tie going to the lower
+// slot; with revert, only a slot marked for one boot or for good qualifies, a
+// one-boot trial reverts unless confirmed, and the flags follow the standard
+// table. Without revert there is no set-state (S10), nothing is ever
+// "confirmed", and the preferred slot is reported pending and permanent.
+
+bool BootModel::direct_xip() const noexcept
+{
+    return config_.behaviour == BootBehaviour::DirectXip ||
+           config_.behaviour == BootBehaviour::DirectXipWithRevert;
+}
+
+std::size_t BootModel::active_slot() const noexcept
+{
+    return xip_active_;
+}
+
+void BootModel::boot_from_slot(std::size_t slot)
+{
+    xip_active_ = slot % 2;
+    xip_state_ = {XipState::Unset, XipState::Unset};
+    xip_state_[xip_active_] = XipState::Forever;
+    xip_trial_ = false;
+}
+
+bool BootModel::xip_prefers_other() const
+{
+    const std::size_t other = 1 - xip_active_;
+    const ConstBytes theirs = slot_content(other);
+    const ConstBytes ours = slot_content(xip_active_);
+    const std::optional<SlotImage> candidate = describe(theirs);
+    if (!candidate.has_value() || !candidate->bootable) {
+        return false;
+    }
+    if (!describe(ours).has_value()) {
+        return true;
+    }
+    // Both are valid images, so both have a whole header to compare.
+    const HeaderVersion mine = header_version(ours).value_or(HeaderVersion{});
+    const HeaderVersion other_version = header_version(theirs).value_or(HeaderVersion{});
+    return mine < other_version || (mine == other_version && other < xip_active_);
+}
+
+std::optional<bool> BootModel::xip_next_is_trial() const
+{
+    if (!xip_prefers_other()) {
+        return std::nullopt;
+    }
+    if (config_.behaviour == BootBehaviour::DirectXip) {
+        return false;
+    }
+    switch (xip_state_[1 - xip_active_]) {
+    case XipState::Once:
+        return true;
+    case XipState::Forever:
+        return false;
+    case XipState::Unset:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+SlotEntry BootModel::xip_flags(SlotEntry entry) const
+{
+    const bool active = entry.slot == xip_active_;
+    const std::optional<bool> next_trial = xip_next_is_trial();
+    entry.active = active;
+    if (config_.behaviour == BootBehaviour::DirectXip) {
+        // Never confirmed; the slot MCUboot would boot is pending and
+        // permanent (S14).
+        entry.pending = !active && next_trial.has_value();
+        entry.confirmed = false;
+        entry.permanent = !active && next_trial.has_value();
+        return entry;
+    }
+    if (xip_trial_) {
+        // Swap type REVERT: the running image is unconfirmed, the other is
+        // what the device goes back to.
+        entry.pending = false;
+        entry.confirmed = !active;
+        entry.permanent = false;
+        return entry;
+    }
+    if (active) {
+        entry.pending = false;
+        entry.confirmed = true;
+        entry.permanent = false;
+        return entry;
+    }
+    entry.pending = next_trial.has_value();
+    entry.confirmed = false;
+    entry.permanent = next_trial.has_value() && !*next_trial;
+    return entry;
+}
+
+void BootModel::xip_reboot()
+{
+    const std::size_t other = 1 - xip_active_;
+    if (config_.behaviour == BootBehaviour::DirectXipWithRevert && xip_trial_) {
+        // An unconfirmed trial: MCUboot drops the image and boots the other.
+        images_[0].slots[xip_active_].clear();
+        xip_state_[xip_active_] = XipState::Unset;
+        xip_active_ = other;
+        xip_trial_ = false;
+        return;
+    }
+    const std::optional<bool> trial = xip_next_is_trial();
+    if (!trial.has_value()) {
+        return;
+    }
+    xip_active_ = other;
+    xip_trial_ = *trial;
+}
+
+ImageError BootModel::xip_set_next(std::size_t global_slot, bool confirm)
+{
+    if (global_slot >= xip_state_.size()) {
+        // Only image 0 is supported under direct-XIP (S10).
+        return ImageError::HashNotFound;
+    }
+    const bool active = global_slot == xip_active_;
+    // img_mgmt_set_next_boot_slot()'s denials, in its order (S14, A27).
+    if (confirm && !active && !config_.allow_confirm_non_active_slot) {
+        return ImageError::ImageConfirmationDenied;
+    }
+    if (!confirm && active) {
+        return ImageError::ImageSettingTestToActiveDenied;
+    }
+    if (confirm) {
+        xip_state_[global_slot] = XipState::Forever;
+        if (active) {
+            xip_trial_ = false;
+        }
+        return ImageError::Ok;
+    }
+    if (xip_trial_ || xip_state_[global_slot] == XipState::Forever) {
+        return ImageError::ImageAlreadyPending;
+    }
+    xip_state_[global_slot] = XipState::Once; // already Once: nothing to do
+    return ImageError::Ok;
 }
 
 } // namespace smply::boot_model

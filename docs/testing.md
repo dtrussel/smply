@@ -119,8 +119,8 @@ A deterministic in-memory MCUmgr device: groups 0 and 1 per
 offset correction in both directions, session resume by `sha`, the `off == 0`
 restart, `match` on the final chunk, reset-then-drop, and the MCUboot swap and
 revert bookkeeping across a simulated reboot. The wire, the upload session and
-the scripted faults are its own; every swap-mode boot decision is the **boot
-model**'s (below), which it holds and asks.
+the scripted faults are its own; every boot decision is the **boot model**'s
+(below), which it holds and asks. It keeps no boot state of its own.
 
 **It does not answer from inside `send()`.** `Transport::send()` may not deliver
 inbound bytes before it returns, so a simulator that replied inline would
@@ -159,11 +159,15 @@ struct ServerConfig {
     bool no_downgrade           = false;     // "no-downgrade": true in the answer
     std::string bootloader_name = "MCUboot"; // anything else: no answer to "mode"
 };
+```
 
-`bootloader_mode` 4 or 5 switches image 0 to **direct-XIP**: it runs in place
-from `active_slot()`, uploads go to the other slot, a reboot moves to the
-newest valid slot (with revert, only a marked or confirmed one, and an
-unconfirmed trial reverts), and image-state reports Zephyr's direct-XIP flags
+`bootloader_mode` is sent as given, and also picks the boot model's behaviour
+(`boot_model::behaviour_for_mode()`): 2 overwrites, 4 and 5 run direct-XIP
+without and with revert, and every other number, `-1` or none swaps with
+revert. So 4 or 5 switches image 0 to **direct-XIP**: it runs in place from
+`active_slot()`, uploads go to the other slot, a reboot moves to the newest
+valid slot (with revert, only a marked or confirmed one, and an unconfirmed
+trial reverts), and image-state reports Zephyr's direct-XIP flags
 (protocol-notes §7). Without revert, set-state answers `ENOTSUP`.
 `boot_from_slot()` starts the device in slot 1.
 
@@ -172,8 +176,8 @@ running one (major, minor, revision) is erased and the old one boots, as
 MCUboot's `check_downgrade_prevention()` does. A `bootloader_mode` of 2
 (upgrade-only) also changes the reboot: a test or a
 permanent mark copies the secondary over the primary and erases it, so the
-new image runs confirmed with nothing to revert.
-```
+new image runs confirmed with nothing to revert. All three are the boot
+model's rules; the simulator passes the mode and `no_downgrade` through.
 
 The SMP **version is deliberately not a device setting**: the version on the
 wire is the client's to choose (`SmpClientConfig::smp_version`), and a real
@@ -216,20 +220,36 @@ The **boot model** is a device's slot table and what MCUboot and Zephyr's image
 group do to it, with no wire, no thread and no clock: `smply::boot_model`, a
 static target in `support/` that links only smply's public headers and is not
 installed. `BootModel` is configured with the device's build (`BootConfig`:
-the image count, the three A27 Kconfigs, which images the device commits) and
-answers operations with values:
+the boot behaviour, the image count, `no_downgrade`, the three A27 Kconfigs,
+which images the device commits) and answers operations with values.
+
+The **behaviour** is one of the four the model runs: swap with revert,
+overwrite (upgrade-only), direct-XIP and direct-XIP with revert. A fake maps
+the mode number it *reports* onto one with `behaviour_for_mode()` (2, 4 and 5
+are the last three; every swap mode, every mode the model does not run, `-1`,
+any other number and no report are swap with revert), so the number on the
+wire can be anything while the model runs the nearest behaviour it has. The
+operations:
 
 * `load_slot()` and `slot_content()`, over global slots (image `n` owns `2n`
   and `2n + 1`);
-* `upload_target()` (the image's secondary, or none: `NoFreeSlot`, S36),
-  `begin_upload()` (the implicit erase) and `write()`;
+* `upload_target()` (the image's secondary, under direct-XIP the slot not
+  running, or none: `NoFreeSlot`, S10, S36), `begin_upload()` (the implicit
+  erase, under direct-XIP taking the slot's boot state with it) and `write()`;
+* `supports_set_state()`, false only under plain direct-XIP (S10), where a
+  fake answers `ENOTSUP`;
 * `set_state()` by hash or hashless, answering Zephyr's `ImageError` in
   `img_mgmt_set_next_boot_slot()`'s order (S14, S35, A27), and
   `find_by_hash()`;
 * `erase()` (`InvalidSlot`, or `NoFreeSlot` for a slot marked for the next
   boot);
 * `reboot()`: every image's swap at once, a device-committed image starting
-  its apply instead (ADR-0022);
+  its apply instead (ADR-0022); under overwrite a scheduled image copied over
+  the primary for good; with `no_downgrade` an older scheduled image erased
+  (S41); under direct-XIP image 0 moving to the slot MCUboot would boot, an
+  unconfirmed trial reverted and erased (S14);
+* `boot_from_slot()` and `active_slot()`, the direct-XIP slot image 0 runs
+  from;
 * the listing in two forms: `read_state()`, which first advances
   device-committed applies and commits by one read, and `listing()`, which a
   set-state answer carries; plus `swap_type()`.
@@ -239,10 +259,7 @@ string, `bootable`, the SHA-256 TLV), never with `src/image/` or smply's public
 parser, so a test cannot pass because the parser under test and the oracle
 agree on a misreading. Each rule cites its protocol-notes entry, and
 `tests/unit/test_boot_model.cpp` checks each one at the model's interface,
-with no SMP encoded. The simulator still runs direct-XIP, overwrite and
-downgrade prevention itself; `end_swap_without_trial()` is the one operation
-those need from the model until they move into it
-([`boot-model-plan.md`](boot-model-plan.md)).
+with no SMP encoded.
 
 ### `SimulatedWait` (`tests/component/simulated_wait.hpp`)
 

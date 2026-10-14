@@ -295,17 +295,17 @@ Blocked by: Stage 1.
 
 The model carries all four behaviours, and the simulator holds no boot state.
 
-- [ ] The model's configuration takes the boot behaviour enum and
+- [x] The model's configuration takes the boot behaviour enum and
       `no_downgrade`. The simulator maps its reported mode number onto the
       behaviour, an unmodelled or absent mode as swap with revert.
-- [ ] Overwrite, downgrade prevention (S41) and direct-XIP with and without
+- [x] Overwrite, downgrade prevention (S41) and direct-XIP with and without
       revert (S10, S14) are the model's, including whether set-state exists
       and starting a direct-XIP device in a given slot.
-- [ ] Unit cases for each: the newer valid slot, a tie to the lower slot,
+- [x] Unit cases for each: the newer valid slot, a tie to the lower slot,
       only a marked or confirmed slot with revert, an unconfirmed trial
       reverted and erased, direct-XIP's set-state rules, overwrite, and an
       older image erased under `no_downgrade`.
-- [ ] The simulator's own boot fields and methods are gone. Its existing
+- [x] The simulator's own boot fields and methods are gone. Its existing
       suites and the component suites pass unedited.
 
 ### Stage 3: the stub uses the boot model for its swap images
