@@ -2,8 +2,9 @@
 
 Status: ready for implementation. Written 2026-10-14 from an architecture
 review. The roadmap's backlog row "One boot model behind both device fakes"
-points here. Split it into stages with `/to-tickets` before work starts. This
-file is deleted with the last stage
+points here. Work the stages below in order of their blockers, and check
+each one off in the commit that lands it. This file is deleted with the last
+stage
 ([ADR-0018](decisions/ADR-0018-maintenance-process.md)).
 
 ## Problem Statement
@@ -253,12 +254,96 @@ or an `ImageError` out.
 * **The simulator's reader exists to be independent** of `src/image/`. Its
   file comment explains why. It moves with that comment, and the model's
   header repeats the rule.
-* **Order of work, as a hint for `/to-tickets`:**
-  1. Extract the model from the simulator, and move the simulator onto it
-     with every existing suite green and unedited. Add the model's unit
-     suite in the same stage.
-  2. Move the stub onto the model in the mode it reports, update its
-     documents, add the two new ctests, and delete the backlog row on the
-     stub's missing A27 rules.
 * **The architecture review** behind this plan was published as a private
   artifact, outside the repository. This document is the record.
+
+## Stages
+
+Each stage leaves every check in [`handoff.md`](handoff.md) passing on every
+Linux preset. Stage 3 may run beside stage 2.
+
+### Stage 1: the boot model takes over the simulator's swap images
+
+Blocked by: none.
+
+The boot model exists, with its own image reader and the swap-with-revert
+rules, and `ServerSimulator` decides every swap-mode answer through it.
+Direct-XIP, overwrite and downgrade prevention stay in the simulator for now.
+
+- [ ] The boot model module and its target in `support/`, linking only
+      smply's public headers, not installed.
+- [ ] Its image reader is the simulator's, moved with the comment on why it
+      is independent of `src/image/`.
+- [ ] The model owns, for swap with revert: the flag table, the reboot
+      transitions, set-state by hash and hashless (A27 and Zephyr's denial
+      order included), erase, the upload target and the upload's erase and
+      writes, the listing in both forms, and device-committed applies and
+      commits (ADR-0022).
+- [ ] `ServerSimulator` uses it for all of the above. Its public interface is
+      unchanged, `SwapType`, `ApplyOutcome` and `CommitOutcome` re-exported
+      under their current names.
+- [ ] A unit suite for the model covers each of those rules, with a case per
+      protocol-notes entry it cites.
+- [ ] `test_simulator.cpp`, the component suites and the example ctests pass
+      unedited.
+- [ ] `testing.md` §2 defines the boot model beside `ServerSimulator`;
+      `architecture.md`'s layout tree lists the new directory.
+
+### Stage 2: the boot model takes over overwrite, downgrade prevention and direct-XIP
+
+Blocked by: Stage 1.
+
+The model carries all four behaviours, and the simulator holds no boot state.
+
+- [ ] The model's configuration takes the boot behaviour enum and
+      `no_downgrade`. The simulator maps its reported mode number onto the
+      behaviour, an unmodelled or absent mode as swap with revert.
+- [ ] Overwrite, downgrade prevention (S41) and direct-XIP with and without
+      revert (S10, S14) are the model's, including whether set-state exists
+      and starting a direct-XIP device in a given slot.
+- [ ] Unit cases for each: the newer valid slot, a tie to the lower slot,
+      only a marked or confirmed slot with revert, an unconfirmed trial
+      reverted and erased, direct-XIP's set-state rules, overwrite, and an
+      older image erased under `no_downgrade`.
+- [ ] The simulator's own boot fields and methods are gone. Its existing
+      suites and the component suites pass unedited.
+
+### Stage 3: the stub uses the boot model for its swap images
+
+Blocked by: Stage 1.
+
+The stub device keeps its thread, its five commands and its upload, and
+takes its slot table, flags, set-state answers and reboot from the model in
+swap-with-revert mode. It refuses a client confirm of image 1, as a default
+Zephyr build does.
+
+- [ ] The stub's own swap type, flag derivation, apply and commit code are
+      gone. It reads slots with the model's reader, not smply's parser.
+- [ ] Its constructor is unchanged, and its `ApplyOutcome` is the model's
+      under the current name.
+- [ ] A new `cli_dfu` ctest: a package update with `--commit 1=client` fails
+      with the confirmation denial, its expected output taken from the
+      updater's behaviour against the simulator.
+- [ ] Every existing `cli_dfu` and `serial_dfu` ctest passes unedited.
+- [ ] The backlog row on the stub's missing A27 rules is deleted, and the
+      stub's header no longer says it lacks them.
+
+### Stage 4: the stub runs the mode it reports
+
+Blocked by: Stage 2, Stage 3.
+
+The mode the stub reports picks the model's behaviour, so a direct-XIP stub
+runs from either slot and an upgrade-only stub overwrites.
+
+- [ ] The stub maps its reported mode onto the model's behaviour as the
+      simulator does. Its upload goes to the model's upload target, and a
+      plain direct-XIP stub answers set-state `ENOTSUP`.
+- [ ] `cli_dfu_mode_two_builds`, `cli_dfu_xip_package`,
+      `cli_dfu_xip_package_board` and `cli_dfu_mode_allow_no_revert` pass
+      unedited, now through the mode they name.
+- [ ] A new `cli_dfu` ctest for `--stub-mode direct-xip --demo-builds`,
+      matching what the updater does against the simulator in that mode.
+- [ ] The stub's header, `testing.md` §3 (both example sections), the
+      `support/` CMake comment and `cli_dfu`'s usage text say the stub runs
+      its mode and is still not the wire's reference.
+- [ ] The roadmap row is removed and this file is deleted.
