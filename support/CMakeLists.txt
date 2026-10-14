@@ -99,7 +99,7 @@ target_compile_features(smply_dfu_package PUBLIC cxx_std_20)
 #
 # The boot model: a device's slot table and what MCUboot and Zephyr's image
 # group do to it (docs/testing.md section 2). Pure: no wire, no thread, no
-# clock. ServerSimulator is a wire adapter over it. It reads flash with its own
+# clock. ServerSimulator and the examples' stub device are wire adapters over it. It reads flash with its own
 # image reader and links only smply's public headers, so that a test cannot
 # pass because the parser under test and the oracle agree on a misreading, and
 # so that an example may link it. A test double, not the library: not

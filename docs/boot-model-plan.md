@@ -317,15 +317,15 @@ takes its slot table, flags, set-state answers and reboot from the model in
 swap-with-revert mode. It refuses a client confirm of image 1, as a default
 Zephyr build does.
 
-- [ ] The stub's own swap type, flag derivation, apply and commit code are
+- [x] The stub's own swap type, flag derivation, apply and commit code are
       gone. It reads slots with the model's reader, not smply's parser.
-- [ ] Its constructor is unchanged, and its `ApplyOutcome` is the model's
+- [x] Its constructor is unchanged, and its `ApplyOutcome` is the model's
       under the current name.
-- [ ] A new `cli_dfu` ctest: a package update with `--commit 1=client` fails
+- [x] A new `cli_dfu` ctest: a package update with `--commit 1=client` fails
       with the confirmation denial, its expected output taken from the
       updater's behaviour against the simulator.
-- [ ] Every existing `cli_dfu` and `serial_dfu` ctest passes unedited.
-- [ ] The backlog row on the stub's missing A27 rules is deleted, and the
+- [x] Every existing `cli_dfu` and `serial_dfu` ctest passes unedited.
+- [x] The backlog row on the stub's missing A27 rules is deleted, and the
       stub's header no longer says it lacks them.
 
 ### Stage 4: the stub runs the mode it reports

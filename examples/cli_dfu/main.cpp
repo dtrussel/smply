@@ -211,14 +211,23 @@ int main(int argc, char** argv)
     // The stub's image 1, with a package: another MCU's firmware, which it
     // applies itself after the reset. The demo device runs radio 5.0.0; a real
     // package's image 1 lands on a device with nothing applied yet. The
-    // direct-XIP demo is one image, given twice, so its device has none.
+    // direct-XIP demo is one image, given twice, so its device has none. With
+    // `--commit 1=client` image 1 is an ordinary image instead, which a device
+    // built with Zephyr's defaults refuses to let the client confirm (A27).
     std::optional<SecondImage> second_image;
     if (command.package_mode() && !options.demo_xip_package) {
+        CommitBy image_1 = CommitBy::Device;
+        for (const auto& [image, commit] : command.commits) {
+            if (image == 1) {
+                image_1 = commit; // the last one given, as open_inputs() applies them
+            }
+        }
         second_image = SecondImage{
             .running = options.demo_package
                            ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
                            : std::vector<std::byte>{},
             .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+            .device_commits = image_1 == CommitBy::Device,
         };
     }
 

@@ -278,7 +278,9 @@ before anything is sent (`dfu_package::BoardName`, `check_board`). The
 generated packages are for the invented board `demo_board`.
 
 Without `--port` both examples run against `examples/stub_device/`, given a
-second image it commits itself. `support/dfu_app/update_inputs.hpp`
+second image it commits itself. With `--commit 1=client` the stub's image 1 is
+one the client commits instead, and, built like a default Zephyr device, the
+stub refuses that confirm (`IMAGE_CONFIRMATION_DENIED`, protocol-notes A27). `support/dfu_app/update_inputs.hpp`
 (`UpdateInputs`) is the few lines between a package file and
 `FirmwareUpdater::start()`: it reads the file, bounded before anything is
 allocated, and builds the target list: image 0 `Client`, every other image `Device`,

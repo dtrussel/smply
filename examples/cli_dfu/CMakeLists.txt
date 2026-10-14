@@ -120,6 +120,20 @@ if(SMPLY_BUILD_TESTS)
             "update failed: firmware update failed \\(at dfu: device did not apply an image\\).*image 1 \\(device\\): not applied.*will revert on the next reset"
         TIMEOUT 60
     )
+    # Image 1 committed by the client on a device built with Zephyr's
+    # defaults (protocol-notes A27): both images swap on trial, image 0 is
+    # confirmed, and the confirm of image 1 by its hash is denied with
+    # IMAGE_CONFIRMATION_DENIED (32). The expected lines are what the updater
+    # does against ServerSimulator with two images, the A27 Kconfigs off and
+    # the err map kept for a v1 request (translate_v1_errors off, the stub's
+    # error shape): image 0 left confirmed, image 1's trial to revert.
+    add_test(NAME cli_dfu_package_client_confirm_denied
+        COMMAND cli_dfu --quiet --demo-package --commit 1=client)
+    set_tests_properties(cli_dfu_package_client_confirm_denied PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "update failed: MCUmgr protocol error \\[image rc=32\\].*image 0 \\(client\\).*image 1 \\(client\\).*will revert on the next reset"
+        TIMEOUT 60
+    )
     # The package board check (protocol-notes section 5). The demo packages'
     # manifests name the invented board "demo_board": a bare board name for
     # image 0, a board target for image 1. A matching --board completes, also

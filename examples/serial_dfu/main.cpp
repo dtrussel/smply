@@ -267,14 +267,24 @@ int main(int argc, char** argv)
     if (port.empty()) {
 #ifndef _WIN32
         // With a package, the stub gets an image 1 it applies itself after the
-        // reset, as a coordinating MCU does with its partner's firmware.
+        // reset, as a coordinating MCU does with its partner's firmware. With
+        // `--commit 1=client` image 1 is an ordinary image instead, which a
+        // device built with Zephyr's defaults refuses to let the client
+        // confirm (A27).
         std::optional<SecondImage> second;
         if (command.package_mode()) {
+            CommitBy image_1 = CommitBy::Device;
+            for (const auto& [image, commit] : command.commits) {
+                if (image == 1) {
+                    image_1 = commit; // the last one given, as open_inputs() applies them
+                }
+            }
             second = SecondImage{
                 .running = options.demo_package
                                ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
                                : std::vector<std::byte>{},
                 .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+                .device_commits = image_1 == CommitBy::Device,
             };
         }
         const StubRig& stub =

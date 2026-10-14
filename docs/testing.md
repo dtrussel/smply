@@ -587,6 +587,16 @@ it commits itself. Each passes on its output lines, never on the exit code:
   and warn that the next reset reverts image 0. Both patterns were checked
   against the other test's output, so neither passes on the wrong outcome.
 
+`cli_dfu_package_client_confirm_denied` runs the same package with
+`--commit 1=client`, so the stub's image 1 is an ordinary image and the device
+is built with Zephyr's defaults: both images swap on trial, image 0 is
+confirmed, and the confirm of image 1 is denied (A27). It expects
+`MCUmgr protocol error [image rc=32]` (`IMAGE_CONFIRMATION_DENIED`), both
+images reported as the client's, and the warning that the trial reverts. That
+output is what the updater does against `ServerSimulator` with two images, the
+A27 Kconfigs off and the `err` map kept for a v1 request, not what the stub
+happened to print.
+
 Nine show the package board check (`--board`, protocol-notes §5). The demo
 packages name the invented board `demo_board`, a board name for image 0 and a
 board target for image 1. `cli_dfu_package_board` (`--board demo_board`) and
@@ -616,13 +626,21 @@ gives a direct-XIP-with-revert stub both builds of the demo image
 swaps with revert whatever it claims, so that test shows the build chosen and
 the image-list `start()`, not direct-XIP itself.
 
-Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`, and that device is **not** a
-protocol reference — `ServerSimulator` is. The stub answers the five commands one
-clean update needs and no more. Its one extension is a second image the device
-commits itself, the simulator's device-committed mode cut down to success and
-one failure, so the multi-image examples have a device to take a package. If the two ever disagree, the simulator is right;
-growing the stub to match it would be building a second test double outside
-`tests/`.
+Its device is `examples/stub_device/stub_device.*`, shared with `serial_dfu`.
+Its **boot rules are the boot model's** (§2): the slot table, the flags, the
+set-state answers, the reboot and a device-committed image's apply and commit
+are decided by the same `smply::boot_model` the simulator uses, run in
+swap-with-revert mode, and its slots are read with the model's image reader.
+So it refuses what a default Zephyr build refuses, a client confirm of image 1
+included. It answers an image-group refusal as the group-scoped `err` map in
+either SMP version, as a server without `ORIGINAL_PROTOCOL` does (A16). It is
+still **not** a reference for the wire — `ServerSimulator` is. The stub answers
+the five commands one clean update needs and no more: no offset correction
+beyond answering the offset it holds, no resume by `sha`, no `match`, no
+faults. Its one extension is a second image, by default one the device commits
+itself, so the multi-image examples have a device to take a package. If the
+two ever disagree on the wire, the simulator is right; growing the stub to
+match it would be building a second test double outside `tests/`.
 
 ### The serial example as a test (`examples/serial_dfu/`)
 

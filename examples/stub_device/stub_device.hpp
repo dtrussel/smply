@@ -5,32 +5,42 @@
 /// \file
 /// A pretend Zephyr device, on its own thread.
 ///
-/// **This is not a protocol reference, and it must not become one.**
-/// `tests/support/server_simulator.*` is the thing the test suites trust: it
-/// models the awkward parts -- offset correction in both directions, session
-/// resume by `sha`, the `off == 0` restart, `match` on the final chunk, the
-/// whole swap and revert bookkeeping -- and it is anchored by 74 component
-/// tests. This answers the five commands one clean update needs, and stops.
-/// If the two ever disagree, the simulator is right. Do not reconcile them by
-/// growing this one; a device worth trusting is a test double, and belongs
-/// under `tests/`.
+/// **This is not a reference for the wire, and it must not become one.**
+/// `tests/support/server_simulator.*` is the thing the test suites trust for
+/// SMP: it models the awkward parts of the upload -- offset correction in both
+/// directions, session resume by `sha`, the `off == 0` restart, `match` on the
+/// final chunk -- the faults and the v1 error translation, and it is anchored
+/// by the component tests. This answers the five commands one clean update
+/// needs, and stops. If the two ever disagree on the wire, the simulator is
+/// right. Do not reconcile them by growing this one; a device worth trusting is
+/// a test double, and belongs under `tests/`.
+///
+/// **The boot rules are shared and trusted.** The slot table, the flags, the
+/// set-state answers, the reboot and the apply and commit of an image the
+/// device commits itself all come from the boot model (`support/boot_model/`),
+/// the same one the simulator decides with. So this device refuses what a
+/// default Zephyr build refuses, a client confirm of image 1 included
+/// (protocol-notes A27). It reads its slots with the model's image reader, not
+/// smply's parser. An image-group refusal is answered as the group-scoped `err`
+/// map whatever the request's SMP version, as a server without
+/// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` answers (protocol-notes A16),
+/// so that the example tools show the device's own reason.
 ///
 /// It also answers the bootloader-information command with a mode it is given,
 /// so that the examples can show the mode being reported and an update being
-/// refused for it (ADR-0025). It reports the mode and models none of it.
+/// refused for it (ADR-0025). It reports the mode and runs the model in
+/// swap-with-revert mode whatever it reports.
 ///
-/// The one extension is a **second image that the device commits itself**
-/// (`SecondImage`), because the multi-image examples need a device to take a
-/// package (ADR-0021). It is the simulator's device-committed mode cut down to
-/// the happy path and one failure: the same five commands, with an `image`
-/// number on uploads and in the listing, and an apply that finishes after a
-/// few state reads. It does not model the confirm-denial rules for image 1
-/// (protocol-notes A27); the simulator does.
+/// The one extension is a **second image** (`SecondImage`), because the
+/// multi-image examples need a device to take a package (ADR-0021): by default
+/// one the device commits itself, which it applies after a few state reads, as
+/// a coordinating MCU does with its partner's firmware.
 ///
 /// What it *is* for is the thread. A single-threaded example would demonstrate
 /// nothing about the arrangement that actually catches people out -- a driver
 /// delivering on a thread the library does not own -- and would leave
-/// `smply::Dispatcher` with no caller anywhere in the tree.
+/// `smply::Dispatcher` with no caller anywhere in the tree. The boot model is
+/// single-threaded: it is touched only on the device thread.
 ///
 /// It is built without `CONFIG_IMG_ENABLE_IMAGE_CHECK`, so it never sends
 /// `match` (docs/protocol-notes.md section 9, A6: absence is not an error). That
@@ -39,6 +49,8 @@
 /// an example use it at all.
 
 #include "stub_device/device_link.hpp"
+
+#include "boot_model/boot_model.hpp"
 
 #include "smply/bytes.hpp"
 #include "smply/error.hpp"
@@ -50,63 +62,43 @@
 #include <deque>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 #include <vector>
 
 namespace smply::example {
 
-/// What the bootloader will do on the next reset (protocol-notes section 7).
-enum class SwapType : std::uint8_t
-{
-    None,  ///< Boot the primary slot again.
-    Test,  ///< Swap in the secondary for a trial; revert unless confirmed.
-    Perm,  ///< Swap in the secondary permanently.
-    Revert ///< A trial was not confirmed: swap back.
-};
+/// How a device-committed image's apply ends: the boot model's, under the name
+/// the examples have always used (docs/multi-image.md, ADR-0022).
+using ApplyOutcome = boot_model::ApplyOutcome;
 
-/// How a device-committed image's apply ends (docs/multi-image.md).
-enum class ApplyOutcome : std::uint8_t
-{
-    Applied, ///< The second MCU committed it: slot 0 new, confirmed.
-    Failed,  ///< It could not: slot 0 back on the old image, nothing pending.
-};
-
-/// A second image, which the device commits itself: the staged firmware of
-/// another MCU, as a coordinator holds a target's (docs/multi-image.md). After the reset
-/// the device takes `apply_reads` image-state reads to apply it, then reports
-/// `outcome`: the new image running on trial, or the old one still there. It
-/// commits an applied image a read after image 0 is confirmed, or at once if
-/// image 0 is not on trial (ADR-0022).
+/// A second image: by default the staged firmware of another MCU, which the
+/// device commits itself, as a coordinator holds a target's
+/// (docs/multi-image.md). After the reset the device takes `apply_reads`
+/// image-state reads to apply it, then reports `outcome`: the new image running
+/// on trial, or the old one still there. It commits an applied image a read
+/// after image 0 is confirmed, or at once if image 0 is not on trial
+/// (ADR-0022).
 struct SecondImage
 {
     /// What image 1 runs now. May be empty: nothing applied yet.
     std::vector<std::byte> running;
     ApplyOutcome outcome = ApplyOutcome::Applied;
     unsigned apply_reads = 3;
+    /// False makes image 1 an ordinary image, committed by the client: it
+    /// swaps on trial at the reset as image 0 does, and a client confirm of it
+    /// is denied, the device being built with Zephyr's defaults
+    /// (`IMAGE_CONFIRMATION_DENIED`, protocol-notes A27). `outcome` and
+    /// `apply_reads` are then unused.
+    bool device_commits = true;
 };
 
-/// One flash slot.
-struct Slot
-{
-    std::vector<std::byte> content;
-    std::string version;
-    std::optional<ImageHash> hash;
-
-    [[nodiscard]] bool empty() const noexcept
-    {
-        return content.empty();
-    }
-};
-
-/// A device with one image and two slots -- or two images, the second
-/// committed by the device -- answering on a background thread.
+/// A device with one image and two slots -- or two images -- answering on a
+/// background thread.
 class StubDevice
 {
 public:
     /// \param primary The image the device is already running.
-    /// \param second  An image 1 the device commits itself, or nothing for the
-    ///                ordinary one-image device.
+    /// \param second  An image 1, or nothing for the ordinary one-image device.
     /// \param bootloader_mode The number the device reports to the bootloader-
     ///                information `mode` query, or nothing for a device without
     ///                the command. **Reported only**: the device still swaps
@@ -148,20 +140,7 @@ private:
     /// Answers one request; returns the response message, or nothing when the
     /// request should be ignored.
     [[nodiscard]] std::optional<std::vector<std::byte>> answer(const std::vector<std::byte>& raw);
-
-    [[nodiscard]] std::vector<std::byte> encode_state() const;
-    /// One step of every device-committed apply in progress: each state read
-    /// is "a while" passing.
-    void advance_applies();
-    /// Starts committing every device-committed image running on trial, as the
-    /// coordinating MCU does when image 0 is confirmed (ADR-0022).
-    void start_device_commits();
-    /// Confirms \p image's running slot. Confirming image 0 is the coordinating
-    /// MCU's cue to commit what it applied to the other MCU (protocol-notes S39).
-    void confirm_running(std::size_t image);
     void reboot();
-    /// Re-reads a slot's version and hash from the image it now holds.
-    static void describe(Slot& slot);
 
     mutable std::mutex mutex_;
     std::condition_variable work_;
@@ -174,30 +153,18 @@ private:
 
     // --- Device state, touched only on the device thread --------------------
 
-    /// One image: its two slots, what the next boot does with them, and --
-    /// for a device-committed image -- how its apply goes.
-    struct ImagePair
-    {
-        std::vector<Slot> slots{2};
-        SwapType swap = SwapType::None;
-        std::optional<ApplyOutcome> device_commits;
-        unsigned apply_reads = 0;
-        /// State reads left before an apply in progress finishes.
-        std::optional<unsigned> applying;
-        /// State reads left before a commit in progress finishes.
-        std::optional<unsigned> committing;
-    };
-
-    std::vector<ImagePair> images_;
+    /// The slots and every boot decision over them. Built in the constructor,
+    /// before the thread starts; touched only on the device thread after.
+    boot_model::BootModel model_;
 
     /// What the bootloader-information `mode` query answers, if anything.
     std::optional<std::int64_t> bootloader_mode_;
 
-    /// The upload in progress: the image it is for, the bytes accepted so far,
-    /// and the total the client declared.
-    std::uint32_t staging_image_ = 0;
-    std::vector<std::byte> staging_;
-    std::uint64_t declared_size_ = 0;
+    /// The upload in progress: the global slot it writes, the bytes accepted
+    /// so far, and the total the client declared. No slot when none is open.
+    std::optional<std::size_t> upload_slot_;
+    std::size_t received_ = 0;
+    std::size_t declared_size_ = 0;
 
     std::thread thread_;
 };
