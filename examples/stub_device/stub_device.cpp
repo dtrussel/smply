@@ -4,22 +4,23 @@
 
 #include "stub_device/device_link.hpp"
 
+#include "boot_model/boot_model.hpp"
+#include "boot_model/image_reader.hpp"
 #include "minicbor/minicbor.hpp"
 
 #include "smply/bytes.hpp"
 #include "smply/error.hpp"
 #include "smply/group.hpp"
-#include "smply/image_source.hpp"
-#include "smply/mcuboot_image.hpp"
+#include "smply/groups/image.hpp"
 #include "smply/result.hpp"
 #include "smply/smp/header.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
-#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -36,6 +37,11 @@ constexpr std::uint8_t kImageState = 0;
 constexpr std::uint8_t kImageUpload = 1;
 
 constexpr std::uint32_t kBufCount = 2;
+
+/// What one slot holds. A declared upload larger than this is refused before
+/// the slot is erased to its size, so a received `len` never sizes an
+/// unbounded allocation. The simulator's default capacity.
+constexpr std::size_t kSlotCapacity = std::size_t{512} * 1024U;
 
 /// How long the device pretends a reboot takes. Long enough that the
 /// application really does have to wait and reconnect, short enough that CI
@@ -77,21 +83,105 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
     return out.bytes();
 }
 
+/// `img_mgmt_translate_error_code()`: the lossy, many-to-one mapping an
+/// image-group code goes through on its way to a v1 client (protocol-notes
+/// section 9, A16). The same mapping as the simulator's.
+[[nodiscard]] SmpError translate(ImageError code)
+{
+    switch (code) {
+    case ImageError::Ok:
+        return SmpError::Ok;
+    case ImageError::NoFreeSlot:
+    case ImageError::CurrentVersionIsNewer:
+    case ImageError::ImageAlreadyPending:
+        return SmpError::BadState;
+    case ImageError::NoFreeMemory:
+        return SmpError::NoMemory;
+    case ImageError::InvalidOffset:
+    case ImageError::InvalidLength:
+        return SmpError::InvalidArgument;
+    default:
+        return SmpError::Unknown;
+    }
+}
+
+/// An image-group error in the shape the request's SMP version gets from a
+/// server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, as the
+/// simulator's default does (protocol-notes A16): a v1 request gets the flat
+/// `rc` the stub has always sent, carrying the translated code; a v2 request
+/// gets the group-scoped `err`.
+[[nodiscard]] std::vector<std::byte> image_error_map(Version version, ImageError code)
+{
+    cbor::Writer out;
+    if (version == Version::V1) {
+        out.map(1).text("rc").uint(static_cast<std::uint64_t>(translate(code)));
+        return out.bytes();
+    }
+    out.map(1).text("err").map(2);
+    out.text("group").uint(static_cast<std::uint64_t>(Group::Image));
+    out.text("rc").uint(static_cast<std::uint64_t>(code));
+    return out.bytes();
+}
+
+/// The image-state listing, as the boot model reports it.
+[[nodiscard]] std::vector<std::byte> encode_state(const std::vector<boot_model::SlotEntry>& slots)
+{
+    cbor::Writer out;
+    out.map(1).text("images").array(slots.size());
+    for (const boot_model::SlotEntry& entry : slots) {
+        const bool has_hash = !entry.content.hash.empty();
+        // Nine pairs with a hash, eight without. Count them against the block
+        // below before changing either: a definite-length CBOR map that lies
+        // about its size decodes as garbage from that point on, and the error
+        // surfaces somewhere else entirely ("array element not a map").
+        out.map(has_hash ? 9 : 8);
+        out.text("image").uint(entry.image);
+        out.text("slot").uint(entry.slot);
+        out.text("version").text(entry.content.version);
+        if (has_hash) {
+            out.text("hash").blob(ConstBytes{entry.content.hash});
+        }
+        out.text("bootable").boolean(entry.content.bootable);
+        out.text("pending").boolean(entry.pending);
+        out.text("confirmed").boolean(entry.confirmed);
+        out.text("active").boolean(entry.active);
+        out.text("permanent").boolean(entry.permanent);
+    }
+    return out.bytes();
+}
+
+/// The device's build: the bootloader behind the mode it reports, mapped as the
+/// simulator maps it (a swap mode, an unmodelled one and none all swap with
+/// revert), and one image, or two with image 1 committed by the device or by
+/// the client. The three A27 Kconfigs stay off, as in Zephyr.
+[[nodiscard]] boot_model::BootConfig boot_config(const std::optional<SecondImage>& second,
+                                                 std::optional<std::int64_t> bootloader_mode)
+{
+    boot_model::BootConfig config;
+    config.behaviour = boot_model::behaviour_for_mode(bootloader_mode);
+    if (!second.has_value()) {
+        return config;
+    }
+    config.image_count = 2;
+    if (second->device_commits) {
+        config.device_commits = {std::nullopt, boot_model::DeviceCommit{
+                                                   .outcome = second->outcome,
+                                                   .apply_reads = second->apply_reads,
+                                               }};
+    }
+    return config;
+}
+
 } // namespace
 
 StubDevice::StubDevice(std::vector<std::byte> primary, std::optional<SecondImage> second,
                        std::optional<std::int64_t> bootloader_mode)
-    : bootloader_mode_{bootloader_mode}
+    : model_{boot_config(second, bootloader_mode)}, bootloader_mode_{bootloader_mode}
 {
-    images_.emplace_back();
-    images_[0].slots[0].content = std::move(primary);
-    describe(images_[0].slots[0]);
+    // Global slots, as Zephyr numbers them: image n's primary is slot 2n.
+    model_.load_slot(0, std::move(primary));
     if (second.has_value()) {
-        ImagePair& pair = images_.emplace_back();
-        pair.slots[0].content = std::move(second->running);
-        describe(pair.slots[0]);
-        pair.device_commits = second->outcome;
-        pair.apply_reads = second->apply_reads;
+        model_.load_slot(2, std::move(second->running));
     }
     thread_ = std::thread{[this] { run(); }};
 }
@@ -131,186 +221,17 @@ void StubDevice::submit(std::vector<std::byte> request)
     work_.notify_all();
 }
 
-void StubDevice::describe(Slot& slot)
-{
-    slot.version.clear();
-    slot.hash.reset();
-    if (slot.content.empty()) {
-        return;
-    }
-
-    // Read with smply's *public* image API. A device would read its own flash;
-    // reading the bytes it was given is the same thing, and it keeps this file
-    // clear of src/image/.
-    const ConstBytes bytes{slot.content};
-    const Result<McubootImageInfo> info = parse_mcuboot_header(bytes.first(kMcubootHeaderSize));
-    if (!info.has_value()) {
-        // A slot whose header will not parse is skipped in the state response,
-        // which is what a real server does with an image it cannot validate
-        // (protocol-notes section 6).
-        slot.content.clear();
-        return;
-    }
-
-    slot.version = std::to_string(info->version.major) + '.' + std::to_string(info->version.minor) +
-                   '.' + std::to_string(info->version.revision);
-    if (info->version.build != 0) {
-        slot.version += '.' + std::to_string(info->version.build);
-    }
-
-    MemoryImageSource source{bytes};
-    if (const Result<std::optional<ImageHash>> found = find_image_tlv_hash(source, *info);
-        found.has_value()) {
-        slot.hash = *found;
-    }
-}
-
-std::vector<std::byte> StubDevice::encode_state() const
-{
-    std::size_t present = 0;
-    for (const ImagePair& pair : images_) {
-        for (const Slot& slot : pair.slots) {
-            if (!slot.empty()) {
-                ++present;
-            }
-        }
-    }
-
-    cbor::Writer out;
-    out.map(1).text("images").array(present);
-    for (std::size_t image = 0; image < images_.size(); ++image) {
-        // Flags are *derived from the swap type*, not stored (protocol-notes
-        // section 7). After a test swap the running image reports `active` with
-        // no `confirmed`, and the fallback slot reports `confirmed` -- which
-        // reads backwards until you know it is the fallback being described.
-        const ImagePair& pair = images_[image];
-        const bool trial = pair.swap == SwapType::Revert;
-        for (std::size_t index = 0; index < pair.slots.size(); ++index) {
-            const Slot& slot = pair.slots[index];
-            if (slot.empty()) {
-                continue;
-            }
-            const bool primary = index == 0;
-            const bool pending = !primary && pair.swap == SwapType::Test;
-
-            // Nine pairs with a hash, eight without. Count them against the
-            // block below before changing either: a definite-length CBOR map
-            // that lies about its size decodes as garbage from that point on,
-            // and the error surfaces somewhere else entirely ("array element
-            // not a map"). The simulator has had this exact off-by-one.
-            out.map(slot.hash.has_value() ? 9 : 8);
-            out.text("image").uint(image);
-            out.text("slot").uint(index);
-            out.text("version").text(slot.version);
-            if (slot.hash.has_value()) {
-                out.text("hash").blob(slot.hash->bytes());
-            }
-            out.text("bootable").boolean(true);
-            out.text("pending").boolean(pending);
-            out.text("confirmed").boolean(primary ? !trial : trial);
-            out.text("active").boolean(primary);
-            out.text("permanent").boolean(false);
-        }
-    }
-    return out.bytes();
-}
-
-void StubDevice::advance_applies()
-{
-    // The device-committed image's MCU finishes its update in the background;
-    // each state read is one step of "a while". What it then reports is the
-    // device contract in docs/multi-image.md.
-    for (ImagePair& pair : images_) {
-        if (pair.committing.has_value()) {
-            if (*pair.committing > 0) {
-                --*pair.committing;
-                continue;
-            }
-            // Committed: the other MCU's trial is permanent.
-            pair.committing.reset();
-            pair.swap = SwapType::None;
-            continue;
-        }
-        if (!pair.applying.has_value()) {
-            continue;
-        }
-        if (*pair.applying > 0) {
-            --*pair.applying;
-            continue;
-        }
-        pair.applying.reset();
-        if (pair.device_commits == ApplyOutcome::Applied) {
-            // The other MCU runs it on trial: slot 0 new and unconfirmed.
-            std::swap(pair.slots[0], pair.slots[1]);
-            pair.swap = SwapType::Revert;
-        } else {
-            // Failed: the old image stays in slot 0, the new one in slot 1 with
-            // nothing pending.
-            pair.swap = SwapType::None;
-        }
-    }
-    // Nothing will confirm image 0 if it is not on trial: commit at once.
-    if (images_[0].swap != SwapType::Revert) {
-        start_device_commits();
-    }
-}
-
-void StubDevice::confirm_running(std::size_t image)
-{
-    ImagePair& pair = images_[image];
-    const bool was_trial = pair.swap == SwapType::Revert;
-    pair.swap = SwapType::None;
-    pair.committing.reset();
-    if (image == 0 && was_trial) {
-        start_device_commits();
-    }
-}
-
-void StubDevice::start_device_commits()
-{
-    for (ImagePair& pair : images_) {
-        if (pair.device_commits.has_value() && pair.swap == SwapType::Revert &&
-            !pair.applying.has_value() && !pair.committing.has_value()) {
-            pair.committing = 1U;
-        }
-    }
-}
-
 void StubDevice::reboot()
 {
-    // MCUboot runs every image's swap at the same boot.
-    for (ImagePair& pair : images_) {
-        switch (pair.swap) {
-        case SwapType::None:
-            break;
-        case SwapType::Test:
-            if (pair.device_commits.has_value()) {
-                // Not this MCU's image: the device starts applying it to the
-                // other MCU. Slot 0 keeps reporting what that MCU runs -- the
-                // old image, with the new one pending (docs/multi-image.md).
-                pair.applying = pair.apply_reads;
-                break;
-            }
-            std::swap(pair.slots[0], pair.slots[1]);
-            pair.swap = SwapType::Revert; // unconfirmed: the next reset undoes it
-            break;
-        case SwapType::Perm:
-        case SwapType::Revert:
-            // Identical *here* and not in general: Perm installs the secondary
-            // for good, Revert puts the original back. Both are "swap the slots
-            // and stop swapping", because this device holds two slots and
-            // models no difference between them. A real bootloader
-            // distinguishes them by which trailer it writes.
-            std::swap(pair.slots[0], pair.slots[1]);
-            pair.swap = SwapType::None;
-            pair.applying.reset();
-            break;
-        }
-    }
+    // MCUboot does what its mode does -- swaps, overwrites, or picks the
+    // direct-XIP slot to run -- and the device starts applying an image it
+    // commits itself: the boot model's reboot.
+    model_.reboot();
 
     // A reboot forgets any upload session, which is the `area_id == -1` case in
     // protocol-notes section 6 rule 5.
-    staging_.clear();
+    upload_slot_.reset();
+    received_ = 0;
     declared_size_ = 0;
 }
 
@@ -355,51 +276,38 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
     }
 
     if (header->command == kImageState && header->op == Operation::Read) {
-        advance_applies();
-        return respond(*header, ConstBytes{encode_state()});
+        // Each state read is "a while" passing for an image the device
+        // commits itself (ADR-0022).
+        return respond(*header, ConstBytes{encode_state(model_.read_state())});
     }
 
     if (header->command == kImageState && header->op == Operation::Write) {
+        if (!model_.supports_set_state()) {
+            // Plain direct-XIP: Zephyr's write handler is NULL (S10).
+            return respond(*header, ConstBytes{error_map(8)}); // MGMT_ERR_ENOTSUP
+        }
         if (!request.has_value()) {
             return respond(*header, ConstBytes{error_map(3)}); // MGMT_ERR_EINVAL
         }
         const bool confirm = request->get_bool("confirm").value_or(false);
         const cbor::Value* hash = request->find("hash");
 
-        if (confirm && hash == nullptr) {
-            // Confirm the *running* image, image 0: the trial, if any, is now
-            // permanent. Never another image (protocol-notes section 6).
-            confirm_running(0);
-            return respond(*header, ConstBytes{encode_state()});
-        }
-        if (hash == nullptr || !hash->is(cbor::Value::Kind::Bytes)) {
-            return respond(*header, ConstBytes{error_map(3)});
-        }
-        // Mark the slot holding that hash for the next boot, in whichever
-        // image holds it: the device finds a hash in any image.
-        for (std::size_t image = 0; image < images_.size(); ++image) {
-            ImagePair& pair = images_[image];
-            for (std::size_t index = 0; index < pair.slots.size(); ++index) {
-                const Slot& slot = pair.slots[index];
-                if (!slot.hash.has_value() ||
-                    !std::equal(hash->bytes.begin(), hash->bytes.end(), slot.hash->bytes().begin(),
-                                slot.hash->bytes().end())) {
-                    continue;
-                }
-                if (index == 0) {
-                    // Already running it. A real device refuses to confirm a
-                    // slot that is not the running one, and this is the mirror
-                    // case.
-                    if (confirm) {
-                        confirm_running(image);
-                    }
-                    return respond(*header, ConstBytes{encode_state()});
-                }
-                pair.swap = confirm ? SwapType::Perm : SwapType::Test;
-                return respond(*header, ConstBytes{encode_state()});
+        // The hash's encoding is the wire's to check; everything after it --
+        // which slot it names, in any image, and whether the device lets it be
+        // marked or confirmed (S14, S35, A27) -- is the boot model's.
+        std::optional<ConstBytes> named;
+        if (hash != nullptr) {
+            if (!hash->is(cbor::Value::Kind::Bytes)) {
+                return respond(*header, ConstBytes{error_map(3)});
             }
+            named = ConstBytes{hash->bytes};
+        } else if (!confirm) {
+            return respond(*header, ConstBytes{error_map(3)}); // a test names no image
         }
-        return respond(*header, ConstBytes{error_map(3)});
+        if (const ImageError result = model_.set_state(named, confirm); result != ImageError::Ok) {
+            return respond(*header, ConstBytes{image_error_map(header->version, result)});
+        }
+        return respond(*header, ConstBytes{encode_state(model_.listing())});
     }
 
     if (header->command == kImageUpload && header->op == Operation::Write) {
@@ -417,48 +325,59 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
             if (!len.has_value()) {
                 return respond(*header, ConstBytes{error_map(3)}); // INVALID_LENGTH
             }
-            if (data->bytes.size() < kMcubootHeaderSize) {
+            if (data->bytes.size() < boot_model::kImageHeaderSize) {
                 return respond(*header, ConstBytes{error_map(3)});
             }
-            if (!parse_mcuboot_header(ConstBytes{data->bytes}.first(kMcubootHeaderSize))
-                     .has_value()) {
+            if (boot_model::read32(ConstBytes{data->bytes}, 0) != boot_model::kImageMagic) {
                 return respond(*header, ConstBytes{error_map(3)}); // bad magic
             }
-            // Read on first packets only, where it picks the image whose
-            // secondary slot receives the upload (protocol-notes section 6).
-            const std::uint64_t image = request->get_uint("image").value_or(0);
-            if (image >= images_.size()) {
-                return respond(*header, ConstBytes{error_map(3)}); // no such image
+            // Read on first packets only, where it picks the image whose slot
+            // receives the upload: its secondary, or under direct-XIP the slot
+            // not running (protocol-notes section 6, S10, S36).
+            const std::optional<std::size_t> slot =
+                model_.upload_target(request->get_uint("image").value_or(0));
+            if (!slot.has_value()) {
+                return respond(
+                    *header, ConstBytes{image_error_map(header->version, ImageError::NoFreeSlot)});
             }
-            staging_image_ = static_cast<std::uint32_t>(image);
+            if (*len > kSlotCapacity) {
+                return respond(*header, ConstBytes{image_error_map(
+                                            header->version, ImageError::InvalidImageTooLarge)});
+            }
             // The first chunk erases the slot it is about to fill.
-            images_[staging_image_].slots[1] = Slot{};
-            declared_size_ = *len;
-            staging_.clear();
+            model_.begin_upload(*slot, static_cast<std::size_t>(*len));
+            upload_slot_ = slot;
+            declared_size_ = static_cast<std::size_t>(*len);
+            received_ = 0;
         }
 
         // Offset mismatch is not an error: drop the data and answer with the
         // offset actually held (protocol-notes section 6, rule 5). smply's
         // upload machine is built on this being authoritative, so it is worth
         // getting right even in a stub.
-        if (*off != staging_.size()) {
+        if (!upload_slot_.has_value() || *off != received_) {
             cbor::Writer out;
-            out.map(1).text("off").uint(staging_.size());
+            out.map(1).text("off").uint(received_);
             return respond(*header, ConstBytes{out.bytes()});
         }
 
-        Slot& target = images_[staging_image_].slots[1];
-        staging_.insert(staging_.end(), data->bytes.begin(), data->bytes.end());
-        if (staging_.size() >= declared_size_ && declared_size_ != 0) {
-            target.content = staging_;
-            describe(target);
-            staging_.clear();
+        if (!model_.write(*upload_slot_, received_, ConstBytes{data->bytes})) {
+            return respond(*header, ConstBytes{image_error_map(
+                                        header->version, ImageError::InvalidImageDataOverrun)});
+        }
+        received_ += data->bytes.size();
+        const bool complete = received_ == declared_size_;
+        if (complete) {
+            // The session ends with the image: a repeat of the last chunk is
+            // answered from zero, as rule 9b says.
+            upload_slot_.reset();
+            received_ = 0;
         }
 
         cbor::Writer out;
         // No "match": this device is built without CONFIG_IMG_ENABLE_IMAGE_CHECK
         // (A6). Absence is a successful answer, not a missing one.
-        out.map(1).text("off").uint(target.empty() ? staging_.size() : declared_size_);
+        out.map(1).text("off").uint(complete ? declared_size_ : received_);
         return respond(*header, ConstBytes{out.bytes()});
     }
 

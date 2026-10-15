@@ -34,9 +34,15 @@
 ///
 /// The behaviour is specified by docs/protocol-notes.md sections 5, 6 and 7,
 /// which are written as server behaviour precisely so they can be implemented
-/// here. Three answers matter more than the rest, because each makes a correct
-/// client look broken, and all three fall out of implementing the real decision
-/// order rather than being special cases:
+/// here. Every boot decision -- the swap types and the flags derived from them,
+/// set-state and whether it exists, erase, the upload target, the reboot with
+/// overwrite, downgrade prevention and direct-XIP, and the device-committed
+/// apply and commit -- is the boot model's (`support/boot_model/`), run in the
+/// behaviour `ServerConfig::bootloader_mode` names. This class holds no boot
+/// state of its own: it is the wire, the upload session and the faults around
+/// the model. Three answers matter more than the rest, because each makes a
+/// correct client look broken, and all three fall out of implementing the real
+/// decision order rather than being special cases:
 ///
 /// * an upload can complete on the **first** packet, with no data transferred
 ///   (section 6, rule 9a);
@@ -47,12 +53,13 @@
 
 #include "fake_transport.hpp"
 
+#include "boot_model/boot_model.hpp"
+
 #include "smply/bytes.hpp"
 #include "smply/clock.hpp"
 #include "smply/groups/image.hpp"
 #include "smply/smp/header.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -62,17 +69,9 @@
 
 namespace smply::test {
 
-/// What MCUboot will do on the next boot (docs/protocol-notes.md section 7).
-///
-/// The client never sees this value; it sees the slot flags derived from it,
-/// which is exactly the indirection that makes a trial boot hard to recognise.
-enum class SwapType : std::uint8_t
-{
-    None,   ///< Boot the active slot again.
-    Test,   ///< Swap on the next boot, then require a confirm.
-    Perm,   ///< Swap on the next boot and keep it.
-    Revert, ///< A trial boot is running unconfirmed; the next boot undoes it.
-};
+/// What MCUboot will do on the next boot (docs/protocol-notes.md section 7):
+/// the boot model's type, under the name the suites use.
+using SwapType = boot_model::SwapType;
 
 /// How this device is built.
 ///
@@ -97,6 +96,11 @@ struct ServerConfig
     /// the command out, so it answers `ENOTSUP`, as Zephyr does by default.
     /// The number is sent as given, so `-1` and numbers outside MCUboot's enum
     /// can be tested.
+    ///
+    /// It also picks what the device does, through
+    /// `boot_model::behaviour_for_mode()`: 2 overwrites, 4 and 5 run
+    /// direct-XIP without and with revert, and every other number, or none,
+    /// swaps with revert.
     std::optional<std::int64_t> bootloader_mode{};
 
     /// `CONFIG_MCUBOOT_BOOTLOADER_NO_DOWNGRADE`: the `mode` answer carries
@@ -148,19 +152,13 @@ struct ServerConfig
     Duration response_delay{0};
 };
 
-/// How a device-committed image's apply ends (docs/multi-image.md, ADR-0022).
-enum class ApplyOutcome : std::uint8_t
-{
-    Applied, ///< The target MCU runs it on trial: slot 0 new, not confirmed.
-    Failed,  ///< It could not: slot 0 still the old image, nothing pending.
-};
+/// How a device-committed image's apply ends (docs/multi-image.md, ADR-0022):
+/// the boot model's type.
+using ApplyOutcome = boot_model::ApplyOutcome;
 
-/// Whether the device commits an applied image when it should.
-enum class CommitOutcome : std::uint8_t
-{
-    Commits, ///< After image 0 is confirmed, or at once if image 0 is not on trial.
-    Never,   ///< It stays on trial: a commit that never happens.
-};
+/// Whether the device commits an applied image when it should: the boot
+/// model's type.
+using CommitOutcome = boot_model::CommitOutcome;
 
 /// An in-memory MCUmgr server driven through a `FakeTransport`.
 ///
@@ -203,7 +201,7 @@ public:
     /// moves to it when MCUboot would (protocol-notes section 7).
     [[nodiscard]] std::size_t active_slot() const noexcept
     {
-        return xip_active_;
+        return model_.active_slot();
     }
 
     /// Direct-XIP only: start the device running from \p slot instead, as
@@ -235,7 +233,7 @@ public:
     /// What \p image will do on the next boot.
     [[nodiscard]] SwapType swap_type(std::uint32_t image = 0) const noexcept
     {
-        return images_.at(image).swap;
+        return model_.swap_type(image);
     }
 
     /// Makes \p image **device-committed**, as the staged image of a second MCU
@@ -334,27 +332,6 @@ private:
         std::vector<std::byte> sha;
     };
 
-    /// One image pair: its two slots and what the next boot does with them.
-    struct ImagePair
-    {
-        std::vector<std::vector<std::byte>> slots{2};
-        SwapType swap = SwapType::None;
-        /// Set by `device_commits()`: this image is applied by the device.
-        std::optional<ApplyOutcome> device_outcome;
-        unsigned apply_reads = 1;
-        /// Reads left before an apply in progress finishes; nullopt when none
-        /// is in progress.
-        std::optional<unsigned> applying;
-        CommitOutcome commit = CommitOutcome::Commits;
-        unsigned commit_reads = 1;
-        /// Reads left before a commit in progress finishes.
-        std::optional<unsigned> committing;
-    };
-
-    /// Starts the commit of every device-committed image on trial, as the
-    /// coordinating MCU does from its confirm hook (protocol-notes S39).
-    void start_device_commits();
-
     void handle(const Header& header, ConstBytes payload, TimePoint now);
     void enqueue(const Header& request, ConstBytes payload, TimePoint now);
 
@@ -363,7 +340,9 @@ private:
     [[nodiscard]] std::vector<std::byte> handle_image(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_upload(const Header& header, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_state_read();
-    [[nodiscard]] std::vector<std::byte> encode_state() const;
+    /// Encodes a listing of the boot model's.
+    [[nodiscard]] std::vector<std::byte>
+    encode_state(const std::vector<boot_model::SlotEntry>& listing) const;
     [[nodiscard]] std::vector<std::byte> handle_state_write(Version version, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_erase(Version version, ConstBytes payload);
     [[nodiscard]] std::vector<std::byte> handle_slot_info() const;
@@ -376,56 +355,12 @@ private:
     /// An OS-group error, in the v2 `err` shape whatever the request's version:
     /// the simulator does not model Zephyr's v1 translation of OS-group codes.
     [[nodiscard]] static std::vector<std::byte> os_failure(std::uint64_t code);
-    /// With `no_downgrade`, erases a scheduled image older than the running one
-    /// and cancels the swap, as MCUboot does at boot. Returns whether it did.
-    [[nodiscard]] bool refuses_downgrade(ImagePair& pair) const;
-    /// Direct-XIP, with or without revert: image 0 runs in place from either
-    /// slot, and the newest valid one boots.
-    [[nodiscard]] bool direct_xip() const noexcept;
-    [[nodiscard]] bool xip_with_revert() const noexcept;
-    /// MCUboot would prefer the slot that is not running: it holds a valid
-    /// image with a higher version, or the same version in a lower slot.
-    [[nodiscard]] bool xip_prefers_other() const;
-    /// Whether the other slot boots next, and if so as a one-boot trial.
-    [[nodiscard]] std::optional<bool> xip_next_is_trial() const;
-    /// The flags image-state reports for one of image 0's slots.
-    [[nodiscard]] std::array<bool, 4> xip_flags(std::size_t slot) const;
-    void xip_reboot();
-    [[nodiscard]] ImageError xip_set_next(std::size_t slot, bool confirm);
-    /// The configured mode is upgrade-only (overwrite): a test is permanent.
-    [[nodiscard]] bool upgrade_only() const noexcept;
-    /// Copies the secondary over the primary and erases it, as an overwrite
-    /// upgrade does.
-    static void overwrite(ImagePair& pair);
-
-    /// Which slot of \p image (0 or 1, within the pair) the next boot runs.
-    [[nodiscard]] std::size_t next_boot_slot(std::uint32_t image) const noexcept;
-
-    /// Applies `img_mgmt_set_next_boot_slot()`'s rules to a global slot;
-    /// returns `ImageError::Ok` on success.
-    [[nodiscard]] ImageError set_next_boot_slot(std::size_t slot, bool confirm);
-
-    /// Advances every device-committed apply in progress by one state read.
-    void advance_applies();
-
     std::reference_wrapper<FakeTransport> transport_;
     ServerConfig config_;
 
-    std::vector<ImagePair> images_;
+    /// The slots and every boot rule over them.
+    boot_model::BootModel model_;
 
-    /// Direct-XIP's boot state per slot of image 0, as Zephyr's
-    /// read_boot_swap_state() names it: unset, marked for one boot, or
-    /// confirmed for good (S14). Only the with-revert variant writes it.
-    enum class XipState : std::uint8_t
-    {
-        Unset,
-        Once,
-        Forever,
-    };
-    std::size_t xip_active_ = 0;
-    std::array<XipState, 2> xip_state_{XipState::Forever, XipState::Unset};
-    /// Running a one-boot trial nobody confirmed: the next reboot reverts.
-    bool xip_trial_ = false;
     Session session_;
 
     std::vector<Pending> pending_;

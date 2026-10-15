@@ -448,6 +448,12 @@ smply/
 ├── support/                    shared by the tests and the examples, part of neither
 │   ├── minicbor/               a CBOR codec independent of src/cbor/, used by the
 │   │                           test doubles and the stub device. smply::minicbor
+│   ├── boot_model/             the boot model (testing.md §2): a device's slot table
+│   │                           and what MCUboot and the image group do to it, with
+│   │                           its own image reader, independent of src/image/.
+│   │                           Pure; ServerSimulator and the stub device decide
+│   │                           through it. smply::boot_model, not installed,
+│   │                           unit-tested
 │   ├── dfu_app/                what a DFU *application* needs and the library
 │   │                           deliberately does not ship: FileImageSource,
 │   │                           ReconnectPolicy, UpdateInputs (a file, a build
@@ -475,10 +481,11 @@ smply/
 │   ├── stub_device/            stub_device.hpp  demo_image.hpp  demo_package.hpp
 │   │                           demo_image_file.hpp  device_link.hpp — the pretend
 │   │                           device both portable examples drive, behind a
-│   │                           DeviceLink, optionally with a second image it commits
-│   │                           itself; and the demo image and two-image package it is
+│   │                           DeviceLink, optionally with a second image, by default
+│   │                           one it commits itself; and the demo image and two-image package it is
 │   │                           given, and the temporary file the image is read from.
-│   │                           Scaffolding, not a protocol reference
+│   │                           Its boot rules are smply::boot_model's, in the mode it
+│   │                           reports; not a wire reference
 │   ├── cli_dfu/                the portable DFU example: main.cpp drives UpdateRun
 │   │                           through its three hooks;
 │   │                           loopback_transport.* is the link to the stub device. Runs

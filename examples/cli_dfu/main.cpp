@@ -93,8 +93,9 @@ struct Options
     /// The stub device fails to apply image 1 (package modes only).
     bool apply_fails = false;
 
-    /// `--stub-mode`: the mode the stub device reports. Without it, the stub
-    /// has no bootloader-information command, like most Zephyr builds.
+    /// `--stub-mode`: the mode the stub device reports, and runs. Without it,
+    /// the stub has no bootloader-information command, like most Zephyr
+    /// builds, and swaps with revert.
     std::optional<McubootMode> stub_mode;
 };
 
@@ -113,7 +114,8 @@ void usage()
                  "  --demo-xip-package  generate a direct-XIP package: one image, a build\n"
                  "                per slot (needs a direct-XIP --stub-mode)\n"
                  "  --apply-fails  the demo device fails to apply image 1\n"
-                 "  --stub-mode M  the mode the demo device reports (it still swaps)\n"
+                 "  --stub-mode M  the mode the demo device reports and runs: direct-XIP\n"
+                 "                boots either slot, upgrade-only overwrites, the rest swap\n"
                  "  --flaky-reconnect N  refuse N reconnection attempts before succeeding,\n"
                  "                to exercise the backoff; above the attempt budget the\n"
                  "                update gives up, which is also worth demonstrating\n";
@@ -211,14 +213,23 @@ int main(int argc, char** argv)
     // The stub's image 1, with a package: another MCU's firmware, which it
     // applies itself after the reset. The demo device runs radio 5.0.0; a real
     // package's image 1 lands on a device with nothing applied yet. The
-    // direct-XIP demo is one image, given twice, so its device has none.
+    // direct-XIP demo is one image, given twice, so its device has none. With
+    // `--commit 1=client` image 1 is an ordinary image instead, which a device
+    // built with Zephyr's defaults refuses to let the client confirm (A27).
     std::optional<SecondImage> second_image;
     if (command.package_mode() && !options.demo_xip_package) {
+        CommitBy image_1 = CommitBy::Device;
+        for (const auto& [image, commit] : command.commits) {
+            if (image == 1) {
+                image_1 = commit; // the last one given, as open_inputs() applies them
+            }
+        }
         second_image = SecondImage{
             .running = options.demo_package
                            ? build_demo_image(DemoVersion{.major = kDemoRadioRunning})
                            : std::vector<std::byte>{},
             .outcome = options.apply_fails ? ApplyOutcome::Failed : ApplyOutcome::Applied,
+            .device_commits = image_1 == CommitBy::Device,
         };
     }
 
