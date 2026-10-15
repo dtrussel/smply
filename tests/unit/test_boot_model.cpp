@@ -148,16 +148,34 @@ struct StringMaker<Flags>
 
 // --- A slot the device does not have ------------------------------------------
 
+namespace {
+
+/// Whether \p call throws `std::out_of_range`. A plain function rather than
+/// Catch2's CHECK_THROWS_AS, whose expansion cppcheck cannot parse
+/// (tools/lint.sh runs it over the tests too).
+template<class Call>
+[[nodiscard]] bool refused(Call call)
+{
+    try {
+        call();
+    } catch (const std::out_of_range&) {
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
 TEST_CASE("a slot the device does not have is refused in every build", "[boot-model][flash]")
 {
     // Not an assert: a release build must refuse it too.
     BootModel model{BootConfig{.image_count = 2}};
-    CHECK_THROWS_AS(model.load_slot(4, {}), std::out_of_range);
-    CHECK_THROWS_AS(model.slot_content(4), std::out_of_range);
-    CHECK_THROWS_AS(model.begin_upload(4, 32), std::out_of_range);
-    CHECK_THROWS_AS(static_cast<void>(model.write(4, 0, ConstBytes{})), std::out_of_range);
-    CHECK_THROWS_AS(model.boot_from_slot(2), std::out_of_range);
-    CHECK_NOTHROW(model.slot_content(3));
+    CHECK(refused([&] { model.load_slot(4, {}); }));
+    CHECK(refused([&] { static_cast<void>(model.slot_content(4)); }));
+    CHECK(refused([&] { model.begin_upload(4, 32); }));
+    CHECK(refused([&] { static_cast<void>(model.write(4, 0, ConstBytes{})); }));
+    CHECK(refused([&] { model.boot_from_slot(2); }));
+    CHECK_FALSE(refused([&] { static_cast<void>(model.slot_content(3)); }));
 }
 
 // --- The flag table (S14) ----------------------------------------------------
