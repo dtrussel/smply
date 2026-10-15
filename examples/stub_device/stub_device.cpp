@@ -5,6 +5,7 @@
 #include "stub_device/device_link.hpp"
 
 #include "boot_model/boot_model.hpp"
+#include "boot_model/image_reader.hpp"
 #include "minicbor/minicbor.hpp"
 
 #include "smply/bytes.hpp"
@@ -36,10 +37,6 @@ constexpr std::uint8_t kImageState = 0;
 constexpr std::uint8_t kImageUpload = 1;
 
 constexpr std::uint32_t kBufCount = 2;
-
-/// An MCUboot image header's size (protocol-notes section 7): a first chunk
-/// shorter than this cannot start an image.
-constexpr std::size_t kImageHeaderSize = 32;
 
 /// What one slot holds. A declared upload larger than this is refused before
 /// the slot is erased to its size, so a received `len` never sizes an
@@ -86,12 +83,40 @@ constexpr auto kRebootDuration = std::chrono::milliseconds{150};
     return out.bytes();
 }
 
-/// An image-group error, group-scoped in either SMP version: the shape of a
-/// server without `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, which keeps
-/// the device's own reason (protocol-notes A16).
-[[nodiscard]] std::vector<std::byte> image_error_map(ImageError code)
+/// `img_mgmt_translate_error_code()`: the lossy, many-to-one mapping an
+/// image-group code goes through on its way to a v1 client (protocol-notes
+/// section 9, A16). The same mapping as the simulator's.
+[[nodiscard]] SmpError translate(ImageError code)
+{
+    switch (code) {
+    case ImageError::Ok:
+        return SmpError::Ok;
+    case ImageError::NoFreeSlot:
+    case ImageError::CurrentVersionIsNewer:
+    case ImageError::ImageAlreadyPending:
+        return SmpError::BadState;
+    case ImageError::NoFreeMemory:
+        return SmpError::NoMemory;
+    case ImageError::InvalidOffset:
+    case ImageError::InvalidLength:
+        return SmpError::InvalidArgument;
+    default:
+        return SmpError::Unknown;
+    }
+}
+
+/// An image-group error in the shape the request's SMP version gets from a
+/// server with `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, as the
+/// simulator's default does (protocol-notes A16): a v1 request gets the flat
+/// `rc` the stub has always sent, carrying the translated code; a v2 request
+/// gets the group-scoped `err`.
+[[nodiscard]] std::vector<std::byte> image_error_map(Version version, ImageError code)
 {
     cbor::Writer out;
+    if (version == Version::V1) {
+        out.map(1).text("rc").uint(static_cast<std::uint64_t>(translate(code)));
+        return out.bytes();
+    }
     out.map(1).text("err").map(2);
     out.text("group").uint(static_cast<std::uint64_t>(Group::Image));
     out.text("rc").uint(static_cast<std::uint64_t>(code));
@@ -280,7 +305,7 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
             return respond(*header, ConstBytes{error_map(3)}); // a test names no image
         }
         if (const ImageError result = model_.set_state(named, confirm); result != ImageError::Ok) {
-            return respond(*header, ConstBytes{image_error_map(result)});
+            return respond(*header, ConstBytes{image_error_map(header->version, result)});
         }
         return respond(*header, ConstBytes{encode_state(model_.listing())});
     }
@@ -300,22 +325,24 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
             if (!len.has_value()) {
                 return respond(*header, ConstBytes{error_map(3)}); // INVALID_LENGTH
             }
-            if (data->bytes.size() < kImageHeaderSize) {
+            if (data->bytes.size() < boot_model::kImageHeaderSize) {
                 return respond(*header, ConstBytes{error_map(3)});
+            }
+            if (boot_model::read32(ConstBytes{data->bytes}, 0) != boot_model::kImageMagic) {
+                return respond(*header, ConstBytes{error_map(3)}); // bad magic
             }
             // Read on first packets only, where it picks the image whose slot
             // receives the upload: its secondary, or under direct-XIP the slot
-            // not running (protocol-notes section 6, S10, S36). Whether the
-            // bytes are an image is the model's reader's call once they are in
-            // flash: one that is not is never listed.
+            // not running (protocol-notes section 6, S10, S36).
             const std::optional<std::size_t> slot =
                 model_.upload_target(request->get_uint("image").value_or(0));
             if (!slot.has_value()) {
-                return respond(*header, ConstBytes{image_error_map(ImageError::NoFreeSlot)});
+                return respond(
+                    *header, ConstBytes{image_error_map(header->version, ImageError::NoFreeSlot)});
             }
             if (*len > kSlotCapacity) {
-                return respond(*header,
-                               ConstBytes{image_error_map(ImageError::InvalidImageTooLarge)});
+                return respond(*header, ConstBytes{image_error_map(
+                                            header->version, ImageError::InvalidImageTooLarge)});
             }
             // The first chunk erases the slot it is about to fill.
             model_.begin_upload(*slot, static_cast<std::size_t>(*len));
@@ -335,8 +362,8 @@ std::optional<std::vector<std::byte>> StubDevice::answer(const std::vector<std::
         }
 
         if (!model_.write(*upload_slot_, received_, ConstBytes{data->bytes})) {
-            return respond(*header,
-                           ConstBytes{image_error_map(ImageError::InvalidImageDataOverrun)});
+            return respond(*header, ConstBytes{image_error_map(
+                                        header->version, ImageError::InvalidImageDataOverrun)});
         }
         received_ += data->bytes.size();
         const bool complete = received_ == declared_size_;

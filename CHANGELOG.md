@@ -54,9 +54,10 @@ git; commit `97f1647` is the last to carry the per-phase record in
   (`support/boot_model/`): a direct-XIP stub runs from either slot and takes
   the upload into the one not running, plain direct-XIP answers set-state
   `ENOTSUP`, and an upgrade-only stub overwrites. A stub with two images
-  refuses a client confirm of image 1 (`IMAGE_CONFIRMATION_DENIED`), as a
-  default Zephyr build does (protocol-notes A27), so `cli_dfu --demo-package
-  --commit 1=client` now fails. The simulator stays the reference for the
+  refuses a client confirm of image 1 (`IMAGE_CONFIRMATION_DENIED`, a flat
+  `rc=1` to the examples' SMP v1), as a default Zephyr build does
+  (protocol-notes A27), so `cli_dfu --demo-package --commit 1=client` now
+  fails. The simulator stays the reference for the
   wire.
 
 ### Fixed

@@ -21,10 +21,13 @@
 /// the same one the simulator decides with. So this device refuses what a
 /// default Zephyr build refuses, a client confirm of image 1 included
 /// (protocol-notes A27). It reads its slots with the model's image reader, not
-/// smply's parser. An image-group refusal is answered as the group-scoped `err`
-/// map whatever the request's SMP version, as a server without
-/// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL` answers (protocol-notes A16),
-/// so that the example tools show the device's own reason.
+/// smply's parser. An image-group refusal is shaped by the request's SMP
+/// version, as the simulator's default (a server with
+/// `CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL`, protocol-notes A16) shapes
+/// it: v1 gets the flat `rc` the stub has always sent, carrying the translated
+/// code; v2 gets the group-scoped `err` map. Its two upload refusals (a
+/// declared length above the slot, a write past it) bound the client's `len`
+/// before the model erases flash to that size (docs/testing.md section 3).
 ///
 /// It also answers the bootloader-information command with a mode it is given
 /// (ADR-0025), and **runs the mode it reports**: the mode picks the boot

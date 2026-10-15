@@ -22,6 +22,17 @@
 
 namespace smply::boot_model {
 
+/// `IMAGE_MAGIC`: the first four bytes of an MCUboot image header,
+/// little-endian (docs/protocol-notes.md section 7).
+inline constexpr std::uint32_t kImageMagic = 0x96F3B83DU;
+
+/// The size of an MCUboot image header (docs/protocol-notes.md section 7).
+inline constexpr std::size_t kImageHeaderSize = 32;
+
+/// The little-endian 32-bit value at \p offset in \p bytes. The caller
+/// guarantees `offset + 4 <= bytes.size()`.
+[[nodiscard]] std::uint32_t read32(ConstBytes bytes, std::size_t offset);
+
 /// What the device can say about a slot: everything image-state reports.
 struct SlotImage
 {

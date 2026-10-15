@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -144,6 +145,20 @@ struct StringMaker<Flags>
     }
 };
 } // namespace Catch
+
+// --- A slot the device does not have ------------------------------------------
+
+TEST_CASE("a slot the device does not have is refused in every build", "[boot-model][flash]")
+{
+    // Not an assert: a release build must refuse it too.
+    BootModel model{BootConfig{.image_count = 2}};
+    CHECK_THROWS_AS(model.load_slot(4, {}), std::out_of_range);
+    CHECK_THROWS_AS(model.slot_content(4), std::out_of_range);
+    CHECK_THROWS_AS(model.begin_upload(4, 32), std::out_of_range);
+    CHECK_THROWS_AS(static_cast<void>(model.write(4, 0, ConstBytes{})), std::out_of_range);
+    CHECK_THROWS_AS(model.boot_from_slot(2), std::out_of_range);
+    CHECK_NOTHROW(model.slot_content(3));
+}
 
 // --- The flag table (S14) ----------------------------------------------------
 
@@ -644,7 +659,7 @@ TEST_CASE("a device that never commits keeps the image on trial, and a reboot re
     model.load_slot(2, image(3, 3));
     model.load_slot(3, image(4, 4));
     // Made device-committed after construction, as ServerSimulator does.
-    model.device_commits(1, DeviceCommit{.apply_reads = 1, .commit = CommitOutcome::Never});
+    model.set_device_commit(1, DeviceCommit{.apply_reads = 1, .commit = CommitOutcome::Never});
     REQUIRE(model.device_committed(1));
     REQUIRE(model.set_state(ConstBytes{hash(4)}, false) == ImageError::Ok);
     model.reboot();
@@ -734,7 +749,7 @@ TEST_CASE("an overwrite device still applies an image it commits itself", "[boot
     model.load_slot(0, image(1, 1));
     model.load_slot(2, image(3, 3));
     model.load_slot(3, image(4, 4));
-    model.device_commits(1, DeviceCommit{});
+    model.set_device_commit(1, DeviceCommit{});
     REQUIRE(model.set_state(ConstBytes{hash(4)}, false) == ImageError::Ok);
     model.reboot();
     CHECK(model.swap_type(1) == SwapType::Test);

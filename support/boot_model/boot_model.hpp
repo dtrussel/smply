@@ -21,9 +21,11 @@
 /// there (S10, S14, S35, S36, S39, S41, S56, A27, ADR-0022).
 ///
 /// It reads flash with its own image reader (`image_reader.hpp`), never with
-/// smply's parser, and links only smply's public headers, so an example may
-/// use it. It is single-threaded and holds no lock: whoever owns a model owns
-/// it on one thread.
+/// smply's parser: this model is the oracle smply's client is tested against,
+/// and an oracle that shared the parser under test could not tell a correct
+/// image from one both halves misread. It links only smply's public headers,
+/// so an example may use it. It is single-threaded and holds no lock: whoever
+/// owns a model owns it on one thread.
 ///
 /// Slots are numbered globally, as Zephyr does: image `n` owns slots `2n`
 /// (primary, the one that runs) and `2n + 1` (secondary, the upload target).
@@ -162,9 +164,6 @@ public:
     /// How many image pairs the device has.
     [[nodiscard]] std::uint32_t image_count() const noexcept;
 
-    /// What the bootloader does with the slots.
-    [[nodiscard]] BootBehaviour behaviour() const noexcept;
-
     /// Whether set-state exists: false only under plain direct-XIP, where
     /// Zephyr's write handler is `NULL` and a server answers `ENOTSUP` (S10).
     [[nodiscard]] bool supports_set_state() const noexcept;
@@ -172,10 +171,12 @@ public:
     // --- Flash ---------------------------------------------------------------
 
     /// Puts \p content into global \p slot, as though it had been flashed
-    /// there. An empty vector is an erased slot. \p slot must exist.
+    /// there. An empty vector is an erased slot. A \p slot the device does
+    /// not have throws `std::out_of_range`, as every operation taking a global
+    /// slot or an image number does, in a release build too.
     void load_slot(std::size_t slot, std::vector<std::byte> content);
 
-    /// What global \p slot holds. \p slot must exist.
+    /// What global \p slot holds.
     [[nodiscard]] ConstBytes slot_content(std::size_t slot) const;
 
     /// The global slot an upload of \p image writes to: that image's
@@ -243,7 +244,7 @@ public:
 
     /// Makes \p image device-committed after construction, as
     /// `BootConfig::device_commits` does at it.
-    void device_commits(std::uint32_t image, const DeviceCommit& how);
+    void set_device_commit(std::uint32_t image, const DeviceCommit& how);
 
     [[nodiscard]] bool device_committed(std::uint32_t image) const;
 
@@ -260,7 +261,7 @@ public:
     /// MCUboot would boot is pending and permanent.
     [[nodiscard]] std::vector<SlotEntry> listing() const;
 
-    /// What \p image will do on the next boot. \p image must exist. Under
+    /// What \p image will do on the next boot. Under
     /// direct-XIP, image 0's is always `None`: its boot state is per slot
     /// (`active_slot()`, and the listing's flags).
     [[nodiscard]] SwapType swap_type(std::uint32_t image = 0) const;
@@ -277,7 +278,8 @@ public:
 
     /// Starts the device running image 0 from \p slot (0 or 1) instead, as
     /// though an earlier update had moved it there. The slot runs confirmed,
-    /// and the other carries no boot state.
+    /// and the other carries no boot state. Any other \p slot throws
+    /// `std::out_of_range`.
     void boot_from_slot(std::size_t slot);
 
 private:
@@ -304,6 +306,11 @@ private:
         Forever,
     };
 
+    /// Global \p slot's flash; `std::out_of_range` for a slot the device
+    /// does not have.
+    [[nodiscard]] std::vector<std::byte>& flash(std::size_t slot);
+    [[nodiscard]] const std::vector<std::byte>& flash(std::size_t slot) const;
+
     /// Ends \p image's scheduled swap at a boot without a trial. With
     /// \p install the secondary's image is copied over the primary (an
     /// overwrite); without, it is dropped (a refused downgrade, S41). Either
@@ -322,8 +329,14 @@ private:
     /// valid, bootable image with a higher version, or the same version in a
     /// lower slot.
     [[nodiscard]] bool xip_prefers_other() const;
-    /// Whether the other slot boots next, and if so as a one-boot trial.
-    [[nodiscard]] std::optional<bool> xip_next_is_trial() const;
+    /// What image 0's next boot runs under direct-XIP.
+    enum class XipNext : std::uint8_t
+    {
+        Stay,         ///< The running slot boots again.
+        OtherOnTrial, ///< The other slot boots, as a one-boot trial.
+        OtherForGood, ///< The other slot boots, and keeps booting.
+    };
+    [[nodiscard]] XipNext xip_next() const;
     /// The flags image-state reports for image 0's \p slot under direct-XIP.
     [[nodiscard]] SlotEntry xip_flags(SlotEntry entry) const;
     [[nodiscard]] ImageError xip_set_next(std::size_t global_slot, bool confirm);

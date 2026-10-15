@@ -2,6 +2,7 @@
 
 #include "server_simulator.hpp"
 
+#include "boot_model/image_reader.hpp"
 #include "message_builder.hpp"
 #include "minicbor/minicbor.hpp"
 
@@ -24,25 +25,6 @@ namespace smply::test {
 namespace tcbor = smply::minicbor;
 
 namespace {
-
-// --- The upload's header check ------------------------------------------------
-//
-// img_mgmt_upload_inspect() looks at the first packet's magic before it writes
-// anything (section 6). Read by hand from docs/protocol-notes.md section 7, as
-// the boot model's own reader is, and never through src/image/.
-
-constexpr std::uint32_t kImageMagic = 0x96F3B83DU;
-constexpr std::size_t kImageHeaderSize = 32;
-
-[[nodiscard]] std::uint32_t read32(ConstBytes bytes, std::size_t offset)
-{
-    std::uint32_t value = 0;
-    for (std::size_t i = 0; i < 4; ++i) {
-        value |= std::to_integer<std::uint32_t>(bytes[offset + i])
-                 << (8U * static_cast<unsigned>(i));
-    }
-    return value;
-}
 
 [[nodiscard]] std::vector<std::byte> sha256_of(ConstBytes content)
 {
@@ -114,10 +96,10 @@ ConstBytes ServerSimulator::slot_content(std::size_t slot) const
 void ServerSimulator::device_commits(std::uint32_t image, ApplyOutcome outcome, unsigned reads,
                                      CommitOutcome commit, unsigned commit_reads)
 {
-    model_.device_commits(image, boot_model::DeviceCommit{.outcome = outcome,
-                                                          .apply_reads = reads,
-                                                          .commit = commit,
-                                                          .commit_reads = commit_reads});
+    model_.set_device_commit(image, boot_model::DeviceCommit{.outcome = outcome,
+                                                             .apply_reads = reads,
+                                                             .commit = commit,
+                                                             .commit_reads = commit_reads});
 }
 
 void ServerSimulator::reboot()
@@ -386,14 +368,17 @@ std::vector<std::byte> ServerSimulator::handle_upload(const Header& header, Cons
     // img_mgmt_upload_inspect(), in its own order (section 6, rules 2-8).
     bool proceed = true;
     if (*off == 0) {
-        if (data.size() < kImageHeaderSize) {
+        // img_mgmt_upload_inspect() looks at the first packet's magic before
+        // it writes anything (section 6), read with the boot model's own
+        // reader and never through src/image/.
+        if (data.size() < boot_model::kImageHeaderSize) {
             return image_failure(header.version, ImageError::InvalidImageHeader);
         }
         const std::optional<std::uint64_t> size = request->get_uint("len");
         if (!size.has_value()) {
             return image_failure(header.version, ImageError::InvalidLength);
         }
-        if (read32(data, 0) != kImageMagic) {
+        if (boot_model::read32(data, 0) != boot_model::kImageMagic) {
             return image_failure(header.version, ImageError::InvalidImageHeaderMagic);
         }
 

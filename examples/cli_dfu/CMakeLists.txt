@@ -138,15 +138,20 @@ if(SMPLY_BUILD_TESTS)
     # Image 1 committed by the client on a device built with Zephyr's
     # defaults (protocol-notes A27): both images swap on trial, image 0 is
     # confirmed, and the confirm of image 1 by its hash is denied with
-    # IMAGE_CONFIRMATION_DENIED (32). The expected lines are what the updater
-    # does against ServerSimulator with two images, the A27 Kconfigs off and
-    # the err map kept for a v1 request (translate_v1_errors off, the stub's
-    # error shape): image 0 left confirmed, image 1's trial to revert.
+    # IMAGE_CONFIRMATION_DENIED (32). cli_dfu speaks SMP v1, so the denial
+    # arrives translated onto a flat rc=1 (MGMT_ERR_EUNKNOWN, protocol-notes
+    # A16) and the updater reports it at the SMP layer. The expected lines are
+    # what the updater does against ServerSimulator with its default config
+    # (two images, the A27 Kconfigs off, translate_v1_errors on): it fails in
+    # Confirming with [smp rc=1] after its one confirm landed, leaving image 0
+    # confirmed and image 1's trial to revert, and warns of the revert. The
+    # report lists a client image by bytes only, so image 0's confirm shows as
+    # the failure coming after it, not as a line of its own.
     add_test(NAME cli_dfu_package_client_confirm_denied
         COMMAND cli_dfu --quiet --demo-package --commit 1=client)
     set_tests_properties(cli_dfu_package_client_confirm_denied PROPERTIES
         PASS_REGULAR_EXPRESSION
-            "update failed: MCUmgr protocol error \\[image rc=32\\].*image 0 \\(client\\).*image 1 \\(client\\).*will revert on the next reset"
+            "update failed: MCUmgr protocol error \\[smp rc=1\\] \\(at smp client\\).*image 0 \\(client\\).*image 1 \\(client\\).*will revert on the next reset"
         TIMEOUT 60
     )
     # The package board check (protocol-notes section 5). The demo packages'

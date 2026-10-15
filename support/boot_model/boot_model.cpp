@@ -3,10 +3,10 @@
 #include "boot_model/boot_model.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -44,11 +44,6 @@ std::uint32_t BootModel::image_count() const noexcept
     return static_cast<std::uint32_t>(images_.size());
 }
 
-BootBehaviour BootModel::behaviour() const noexcept
-{
-    return config_.behaviour;
-}
-
 bool BootModel::supports_set_state() const noexcept
 {
     // The write handler is NULL under DIRECT_XIP (S10); with revert it stays.
@@ -57,16 +52,26 @@ bool BootModel::supports_set_state() const noexcept
 
 // --- Flash -------------------------------------------------------------------
 
+std::vector<std::byte>& BootModel::flash(std::size_t slot)
+{
+    // images_.at() throws std::out_of_range for a slot the device does not
+    // have, in a release build as in a debug one.
+    return images_.at(slot / 2).slots[slot % 2];
+}
+
+const std::vector<std::byte>& BootModel::flash(std::size_t slot) const
+{
+    return images_.at(slot / 2).slots[slot % 2];
+}
+
 void BootModel::load_slot(std::size_t slot, std::vector<std::byte> content)
 {
-    assert(slot / 2 < images_.size());
-    images_[slot / 2].slots[slot % 2] = std::move(content);
+    flash(slot) = std::move(content);
 }
 
 ConstBytes BootModel::slot_content(std::size_t slot) const
 {
-    assert(slot / 2 < images_.size());
-    return ConstBytes{images_[slot / 2].slots[slot % 2]};
+    return ConstBytes{flash(slot)};
 }
 
 std::optional<std::size_t> BootModel::upload_target(std::uint64_t image) const
@@ -88,8 +93,7 @@ void BootModel::begin_upload(std::size_t slot, std::size_t size)
 {
     // The implicit erase of the target slot (protocol-notes section 6,
     // rule 12).
-    assert(slot / 2 < images_.size());
-    images_[slot / 2].slots[slot % 2].assign(size, std::byte{0xFF});
+    flash(slot).assign(size, std::byte{0xFF});
     if (direct_xip() && slot < xip_state_.size()) {
         // The erase took the slot's trailer, and its boot state with it.
         xip_state_[slot] = XipState::Unset;
@@ -98,12 +102,11 @@ void BootModel::begin_upload(std::size_t slot, std::size_t size)
 
 bool BootModel::write(std::size_t slot, std::size_t offset, ConstBytes data)
 {
-    assert(slot / 2 < images_.size());
-    std::vector<std::byte>& flash = images_[slot / 2].slots[slot % 2];
-    if (offset > flash.size() || data.size() > flash.size() - offset) {
+    std::vector<std::byte>& target = flash(slot);
+    if (offset > target.size() || data.size() > target.size() - offset) {
         return false;
     }
-    std::copy(data.begin(), data.end(), flash.begin() + static_cast<std::ptrdiff_t>(offset));
+    std::copy(data.begin(), data.end(), target.begin() + static_cast<std::ptrdiff_t>(offset));
     return true;
 }
 
@@ -307,7 +310,7 @@ void BootModel::reboot()
     }
 }
 
-void BootModel::device_commits(std::uint32_t image, const DeviceCommit& how)
+void BootModel::set_device_commit(std::uint32_t image, const DeviceCommit& how)
 {
     images_.at(image).device = how;
 }
@@ -492,7 +495,10 @@ std::size_t BootModel::active_slot() const noexcept
 
 void BootModel::boot_from_slot(std::size_t slot)
 {
-    xip_active_ = slot % 2;
+    if (slot >= xip_state_.size()) {
+        throw std::out_of_range{"boot_from_slot: image 0 has slots 0 and 1"};
+    }
+    xip_active_ = slot;
     xip_state_ = {XipState::Unset, XipState::Unset};
     xip_state_[xip_active_] = XipState::Forever;
     xip_trial_ = false;
@@ -516,36 +522,37 @@ bool BootModel::xip_prefers_other() const
     return mine < other_version || (mine == other_version && other < xip_active_);
 }
 
-std::optional<bool> BootModel::xip_next_is_trial() const
+BootModel::XipNext BootModel::xip_next() const
 {
     if (!xip_prefers_other()) {
-        return std::nullopt;
+        return XipNext::Stay;
     }
     if (config_.behaviour == BootBehaviour::DirectXip) {
-        return false;
+        return XipNext::OtherForGood;
     }
     switch (xip_state_[1 - xip_active_]) {
     case XipState::Once:
-        return true;
+        return XipNext::OtherOnTrial;
     case XipState::Forever:
-        return false;
+        return XipNext::OtherForGood;
     case XipState::Unset:
-        return std::nullopt;
+        return XipNext::Stay;
     }
-    return std::nullopt;
+    return XipNext::Stay;
 }
 
 SlotEntry BootModel::xip_flags(SlotEntry entry) const
 {
     const bool active = entry.slot == xip_active_;
-    const std::optional<bool> next_trial = xip_next_is_trial();
+    const XipNext next = xip_next();
+    const bool other_boots = next != XipNext::Stay;
     entry.active = active;
     if (config_.behaviour == BootBehaviour::DirectXip) {
         // Never confirmed; the slot MCUboot would boot is pending and
         // permanent (S14).
-        entry.pending = !active && next_trial.has_value();
+        entry.pending = !active && other_boots;
         entry.confirmed = false;
-        entry.permanent = !active && next_trial.has_value();
+        entry.permanent = !active && other_boots;
         return entry;
     }
     if (xip_trial_) {
@@ -562,9 +569,9 @@ SlotEntry BootModel::xip_flags(SlotEntry entry) const
         entry.permanent = false;
         return entry;
     }
-    entry.pending = next_trial.has_value();
+    entry.pending = other_boots;
     entry.confirmed = false;
-    entry.permanent = next_trial.has_value() && !*next_trial;
+    entry.permanent = next == XipNext::OtherForGood;
     return entry;
 }
 
@@ -579,12 +586,12 @@ void BootModel::xip_reboot()
         xip_trial_ = false;
         return;
     }
-    const std::optional<bool> trial = xip_next_is_trial();
-    if (!trial.has_value()) {
+    const XipNext next = xip_next();
+    if (next == XipNext::Stay) {
         return;
     }
     xip_active_ = other;
-    xip_trial_ = *trial;
+    xip_trial_ = next == XipNext::OtherOnTrial;
 }
 
 ImageError BootModel::xip_set_next(std::size_t global_slot, bool confirm)

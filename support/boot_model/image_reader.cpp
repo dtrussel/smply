@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -18,8 +19,6 @@ namespace {
 // a component test that parsed slot content with the parser under test could
 // not tell a correct image from one both halves agree to misread.
 
-constexpr std::uint32_t kImageMagic = 0x96F3B83DU;
-constexpr std::size_t kImageHeaderSize = 32;
 constexpr std::uint16_t kTlvInfoMagic = 0x6907;
 constexpr std::uint16_t kTlvProtInfoMagic = 0x6908;
 constexpr std::uint16_t kTlvSha256 = 0x10;
@@ -32,7 +31,17 @@ constexpr std::size_t kAreaHeaderSize = 4;
                                       (std::to_integer<std::uint16_t>(bytes[offset + 1]) << 8U));
 }
 
-[[nodiscard]] std::uint32_t read32(ConstBytes bytes, std::size_t offset)
+/// Whether `base + add` neither overflows nor passes \p limit
+/// (docs/design.md section 11: `off + len < off` and `off + len > size`).
+[[nodiscard]] bool fits(std::uint64_t base, std::uint64_t add, std::uint64_t limit)
+{
+    const std::uint64_t end = base + add;
+    return end >= base && end <= limit;
+}
+
+} // namespace
+
+std::uint32_t read32(ConstBytes bytes, std::size_t offset)
 {
     std::uint32_t value = 0;
     for (std::size_t i = 0; i < 4; ++i) {
@@ -41,8 +50,6 @@ constexpr std::size_t kAreaHeaderSize = 4;
     }
     return value;
 }
-
-} // namespace
 
 std::optional<SlotImage> describe(ConstBytes content)
 {
@@ -70,31 +77,39 @@ std::optional<SlotImage> describe(ConstBytes content)
 
     // The hash TLV lives in the unprotected area, which follows the protected
     // one when there is a protected one. Both areas are walked as one run.
-    std::size_t offset = static_cast<std::size_t>(header_size) + image_size;
+    // Every offset is std::uint64_t and every addition is checked for both
+    // overflow and the end of the content (docs/design.md section 11).
+    const std::uint64_t size = content.size();
+    if (!fits(header_size, image_size, std::numeric_limits<std::uint64_t>::max())) {
+        return out;
+    }
+    std::uint64_t offset = std::uint64_t{header_size} + image_size;
     for (int area = 0; area < 2; ++area) {
-        if (offset + kAreaHeaderSize > content.size()) {
+        if (!fits(offset, kAreaHeaderSize, size)) {
             break;
         }
-        const std::uint16_t magic = read16(content, offset);
-        const std::uint16_t total = read16(content, offset + 2);
+        const auto at = static_cast<std::size_t>(offset);
+        const std::uint16_t magic = read16(content, at);
+        const std::uint16_t total = read16(content, at + 2);
         if (magic != kTlvInfoMagic && magic != kTlvProtInfoMagic) {
             break;
         }
-        if (total < kAreaHeaderSize || offset + total > content.size()) {
+        if (total < kAreaHeaderSize || !fits(offset, total, size)) {
             break;
         }
 
-        const std::size_t area_end = offset + total;
-        std::size_t entry = offset + kAreaHeaderSize;
-        while (entry + kAreaHeaderSize <= area_end) {
-            const std::uint16_t type = read16(content, entry);
-            const std::uint16_t length = read16(content, entry + 2);
-            const std::size_t value = entry + kAreaHeaderSize;
-            if (value + length > area_end) {
+        const std::uint64_t area_end = offset + total;
+        std::uint64_t entry = offset + kAreaHeaderSize;
+        while (fits(entry, kAreaHeaderSize, area_end)) {
+            const auto entry_at = static_cast<std::size_t>(entry);
+            const std::uint16_t type = read16(content, entry_at);
+            const std::uint16_t length = read16(content, entry_at + 2);
+            const std::uint64_t value = entry + kAreaHeaderSize;
+            if (!fits(value, length, area_end)) {
                 break;
             }
             if (type == kTlvSha256 && magic == kTlvInfoMagic) {
-                const ConstBytes bytes = content.subspan(value, length);
+                const ConstBytes bytes = content.subspan(static_cast<std::size_t>(value), length);
                 out.hash.assign(bytes.begin(), bytes.end());
             }
             entry = value + length;

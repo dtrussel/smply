@@ -254,6 +254,11 @@ operations:
   device-committed applies and commits by one read, and `listing()`, which a
   set-state answer carries; plus `swap_type()`.
 
+A slot or image the device does not have, passed to any operation that takes
+one by number other than `upload_target()` and `erase()` (which answer it as a
+device would), throws `std::out_of_range`, in a release build too: a fake's
+bug, never a silent write to the wrong slot.
+
 It reads slots with its own image reader (`image_reader.hpp`: magic, version
 string, `bootable`, the SHA-256 TLV), never with `src/image/` or smply's public
 parser, so a test cannot pass because the parser under test and the oracle
@@ -608,12 +613,17 @@ it commits itself. Each passes on its output lines, never on the exit code:
 `cli_dfu_package_client_confirm_denied` runs the same package with
 `--commit 1=client`, so the stub's image 1 is an ordinary image and the device
 is built with Zephyr's defaults: both images swap on trial, image 0 is
-confirmed, and the confirm of image 1 is denied (A27). It expects
-`MCUmgr protocol error [image rc=32]` (`IMAGE_CONFIRMATION_DENIED`), both
-images reported as the client's, and the warning that the trial reverts. That
-output is what the updater does against `ServerSimulator` with two images, the
-A27 Kconfigs off and the `err` map kept for a v1 request, not what the stub
-happened to print.
+confirmed, and the confirm of image 1 is denied with
+`IMAGE_CONFIRMATION_DENIED` (A27). `cli_dfu` speaks SMP v1, so the denial
+arrives translated onto a flat `rc=1` (A16): the test expects
+`MCUmgr protocol error [smp rc=1] (at smp client)`, both images reported as
+the client's, and the warning that the trial reverts. That output is what the
+updater does against `ServerSimulator` with its default config (two images, the
+A27 Kconfigs off, `translate_v1_errors` on): it fails in `Confirming` after its
+one confirm landed, leaving image 0 confirmed and image 1's trial to revert. It
+is not what the stub happened to print. A client image's report line carries
+only its bytes, so image 0's confirm shows only as the failure coming after
+it.
 
 Nine show the package board check (`--board`, protocol-notes §5). The demo
 packages name the invented board `demo_board`, a board name for image 0 and a
@@ -660,8 +670,12 @@ either slot and uploads to the one not running, plain direct-XIP answers
 set-state `ENOTSUP`, upgrade-only overwrites, and every other mode, or none,
 swaps with revert. It never prevents a downgrade.
 So it refuses what a default Zephyr build refuses, a client confirm of image 1
-included. It answers an image-group refusal as the group-scoped `err` map in
-either SMP version, as a server without `ORIGINAL_PROTOCOL` does (A16). It is
+included. An image-group refusal is shaped by the request's SMP version, as
+the simulator's default (a server with `ORIGINAL_PROTOCOL`, A16) shapes it: a
+v1 request, which is what the examples send, gets the flat `rc` the stub has
+always sent, carrying the code `img_mgmt_translate_error_code()` gives; a v2
+request gets the group-scoped `err` map. A first chunk too short for an image header or without its magic is
+refused with a flat `rc=3`, as the stub always refused it. It is
 still **not** a reference for the wire — `ServerSimulator` is. The stub answers
 the five commands one clean update needs and no more: no offset correction
 beyond answering the offset it holds, no resume by `sha`, no `match`, no
@@ -669,6 +683,21 @@ faults. Its one extension is a second image, by default one the device commits
 itself, so the multi-image examples have a device to take a package. If the
 two ever disagree on the wire, the simulator is right; growing the stub to
 match it would be building a second test double outside `tests/`.
+
+Two things it gained with the boot model look like wire growth and are kept
+on purpose:
+* **Two upload refusals.** A first chunk declaring a `len` above the slot's
+  512 KiB is refused with `InvalidImageTooLarge`, and a chunk that would write
+  past the declared length with `InvalidImageDataOverrun`. The model erases
+  the slot to the declared length (`BootModel::begin_upload()`), so `len` is a
+  client-supplied size that would otherwise size an allocation; these two
+  bound it first (CLAUDE.md rule 6, `design.md` §11). The stub used to stage
+  chunks in a growing buffer and had no such size to bound.
+* **`SecondImage::device_commits`**, set from the tool's `--commit` for image
+  1. Without it the stub would apply and commit image 1 itself even when the
+  client is to commit it, so a client-committed image 1 would never be on
+  trial for the updater to confirm, and `--commit 1=client` would never reach
+  the confirm that `cli_dfu_package_client_confirm_denied` exists to show.
 
 ### The serial example as a test (`examples/serial_dfu/`)
 
